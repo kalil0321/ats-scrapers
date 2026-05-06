@@ -48,14 +48,14 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-logger = logging.getLogger(__name__)
-
 from jobhive.exceptions import ScraperError
 from jobhive.models import ATSType, Job
 from jobhive.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
+
+logger = logging.getLogger(__name__)
 
 API_URL = "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobs"
 API_KEY = "jobboerse-jobsuche"  # Public key shared by the official frontend.
