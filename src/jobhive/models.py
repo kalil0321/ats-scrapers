@@ -58,6 +58,7 @@ class ATSType(StrEnum):
     EURES = "eures"
     # Hybrid jobboards (companies post directly, not aggregated)
     WELCOMETOTHEJUNGLE = "welcometothejungle"
+    GETONBRD = "getonbrd"
     # Additional multi-tenant ATSes (post-0.1)
     BAMBOOHR = "bamboohr"
     BREEZY = "breezy"
