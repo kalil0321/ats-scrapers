@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import logging
 import re
+from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
 
 from jobhive.scrapers import BundesagenturScraper
@@ -104,32 +106,14 @@ def test_page_failure_logs_page_skip_not_subtree_skip(
     # the per-page failure path deterministically.
     monkeypatch.setattr(ba, "PAGE_SIZE", 1)
 
-    callback_calls = {"n": 0}
-
-    def serve(request):
-        from urllib.parse import parse_qs, urlparse
+    def serve(request: httpx.Request) -> httpx.Response:
         params = parse_qs(urlparse(str(request.url)).query)
-        size = params.get("size", ["1"])[0]
         page = int(params.get("page", ["1"])[0])
-        callback_calls["n"] += 1
-        # The probe (size=1, page=1) and page 1 of fan-out (also size=1,
-        # page=1) succeed.
-        if page == 1:
-            from pytest_httpx import IteratorStream  # noqa: F401  (typing only)
-            import httpx as _h
-            return _h.Response(
-                200,
-                json={
-                    "stellenangebote": [_job(str(page), f"Page-{page} row")],
-                    "maxErgebnisse": 3,
-                },
-            )
+        # The probe (page=1) and page 1 of fan-out succeed; page 2
+        # persistently 403s; page 3 succeeds.
         if page == 2:
-            import httpx as _h
-            return _h.Response(403)
-        # Page 3 succeeds again.
-        import httpx as _h
-        return _h.Response(
+            return httpx.Response(403)
+        return httpx.Response(
             200,
             json={
                 "stellenangebote": [_job(str(page), f"Page-{page} row")],
