@@ -45,6 +45,7 @@ from jobhive.scrapers.tesla import TeslaScraper
 from jobhive.scrapers.tiktok import TikTokScraper
 from jobhive.scrapers.uber import UberScraper
 from jobhive.scrapers.usajobs import USAJobsScraper
+from jobhive.scrapers.wanted import WantedScraper
 from jobhive.scrapers.welcometothejungle import WTTJScraper
 from jobhive.scrapers.workable import WorkableScraper
 from jobhive.scrapers.workday import WorkdayScraper
@@ -88,6 +89,7 @@ __all__ = [
     "USAJobsScraper",
     "UberScraper",
     "WTTJScraper",
+    "WantedScraper",
     "WorkableScraper",
     "WorkdayScraper",
     "get_scraper",
