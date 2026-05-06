@@ -24,8 +24,8 @@ def test_ats_type_includes_every_supported_platform() -> None:
         # Big-tech custom careers systems
         "amazon", "apple", "google", "meta",
         "tesla", "tiktok", "uber", "usajobs",
-        # National public-sector aggregators
-        "bundesagentur", "arbetsformedlingen",
+        # National / supranational public-sector aggregators
+        "bundesagentur", "arbetsformedlingen", "eures",
         # Hybrid jobboards (companies post directly)
         "welcometothejungle",
         # Additional multi-tenant ATSes

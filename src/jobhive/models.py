@@ -55,6 +55,7 @@ class ATSType(StrEnum):
     # scrapers — each is the entire country's jobs api)
     BUNDESAGENTUR = "bundesagentur"
     ARBETSFORMEDLINGEN = "arbetsformedlingen"
+    EURES = "eures"
     # Hybrid jobboards (companies post directly, not aggregated)
     WELCOMETOTHEJUNGLE = "welcometothejungle"
     # Additional multi-tenant ATSes (post-0.1)

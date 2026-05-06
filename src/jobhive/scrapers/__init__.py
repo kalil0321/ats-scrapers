@@ -19,6 +19,7 @@ from jobhive.scrapers.breezy import BreezyScraper
 from jobhive.scrapers.bundesagentur import BundesagenturScraper
 from jobhive.scrapers.cornerstone import CornerstoneScraper
 from jobhive.scrapers.eightfold import EightfoldScraper
+from jobhive.scrapers.eures import EuresScraper
 from jobhive.scrapers.gem import GemScraper
 from jobhive.scrapers.google import GoogleScraper
 from jobhive.scrapers.greenhouse import GreenhouseScraper
@@ -59,6 +60,7 @@ __all__ = [
     "BundesagenturScraper",
     "CornerstoneScraper",
     "EightfoldScraper",
+    "EuresScraper",
     "GemScraper",
     "GoogleScraper",
     "GreenhouseScraper",

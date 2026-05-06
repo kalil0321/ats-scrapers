@@ -9,14 +9,23 @@ the iframe URL directly to skip the wrapper:
 
     GET https://careers-{slug}.icims.com/jobs/search?ss=1&pr={page}&in_iframe=1
 
-Job entries look like:
+Each posting is wrapped in a ``<li class="iCIMS_JobCardItem">`` block:
 
-    <a href="https://careers-{slug}.icims.com/jobs/{id}/{title-slug}/job?in_iframe=1"
-       class="iCIMS_Anchor">
-      <h3>Title</h3>
-    </a>
-    <span title="4/30/2026 10:11 PM">3 days ago</span>
-    <div class="description">summary text...</div>
+    <li class="iCIMS_JobCardItem">
+      <div class="col-xs-6 header left">
+        <span class="sr-only field-label">Job Locations</span>
+        <span> US-CA-Monrovia</span>          ← location lives here
+      </div>
+      <div class="col-xs-6 header right">
+        <span title="5/6/2026 10:23 AM">3 hours ago</span>   ← posted_at
+      </div>
+      <div class="col-xs-12 title">
+        <a href=".../jobs/{id}/{slug}/job?in_iframe=1" class="iCIMS_Anchor">
+          <h3>Title</h3>
+        </a>
+      </div>
+      <div class="col-xs-12 description">summary text...</div>
+    </li>
 
 Pagination via ``pr={N}``, 0-indexed. Each page typically holds 25 jobs.
 We paginate until a page yields no new IDs.
@@ -43,18 +52,50 @@ MAX_PAGES = 200  # Safety bound; iCIMS tenants rarely exceed 5K jobs.
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
 
-# Each job is wrapped in an `<a class="iCIMS_Anchor"... href="...">` with a
-# nested `<h3>` containing the title.
+# Each posting is one <li class="iCIMS_JobCardItem">…</li>. We match the whole
+# card so location, posted_at and description (which sit OUTSIDE the anchor)
+# stay associated with the right job.
+_JOB_CARD_RE = re.compile(
+    r'<li[^>]+class="[^"]*iCIMS_JobCardItem[^"]*"[^>]*>(?P<body>.*?)</li>',
+    re.DOTALL | re.IGNORECASE,
+)
+# Anchor inside a card — gives us href, id, and the <h3> title.
 _JOB_ANCHOR_RE = re.compile(
     r'<a[^>]+href="(?P<href>https?://[^"]*?/jobs/(?P<id>\d+)/[^"]*?/job[^"]*)"[^>]*'
-    r'class="iCIMS_Anchor"[^>]*>'
+    r'class="[^"]*iCIMS_Anchor[^"]*"[^>]*>'
     r'(?P<inner>.*?)</a>',
     re.DOTALL | re.IGNORECASE,
 )
 _TITLE_RE = re.compile(r'<h3[^>]*>(?P<title>.*?)</h3>', re.DOTALL | re.IGNORECASE)
+# `<span class="sr-only field-label">Job Locations</span> <span>VALUE</span>`
+# captures the visible location string (iCIMS uses the format
+# "US-SC-Prosperity" — country-state-city).
+_LOCATION_RE = re.compile(
+    r'<span[^>]+class="[^"]*sr-only[^"]*field-label[^"]*"[^>]*>\s*Job Locations\s*</span>'
+    r'\s*<span[^>]*>\s*(?P<loc>[^<]*?)\s*</span>',
+    re.DOTALL | re.IGNORECASE,
+)
+# Posted-at: `<span title="5/6/2026 10:23 AM">3 hours ago…</span>`. The
+# title attribute is the absolute timestamp; relative ("3 hours ago") is the
+# label. We parse the title.
 _DATE_TITLE_RE = re.compile(
-    r'<span[^>]+title="(?P<date>[\d/]+\s+[\d:]+\s*(?:AM|PM)?)"',
+    r'<span[^>]+title="(?P<date>\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?)"',
     re.IGNORECASE,
+)
+# Per-job header tags inside `iCIMS_JobHeaderGroup`. Two shapes:
+#   <dt class="iCIMS_JobHeaderField">Requisition ID</dt>            ← plain
+#   <dt><span class="glyphicons …"></span>                          ← icon
+#       <span class="sr-only field-label">Location : City</span></dt>
+# The label is whatever readable text sits inside the <dt>, with any
+# leading icon/sr-only wrappers stripped — extract by removing tags.
+_HEADER_TAG_RE = re.compile(
+    r'<dt[^>]*>(?P<label_html>.*?)</dt>'
+    r'\s*<dd[^>]*>\s*<span[^>]*>(?P<value>.*?)</span>',
+    re.DOTALL | re.IGNORECASE,
+)
+_DESC_RE = re.compile(
+    r'<div[^>]+class="[^"]*col-xs-12[^"]*description[^"]*"[^>]*>(?P<desc>.*?)</div>',
+    re.DOTALL | re.IGNORECASE,
 )
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -154,17 +195,19 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
         jobs: list[Job] = []
         seen_in_page: set[str] = set()
         company = self._company_name()
-        for match in _JOB_ANCHOR_RE.finditer(html_text):
-            ats_id = match.group("id")
+        for card in _JOB_CARD_RE.finditer(html_text):
+            body = card.group("body")
+            anchor = _JOB_ANCHOR_RE.search(body)
+            if anchor is None:
+                continue
+            ats_id = anchor.group("id")
             if ats_id in seen_in_page:
                 # iCIMS sometimes renders multiple anchors per job (title +
                 # icon link); dedup within the page so cross-page logic
                 # gets clean input.
                 continue
             seen_in_page.add(ats_id)
-            href = html.unescape(match.group("href"))
-            inner = match.group("inner")
-            title_match = _TITLE_RE.search(inner)
+            title_match = _TITLE_RE.search(anchor.group("inner"))
             if not title_match:
                 continue
             title = _strip(title_match.group("title"))
@@ -172,14 +215,16 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
                 continue
             jobs.append(
                 Job(
-                    url=href,
+                    url=html.unescape(anchor.group("href")),
                     title=title,
                     company=company,
                     ats_type=ATSType.ICIMS,
                     ats_id=ats_id,
-                    location=None,  # iCIMS HTML rarely surfaces location in the
-                                    # listing — would need per-job page fetch.
-                    posted_at=None,
+                    location=_extract_location(body),
+                    posted_at=_extract_posted_at(body),
+                    description=_extract_description(body),
+                    requisition_id=_extract_requisition_id(body),
+                    department=_extract_header_value(body, "Category"),
                     fetched_at=datetime.now(),
                 )
             )
@@ -202,3 +247,81 @@ def _strip(text: str) -> str:
     cleaned = _TAG_RE.sub(" ", text)
     cleaned = html.unescape(cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+# iCIMS encodes locations as Country-State-City (e.g. "US-SC-Prosperity",
+# "USA-MD-Baltimore", "CA-ON-Toronto", "FR-Paris"). We reverse to City,
+# State, Country for human readability and consistency with the other ATS
+# scrapers — but only when we recognize the dash-separated shape; opaque
+# strings ("Remote", "Multiple Locations") pass through unchanged.
+_DASH_LOC_RE = re.compile(
+    r'^(?P<country>[A-Z]{2,3})-(?P<state>[A-Z0-9 ]{1,40})(?:-(?P<city>[^-].*))?$'
+)
+
+
+def _extract_location(card_body: str) -> str | None:
+    match = _LOCATION_RE.search(card_body)
+    if match:
+        raw = _strip(match.group("loc"))
+        if raw:
+            return _normalize_location(raw)
+    # Fall back to the per-job header tags (City / State / Country).
+    parts: dict[str, str] = {}
+    for tag in _HEADER_TAG_RE.finditer(card_body):
+        label = _strip(tag.group("label_html")).lower()
+        value = _strip(tag.group("value"))
+        if not value:
+            continue
+        if "city" in label:
+            parts["city"] = value
+        elif "state" in label or "province" in label:
+            parts["state"] = value
+        elif "country" in label:
+            parts["country"] = value
+    if parts:
+        ordered = [parts.get(k) for k in ("city", "state", "country")]
+        return ", ".join(p for p in ordered if p)
+    return None
+
+
+def _normalize_location(raw: str) -> str:
+    match = _DASH_LOC_RE.match(raw)
+    if not match:
+        return raw
+    parts = [match.group("city"), match.group("state"), match.group("country")]
+    return ", ".join(p.strip() for p in parts if p and p.strip())
+
+
+def _extract_posted_at(card_body: str) -> datetime | None:
+    match = _DATE_TITLE_RE.search(card_body)
+    if not match:
+        return None
+    raw = match.group("date").strip()
+    for fmt in ("%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _extract_description(card_body: str) -> str | None:
+    match = _DESC_RE.search(card_body)
+    if not match:
+        return None
+    text = _strip(match.group("desc"))
+    return text or None
+
+
+def _extract_requisition_id(card_body: str) -> str | None:
+    return _extract_header_value(card_body, "Requisition ID") or _extract_header_value(card_body, "ID")
+
+
+def _extract_header_value(card_body: str, label_match: str) -> str | None:
+    """Look up a `<dt>{label}</dt><dd>{value}</dd>` pair by exact label."""
+    needle = label_match.lower()
+    for tag in _HEADER_TAG_RE.finditer(card_body):
+        if _strip(tag.group("label_html")).lower() == needle:
+            value = _strip(tag.group("value"))
+            return value or None
+    return None

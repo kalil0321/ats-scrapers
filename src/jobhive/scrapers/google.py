@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 LISTING_URL = "https://www.google.com/about/careers/applications/jobs/results"
 APPLICATIONS_BASE = "https://www.google.com/about/careers/applications/"
 
-MAX_PAGES = 100  # Defensive — Google has thousands of jobs but we'll stop on a no-new-ids page.
+MAX_PAGES = 500  # Defensive ceiling. Google currently exposes ~180 pages (~3,600 jobs) and we stop on a no-new-ids page; 100 was hard-capping us at exactly 2,000.
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
 
