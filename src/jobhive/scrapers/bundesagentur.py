@@ -23,8 +23,15 @@ oversize category into <10k leaves.
 The earlier version subdivided by Bundesland names, but the API's
 ``arbeitsort`` filter expects *city* names (e.g. ``"Berlin"``,
 ``"München"``), not states (``"Bayern"`` returns 0) — that bug capped
-output at ~301k. The orthogonal-facet recursion below recovers the full
-volume.
+output at ~301k.
+
+A subsequent 4-facet version (``berufsfeld → arbeitszeit → zeitarbeit →
+befristung``) still capped near ~301-500k because the tail facets are
+heavily skewed (~84% in the dominant bucket each), so the worst leaf —
+Verkauf + vz + false + befristung=3 — still held 56k jobs against a
+10k cap. The current 6-facet recursion adds ``eintrittsdatum`` (24
+month windows) and ``arbeitgeber`` (top-100 employers per leaf), which
+is enough to drive every dominant leaf below 10k.
 
 Single-tenant scraper: ``company_slug`` is informational and ignored.
 The output rows carry the German employer name as ``company`` so the
@@ -34,10 +41,14 @@ publisher's cross-ATS dedup still works.
 from __future__ import annotations
 
 import asyncio
+import logging
+import random
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from jobhive.exceptions import ScraperError
 from jobhive.models import ATSType, Job
@@ -51,18 +62,39 @@ API_KEY = "jobboerse-jobsuche"  # Public key shared by the official frontend.
 PAGE_SIZE = 100
 PAGE_LIMIT = 100  # size × page caps at 10,000 → max page=100 at size=100.
 PAGINATION_CAP = PAGE_SIZE * PAGE_LIMIT
-MAX_CONCURRENCY = 8
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
+# The 6-facet recursion issues 10k+ requests for a full scrape. The
+# arbeitsagentur API has an Akamai-style WAF that returns 403 under
+# burst load. A shared global semaphore at 2 + sequential page fan-out
+# within each leaf keeps the request pace below the WAF threshold while
+# still parallelizing across the recursion tree.
+MAX_CONCURRENCY = 2
+MAX_RETRIES = 6
+RETRY_BASE_DELAY = 2.0
+RETRY_JITTER = 0.5  # ± fraction added to each backoff so concurrent
+# retries don't synchronize and re-trigger the WAF in lockstep.
 
 # Subdivision facets in priority order. Each facet's ``counts`` dict
 # enumerates the available values for that filter — we read those at
-# query time so the scraper survives taxonomy churn. Facets are
-# orthogonal: applying multiple cuts the result set roughly
-# multiplicatively. ``berufsfeld`` first because it has the highest
-# cardinality (144 buckets).
-_SUBDIVISION_FACETS = ("berufsfeld", "arbeitszeit", "zeitarbeit", "befristung")
-MAX_SUBDIVISION_DEPTH = 4  # paranoid ceiling — each level drops by 2-5×.
+# query time so the scraper survives taxonomy churn.
+#
+# Facet ordering matters: API responses cap at 10k results, so we want
+# the highest-cardinality / least-skewed facets applied first. The
+# tail (arbeitszeit/zeitarbeit/befristung) is heavily skewed (~84% in
+# the dominant bucket each), which is why berufsfeld + the original
+# 4 facets weren't enough — the worst leaf (Verkauf+vz+false+
+# befristung=3) still held 56k jobs. eintrittsdatum (24 monthly start
+# windows + a "10_01_01-now" catch-all) and arbeitgeber (top-100
+# employers per leaf) are the levers that finally crack the dominant
+# leaves.
+_SUBDIVISION_FACETS = (
+    "berufsfeld",      # 144 buckets, full coverage
+    "eintrittsdatum",  # 24 month windows; multi-tag (sum > total) so dedup is essential
+    "arbeitszeit",     # 5 work-time codes, multi-tag
+    "befristung",      # 3 contract types
+    "zeitarbeit",      # 2 (temp work y/n)
+    "arbeitgeber",     # top-100 employers per leaf — last-resort partition
+)
+MAX_SUBDIVISION_DEPTH = len(_SUBDIVISION_FACETS)
 
 
 @ScraperRegistry.register(ATSType.BUNDESAGENTUR)
@@ -178,12 +210,14 @@ class BundesagenturScraper(BaseScraper):
         # We can fetch ``ceil(total / PAGE_SIZE)`` pages, capped at PAGE_LIMIT.
         page_count = min((total + PAGE_SIZE - 1) // PAGE_SIZE, PAGE_LIMIT)
 
-        async def one(page: int) -> None:
+        # Sequential page fan-out within a single leaf — the recursion
+        # tree provides cross-leaf parallelism via the global semaphore.
+        # Bursting 50+ page requests for one leaf was the WAF trigger we
+        # saw at concurrency=3.
+        for page in range(1, page_count + 1):
             params = {**base_params, "size": PAGE_SIZE, "page": page}
             payload = await self._fetch_page(client, sem, params=params)
             await absorb(payload.get("stellenangebote") or [])
-
-        await asyncio.gather(*(one(p) for p in range(1, page_count + 1)))
 
     async def _fetch_page(
         self,
@@ -219,17 +253,28 @@ class BundesagenturScraper(BaseScraper):
             if r.status_code == 400:
                 # Past pagination cap — return empty so caller stops.
                 return {"stellenangebote": [], "maxErgebnisse": 0}
-            if r.status_code == 429 or 500 <= r.status_code < 600:
+            # 403 here is a transient Akamai/WAF rate-limit, not a real
+            # auth failure (the API key never expires); back off and retry.
+            if r.status_code in (403, 429) or 500 <= r.status_code < 600:
                 if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Bundesagentur returned {r.status_code} after "
-                        f"{MAX_RETRIES} retries for {params}"
+                    # Soft-fail: log + drop this leaf so the scraper still
+                    # completes the rest. Crashing on a single persistent
+                    # WAF block would lose ~95% of the work the recursion
+                    # already finished.
+                    logger.warning(
+                        "Bundesagentur returned %s after %d retries for %s — "
+                        "skipping this leaf (output will undercount).",
+                        r.status_code, MAX_RETRIES, params,
                     )
+                    return {"stellenangebote": [], "maxErgebnisse": 0}
                 retry_after = r.headers.get("Retry-After")
-                delay = (
+                base = (
                     float(retry_after) if retry_after and retry_after.isdigit()
                     else RETRY_BASE_DELAY * (2 ** attempt)
                 )
+                # Jitter: ± up to RETRY_JITTER × base, so concurrent retries
+                # don't synchronize and re-trigger the WAF together.
+                delay = base * (1 + random.uniform(-RETRY_JITTER, RETRY_JITTER))
                 await asyncio.sleep(delay)
                 continue
             raise ScraperError(
