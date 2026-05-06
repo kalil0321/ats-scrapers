@@ -143,9 +143,22 @@ class BundesagenturScraper(BaseScraper):
         unused subdivision facet and split. ``depth`` bounds the
         recursion: berufsfeld → arbeitszeit → zeitarbeit → befristung.
         """
-        first = await self._fetch_page(
-            client, sem, params={**base_params, "size": 1, "page": 1},
-        )
+        try:
+            first = await self._fetch_page(
+                client, sem, params={**base_params, "size": 1, "page": 1},
+            )
+        except ScraperError as exc:
+            # Probe failed after retries (most likely persistent WAF block).
+            # Probe failures must never silently look like ``maxErgebnisse=0``
+            # — that would drop the whole subtree (and at depth=0 the entire
+            # scrape) without anyone noticing. Log loudly and skip just this
+            # subtree; sibling buckets continue.
+            logger.warning(
+                "Bundesagentur probe failed for params=%s depth=%d — "
+                "subtree skipped, output will undercount: %s",
+                base_params, depth, exc,
+            )
+            return
         total = int(first.get("maxErgebnisse") or 0)
         if total == 0:
             return
@@ -216,7 +229,20 @@ class BundesagenturScraper(BaseScraper):
         # saw at concurrency=3.
         for page in range(1, page_count + 1):
             params = {**base_params, "size": PAGE_SIZE, "page": page}
-            payload = await self._fetch_page(client, sem, params=params)
+            try:
+                payload = await self._fetch_page(client, sem, params=params)
+            except ScraperError as exc:
+                # Page-level soft-fail: lose at most ``PAGE_SIZE`` jobs from
+                # this one page; keep working on the rest of the leaf and
+                # the rest of the tree. (Page failures are bounded; probe
+                # failures are not, which is why ``_exhaust_query`` handles
+                # them separately.)
+                logger.warning(
+                    "Bundesagentur page %d/%d failed for params=%s — "
+                    "page skipped (~%d jobs lost): %s",
+                    page, page_count, base_params, PAGE_SIZE, exc,
+                )
+                continue
             await absorb(payload.get("stellenangebote") or [])
 
     async def _fetch_page(
@@ -257,16 +283,18 @@ class BundesagenturScraper(BaseScraper):
             # auth failure (the API key never expires); back off and retry.
             if r.status_code in (403, 429) or 500 <= r.status_code < 600:
                 if attempt == MAX_RETRIES:
-                    # Soft-fail: log + drop this leaf so the scraper still
-                    # completes the rest. Crashing on a single persistent
-                    # WAF block would lose ~95% of the work the recursion
-                    # already finished.
-                    logger.warning(
-                        "Bundesagentur returned %s after %d retries for %s — "
-                        "skipping this leaf (output will undercount).",
-                        r.status_code, MAX_RETRIES, params,
+                    # Persistent WAF/server failure — raise so callers can
+                    # decide what to do. ``_exhaust_query`` treats this as
+                    # a subtree-loss (logs + skips); ``_fan_out_pages``
+                    # treats it as a page-loss (logs + continues). We must
+                    # NOT silently return an empty payload here: that would
+                    # be indistinguishable from a real ``maxErgebnisse=0``
+                    # response and would silently abandon the whole subtree
+                    # whenever a probe gets WAF-blocked.
+                    raise ScraperError(
+                        f"Bundesagentur returned {r.status_code} for {params} "
+                        f"after {MAX_RETRIES} retries"
                     )
-                    return {"stellenangebote": [], "maxErgebnisse": 0}
                 retry_after = r.headers.get("Retry-After")
                 base = (
                     float(retry_after) if retry_after and retry_after.isdigit()
