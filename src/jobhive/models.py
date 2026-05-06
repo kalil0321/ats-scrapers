@@ -60,6 +60,7 @@ class ATSType(StrEnum):
     WELCOMETOTHEJUNGLE = "welcometothejungle"
     GETONBRD = "getonbrd"
     WANTED = "wanted"
+    REMOTEOK = "remoteok"
     # Additional multi-tenant ATSes (post-0.1)
     BAMBOOHR = "bamboohr"
     BREEZY = "breezy"
