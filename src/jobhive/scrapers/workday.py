@@ -56,6 +56,15 @@ MAX_CONCURRENCY = 10
 MAX_RETRIES = 3
 RETRY_BACKOFF = 1.5
 
+# When a Workday job spans multiple offices, the search endpoint returns a
+# rollup string in ``locationsText`` like "2 Locations" / "5 Locations"
+# instead of the actual list — the underlying ``locations`` array is not
+# included in the search payload. We detect those and fetch the per-job
+# detail endpoint (which DOES expose ``jobPostingInfo.location`` plus
+# ``additionalLocations``) to recover the real cities. About 9% of typical
+# Workday rows hit this code path on multi-tenant runs.
+_LOCATION_ROLLUP_RE = re.compile(r"^\s*\d+\s+Locations?\s*$", re.IGNORECASE)
+
 # Facets we'll try as subdivision dimensions, in priority order. After
 # `jobFamilyGroup` (which usually covers level 1 well), `timeType`
 # partitions further into Full/Part-time. `workerSubType` (Skills) is
@@ -82,11 +91,20 @@ class WorkdayScraper(BaseScraper):
         instance = match.group("instance")
         site = match.group("site")
         api = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}/jobs"
+        # The detail endpoint shares the cxs prefix but takes a job-relative
+        # path: GET /wday/cxs/{co}/{site}{externalPath}.
+        detail_prefix = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}"
         base = self.company_slug.split("/wday/")[0].rstrip("/")
 
-        return asyncio.run(self._fetch_async(api, base, company))
+        return asyncio.run(self._fetch_async(api, base, company, detail_prefix))
 
-    async def _fetch_async(self, api: str, base: str, company: str) -> list[Job]:
+    async def _fetch_async(
+        self,
+        api: str,
+        base: str,
+        company: str,
+        detail_prefix: str,
+    ) -> list[Job]:
         async with httpx.AsyncClient(
             timeout=self.timeout, follow_redirects=True
         ) as client:
@@ -107,7 +125,65 @@ class WorkdayScraper(BaseScraper):
                 client, api, sem,
                 applied_facets={}, absorb=absorb, depth=0,
             )
+
+            await self._resolve_location_rollups(
+                client, sem, detail_prefix, all_jobs,
+            )
         return all_jobs
+
+    async def _resolve_location_rollups(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        detail_prefix: str,
+        jobs: list[Job],
+    ) -> None:
+        """Replace 'N Locations' rollup strings with the actual city list.
+
+        The search endpoint returns ``locationsText="2 Locations"`` for any
+        posting that spans multiple offices but does not include the
+        underlying location array in the response. We can recover the real
+        cities from the per-job detail endpoint
+        (``jobPostingInfo.location`` + ``additionalLocations``).
+        """
+        targets = [
+            (i, j) for i, j in enumerate(jobs)
+            if isinstance(j.location, str) and _LOCATION_ROLLUP_RE.match(j.location)
+        ]
+        if not targets:
+            return
+
+        async def resolve(i: int, job: Job) -> None:
+            external_path = (job.raw or {}).get("externalPath") or _external_path(job.url)
+            if not external_path:
+                return
+            url = f"{detail_prefix}{external_path}"
+            async with sem:
+                try:
+                    response = await client.get(
+                        url,
+                        headers={
+                            "Accept": "application/json",
+                            "User-Agent": "Mozilla/5.0",
+                        },
+                    )
+                except httpx.HTTPError:
+                    return
+            if response.status_code != 200:
+                return
+            try:
+                payload = response.json()
+            except ValueError:
+                return
+            jpi = payload.get("jobPostingInfo") or {}
+            primary = jpi.get("location")
+            additional = jpi.get("additionalLocations") or []
+            resolved = _format_locations(primary, additional)
+            if resolved:
+                # Job is frozen — rebuild via model_copy.
+                jobs[i] = job.model_copy(update={"location": resolved})
+
+        await asyncio.gather(*(resolve(i, j) for i, j in targets))
 
     async def _exhaust_query(
         self,
@@ -267,6 +343,10 @@ class WorkdayScraper(BaseScraper):
             v = item.get(k)
             if v:
                 raw[k] = v
+        # Stash externalPath so the post-scrape rollup-resolver can build
+        # the detail URL without re-parsing the job url.
+        if external_path:
+            raw["externalPath"] = external_path
 
         return Job(
             url=f"{base_url}{external_path}" if external_path else base_url,
@@ -287,6 +367,33 @@ def _parse_workday_date(value: str | None) -> datetime | None:
     if not value:
         return None
     return None  # Relative; absolute date requires fetching the per-job detail.
+
+
+def _external_path(url: object) -> str | None:
+    """Extract the Workday external path from a full job URL.
+
+    Workday URLs are ``{base}/{site}{externalPath}`` — externalPath
+    starts with ``/job/...``. We grep for that prefix to stay schema-
+    independent across tenants.
+    """
+    if not url:
+        return None
+    s = str(url)
+    idx = s.find("/job/")
+    return s[idx:] if idx >= 0 else None
+
+
+def _format_locations(primary: object, additional: object) -> str | None:
+    """Combine primary + additional Workday location strings into a single
+    pipe-separated value. Returns None when both are empty or non-string."""
+    locs: list[str] = []
+    if isinstance(primary, str) and primary.strip():
+        locs.append(primary.strip())
+    if isinstance(additional, list):
+        for v in additional:
+            if isinstance(v, str) and v.strip() and v.strip() not in locs:
+                locs.append(v.strip())
+    return " | ".join(locs) if locs else None
 
 
 def _pick_subdivision_facet(
