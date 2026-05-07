@@ -54,6 +54,7 @@ from jobhive.scrapers.uber import UberScraper
 from jobhive.scrapers.usajobs import USAJobsScraper
 from jobhive.scrapers.wanted import WantedScraper
 from jobhive.scrapers.welcometothejungle import WTTJScraper
+from jobhive.scrapers.wellfound import WellfoundScraper
 from jobhive.scrapers.weworkremotely import WeWorkRemotelyScraper
 from jobhive.scrapers.workable import WorkableScraper
 from jobhive.scrapers.workday import WorkdayScraper
@@ -107,6 +108,7 @@ __all__ = [
     "WTTJScraper",
     "WantedScraper",
     "WeWorkRemotelyScraper",
+    "WellfoundScraper",
     "WorkableScraper",
     "WorkdayScraper",
     "YCombinatorScraper",
