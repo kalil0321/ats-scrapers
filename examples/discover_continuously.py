@@ -286,6 +286,13 @@ def upsert_tenant(
 # --- search + verify --------------------------------------------------------
 
 
+class SearchSuspended(Exception):
+    """SearXNG returned an empty result list with one or more
+    upstream engines reporting suspended state. The query was not
+    actually answered — caller should NOT mark it as 'run' so it
+    gets retried in a future cycle."""
+
+
 def searxng_search(
     client: httpx.Client,
     query: str,
@@ -294,9 +301,12 @@ def searxng_search(
 ) -> Iterable[str]:
     """Yield every result URL across N pages of one SearXNG query.
 
-    Stops early when a page returns 0 results. Logs WARN and continues
-    on non-200 responses (engines may be transiently rate-limited).
+    Raises ``SearchSuspended`` if page 1 comes back empty AND
+    SearXNG reports any unresponsive upstream engines — the most
+    common reason for empty results. Caller should treat this as
+    a soft-failure and re-queue the query.
     """
+    yielded = 0
     for page in range(1, pages + 1):
         try:
             r = client.get(
@@ -318,10 +328,21 @@ def searxng_search(
             return
         results = payload.get("results") or []
         if not results:
+            # Page 1 came back empty: distinguish "Google indexed
+            # nothing" (a real zero) from "all engines are
+            # CAPTCHA'd" (a soft failure). The latter shows up in
+            # ``unresponsive_engines``.
+            if page == 1 and yielded == 0:
+                unresponsive = payload.get("unresponsive_engines") or []
+                if unresponsive:
+                    raise SearchSuspended(
+                        f"empty results + suspended engines: {unresponsive}"
+                    )
             return
         for res in results:
             url = res.get("url") or ""
             if url:
+                yielded += 1
                 yield url
         time.sleep(page_delay)
 
@@ -400,30 +421,46 @@ def cycle(
     # Round-robin: take the i-th query from each ATS in turn until
     # every list is exhausted. Spreads upstream-engine load evenly.
     max_len = max((len(p["queries"]) for p in plan.values()), default=0)
+    aborted = False
     for i in range(max_len):
+        if aborted:
+            break
         for ats_name, p in plan.items():
             if i >= len(p["queries"]):
                 continue
             ats = p["ats"]
             q = p["queries"][i]
             new_count = 0
-            for url in searxng_search(http, q, PAGES_PER_QUERY):
-                m = ats.url_regex.search(url)
-                if not m:
-                    continue
-                slug = ats.extract_slug(m)
-                if not slug:
-                    continue
-                if slug in p["seen_in_db"]:
-                    continue
-                p["seen_in_db"].add(slug)
-                p["new_seen"] += 1
-                new_count += 1
-                ok, status = verify_one(ats, slug)
-                upsert_tenant(conn, ats_name, slug, verified=ok, status=status)
-                if ok:
-                    p["new_verified"] += 1
-            mark_query_run(conn, ats_name, q, new_count)
+            try:
+                for url in searxng_search(http, q, PAGES_PER_QUERY):
+                    m = ats.url_regex.search(url)
+                    if not m:
+                        continue
+                    slug = ats.extract_slug(m)
+                    if not slug:
+                        continue
+                    if slug in p["seen_in_db"]:
+                        continue
+                    p["seen_in_db"].add(slug)
+                    p["new_seen"] += 1
+                    new_count += 1
+                    ok, status = verify_one(ats, slug)
+                    upsert_tenant(conn, ats_name, slug, verified=ok, status=status)
+                    if ok:
+                        p["new_verified"] += 1
+                mark_query_run(conn, ats_name, q, new_count)
+            except SearchSuspended as exc:
+                # Leave last_run NULL so this query gets re-picked
+                # next cycle. Abort the rest of the round-robin —
+                # once one engine pool is suspended, the others are
+                # likely to be too, and there's no point burning
+                # through more queries.
+                log.warning(
+                    "engines suspended on %s/%s — aborting cycle: %s",
+                    ats_name, q, exc,
+                )
+                aborted = True
+                break
             # Inter-query cool-down: with ~150 queries/cycle the
             # upstream engines suspend without a brief pause. 1s is
             # enough to keep Google/Bing happy across long runs.
