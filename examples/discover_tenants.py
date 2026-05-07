@@ -75,24 +75,56 @@ def _workday_verify_url(slug: str) -> str:
     return f"https://{co}.{instance}.myworkdayjobs.com/wday/cxs/{co}/{site}/jobs"
 
 
+def _site_query_set(site: str) -> tuple[str, ...]:
+    """Generate a wide query set for a given site:X.com host.
+
+    Google's ``site:`` operator returns the most-indexed pages first;
+    adding generic role keywords ('engineer', 'manager') overlaps
+    heavily across queries. The biggest variety wins come from
+    *specific* terms — cities, industries, US states, niche stacks
+    — that re-rank the result list to surface long-tail tenants.
+    """
+    cities = (
+        "new york", "san francisco", "los angeles", "chicago", "boston",
+        "austin", "seattle", "washington dc", "atlanta", "miami", "dallas",
+        "houston", "phoenix", "denver", "portland", "minneapolis",
+        "detroit", "philadelphia", "san diego", "raleigh", "salt lake city",
+        "tampa", "orlando", "nashville", "columbus", "indianapolis",
+        "kansas city", "saint louis", "pittsburgh", "cincinnati",
+        "london", "toronto", "vancouver", "sydney", "melbourne",
+    )
+    us_states = (
+        "california", "texas", "new york state", "florida", "illinois",
+        "pennsylvania", "ohio", "georgia", "north carolina", "michigan",
+        "virginia", "washington state", "massachusetts", "arizona",
+        "tennessee", "indiana", "missouri", "maryland", "wisconsin",
+        "colorado", "minnesota", "south carolina", "alabama", "louisiana",
+        "kentucky", "oregon", "oklahoma", "connecticut",
+    )
+    industries = (
+        "healthcare", "biotech", "fintech", "banking", "retail",
+        "manufacturing", "energy", "automotive", "aerospace",
+        "insurance", "logistics", "real estate", "education",
+        "media", "telecommunications", "government",
+        "ai", "cybersecurity", "saas", "consulting", "pharma",
+        "ecommerce", "gaming", "cloud", "construction", "agriculture",
+    )
+    roles = (
+        "engineer", "manager", "director", "vp", "intern",
+        "analyst", "designer", "scientist", "nurse", "physician",
+        "attorney", "consultant", "founder",
+    )
+    base = [f"site:{site}"]
+    base += [f"site:{site} {city}" for city in cities]
+    base += [f"site:{site} {state}" for state in us_states]
+    base += [f"site:{site} {industry}" for industry in industries]
+    base += [f"site:{site} {role}" for role in roles]
+    return tuple(base)
+
+
 WORKDAY = AtsConfig(
     name="workday",
-    queries=(
-        "site:myworkdayjobs.com",
-        "site:myworkdayjobs.com careers",
-        "site:myworkdayjobs.com engineer",
-        "site:myworkdayjobs.com senior",
-        "site:myworkdayjobs.com manager",
-        "site:myworkdayjobs.com analyst",
-        "site:myworkdayjobs.com director",
-        "site:myworkdayjobs.com intern",
-        "site:myworkdayjobs.com nurse",
-        "site:myworkdayjobs.com sales",
-        "site:myworkdayjobs.com marketing",
-        "site:myworkdayjobs.com finance",
-        "site:myworkdayjobs.com healthcare",
-        "site:myworkdayjobs.com retail",
-    ),
+    queries=_site_query_set("myworkdayjobs.com"),
     url_regex=re.compile(
         r"https?://([^./]+)\.(wd\d+)\.myworkdayjobs\.com/([^/?#]+)"
     ),
@@ -107,60 +139,45 @@ WORKDAY = AtsConfig(
 # in the first path segment.
 GREENHOUSE = AtsConfig(
     name="greenhouse",
-    queries=(
-        "site:boards.greenhouse.io",
-        "site:job-boards.greenhouse.io",
-        "site:boards.greenhouse.io engineer",
-        "site:job-boards.greenhouse.io engineer",
-        "site:boards.greenhouse.io manager",
-        "site:job-boards.greenhouse.io manager",
-        "site:boards.greenhouse.io senior",
-        "site:job-boards.greenhouse.io senior",
-        "site:boards.greenhouse.io intern",
-        "site:job-boards.greenhouse.io marketing",
-    ),
+    queries=_site_query_set("boards.greenhouse.io") + _site_query_set("job-boards.greenhouse.io"),
     url_regex=re.compile(
         r"https?://(?:job-)?boards\.greenhouse\.io/([a-zA-Z0-9_-]+)"
     ),
     extract_slug=lambda m: m.group(1).lower(),
     # Greenhouse public jobs API: GET returns {"jobs": [...]}.
-    # 404 / 410 → board doesn't exist or is closed.
+    # We accept empty boards too — a company may have no openings
+    # today but post next week; the slug is still valid for the
+    # publisher to track. The presence of the ``jobs`` key (vs a
+    # 404 / generic landing page) is enough proof the board exists.
     verify_url=lambda slug: f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs",
-    verify_ok=lambda r: r.status_code == 200 and len(((r.json() or {}).get("jobs") or [])) >= 0,
+    verify_ok=lambda r: (
+        r.status_code == 200
+        and isinstance(r.json(), dict)
+        and "jobs" in r.json()
+    ),
 )
 
 LEVER = AtsConfig(
     name="lever",
-    queries=(
-        "site:jobs.lever.co",
-        "site:jobs.lever.co engineer",
-        "site:jobs.lever.co manager",
-        "site:jobs.lever.co senior",
-        "site:jobs.lever.co intern",
-        "site:jobs.lever.co marketing",
-        "site:jobs.lever.co operations",
-    ),
+    queries=_site_query_set("jobs.lever.co"),
     url_regex=re.compile(r"https?://jobs\.lever\.co/([a-zA-Z0-9_-]+)"),
     extract_slug=lambda m: m.group(1),  # Lever slugs ARE case-sensitive
-    # Lever public API: GET returns a JSON array of postings.
+    # Lever public API: GET returns a JSON array of postings. We
+    # accept empty arrays — the board itself is real (Lever 404s
+    # for nonexistent slugs).
     verify_url=lambda slug: f"https://api.lever.co/v0/postings/{slug}?mode=json",
     verify_ok=lambda r: r.status_code == 200 and isinstance(r.json(), list),
 )
 
 ASHBY = AtsConfig(
     name="ashby",
-    queries=(
-        "site:jobs.ashbyhq.com",
-        "site:jobs.ashbyhq.com engineer",
-        "site:jobs.ashbyhq.com senior",
-        "site:jobs.ashbyhq.com founding",
-        "site:jobs.ashbyhq.com manager",
-        "site:jobs.ashbyhq.com intern",
-        "site:jobs.ashbyhq.com designer",
-    ),
+    queries=_site_query_set("jobs.ashbyhq.com"),
     url_regex=re.compile(r"https?://jobs\.ashbyhq\.com/([a-zA-Z0-9_-]+)"),
     extract_slug=lambda m: m.group(1).lower(),
-    # Ashby's public job-board API returns the board metadata + jobs.
+    # Ashby's public job-board API returns board metadata + jobs.
+    # We accept empty boards too — board existence (vs 404) is the
+    # signal we care about; the publisher just emits 0 rows for a
+    # silent run, no harm.
     verify_url=lambda slug: f"https://api.ashbyhq.com/posting-api/job-board/{slug}",
     verify_ok=lambda r: (
         r.status_code == 200 and isinstance(r.json(), dict) and "jobs" in r.json()
@@ -276,7 +293,11 @@ def verify_slugs(
         try:
             with httpx.Client(timeout=timeout, follow_redirects=True) as client:
                 if ats.name == "workday":
-                    # Workday's jobs endpoint is POST with empty body.
+                    # Workday's jobs endpoint is POST with an empty
+                    # applied-facets body. Accept empty job lists —
+                    # a real Workday tenant (vs a 404'd or relocated
+                    # one) returns 200 with the ``jobPostings`` key
+                    # even when there are no current openings.
                     r = client.post(
                         url, json={"appliedFacets": {}, "limit": 1, "offset": 0, "searchText": ""},
                         headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
