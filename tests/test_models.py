@@ -28,7 +28,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "bundesagentur", "arbetsformedlingen", "eures",
         # Hybrid jobboards (companies post directly)
         "welcometothejungle", "getonbrd", "wanted", "remoteok",
-        "weworkremotely",
+        "weworkremotely", "programathor",
         # Additional multi-tenant ATSes
         "bamboohr", "breezy", "jazzhr", "jobvite",
         "recruitee", "taleo", "teamtailor",
