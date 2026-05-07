@@ -424,6 +424,10 @@ def cycle(
                 if ok:
                     p["new_verified"] += 1
             mark_query_run(conn, ats_name, q, new_count)
+            # Inter-query cool-down: with ~150 queries/cycle the
+            # upstream engines suspend without a brief pause. 1s is
+            # enough to keep Google/Bing happy across long runs.
+            time.sleep(1.0)
 
     stats: dict[str, dict[str, int]] = {}
     for ats_name, p in plan.items():
