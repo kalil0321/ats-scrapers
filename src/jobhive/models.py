@@ -61,6 +61,7 @@ class ATSType(StrEnum):
     GETONBRD = "getonbrd"
     WANTED = "wanted"
     REMOTEOK = "remoteok"
+    WEWORKREMOTELY = "weworkremotely"
     # Additional multi-tenant ATSes (post-0.1)
     BAMBOOHR = "bamboohr"
     BREEZY = "breezy"
