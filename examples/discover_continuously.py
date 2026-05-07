@@ -378,17 +378,35 @@ def write_snapshot(
     out_dir: Path,
     published_known: set[str],
 ) -> int:
-    """Write the current cumulative verified-and-NOT-yet-published
-    slug list for one ATS. Returns the row count.
+    """Write two files per ATS, both in ``companies/all.csv`` schema:
+
+    - ``{ats}.csv``: every verified slug for this ATS — published +
+      newly discovered. Suitable for direct sync into the publisher's
+      canonical list.
+    - ``new_{ats}.csv``: delta only — slugs NOT yet in the published
+      ``companies/all.csv``. Useful for review / merge requests.
+
+    Returns the count of net-new slugs (the delta).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    new_verified = verified_slugs(conn, ats_name) - published_known
-    path = out_dir / f"new_{ats_name}.csv"
-    with path.open("w", newline="") as f:
+    verified = verified_slugs(conn, ats_name)
+    new_verified = verified - published_known
+    full = verified | published_known  # union: every known-good slug
+
+    full_path = out_dir / f"{ats_name}.csv"
+    with full_path.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["slug", "ats"])
+        for slug in sorted(full):
+            w.writerow([slug, ats_name])
+
+    delta_path = out_dir / f"new_{ats_name}.csv"
+    with delta_path.open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["slug", "ats"])
         for slug in sorted(new_verified):
             w.writerow([slug, ats_name])
+
     return len(new_verified)
 
 
