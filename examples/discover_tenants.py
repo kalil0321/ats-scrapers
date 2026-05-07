@@ -218,10 +218,12 @@ JAZZHR = AtsConfig(
     url_regex=re.compile(r"https?://([a-zA-Z0-9-]+)\.applytojob\.com"),
     extract_slug=lambda m: m.group(1).lower(),
     verify_url=lambda slug: f"https://{slug}.applytojob.com/apply/jobs",
-    # JazzHR has no JSON API; HTML 200 with the listing markup is
-    # our only signal. The "Powered by JazzHR" footer is a stable
-    # marker (parked/dead tenants 404 instead).
-    verify_ok=lambda r: r.status_code == 200 and "jazzhr" in r.text.lower(),
+    # JazzHR has no JSON API; we read HTML for marker strings.
+    # CAUTION: applytojob.com 200s for *every* subdomain (parking
+    # pages too), so just "jazzhr in body" produces false positives
+    # at scale. The "Powered by JazzHR" footer is rendered only on
+    # real-tenant career pages, not on the parking landing page.
+    verify_ok=lambda r: r.status_code == 200 and "Powered by JazzHR" in r.text,
 )
 
 PERSONIO = AtsConfig(
