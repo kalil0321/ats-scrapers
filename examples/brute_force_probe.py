@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import re
 import sqlite3
 import sys
 import time
@@ -143,22 +144,77 @@ def already_seen(conn: sqlite3.Connection, ats_name: str) -> set[str]:
     return {r[0] for r in rows}
 
 
+_WORKDAY_INSTANCES = ("wd1", "wd2", "wd3", "wd5", "wd10", "wd12", "wd103")
+_WORKDAY_SITEMAP_RE = re.compile(
+    r"Sitemap:\s*https?://[\w-]+\.(wd\d+)\.myworkdayjobs\.com/([\w-]+)/siteMap\.xml",
+    re.IGNORECASE,
+)
+
+
+def probe_workday(slug: str, *, timeout: float = 5.0) -> tuple[str, bool, str]:
+    """Workday brute-force is non-trivial because each tenant's
+    verify URL needs ``(slug, instance, site)`` and the site name
+    is per-tenant (e.g. ``NVIDIAExternalCareerSite`` for nvidia).
+
+    Solution: hit ``robots.txt`` on every plausible instance for
+    the slug. Workday helpfully publishes a ``Sitemap:`` line that
+    embeds the canonical ``(instance, site)`` pair. From there,
+    the standard cxs API call confirms the tenant is live.
+
+    Returns the daemon's standard ``(slug, ok, status)`` triple.
+    On hit, the slug is also re-cached for future use via the
+    daemon's _WORKDAY_TRIPLE_CACHE so the SearXNG path can use it.
+    """
+    instance = None
+    site = None
+    for wd in _WORKDAY_INSTANCES:
+        url = f"https://{slug}.{wd}.myworkdayjobs.com/robots.txt"
+        try:
+            r = httpx.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
+        except Exception:
+            continue
+        if r.status_code != 200:
+            continue
+        m = _WORKDAY_SITEMAP_RE.search(r.text)
+        if m:
+            instance = m.group(1)
+            site = m.group(2)
+            break
+    if not (instance and site):
+        return (slug, False, "no_workday_sitemap")
+
+    # Confirm via the cxs API — the same call the verify pass uses.
+    api = (
+        f"https://{slug}.{instance}.myworkdayjobs.com/wday/cxs/{slug}/{site}/jobs"
+    )
+    try:
+        r = httpx.post(
+            api,
+            json={"appliedFacets": {}, "limit": 1, "offset": 0, "searchText": ""},
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+    except Exception as exc:
+        return (slug, False, type(exc).__name__)
+    ok = (
+        r.status_code == 200
+        and isinstance(r.json(), dict)
+        and "jobPostings" in r.json()
+    )
+    if ok:
+        # Cache the triple so the SearXNG-based daemon's verify pass
+        # (which would otherwise re-default to wd1) can reuse it.
+        from discover_tenants import _WORKDAY_TRIPLE_CACHE
+        _WORKDAY_TRIPLE_CACHE.setdefault(slug, (slug, instance, site))
+    return (slug, ok, f"http_{r.status_code}")
+
+
 def probe(ats: AtsConfig, slug: str, *, timeout: float = 10.0) -> tuple[str, bool, str]:
+    if ats.name == "workday":
+        return probe_workday(slug, timeout=timeout)
     url = ats.verify_url(slug)
     try:
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-            if ats.name == "workday":
-                r = client.post(
-                    url,
-                    json={"appliedFacets": {}, "limit": 1, "offset": 0, "searchText": ""},
-                    headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
-                )
-                ok = (
-                    r.status_code == 200
-                    and isinstance(r.json(), dict)
-                    and "jobPostings" in r.json()
-                )
-                return (slug, ok, f"http_{r.status_code}")
             r = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
             return (slug, ats.verify_ok(r), f"http_{r.status_code}")
     except Exception as exc:
