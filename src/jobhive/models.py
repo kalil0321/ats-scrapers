@@ -63,6 +63,7 @@ class ATSType(StrEnum):
     REMOTEOK = "remoteok"
     WEWORKREMOTELY = "weworkremotely"
     PROGRAMATHOR = "programathor"
+    BUILTIN = "builtin"
     # Additional multi-tenant ATSes (post-0.1)
     BAMBOOHR = "bamboohr"
     BREEZY = "breezy"
