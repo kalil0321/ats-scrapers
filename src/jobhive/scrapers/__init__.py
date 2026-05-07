@@ -30,6 +30,7 @@ from jobhive.scrapers.jazzhr import JazzHRScraper
 from jobhive.scrapers.jobsch import JobsChScraper
 from jobhive.scrapers.join_com import JoinComScraper
 from jobhive.scrapers.lever import LeverScraper
+from jobhive.scrapers.manfred import ManfredScraper
 from jobhive.scrapers.mercor import MercorScraper
 from jobhive.scrapers.meta import MetaScraper
 from jobhive.scrapers.oracle import OracleScraper
@@ -77,6 +78,7 @@ __all__ = [
     "JobsChScraper",
     "JoinComScraper",
     "LeverScraper",
+    "ManfredScraper",
     "MercorScraper",
     "MetaScraper",
     "OracleScraper",
