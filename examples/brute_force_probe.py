@@ -314,6 +314,13 @@ def main() -> int:
 
     wordlist = load_wordlist(args.wordlist)
     log.info("wordlist size: %d", len(wordlist))
+    # When a custom --wordlist is supplied, treat it as the
+    # primary candidate source. Cross-pollination from
+    # companies/all.csv stays as a secondary fallback for any
+    # remaining --max budget. Without --wordlist (default fallback
+    # list of ~400 entries), keep the previous order: cross
+    # first, fallback second.
+    custom_wordlist_given = args.wordlist is not None
 
     conn = sqlite3.connect(args.state_db, isolation_level=None)
 
@@ -324,10 +331,15 @@ def main() -> int:
         ats = ALL_ATS[name]
         # Cross-pollinate: for ATS X, probe slugs known to other ATSes.
         cross = slugs_from_published(Path(args.companies_csv), exclude_ats=name)
-        # Combine: dedupe, keep order (cross-pollination first, then wordlist).
+        # Order: prefer the user's --wordlist when given (otherwise
+        # cross-pollination first, fallback list second).
+        if custom_wordlist_given:
+            ordered = wordlist + cross
+        else:
+            ordered = cross + wordlist
         seen = set()
         candidates = []
-        for s in cross + wordlist:
+        for s in ordered:
             if s and s not in seen:
                 seen.add(s)
                 candidates.append(s)
