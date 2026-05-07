@@ -184,11 +184,116 @@ ASHBY = AtsConfig(
     ),
 )
 
+# --- single-host subdomain ATSes -------------------------------------------
+#
+# These follow the same pattern: each tenant lives at
+# ``{slug}.{host}`` and serves a public job-board API at a
+# well-known sub-path. Searching ``site:{host}`` returns indexed
+# pages from every tenant subdomain (Google rolls subdomains under
+# the parent in `site:` operator).
+
+BAMBOOHR = AtsConfig(
+    name="bamboohr",
+    queries=_site_query_set("bamboohr.com"),
+    url_regex=re.compile(r"https?://([a-zA-Z0-9-]+)\.bamboohr\.com"),
+    extract_slug=lambda m: m.group(1).lower(),
+    verify_url=lambda slug: f"https://{slug}.bamboohr.com/jobs/embed2.php",
+    # BambooHR serves HTML for tenant pages; 200 means the slug
+    # resolves. Dead/parked tenants 404 or redirect off-host.
+    verify_ok=lambda r: r.status_code == 200 and "bamboohr" in r.text.lower(),
+)
+
+BREEZY = AtsConfig(
+    name="breezy",
+    queries=_site_query_set("breezy.hr"),
+    url_regex=re.compile(r"https?://([a-zA-Z0-9-]+)\.breezy\.hr"),
+    extract_slug=lambda m: m.group(1).lower(),
+    verify_url=lambda slug: f"https://{slug}.breezy.hr/json",
+    verify_ok=lambda r: r.status_code == 200 and isinstance(r.json(), list),
+)
+
+JAZZHR = AtsConfig(
+    name="jazzhr",
+    queries=_site_query_set("applytojob.com"),
+    url_regex=re.compile(r"https?://([a-zA-Z0-9-]+)\.applytojob\.com"),
+    extract_slug=lambda m: m.group(1).lower(),
+    verify_url=lambda slug: f"https://{slug}.applytojob.com/apply/jobs",
+    # JazzHR has no JSON API; HTML 200 with the listing markup is
+    # our only signal. The "Powered by JazzHR" footer is a stable
+    # marker (parked/dead tenants 404 instead).
+    verify_ok=lambda r: r.status_code == 200 and "jazzhr" in r.text.lower(),
+)
+
+PERSONIO = AtsConfig(
+    name="personio",
+    queries=_site_query_set("jobs.personio.com") + _site_query_set("personio.de"),
+    url_regex=re.compile(r"https?://([a-zA-Z0-9-]+)\.jobs\.personio\.(?:com|de)"),
+    extract_slug=lambda m: m.group(1).lower(),
+    verify_url=lambda slug: f"https://{slug}.jobs.personio.com/search.json",
+    verify_ok=lambda r: r.status_code == 200 and isinstance(r.json(), (list, dict)),
+)
+
+RECRUITEE = AtsConfig(
+    name="recruitee",
+    queries=_site_query_set("recruitee.com"),
+    url_regex=re.compile(r"https?://([a-zA-Z0-9-]+)\.recruitee\.com"),
+    extract_slug=lambda m: m.group(1).lower(),
+    verify_url=lambda slug: f"https://{slug}.recruitee.com/api/offers",
+    verify_ok=lambda r: (
+        r.status_code == 200
+        and isinstance(r.json(), dict)
+        and "offers" in r.json()
+    ),
+)
+
+TEAMTAILOR = AtsConfig(
+    name="teamtailor",
+    queries=_site_query_set("teamtailor.com"),
+    url_regex=re.compile(r"https?://([a-zA-Z0-9-]+)\.teamtailor\.com"),
+    extract_slug=lambda m: m.group(1).lower(),
+    verify_url=lambda slug: f"https://{slug}.teamtailor.com/jobs.rss",
+    # Teamtailor's RSS endpoint is XML; check for the channel tag
+    # to distinguish a real tenant from a 200-but-empty parking
+    # page.
+    verify_ok=lambda r: r.status_code == 200 and "<rss" in r.text[:200].lower(),
+)
+
+WORKABLE = AtsConfig(
+    name="workable",
+    queries=_site_query_set("apply.workable.com"),
+    url_regex=re.compile(r"https?://apply\.workable\.com/([a-zA-Z0-9_-]+)"),
+    extract_slug=lambda m: m.group(1).lower(),
+    verify_url=lambda slug: f"https://apply.workable.com/api/v1/widget/accounts/{slug}",
+    verify_ok=lambda r: (
+        r.status_code == 200
+        and isinstance(r.json(), dict)
+        and "name" in r.json()  # widget returns {"name": "...", "jobs": [...]}
+    ),
+)
+
+RIPPLING = AtsConfig(
+    name="rippling",
+    queries=_site_query_set("ats.rippling.com"),
+    url_regex=re.compile(r"https?://ats\.rippling\.com/([a-zA-Z0-9_-]+)"),
+    extract_slug=lambda m: m.group(1).lower(),
+    verify_url=lambda slug: f"https://api.rippling.com/platform/api/ats/v1/board/{slug}/jobs",
+    verify_ok=lambda r: r.status_code == 200 and isinstance(r.json(), (list, dict)),
+)
+
+
 ALL_ATS: dict[str, AtsConfig] = {
     "workday": WORKDAY,
     "greenhouse": GREENHOUSE,
     "lever": LEVER,
     "ashby": ASHBY,
+    "bamboohr": BAMBOOHR,
+    "breezy": BREEZY,
+    "jazzhr": JAZZHR,
+    "personio": PERSONIO,
+    "recruitee": RECRUITEE,
+    "teamtailor": TEAMTAILOR,
+    "workable": WORKABLE,
+    "rippling": RIPPLING,
 }
 
 
