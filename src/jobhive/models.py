@@ -66,6 +66,7 @@ class ATSType(StrEnum):
     BUILTIN = "builtin"
     JOBSCH = "jobsch"
     MANFRED = "manfred"
+    THEHUB = "thehub"
     # Additional multi-tenant ATSes (post-0.1)
     BAMBOOHR = "bamboohr"
     BREEZY = "breezy"
