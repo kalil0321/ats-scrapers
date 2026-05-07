@@ -4,13 +4,13 @@ Programathor is the largest direct-posting tech job board in Brazil
 (~3,000 active recent postings, 15,000+ historical). Companies post
 directly through Programathor — not syndicated from LinkedIn or Indeed.
 
-The site geo-blocks non-Brazilian IPs (returns 403). To make the
-scraper usable from any environment we route requests through a
-proxy. The proxy URL is read from the ``PROXY`` env variable in the
-``host:port:user:pass`` shape Evomi ships, or passed explicitly via
-the ``proxy_url`` constructor argument. When neither is set the
-scraper attempts a direct connection — that works from a Brazilian
-IP but will 403 from US/EU servers.
+The site geo-blocks non-Brazilian IPs (returns 403). The library
+itself doesn't ship a proxy — running from a Brazilian residential
+IP works without one. Servers in US/EU clouds need to route through
+a residential proxy: pass ``proxy_url`` to the constructor or set
+the ``PROXY`` env variable. Both standard
+``http://user:pass@host:port`` URLs and the 4-colon
+``host:port:user:pass`` shape some providers ship are accepted.
 
 Pagination is HTML-only (no JSON API) — 15 jobs per page on
 ``/jobs?page=N``. The listing card carries enough fields that we
@@ -106,8 +106,8 @@ _EMPLOYMENT_MAP: dict[str, str] = {
 
 
 def _resolve_proxy_url(raw: str | None) -> str | None:
-    """Accept Evomi's ``host:port:user:pass`` shape (the format saved in
-    the project ``.env``) and convert to the standard
+    """Accept the 4-colon ``host:port:user:pass`` shape some
+    residential-proxy providers ship and convert to the standard
     ``http://user:pass@host:port`` URL httpx expects. Plain
     ``http(s)://…`` URLs pass through.
     """
@@ -130,8 +130,10 @@ class ProgramathorScraper(BaseScraper):
 
     Knobs:
     - ``proxy_url`` — explicit proxy URL. Falls back to ``PROXY`` env
-      var (Evomi ``host:port:user:pass`` format auto-converted), then
-      to direct connection.
+      var (4-colon ``host:port:user:pass`` shape auto-converted),
+      then to direct connection. Most users running locally don't
+      need one; servers on US/EU clouds will hit Programathor's
+      403 geo-block without one.
     - ``max_pages`` — pagination cap (default 200 → ~3,000 jobs).
     """
 
@@ -173,8 +175,9 @@ class ProgramathorScraper(BaseScraper):
         }
         if self.proxy_url:
             client_kwargs["proxy"] = self.proxy_url
-            # Evomi's residential CA chain isn't always trusted by
-            # default; the requests carry no PII so verify=False is
+            # Some residential-proxy providers terminate TLS with a
+            # CA chain that isn't always in the system trust store;
+            # the requests carry no PII so disabling verify is
             # acceptable here. (httpx warns once.)
             client_kwargs["verify"] = False
 

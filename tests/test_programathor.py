@@ -88,10 +88,12 @@ def _listing(cards: list[str]) -> str:
 # --- proxy URL helper -------------------------------------------------------
 
 
-def test_proxy_url_evomi_format_converted() -> None:
-    """Evomi's PROXY env shape (host:port:user:pass) → httpx URL."""
-    out = _resolve_proxy_url("http://core-residential.evomi.com:1000:alice:secret")
-    assert out == "http://alice:secret@core-residential.evomi.com:1000"
+def test_proxy_url_quad_colon_format_converted() -> None:
+    """Some residential-proxy providers ship credentials in a
+    ``host:port:user:pass`` shape (4 colons) instead of the standard
+    ``http://user:pass@host:port`` URL — convert it for httpx."""
+    out = _resolve_proxy_url("http://proxy.example.com:1000:alice:secret")
+    assert out == "http://alice:secret@proxy.example.com:1000"
 
 
 def test_proxy_url_already_canonical_passes_through() -> None:
