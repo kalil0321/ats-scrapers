@@ -379,16 +379,33 @@ def cycle(
     http: httpx.Client,
     published_known: dict[str, set[str]],
 ) -> dict[str, dict[str, int]]:
-    """One pass: pick the next batch of queries per ATS, run, verify
-    new slugs, persist. Returns per-ATS counters for logging."""
-    stats: dict[str, dict[str, int]] = {}
+    """One pass: pick the next batch of queries per ATS, walk
+    SearXNG pages round-robin across ATSes (so a single ATS's burst
+    of queries doesn't exhaust the upstream-engine rate-limit budget
+    before the others get a turn), verify new slugs, persist.
+    Returns per-ATS counters for logging.
+    """
+    # Per-ATS bookkeeping the inner loop reads/writes.
+    plan: dict[str, dict] = {}
     for ats_name, ats in ALL_ATS.items():
-        seen_in_db = known_slugs(conn, ats_name)
-        before_verified = len(verified_slugs(conn, ats_name))
-        queries = pick_queries(conn, ats_name, QUERY_BATCH)
-        ats_new_seen = 0
-        ats_new_verified = 0
-        for q in queries:
+        plan[ats_name] = {
+            "ats": ats,
+            "seen_in_db": known_slugs(conn, ats_name),
+            "before_verified": len(verified_slugs(conn, ats_name)),
+            "queries": pick_queries(conn, ats_name, QUERY_BATCH),
+            "new_seen": 0,
+            "new_verified": 0,
+        }
+
+    # Round-robin: take the i-th query from each ATS in turn until
+    # every list is exhausted. Spreads upstream-engine load evenly.
+    max_len = max((len(p["queries"]) for p in plan.values()), default=0)
+    for i in range(max_len):
+        for ats_name, p in plan.items():
+            if i >= len(p["queries"]):
+                continue
+            ats = p["ats"]
+            q = p["queries"][i]
             new_count = 0
             for url in searxng_search(http, q, PAGES_PER_QUERY):
                 m = ats.url_regex.search(url)
@@ -397,25 +414,29 @@ def cycle(
                 slug = ats.extract_slug(m)
                 if not slug:
                     continue
-                if slug in seen_in_db:
+                if slug in p["seen_in_db"]:
                     continue
-                seen_in_db.add(slug)
-                ats_new_seen += 1
+                p["seen_in_db"].add(slug)
+                p["new_seen"] += 1
                 new_count += 1
                 ok, status = verify_one(ats, slug)
                 upsert_tenant(conn, ats_name, slug, verified=ok, status=status)
                 if ok:
-                    ats_new_verified += 1
+                    p["new_verified"] += 1
             mark_query_run(conn, ats_name, q, new_count)
-        # Snapshot CSV after each ATS so the file is always usable.
-        snapshot_count = write_snapshot(conn, ats_name, OUT_DIR, published_known.get(ats_name, set()))
+
+    stats: dict[str, dict[str, int]] = {}
+    for ats_name, p in plan.items():
+        snapshot_count = write_snapshot(
+            conn, ats_name, OUT_DIR, published_known.get(ats_name, set())
+        )
         stats[ats_name] = {
-            "before_verified": before_verified,
-            "after_verified": before_verified + ats_new_verified,
-            "newly_seen": ats_new_seen,
-            "newly_verified": ats_new_verified,
+            "before_verified": p["before_verified"],
+            "after_verified": p["before_verified"] + p["new_verified"],
+            "newly_seen": p["new_seen"],
+            "newly_verified": p["new_verified"],
             "snapshot_csv_rows": snapshot_count,
-            "queries_run": len(queries),
+            "queries_run": len(p["queries"]),
         }
     return stats
 
