@@ -128,10 +128,15 @@ class MetaScraper(BaseScraper):
             captured_listings.append(payload)
 
         # Headed Chromium — keeps the launch shape identical to
-        # Tesla (which actually requires it for the Akamai bypass)
-        # so a single cron host setup covers both browser-required
-        # scrapers. Cron runs overnight when no operator is at the
-        # keyboard, so no need to hide the window.
+        # Tesla so a single cron host setup covers both
+        # browser-required scrapers. Cron runs overnight when no
+        # operator is at the keyboard, so no need to hide the
+        # window.
+        #
+        # No residential proxy on this path: Meta's GraphQL doesn't
+        # IP-discriminate (verified working from a Hetzner VPS in
+        # 2026-05). Routing through Evomi would burn paid requests
+        # for no robustness gain — keep it direct.
         async with async_playwright() as pw:
             try:
                 browser = await pw.chromium.launch(headless=False)

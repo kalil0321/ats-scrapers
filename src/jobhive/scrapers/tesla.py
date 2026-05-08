@@ -47,12 +47,6 @@ from jobhive.scrapers.base import BaseScraper, ScraperRegistry
 
 _BASE_URL = "https://www.tesla.com"
 _CAREERS_HOME = "/careers/search/jobs"
-_STATE_ENDPOINT = "/cua-api/apps/careers/state"
-
-# Match the JSON body whether the browser wraps it in <pre>…</pre> or
-# inlines it as plain text — both forms appear depending on browser /
-# user-agent.
-_PRE_RE = re.compile(r"<pre[^>]*>(.*?)</pre>", re.DOTALL)
 
 
 @ScraperRegistry.register(ATSType.TESLA)
@@ -82,9 +76,21 @@ class TeslaScraper(BaseScraper):
         # variant slips a fingerprint signal Tesla's detector catches.
         # The cron is expected to run overnight when no operator is
         # at the keyboard, so we don't bother hiding the window.
+        #
+        # Datacenter-IP runs (Hetzner / AWS / etc.) get blocked by
+        # Akamai's IP reputation gate before we can even render the
+        # careers page; the workaround is to route through a
+        # residential proxy. Set ``PROXY=http://host:port:user:pass``
+        # in the env (4-colon Evomi format) and we plug it into the
+        # patchright launch automatically. On residential IPs (the
+        # operator's Mac), leave PROXY unset.
+        proxy_cfg = bb.patchright_proxy_from_env()
         async with async_playwright() as pw:
             try:
-                browser = await pw.chromium.launch(headless=False)
+                browser = await pw.chromium.launch(
+                    headless=False,
+                    proxy=proxy_cfg,
+                )
             except Exception as exc:
                 raise ScraperError(
                     f"Tesla: patchright Chromium launch failed ({exc}). "
@@ -96,54 +102,69 @@ class TeslaScraper(BaseScraper):
                 )
                 page = await ctx.new_page()
 
-                # Warm up Akamai cookies by visiting the careers page.
-                # ``networkidle`` lets Akamai's challenge JS finish
-                # gathering its signals (canvas, WebGL, plugin probe,
-                # …) and submit them. patchright's masked Chromium
-                # passes the resulting bot score; default Playwright
-                # doesn't.
+                # Warm up Akamai cookies + bot score: visit the
+                # careers page, wait for its JS challenge to settle,
+                # then mimic a few seconds of human-shaped scroll +
+                # mouse movement. The behavioural signals matter on
+                # datacentre IPs even with patchright's fingerprint
+                # mask — without them we get a 429 cpr_chlge instead
+                # of a 200.
                 await page.goto(
                     f"{_BASE_URL}{_CAREERS_HOME}",
                     wait_until="networkidle",
                     timeout=60_000,
                 )
+                await page.wait_for_timeout(5_000)
+                await page.evaluate("window.scrollBy(0, 500)")
+                await page.wait_for_timeout(2_000)
+                await page.evaluate("window.scrollBy(0, -300)")
+                await page.wait_for_timeout(2_000)
+                await page.mouse.move(700, 400)
+                await page.wait_for_timeout(1_000)
+                await page.mouse.move(900, 600)
+                await page.wait_for_timeout(2_000)
 
                 # Sanity check before the API call: if the warmup
                 # produced an Access Denied page, fail fast with a
-                # diagnostic the operator can act on (proxy issue,
-                # patchright outdated vs new Akamai rules, …).
+                # diagnostic the operator can act on (proxy
+                # exhausted, patchright outdated vs new Akamai
+                # rules, …).
                 if "access denied" in (await page.content()).lower():
                     raise ScraperError(
                         "Tesla: warmup page is 'Access Denied'. "
-                        "patchright did not pass Akamai — try "
-                        "upgrading patchright or running with a "
-                        "different residential IP."
+                        "patchright did not pass Akamai — set PROXY "
+                        "to a residential proxy or run from a "
+                        "residential IP."
                     )
 
-                # Hit the JSON endpoint inside the same browser
-                # session — same cookies, same Akamai-validated bot
-                # score.
-                resp = await page.goto(
-                    f"{_BASE_URL}{_STATE_ENDPOINT}",
-                    wait_until="domcontentloaded",
-                    timeout=30_000,
+                # Fire the API call from inside the page context so
+                # cookies + Sec-Fetch metadata match the bot-scored
+                # session. ``page.goto`` to the JSON URL works
+                # locally on residential IPs but tends to slip the
+                # Sec-Fetch-Dest header through proxies, while
+                # ``fetch()`` from page JS keeps it consistent.
+                api = await page.evaluate(
+                    """async () => {
+                        const r = await fetch(
+                            '/cua-api/apps/careers/state',
+                            {credentials: 'include'}
+                        );
+                        return {status: r.status, body: await r.text()};
+                    }"""
                 )
-                if resp is None or resp.status != 200:
+                if api["status"] != 200:
                     raise ScraperError(
-                        f"Tesla: /cua-api/state returned status="
-                        f"{resp.status if resp else 'None'} after warmup."
+                        f"Tesla: /cua-api/state returned "
+                        f"status={api['status']} after warmup."
                     )
-                payload = await self._extract_json(page)
+                payload = self._parse_json(api["body"])
             finally:
                 await browser.close()
 
         return list(self._parse_payload(payload))
 
     @staticmethod
-    async def _extract_json(page: Any) -> dict[str, Any]:
-        html = await page.content()
-        match = _PRE_RE.search(html)
-        body = match.group(1) if match else await page.inner_text("body")
+    def _parse_json(body: str) -> dict[str, Any]:
         try:
             return json.loads(body)
         except json.JSONDecodeError as exc:

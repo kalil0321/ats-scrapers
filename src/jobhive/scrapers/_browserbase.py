@@ -123,3 +123,35 @@ def warn_disabled(scraper_name: str) -> None:
     )
 
 
+def patchright_proxy_from_env() -> dict[str, str] | None:
+    """Parse ``PROXY`` env var into a Playwright/patchright proxy dict.
+
+    Evomi's ``PROXY`` is the 4-colon ``http://host:port:user:pass``
+    shape. Returns ``None`` when no env var is set so the caller can
+    pass it straight through to ``launch(proxy=...)`` without a
+    branch.
+
+    Used by browser-required scrapers running on cloud / data-centre
+    IPs that get flagged as bots by Akamai-class detectors. On
+    residential IPs (e.g. the operator's Mac), leave PROXY unset and
+    the function no-ops — Evomi bills per request, save the credits.
+    """
+    raw = os.getenv("PROXY")
+    if not raw:
+        return None
+    rest = raw.replace("http://", "").replace("https://", "")
+    parts = rest.split(":")
+    if len(parts) != 4:
+        log.warning(
+            "PROXY env var doesn't match host:port:user:pass shape; "
+            "ignoring."
+        )
+        return None
+    host, port, user, password = parts
+    return {
+        "server": f"http://{host}:{port}",
+        "username": user,
+        "password": password,
+    }
+
+
