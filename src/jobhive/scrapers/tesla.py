@@ -80,7 +80,20 @@ class TeslaScraper(BaseScraper):
 
         async with async_playwright() as pw:
             try:
-                browser = await pw.chromium.launch(headless=False)
+                # patchright clears Akamai only in HEADED mode — the
+                # headless variant slips a fingerprint signal that
+                # Tesla's detector still catches. We launch a headed
+                # Chromium positioned far off-screen so the operator
+                # doesn't see a window pop up while the cron runs;
+                # functionally equivalent to headless from the user's
+                # POV, but Akamai sees a real headed browser.
+                browser = await pw.chromium.launch(
+                    headless=False,
+                    args=[
+                        "--window-position=-32000,-32000",
+                        "--window-size=1440,900",
+                    ],
+                )
             except Exception as exc:
                 raise ScraperError(
                     f"Tesla: patchright Chromium launch failed ({exc}). "
