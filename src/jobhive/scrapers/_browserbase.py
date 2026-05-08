@@ -121,3 +121,67 @@ def warn_disabled(scraper_name: str) -> None:
         "enable. Skipping.",
         scraper_name,
     )
+
+
+# --- macOS focus-restore for patchright launches ---------------------------
+#
+# patchright runs HEADED Chromium (Akamai detects headless even with
+# stealth patches). On macOS, launching a foreground GUI app steals
+# the keyboard focus from whatever the user is doing — annoying when
+# the cron fires while they're typing. Mitigation: capture the
+# frontmost app BEFORE the launch, re-activate it AFTER. The window
+# is also `--start-minimized` and positioned off-screen so it never
+# shows up visually.
+
+import contextlib  # noqa: E402  — kept near its only callers
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+
+
+def capture_frontmost_app_macos() -> str | None:
+    """Return the name of the frontmost macOS app, or ``None`` on
+    non-Darwin / on any subprocess failure. Best-effort; never
+    raises."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "osascript",
+                "-e",
+                'tell application "System Events" to name of '
+                "first process whose frontmost is true",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return None
+    name = (result.stdout or "").strip()
+    return name or None
+
+
+def reactivate_app_macos(name: str | None) -> None:
+    """Re-bring ``name`` to the foreground via AppleScript. No-op when
+    name is None or on non-Darwin. Best-effort; never raises."""
+    if not name or sys.platform != "darwin":
+        return
+    with contextlib.suppress(Exception):
+        subprocess.run(
+            ["osascript", "-e", f'tell application "{name}" to activate'],
+            timeout=2,
+            check=False,
+            capture_output=True,
+        )
+
+
+# Patchright launch args used by Tesla + Meta (both browser-required
+# scrapers). Headed because Akamai detects headless; minimized +
+# off-screen so the operator never sees the window.
+PATCHRIGHT_INVISIBLE_ARGS: tuple[str, ...] = (
+    "--start-minimized",
+    "--window-position=-32000,-32000",
+    "--window-size=1440,900",
+)

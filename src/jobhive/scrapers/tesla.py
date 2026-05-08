@@ -78,27 +78,25 @@ class TeslaScraper(BaseScraper):
                 "Chromium build."
             ) from exc
 
+        # patchright clears Akamai only in HEADED mode — the headless
+        # variant slips a fingerprint signal Tesla's detector catches.
+        # Mitigation for the macOS user experience: window is
+        # --start-minimized + off-screen, AND we re-activate the
+        # operator's previous foreground app right after launch so the
+        # cron never steals their typing focus.
+        prev_app = bb.capture_frontmost_app_macos()
         async with async_playwright() as pw:
             try:
-                # patchright clears Akamai only in HEADED mode — the
-                # headless variant slips a fingerprint signal that
-                # Tesla's detector still catches. We launch a headed
-                # Chromium positioned far off-screen so the operator
-                # doesn't see a window pop up while the cron runs;
-                # functionally equivalent to headless from the user's
-                # POV, but Akamai sees a real headed browser.
                 browser = await pw.chromium.launch(
                     headless=False,
-                    args=[
-                        "--window-position=-32000,-32000",
-                        "--window-size=1440,900",
-                    ],
+                    args=list(bb.PATCHRIGHT_INVISIBLE_ARGS),
                 )
             except Exception as exc:
                 raise ScraperError(
                     f"Tesla: patchright Chromium launch failed ({exc}). "
                     "Did you run `patchright install chromium`?"
                 ) from exc
+            bb.reactivate_app_macos(prev_app)
             try:
                 ctx = await browser.new_context(
                     viewport={"width": 1440, "height": 900},
