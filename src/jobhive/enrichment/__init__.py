@@ -7,8 +7,7 @@ progressively.
 
 from jobhive.enrichment.derived import (
     infer_is_remote,
-    infer_seniority,
     parse_salary_range,
 )
 
-__all__ = ["infer_is_remote", "infer_seniority", "parse_salary_range"]
+__all__ = ["infer_is_remote", "parse_salary_range"]

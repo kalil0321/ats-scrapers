@@ -34,6 +34,13 @@ def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(jh, "RETRY_BASE_DELAY", 0.0)
 
 
+# Per-job detail enrichment fires after the listing parse; tests that
+# don't care about it leave those calls unmocked.
+pytestmark = pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False,
+)
+
+
 URL = "https://acme.applytojob.com/apply/jobs"
 
 

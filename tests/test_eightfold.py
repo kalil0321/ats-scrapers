@@ -34,6 +34,13 @@ from jobhive.scrapers import (
 )
 from jobhive.scrapers.eightfold import _extract_remote, _format_location, _parse_ts
 
+# Detail enrichment fires per-job ``position_details`` GET calls after
+# the search pass; tests that don't care about description ignore them.
+pytestmark = pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False,
+)
+
+
 # --- module-level fixtures --------------------------------------------------
 
 

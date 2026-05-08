@@ -285,18 +285,53 @@ def _format_locations(value: object) -> str | None:
     return name.strip() if isinstance(name, str) and name.strip() else None
 
 
+# Cornerstone tenants who haven't filled in their public description leave
+# the field as a placeholder string. Filter those out — better an empty
+# description column than a misleading "Please upload" everywhere.
+_PLACEHOLDER_DESCRIPTIONS = {
+    "please upload the job description",
+    "please upload a job description",
+    "please add the job description",
+    "no description available",
+    "to be confirmed",
+    "tbc",
+    "used for itt applications",
+    "n/a",
+    "tba",
+    "see job description",
+}
+
+
 def _clean_description(value: object) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     cleaned = _TAG_RE.sub(" ", value)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned[:10_000] or None
+    if not cleaned:
+        return None
+    if cleaned.lower() in _PLACEHOLDER_DESCRIPTIONS:
+        return None
+    return cleaned[:10_000]
 
 
 def _parse_iso(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
+    """Parse Cornerstone's posted-date field.
+
+    The API ships ``postingEffectiveDate`` as ``M/D/YYYY`` (US locale,
+    e.g. ``"5/6/2026"``). ISO 8601 is the fallback for tenants on
+    non-US locales — we try it first because it's the cheaper parse,
+    then fall through to the localized US format.
+    """
+    if not isinstance(value, str) or not value.strip():
         return None
+    cleaned = value.strip()
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
     except ValueError:
-        return None
+        pass
+    for fmt in ("%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+    return None

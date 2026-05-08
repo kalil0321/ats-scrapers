@@ -20,6 +20,14 @@ from jobhive.scrapers import (
     WorkdayScraper,
 )
 
+# Several scrapers now fan out per-job detail fetches after the listing
+# pass (Gem batched GraphQL, join.com JSON-LD, etc.). Tests below mock
+# only the listing call and rely on this module-level relax-mark to
+# tolerate the unmatched detail requests.
+pytestmark = pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False,
+)
+
 # --- SmartRecruiters ---------------------------------------------------------
 
 def test_smartrecruiters_happy_path(httpx_mock) -> None:
@@ -187,6 +195,11 @@ def test_personio_accepts_full_url(httpx_mock) -> None:
 # --- Gem ---------------------------------------------------------------------
 
 def test_gem_parses_jobpostings(httpx_mock) -> None:
+    # The scraper hits the GraphQL endpoint twice: once for the list
+    # (``JobBoardList``) and once for the batched detail enrichment
+    # (``ExternalJobPostingQuery``). The list mock below is the only one
+    # that matters for this test; the detail call is tolerated by the
+    # module-level ``assert_all_requests_were_expected=False`` mark.
     httpx_mock.add_response(
         url="https://jobs.gem.com/api/public/graphql/batch",
         json=[

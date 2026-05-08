@@ -16,14 +16,18 @@ IBM uses ``div.job-item``, Astellas uses table rows. We try a chain of
 known selectors with a final fallback to plain ``<a href=".../JobDetail/...">``
 anchors.
 
-Avature is selective about clients — they reject bare ``Mozilla/5.0`` UAs
-on some tenants. We send full browser headers (Chrome 143 on macOS) plus
-``Sec-Fetch-*`` to mimic a real navigation.
+Avature is selective about clients — many tenants 406-block any HTTP/2
+client (httpx, curl, even curl_cffi with Chrome TLS impersonation) at
+the load-balancer layer. The block isn't TLS-fingerprint-based but
+something post-handshake (header order or h2 settings frame). The only
+workaround is a real browser, which we proxy via Browserbase + Playwright
+CDP. We pay that cost only when the direct HTTP path returns 406.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -42,6 +46,50 @@ PAGE_SIZE = 12  # Avature's default page size.
 MAX_PAGES = 200  # Defensive upper bound — caps a runaway loop at ~2400 jobs.
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
+# How many JobDetail pages to fetch concurrently per tenant. Avature
+# tenants are mid-sized (most under 200 jobs), so 6 keeps load light
+# without prolonging the per-tenant runtime.
+DETAIL_CONCURRENCY = 6
+
+# Avature label vocabulary — multiple tenants reword the same concept.
+# These map to our standardized columns. All comparisons are
+# case-insensitive after stripping punctuation.
+_DEPARTMENT_LABELS = {
+    "career area", "function/business area", "function", "business unit",
+    "department", "category", "occupational area", "job category",
+    "team", "discipline",
+}
+_EMPLOYMENT_TYPE_LABELS = {
+    "employment class", "employment type", "work type", "working time",
+    "employment status", "type of employment", "contract type", "schedule",
+}
+_LOCATION_LABELS = {
+    "location", "work location(s)", "work location", "office",
+    "primary location", "city", "country",
+}
+_REMOTE_LABELS = {"remote?", "remote", "work mode", "workplace type"}
+_REQ_ID_LABELS = {"ref #", "ref. #", "ref no.", "reference number",
+                  "requisition id", "req id", "job id", "job ref"}
+_POSTED_LABELS = {"date published", "posted date", "publication date",
+                  "post date", "date posted"}
+
+_EMPLOYMENT_TYPE_NORMALIZED = {
+    "permanent": "FULL_TIME",
+    "regular": "FULL_TIME",
+    "full time": "FULL_TIME",
+    "fulltime": "FULL_TIME",
+    "full-time": "FULL_TIME",
+    "part time": "PART_TIME",
+    "parttime": "PART_TIME",
+    "part-time": "PART_TIME",
+    "internship": "INTERN",
+    "intern": "INTERN",
+    "contract": "CONTRACT",
+    "fixed term": "CONTRACT",
+    "fixed-term": "CONTRACT",
+    "temporary": "TEMPORARY",
+    "temp": "TEMPORARY",
+}
 
 # Locale path prefixes that some tenants insert (`careers.ibm.com/en_US/...`).
 _LOCALE_PREFIXES = {
@@ -55,6 +103,10 @@ _PSEUDO_TITLES = {
     "apply", "apply now", "apply online", "learn more", "view job",
     "view all", "see job", "more info", "details",
 }
+
+class _BlockedTenantError(Exception):
+    """Raised when a tenant returns 406 — escalates to the Browserbase path."""
+
 
 _BROWSER_HEADERS = {
     "User-Agent": (
@@ -87,6 +139,74 @@ class AvatureScraper(BaseScraper):
     async def _fetch_async(self) -> list[Job]:
         base = self._resolve_base_url()
         company = _company_from_base(base) or self.company_slug
+
+        try:
+            return await self._fetch_direct(base, company)
+        except _BlockedTenantError:
+            # Direct path exhausted retries on 406. Avature's LB blocks
+            # non-browser HTTP/2 clients on some tenants (verified that
+            # local headless Chromium also 406s — only fingerprint-stealth
+            # browsers get through). Try the Browserbase fallback only if
+            # the user explicitly opted in by configuring credentials.
+            return await self._fetch_via_browserbase_optional(base, company)
+
+    async def _fetch_via_browserbase_optional(
+        self, base: str, company: str,
+    ) -> list[Job]:
+        """Use Browserbase only when configured; otherwise return empty.
+
+        This keeps the scraper usable as a public library without
+        forcing a paid dependency. Three states:
+
+        * ``BROWSERBASE_API_KEY`` + ``BROWSERBASE_PROJECT_ID`` set, and
+          ``playwright`` importable → run the Browserbase fallback.
+        * Either credential missing → log a warning and return ``[]`` for
+          this tenant (the rest of the pipeline keeps running).
+        * Playwright unavailable → same as above.
+
+        Set ``JOBHIVE_DISABLE_BROWSERBASE=1`` to force the fallback off
+        even when credentials exist (useful in CI / local dev).
+        """
+        import logging
+        log = logging.getLogger(__name__)
+
+        if os.getenv("JOBHIVE_DISABLE_BROWSERBASE"):
+            log.warning(
+                "Avature %s: 406-blocked and "
+                "JOBHIVE_DISABLE_BROWSERBASE is set; skipping tenant.",
+                base,
+            )
+            return []
+
+        api_key = os.getenv("BROWSERBASE_API_KEY")
+        project_id = os.getenv("BROWSERBASE_PROJECT_ID")
+        if not api_key or not project_id:
+            log.warning(
+                "Avature %s: 406-blocked. Set BROWSERBASE_API_KEY and "
+                "BROWSERBASE_PROJECT_ID to enable the fallback path; "
+                "skipping tenant for now.",
+                base,
+            )
+            return []
+
+        try:
+            from playwright.async_api import async_playwright  # noqa: F401
+        except ImportError:
+            log.warning(
+                "Avature %s: 406-blocked and `playwright` is not "
+                "installed. Run `pip install playwright` to enable the "
+                "Browserbase fallback; skipping tenant for now.",
+                base,
+            )
+            return []
+
+        try:
+            return await self._fetch_via_browserbase(base, company)
+        except Exception as exc:  # log + continue is intentional
+            log.warning("Avature %s: Browserbase fallback failed (%s).", base, exc)
+            return []
+
+    async def _fetch_direct(self, base: str, company: str) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
 
@@ -106,6 +226,136 @@ class AvatureScraper(BaseScraper):
                 # Termination: short page = last page.
                 if len(page_jobs) < PAGE_SIZE:
                     break
+
+            # Per-job detail fetch — Avature's search-results page has
+            # only title/location/department; everything else (description,
+            # employment type, requisition id, posted date, full location)
+            # lives on /JobDetail/. We fetch concurrently with a small
+            # semaphore so a slow tenant doesn't stall the pipeline.
+            sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+            await asyncio.gather(*(
+                self._enrich_with_detail(client, sem, job)
+                for job in all_jobs
+            ))
+        return all_jobs
+
+    async def _enrich_with_detail(
+        self, client: httpx.AsyncClient, sem: asyncio.Semaphore, job: Job,
+    ) -> None:
+        async with sem:
+            try:
+                response = await client.get(str(job.url), headers=_BROWSER_HEADERS)
+            except httpx.HTTPError:
+                return  # Detail enrichment is best-effort; keep the search row.
+            if response.status_code != 200:
+                return
+        fields, description = _parse_detail(response.text)
+        _apply_detail_to_job(job, fields, description)
+
+    async def _fetch_via_browserbase(self, base: str, company: str) -> list[Job]:
+        """Browserbase fallback: run the same listing+detail flow via real Chrome.
+
+        Cost is non-trivial (a session is ~$0.10/min), so we keep the
+        per-tenant work tight: one session, all listing pages first,
+        then a small concurrent batch of detail-page navigations on
+        separate tabs. We cap detail concurrency at 4 to avoid pushing
+        Browserbase past its per-session limits.
+
+        Caller (``_fetch_via_browserbase_optional``) verifies that
+        ``BROWSERBASE_API_KEY`` / ``BROWSERBASE_PROJECT_ID`` are set
+        and that ``playwright`` is importable — this method assumes both.
+        """
+        from playwright.async_api import async_playwright
+
+        api_key = os.environ["BROWSERBASE_API_KEY"]
+        project_id = os.environ["BROWSERBASE_PROJECT_ID"]
+
+        # Create a Browserbase session.
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                "https://api.browserbase.com/v1/sessions",
+                headers={"X-BB-API-Key": api_key,
+                         "Content-Type": "application/json"},
+                json={
+                    "projectId": project_id,
+                    "browserSettings": {
+                        "fingerprint": {
+                            "browsers": ["chrome"],
+                            "devices": ["desktop"],
+                            "operatingSystems": ["macos"],
+                        }
+                    },
+                },
+            )
+            if r.status_code != 201:
+                raise ScraperError(
+                    f"Browserbase session create failed: {r.status_code} "
+                    f"{r.text[:200]}"
+                )
+            session = r.json()
+            ws_url = session["connectUrl"]
+
+        all_jobs: list[Job] = []
+        seen: set[str] = set()
+        async with async_playwright() as p:
+            browser = await p.chromium.connect_over_cdp(ws_url)
+            try:
+                ctx = browser.contexts[0]
+                page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+
+                # Listing pages — sequential on one tab.
+                for page_num in range(MAX_PAGES):
+                    offset = page_num * PAGE_SIZE
+                    list_url = (
+                        f"{base}/careers/SearchJobs/"
+                        f"?jobOffset={offset}&jobRecordsPerPage={PAGE_SIZE}"
+                    )
+                    try:
+                        await page.goto(
+                            list_url, wait_until="domcontentloaded", timeout=30_000
+                        )
+                    except Exception:
+                        break
+                    html_text = await page.content()
+                    page_jobs = self._parse_page(html_text, base, company)
+                    new = [j for j in page_jobs if j.ats_id not in seen]
+                    if not new:
+                        break
+                    for j in new:
+                        seen.add(j.ats_id)
+                    all_jobs.extend(new)
+                    if len(page_jobs) < PAGE_SIZE:
+                        break
+
+                # Detail pages — small parallel batch on extra tabs.
+                bb_detail_concurrency = 4
+                sem = asyncio.Semaphore(bb_detail_concurrency)
+                tabs = [await ctx.new_page() for _ in range(bb_detail_concurrency)]
+                tab_q: asyncio.Queue = asyncio.Queue()
+                for t in tabs:
+                    tab_q.put_nowait(t)
+
+                async def enrich(job: Job) -> None:
+                    async with sem:
+                        tab = await tab_q.get()
+                        try:
+                            try:
+                                await tab.goto(
+                                    str(job.url),
+                                    wait_until="domcontentloaded",
+                                    timeout=30_000,
+                                )
+                            except Exception:
+                                return
+                            html = await tab.content()
+                            fields, description = _parse_detail(html)
+                            _apply_detail_to_job(job, fields, description)
+                        finally:
+                            tab_q.put_nowait(tab)
+
+                await asyncio.gather(*(enrich(j) for j in all_jobs))
+            finally:
+                await browser.close()
         return all_jobs
 
     async def _fetch_page(
@@ -129,6 +379,20 @@ class AvatureScraper(BaseScraper):
                 raise CompanyNotFoundError(f"Avature site not found: {base}")
             if response.status_code == 200:
                 return response.text
+            if response.status_code == 406:
+                # 406 from Avature is usually transient rate-limit-style
+                # blocking — retry with backoff. Only escalate to the
+                # Browserbase path on the first listing page if every
+                # retry exhausts.
+                if attempt == MAX_RETRIES and offset == 0:
+                    raise _BlockedTenantError(base)
+                if attempt == MAX_RETRIES:
+                    raise ScraperError(
+                        f"Avature ({base}) returned 406 at offset={offset} "
+                        f"after {MAX_RETRIES} retries"
+                    )
+                await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+                continue
             if response.status_code == 429 or 500 <= response.status_code < 600:
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
@@ -263,6 +527,164 @@ def _parse_job_element(
         posted_at=None,
         fetched_at=datetime.now(),
     )
+
+
+def _parse_detail(html: str) -> tuple[dict[str, str], str | None]:
+    """Pull label/value fields and description from a JobDetail HTML page.
+
+    Avature's detail page wraps content in repeated ``article--details``
+    blocks. The first one is "General Information" with labelled
+    ``article__content__view__field`` rows (e.g. *Career area* → *Risk*).
+    Subsequent blocks contain the free-form job body (one or more
+    unlabelled field rows).
+
+    The label vocabulary varies per tenant — Bloomberg uses *Function*,
+    Astellas uses *Function/Business Area*, IBM uses *Career area*. The
+    raw label/value dict is returned so the caller can map across that
+    vocab in one place.
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError as exc:  # pragma: no cover
+        raise ScraperError(
+            "Avature scraper requires beautifulsoup4."
+        ) from exc
+
+    soup = BeautifulSoup(html, "html.parser")
+    fields: dict[str, str] = {}
+    description_parts: list[str] = []
+
+    # ``article--details`` is a class — sometimes on <article>, sometimes
+    # on <div>. ``find_all(class_=...)`` handles both element kinds.
+    for blk in soup.find_all(class_="article--details"):
+        field_rows = [
+            d for d in blk.find_all("div")
+            if "article__content__view__field" in (d.get("class") or [])
+        ]
+        labeled_count = 0
+        for fr in field_rows:
+            lbl_el = fr.find(
+                "div", class_="article__content__view__field__label"
+            )
+            val_el = fr.find(
+                "div", class_="article__content__view__field__value"
+            )
+            label_text = lbl_el.get_text(strip=True) if lbl_el else ""
+            if label_text:
+                labeled_count += 1
+                if val_el is not None:
+                    value_text = re.sub(
+                        r"\s+", " ", val_el.get_text(" ", strip=True)
+                    )
+                    if value_text:
+                        fields[label_text] = value_text
+
+        # An "info" block has ≥2 labelled rows; everything else is body.
+        if labeled_count >= 2:
+            continue
+
+        # Unlabelled field rows = description chunks.
+        body_added = False
+        for fr in field_rows:
+            lbl_el = fr.find(
+                "div", class_="article__content__view__field__label"
+            )
+            if lbl_el and lbl_el.get_text(strip=True):
+                continue
+            val_el = fr.find(
+                "div", class_="article__content__view__field__value"
+            ) or fr
+            text = val_el.get_text(separator="\n", strip=True)
+            if text:
+                description_parts.append(text)
+                body_added = True
+        if not field_rows and not body_added:
+            content = blk.find("div", class_="article__content") or blk
+            text = content.get_text(separator="\n", strip=True)
+            if text and len(text) > 100:
+                description_parts.append(text)
+
+    description = "\n\n".join(description_parts).strip()
+    description = re.sub(r"\n{3,}", "\n\n", description)
+    return fields, description or None
+
+
+def _apply_detail_to_job(
+    job: Job, fields: dict[str, str], description: str | None,
+) -> None:
+    """Mutate ``job`` in place with values pulled from the detail page.
+
+    Pydantic models with ``frozen=False`` (the default) allow attribute
+    assignment, but we still need to coerce strings to enums or
+    datetimes where the schema expects them.
+    """
+    # Lower-cased field map for vocabulary lookup.
+    flat = {k.strip().lower().rstrip(":"): v for k, v in fields.items() if v}
+
+    def first(label_set: set[str]) -> str | None:
+        for label, value in flat.items():
+            if label in label_set:
+                return value
+        return None
+
+    # Department: prefer the search-page hint (already set), only
+    # backfill if the detail page provides one and the row is empty.
+    if not job.department:
+        dept = first(_DEPARTMENT_LABELS)
+        if dept:
+            job.department = dept
+
+    # Location: detail page often has the canonical version (city +
+    # state + country) compared to the listing page snippet.
+    detail_loc = first(_LOCATION_LABELS)
+    if detail_loc and (not job.location or len(detail_loc) > len(job.location)):
+        job.location = detail_loc
+
+    # Employment type — coerce to our enum.
+    emp_raw = first(_EMPLOYMENT_TYPE_LABELS)
+    if emp_raw:
+        norm = emp_raw.strip().lower()
+        for key, mapped in _EMPLOYMENT_TYPE_NORMALIZED.items():
+            if key in norm:
+                job.employment_type = mapped  # type: ignore[assignment]
+                break
+
+    # Requisition id (employer's own ref).
+    req = first(_REQ_ID_LABELS)
+    if req and not job.requisition_id:
+        job.requisition_id = req
+
+    # Posted date — Avature serves human-formatted dates; try a couple of
+    # common forms and fall through silently if none match.
+    posted_raw = first(_POSTED_LABELS)
+    if posted_raw and not job.posted_at:
+        for fmt in (
+            "%A, %B %d, %Y",   # Monday, May 4, 2026
+            "%B %d, %Y",       # May 4, 2026
+            "%d %B %Y",        # 4 May 2026
+            "%Y-%m-%d",
+            "%m-%d-%y",        # 05-05-26 (Ally)
+            "%d/%m/%Y",
+        ):
+            try:
+                job.posted_at = datetime.strptime(posted_raw.strip(), fmt)
+                break
+            except ValueError:
+                continue
+
+    # Remote flag.
+    remote_raw = first(_REMOTE_LABELS)
+    if remote_raw is not None and job.is_remote is None:
+        norm = remote_raw.strip().lower()
+        if norm in ("yes", "remote", "fully remote", "true", "y"):
+            job.is_remote = True
+        elif norm in ("no", "on-site", "onsite", "in office", "in-office", "false", "n"):
+            job.is_remote = False
+
+    # Description.
+    if description and not job.description:
+        # Cap at ~12kB to avoid Pydantic warnings on extreme outliers.
+        job.description = description[:12_000]
 
 
 def _company_from_base(base: str) -> str | None:

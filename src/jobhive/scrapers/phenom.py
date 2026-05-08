@@ -50,6 +50,32 @@ _BASE_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# Phenom's ``jobType`` is freeform per tenant (``"Full Time"``,
+# ``"Part Time"``, ``"Regular"``, ``"Other"``, ``"Intern"``…). Map the
+# common ones to the canonical employment-type enum.
+_EMPLOYMENT_TYPE_PATTERNS = {
+    "intern": "INTERN",
+    "internship": "INTERN",
+    "trainee": "INTERN",
+    "co-op": "INTERN",
+    "contract": "CONTRACT",
+    "contractor": "CONTRACT",
+    "freelance": "CONTRACT",
+    "fixed-term": "CONTRACT",
+    "fixed term": "CONTRACT",
+    "temporary": "TEMPORARY",
+    "seasonal": "TEMPORARY",
+    "casual": "TEMPORARY",
+    "part time": "PART_TIME",
+    "part-time": "PART_TIME",
+    "parttime": "PART_TIME",
+    "full time": "FULL_TIME",
+    "full-time": "FULL_TIME",
+    "fulltime": "FULL_TIME",
+    "regular": "FULL_TIME",
+    "permanent": "FULL_TIME",
+}
+
 
 @ScraperRegistry.register(ATSType.PHENOM)
 class PhenomScraper(BaseScraper):
@@ -306,10 +332,32 @@ class PhenomScraper(BaseScraper):
             if v:
                 raw[k] = v
 
-        is_remote = None
-        rt = item.get("remoteType") or item.get("jobType")
-        if isinstance(rt, str) and "remote" in rt.lower():
-            is_remote = True
+        # ``remoteType`` is the structured signal when present;
+        # ``jobType`` sometimes carries "remote"/"hybrid" prefixes.
+        is_remote: bool | None = None
+        for source in (item.get("remoteType"), item.get("jobType"), item.get("locationType")):
+            if isinstance(source, str):
+                norm = source.strip().lower()
+                if not norm:
+                    continue
+                if "remote" in norm or "wfh" in norm or "work from home" in norm:
+                    is_remote = True
+                    break
+                if norm in ("onsite", "on-site", "in-office", "in office", "office"):
+                    is_remote = False
+
+        # Map ``jobType`` to the canonical ``employment_type`` enum;
+        # keep the original label in ``commitment`` for display.
+        commitment = (
+            item.get("jobType") if isinstance(item.get("jobType"), str) else None
+        )
+        employment_type: str | None = None
+        if commitment:
+            norm = commitment.strip().lower()
+            for needle, mapped in _EMPLOYMENT_TYPE_PATTERNS.items():
+                if needle in norm:
+                    employment_type = mapped
+                    break
 
         return Job(
             url=url,
@@ -320,7 +368,8 @@ class PhenomScraper(BaseScraper):
             location=_format_location(item),
             is_remote=is_remote,
             department=item.get("department") or item.get("category"),
-            commitment=item.get("jobType") if isinstance(item.get("jobType"), str) else None,
+            employment_type=employment_type,
+            commitment=commitment,
             requisition_id=str(item.get("jobSeqNo")) if item.get("jobSeqNo") else None,
             description=_clean_description(item.get("descriptionTeaser") or item.get("description")),
             posted_at=_parse_iso(item.get("postedDate") or item.get("dateCreated") or item.get("createdAt")),

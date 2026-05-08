@@ -13,12 +13,21 @@ The unauthenticated REST endpoint:
     GET {base}/hcmRestApi/resources/latest/recruitingCEJobRequisitions
         ?onlyData=true&limit=200&offset=0&finder=findReqs;siteNumber={site}
 
+The companion detail endpoint
+``/recruitingCEJobRequisitionDetails?finder=ById;Id={id}`` exposes the
+full job description (``ExternalDescriptionStr``) plus the qualifications
+and responsibilities sections. Detail enrichment is opt-in via
+``JOBHIVE_ORACLE_FETCH_DESCRIPTIONS=1`` because Oracle's tenant universe
+runs into hundreds of thousands of jobs — a per-job fan-out makes a
+default scrape impractically slow.
+
 Pass the full base URL (and optionally a site number) as the slug.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -38,6 +47,42 @@ SITE_RE = re.compile(r"site_number=([^&]+)")
 DEFAULT_SITE = "CX_1"
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
+DETAIL_CONCURRENCY = 8
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+# Oracle's ``WorkplaceTypeCode`` is a stable enum string — map to the
+# canonical remote flag. ``ORA_HYBRID`` stays None (neither purely
+# remote nor onsite).
+_REMOTE_BY_CODE = {
+    "ORA_REMOTE": True,
+    "ORA_FULL_TIME_REMOTE": True,
+    "ORA_ON_SITE": False,
+    "ORA_ONSITE": False,
+}
+
+# WorkerType / JobType / JobSchedule labels → canonical employment-type
+# enum. Oracle tenants pick from a freeform-ish vocabulary; match against
+# the most common terms.
+_EMPLOYMENT_TYPE_PATTERNS = {
+    "intern": "INTERN",
+    "internship": "INTERN",
+    "co-op": "INTERN",
+    "temporary": "TEMPORARY",
+    "seasonal": "TEMPORARY",
+    "contractor": "CONTRACT",
+    "contract": "CONTRACT",
+    "fixed-term": "CONTRACT",
+    "fixed term": "CONTRACT",
+    "part-time": "PART_TIME",
+    "part time": "PART_TIME",
+    "parttime": "PART_TIME",
+    "full-time": "FULL_TIME",
+    "full time": "FULL_TIME",
+    "fulltime": "FULL_TIME",
+    "regular": "FULL_TIME",
+    "permanent": "FULL_TIME",
+}
 
 
 @ScraperRegistry.register(ATSType.ORACLE)
@@ -97,7 +142,68 @@ class OracleScraper(BaseScraper):
                     if job.ats_id and job.ats_id not in seen:
                         seen.add(job.ats_id)
                         all_jobs.append(job)
+
+            # Optional per-job detail enrichment. Disabled by default
+            # because Oracle's tenant universe (a few hundred enterprise
+            # tenants × hundreds-to-thousands of reqs each) makes a fan-out
+            # scrape take hours. Toggle with
+            # ``JOBHIVE_ORACLE_FETCH_DESCRIPTIONS=1`` when description
+            # coverage is wanted.
+            if all_jobs and os.getenv("JOBHIVE_ORACLE_FETCH_DESCRIPTIONS"):
+                sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+                detail_url = (
+                    f"{base}/hcmRestApi/resources/latest/"
+                    "recruitingCEJobRequisitionDetails"
+                )
+                await asyncio.gather(*(
+                    self._enrich_detail(client, sem, detail_url, j)
+                    for j in all_jobs
+                ))
         return all_jobs
+
+    async def _enrich_detail(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        detail_url: str,
+        job: Job,
+    ) -> None:
+        if not job.ats_id or job.description:
+            return
+        async with sem:
+            try:
+                response = await client.get(
+                    detail_url,
+                    params={"finder": f"ById;Id={job.ats_id}", "onlyData": "true"},
+                    headers={"Accept": "application/json"},
+                )
+            except httpx.HTTPError:
+                return
+        if response.status_code != 200:
+            return
+        try:
+            data = response.json()
+        except ValueError:
+            return
+        items = data.get("items") or []
+        if not items or not isinstance(items[0], dict):
+            return
+        detail = items[0]
+
+        # Concatenate the three external sections — description /
+        # qualifications / responsibilities — into a single plain-text
+        # body, capped at 10kB.
+        parts: list[str] = []
+        for key in (
+            "ExternalDescriptionStr",
+            "ExternalResponsibilitiesStr",
+            "ExternalQualificationsStr",
+        ):
+            v = detail.get(key)
+            if isinstance(v, str) and v.strip():
+                parts.append(_strip_html(v))
+        if parts:
+            job.description = "\n\n".join(parts)[:10_000]
 
     async def _fetch_with_retry(
         self,
@@ -156,12 +262,76 @@ class OracleScraper(BaseScraper):
         company = urlparse(base).hostname or self.company_slug
         title = item.get("Title") or "Untitled"
 
+        # Description from the listing's ``ShortDescriptionStr`` when
+        # populated. Detail enrichment overwrites this with the longer
+        # ``ExternalDescriptionStr`` when enabled.
+        short_desc = item.get("ShortDescriptionStr")
+        description = (
+            _strip_html(short_desc)[:10_000]
+            if isinstance(short_desc, str) and short_desc.strip()
+            else None
+        )
+
+        # ``WorkplaceTypeCode`` is a stable enum (``ORA_REMOTE`` /
+        # ``ORA_ON_SITE`` / ``ORA_HYBRID``); the textual ``WorkplaceType``
+        # field is locale-dependent. Use the code.
+        workplace_code = item.get("WorkplaceTypeCode")
+        is_remote: bool | None = None
+        if isinstance(workplace_code, str):
+            is_remote = _REMOTE_BY_CODE.get(workplace_code.strip().upper())
+
+        # Department — Oracle tenants populate one of these three; pick
+        # the most specific available.
+        department: str | None = None
+        for key in ("Department", "Organization", "BusinessUnit"):
+            v = item.get(key)
+            if isinstance(v, str) and v.strip():
+                department = v.strip()
+                break
+
+        # Employment type — try a chain of fields, mapping each through
+        # the freeform-vocabulary table.
+        employment_type: str | None = None
+        commitment: str | None = None
+        for key in ("WorkerType", "JobType", "ContractType", "JobSchedule"):
+            v = item.get(key)
+            if isinstance(v, str) and v.strip():
+                norm = v.strip().lower()
+                if commitment is None:
+                    commitment = v.strip()
+                if employment_type is None:
+                    for needle, mapped in _EMPLOYMENT_TYPE_PATTERNS.items():
+                        if needle in norm:
+                            employment_type = mapped
+                            break
+                if employment_type is not None:
+                    break
+
+        # Requisition id — Oracle stores the human-readable req number
+        # under multiple keys depending on the API version.
+        req_raw = (
+            item.get("RequisitionNumber")
+            or item.get("RequisitionId")
+            or item.get("ReqNumber")
+        )
+        requisition_id = str(req_raw).strip() if req_raw else None
+
+        # Team — JobFamily is the closest analog when it's a string.
+        team_raw = item.get("JobFamilyName") or item.get("JobFamily")
+        team = (
+            team_raw.strip() if isinstance(team_raw, str) and team_raw.strip()
+            else None
+        )
+
         raw: dict[str, Any] = {}
-        for k in ("Category", "JobFamilyName", "WorkLocation",
-                  "WorkerCategory", "OrganizationName", "BusinessUnitName",
-                  "JobFunctionName", "PrimaryLocationCountry"):
+        for k in ("Category", "JobFamily", "JobFamilyName",
+                  "JobFunction", "JobFunctionCode", "WorkLocation",
+                  "WorkerType", "WorkerCategory", "WorkplaceTypeCode",
+                  "ContractType", "JobSchedule", "JobShift", "JobType",
+                  "Department", "Organization", "BusinessUnit",
+                  "PrimaryLocationCountry", "GeographyId", "LegalEmployer"):
             v = item.get(k)
-            if v:
+            if v not in (None, "", [], False):
                 raw[k] = v
 
         return Job(
@@ -172,9 +342,13 @@ class OracleScraper(BaseScraper):
             ats_type=ATSType.ORACLE,
             ats_id=ats_id,
             location=item.get("PrimaryLocation"),
-            department=item.get("OrganizationName") if isinstance(item.get("OrganizationName"), str) else None,
-            commitment=item.get("WorkerCategory") if isinstance(item.get("WorkerCategory"), str) else None,
-            requisition_id=item.get("RequisitionNumber") if isinstance(item.get("RequisitionNumber"), str) else None,
+            is_remote=is_remote,
+            department=department,
+            team=team,
+            employment_type=employment_type,
+            commitment=commitment,
+            description=description,
+            requisition_id=requisition_id,
             posted_at=_parse_iso(item.get("PostedDate") or item.get("CreatedOn")),
             fetched_at=datetime.now(),
             raw=raw or None,
@@ -196,6 +370,13 @@ def _unwrap(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], int | None]:
     if not isinstance(reqs, list):
         return [], item0.get("TotalJobsCount")
     return reqs, item0.get("TotalJobsCount")
+
+
+def _strip_html(text: str) -> str:
+    import html as html_mod
+    out = _TAG_RE.sub(" ", text)
+    out = html_mod.unescape(out)
+    return re.sub(r"\s+", " ", out).strip()
 
 
 def _parse_iso(value: str | None) -> datetime | None:

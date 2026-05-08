@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from jobhive._version import __version__
-from jobhive.enrichment import infer_is_remote, infer_seniority, parse_salary_range
+from jobhive.enrichment import infer_is_remote, parse_salary_range
 from jobhive.exceptions import StorageError
 from jobhive.models import ATSType
 
@@ -516,13 +516,11 @@ def _dedupe_cross_ats(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _enrich_with_derived(df: pd.DataFrame) -> pd.DataFrame:
-    """Add `is_remote`, `seniority`, `salary_min/max`, `fetched_at` columns
-    derived from existing data."""
+    """Add `is_remote`, `salary_min/max` columns derived from existing
+    data."""
     df = df.copy()
     if "location" in df.columns and "is_remote" not in df.columns:
         df["is_remote"] = df["location"].apply(infer_is_remote)
-    if "title" in df.columns and "seniority" not in df.columns:
-        df["seniority"] = df["title"].apply(infer_seniority)
     if "salary_summary" in df.columns and "salary_min" not in df.columns:
         parsed = df["salary_summary"].apply(parse_salary_range)
         df["salary_min"] = parsed.apply(lambda t: t[0])

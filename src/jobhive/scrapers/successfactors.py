@@ -49,6 +49,28 @@ _TITLE_LOCATION_RE = re.compile(r"^(?P<title>.+?)\s*\((?P<loc>[^()]+)\)\s*$")
 # Google Merchant namespace
 _GOOGLE_NS = {"g": "http://base.google.com/ns/1.0"}
 
+_EMPLOYMENT_TYPE_PATTERNS = {
+    "intern": "INTERN",
+    "internship": "INTERN",
+    "apprentice": "INTERN",
+    "trainee": "INTERN",
+    "contract": "CONTRACT",
+    "fixed-term": "CONTRACT",
+    "fixed term": "CONTRACT",
+    "freelance": "CONTRACT",
+    "temporary": "TEMPORARY",
+    "casual": "TEMPORARY",
+    "seasonal": "TEMPORARY",
+    "part-time": "PART_TIME",
+    "part time": "PART_TIME",
+    "parttime": "PART_TIME",
+    "full-time": "FULL_TIME",
+    "full time": "FULL_TIME",
+    "fulltime": "FULL_TIME",
+    "permanent": "FULL_TIME",
+    "regular": "FULL_TIME",
+}
+
 
 @ScraperRegistry.register(ATSType.SUCCESSFACTORS)
 class SuccessFactorsScraper(BaseScraper):
@@ -188,6 +210,48 @@ class SuccessFactorsScraper(BaseScraper):
 
         description = _clean_description(item.findtext("description"))
         posted_at = _parse_pubdate(item.findtext("pubDate"))
+
+        # Most SuccessFactors RSS feeds omit ``pubDate`` and instead
+        # carry only ``g:expiration_date``. We don't surface that as
+        # ``posted_at`` (it would be misleading) but a small subset of
+        # tenants ship a non-namespaced ``date`` element with the post
+        # date.
+        if posted_at is None:
+            for tag in ("postDate", "publishedDate", "pubdate", "date"):
+                v = item.findtext(tag)
+                if v:
+                    posted_at = _parse_pubdate(v)
+                    if posted_at:
+                        break
+
+        # ``g:employer`` is the actual employer name (the recruiting-
+        # marketing channel title is typically the parent brand).
+        employer = _first_text(item.findtext("g:employer", namespaces=_GOOGLE_NS))
+        if employer:
+            company = employer
+
+        # ``g:job_function`` is the closest analog to a ``department``
+        # facet (categories like ``Professionals`` / ``Engineering`` /
+        # ``Sales``).
+        department = _first_text(
+            item.findtext("g:job_function", namespaces=_GOOGLE_NS),
+        )
+
+        # ``g:job_type`` (rare) — when present, map to the canonical
+        # employment-type enum.
+        employment_type: str | None = None
+        commitment: str | None = None
+        job_type_text = _first_text(
+            item.findtext("g:job_type", namespaces=_GOOGLE_NS),
+        ) or _first_text(item.findtext("g:employment_type", namespaces=_GOOGLE_NS))
+        if job_type_text:
+            commitment = job_type_text
+            norm = job_type_text.lower()
+            for needle, mapped in _EMPLOYMENT_TYPE_PATTERNS.items():
+                if needle in norm:
+                    employment_type = mapped
+                    break
+
         return Job(
             url=link,
             title=title,
@@ -196,6 +260,9 @@ class SuccessFactorsScraper(BaseScraper):
             ats_id=ats_id,
             location=location,
             description=description,
+            department=department,
+            employment_type=employment_type,
+            commitment=commitment,
             posted_at=posted_at,
             fetched_at=datetime.now(),
         )

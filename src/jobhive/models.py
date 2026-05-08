@@ -113,7 +113,6 @@ class Company(BaseModel):
 
 
 EmploymentType = Literal["FULL_TIME", "PART_TIME", "CONTRACT", "INTERN", "TEMPORARY"]
-Seniority = Literal["INTERN", "ENTRY", "MID", "SENIOR", "STAFF", "PRINCIPAL", "DIRECTOR", "EXECUTIVE"]
 
 
 class Job(BaseModel):
@@ -127,10 +126,10 @@ class Job(BaseModel):
 
     - **Cross-ATS canonical**: ``url``/``title``/``company``/``ats_type``/
       ``ats_id``/``location``/``posted_at``. Every scraper sets these.
-    - **Common-but-optional**: salary, employment type, seniority, etc.
-      Set when the source API exposes them; ``None`` otherwise. The
-      enrichment passes (``infer_*``) populate ``is_remote`` / ``seniority``
-      from heuristics when missing.
+    - **Common-but-optional**: salary, employment type, department,
+      team, etc. Set when the source API exposes them; ``None``
+      otherwise. The ``infer_is_remote`` enrichment heuristic populates
+      ``is_remote`` from title/description when missing.
     - **Provider-specific overflow** (``raw``): a JSON dict captured at
       scrape-time so we don't lose ATS-specific fields the canonical
       schema can't represent (Greenhouse ``metadata`` custom fields,
@@ -159,7 +158,6 @@ class Job(BaseModel):
 
     experience: int | None = Field(None, description="Required years of experience")
     employment_type: EmploymentType | None = None
-    seniority: Seniority | None = None
     department: str | None = None
     team: str | None = None
 

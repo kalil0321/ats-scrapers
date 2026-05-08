@@ -35,6 +35,26 @@ PAGE_SIZE = 100
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
 
+_EMPLOYMENT_TYPE_PATTERNS = {
+    "intern": "INTERN",
+    "internship": "INTERN",
+    "trainee": "INTERN",
+    "contract": "CONTRACT",
+    "contractor": "CONTRACT",
+    "fixed-term": "CONTRACT",
+    "fixed term": "CONTRACT",
+    "temporary": "TEMPORARY",
+    "casual": "TEMPORARY",
+    "part-time": "PART_TIME",
+    "part time": "PART_TIME",
+    "parttime": "PART_TIME",
+    "full-time": "FULL_TIME",
+    "full time": "FULL_TIME",
+    "fulltime": "FULL_TIME",
+    "regular": "FULL_TIME",
+    "permanent": "FULL_TIME",
+}
+
 
 @ScraperRegistry.register(ATSType.UBER)
 class UberScraper(BaseScraper):
@@ -130,14 +150,44 @@ class UberScraper(BaseScraper):
         first_loc = all_locations[0] if all_locations else (item.get("location") or {})
         location = None
         if isinstance(first_loc, dict):
-            parts = [first_loc.get("city"), first_loc.get("country")]
+            # Prefer ``countryName`` ("United Kingdom") over the
+            # ISO-3 ``country`` code ("GBR") for human readability.
+            parts = [
+                first_loc.get("city"),
+                first_loc.get("region"),
+                first_loc.get("countryName") or first_loc.get("country"),
+            ]
             location = ", ".join(p for p in parts if p) or None
         elif isinstance(first_loc, str):
             location = first_loc
 
+        # Description is markdown — kept verbatim, capped at 10kB.
+        description_raw = item.get("description")
+        description = (
+            description_raw.strip()[:10_000] or None
+            if isinstance(description_raw, str)
+            else None
+        )
+
+        # ``timeType`` ships as ``"Full-Time"`` / ``"Part-Time"`` /
+        # ``"Intern"`` / ``"Contract"``. Map to the canonical enum.
+        time_type = item.get("timeType")
+        commitment = (
+            time_type.strip() if isinstance(time_type, str) and time_type.strip()
+            else None
+        )
+        employment_type: str | None = None
+        if commitment:
+            norm = commitment.lower()
+            for needle, mapped in _EMPLOYMENT_TYPE_PATTERNS.items():
+                if needle in norm:
+                    employment_type = mapped
+                    break
+
         raw: dict[str, Any] = {}
         for k in ("department", "team", "category", "subCategory",
-                  "level", "remote", "allLocations"):
+                  "level", "otherLevels", "remote", "allLocations",
+                  "programAndPlatform", "type", "timeType", "uniqueSkills"):
             v = item.get(k)
             if v:
                 raw[k] = v
@@ -151,8 +201,15 @@ class UberScraper(BaseScraper):
             location=location,
             department=item.get("department") if isinstance(item.get("department"), str) else None,
             team=item.get("team") if isinstance(item.get("team"), str) else None,
+            employment_type=employment_type,
+            commitment=commitment,
+            description=description,
             requisition_id=ats_id if ats_id else None,
-            posted_at=_parse_iso(item.get("creationDate") or item.get("createdDate")),
+            posted_at=_parse_iso(
+                item.get("creationDate")
+                or item.get("createdDate")
+                or item.get("updatedDate")
+            ),
             fetched_at=datetime.now(),
             raw=raw or None,
         )

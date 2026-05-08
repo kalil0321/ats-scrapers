@@ -9,6 +9,10 @@ in one response, no pagination. Each position carries title, location
 (structured city/state/country with remote flag), department, salary
 range, full-time/part-time type, and the canonical job URL.
 
+The list endpoint does NOT include the job description. Each detail
+page (``/p/{id}-{slug}``) is server-rendered HTML with the body in a
+``<div class="description">`` block — we fetch it concurrently per job.
+
 Tenants without an active Breezy careers site return a 302 redirect to
 ``https://breezy.hr/`` (the marketing site) — we treat that as
 ``CompanyNotFoundError``. Tenants with an active site but zero open
@@ -21,6 +25,7 @@ This scraper uses only the public unauthenticated endpoint.
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -36,6 +41,12 @@ if TYPE_CHECKING:
 API_TEMPLATE = "https://{slug}.breezy.hr/json"
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
+# Per-tenant concurrent detail-page fetches. Tenants are usually
+# small (<50 jobs). Keep this low — Breezy fronts every tenant on a
+# shared CF/Akamai-style edge which 403-blocks bursty traffic. Empirically
+# we got blocked at ~14 req/s during a 685-tenant pass with cross-tenant
+# concurrency 8 + per-tenant 6; 4 keeps us under the threshold.
+DETAIL_CONCURRENCY = 4
 
 _TYPE_MAP = {
     "fullTime": "FULL_TIME",
@@ -58,25 +69,63 @@ class BreezyScraper(BaseScraper):
         return asyncio.run(self._fetch_async())
 
     async def _fetch_async(self) -> list[Job]:
+        # ``follow_redirects=False`` on the client default — the JSON
+        # listing endpoint must NOT follow redirects so we can detect
+        # the 302→marketing-site bounce as ``CompanyNotFoundError``.
+        # Detail-page fetches opt into redirects per-call below.
         async with httpx.AsyncClient(
             timeout=self.timeout, follow_redirects=False
         ) as client:
             payload = await self._fetch_with_retry(client)
-        if not isinstance(payload, list):
-            raise ScraperError(
-                f"BreezyHR returned non-list JSON for {self.company_slug}"
-            )
-        seen: set[str] = set()
-        jobs: list[Job] = []
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            job = self._parse_position(item)
-            if job is None or job.ats_id in seen:
-                continue
-            seen.add(job.ats_id)
-            jobs.append(job)
-        return jobs
+            if not isinstance(payload, list):
+                raise ScraperError(
+                    f"BreezyHR returned non-list JSON for {self.company_slug}"
+                )
+            seen: set[str] = set()
+            jobs: list[Job] = []
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                job = self._parse_position(item)
+                if job is None or job.ats_id in seen:
+                    continue
+                seen.add(job.ats_id)
+                jobs.append(job)
+
+            # Detail-page enrichment is opt-in. Breezy's edge blocks
+            # bursty traffic with 403s; pulling descriptions for the full
+            # tenant universe needs a slower path (Browserbase or
+            # tightly-rate-limited httpx). Disabled by default so the
+            # listing pass still recovers the full job set.
+            #
+            # Set ``JOBHIVE_BREEZY_FETCH_DESCRIPTIONS=1`` to enable.
+            if jobs and os.getenv("JOBHIVE_BREEZY_FETCH_DESCRIPTIONS"):
+                sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+                await asyncio.gather(*(
+                    self._enrich_description(client, sem, j) for j in jobs
+                ))
+            return jobs
+
+    async def _enrich_description(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        async with sem:
+            try:
+                response = await client.get(
+                    str(job.url),
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    follow_redirects=True,
+                )
+            except httpx.HTTPError:
+                return
+        if response.status_code != 200:
+            return
+        description = _extract_description(response.text)
+        if description:
+            job.description = description[:12_000]
 
     async def _fetch_with_retry(
         self, client: httpx.AsyncClient
@@ -115,7 +164,10 @@ class BreezyScraper(BaseScraper):
                 raise CompanyNotFoundError(
                     f"BreezyHR tenant not found: {self.company_slug}"
                 )
-            if response.status_code == 429 or 500 <= response.status_code < 600:
+            if response.status_code in (403, 429) or 500 <= response.status_code < 600:
+                # 403 here is edge-rate-limit (CF/Akamai-style) rather
+                # than a real auth failure — Breezy's public JSON endpoint
+                # is unauthenticated. Treat it as transient and back off.
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
                         f"BreezyHR returned {response.status_code} for "
@@ -172,6 +224,29 @@ class BreezyScraper(BaseScraper):
             fetched_at=datetime.now(),
             raw=raw or None,
         )
+
+
+def _extract_description(html: str) -> str | None:
+    """Pull the plain-text description body from a Breezy detail page.
+
+    Breezy renders the position body as ``<div class="description">``
+    (rich HTML — paragraphs, lists). Tenants that hide the description
+    behind a login or whose pages lack the standard markup yield
+    ``None``; the caller silently keeps the listing-derived row.
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError as exc:  # pragma: no cover
+        raise ScraperError(
+            "BreezyHR detail-page enrichment requires beautifulsoup4."
+        ) from exc
+
+    soup = BeautifulSoup(html, "html.parser")
+    block = soup.find(class_="description")
+    if block is None:
+        return None
+    text = block.get_text(separator="\n", strip=True)
+    return text or None
 
 
 def _format_location(value: object) -> str | None:

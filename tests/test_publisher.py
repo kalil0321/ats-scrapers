@@ -234,7 +234,6 @@ def test_when_dated_snapshot_provided_full_uses_its_schema(
     manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
     assert "salary_min" in manifest["stats"]["schema_columns"]
     assert "is_remote" in manifest["stats"]["schema_columns"]  # derived
-    assert "seniority" in manifest["stats"]["schema_columns"]  # derived
 
 
 # --- Filename date parser ----------------------------------------------------

@@ -9,7 +9,6 @@ import pytest
 
 from jobhive.enrichment.derived import (
     infer_is_remote,
-    infer_seniority,
     parse_salary_range,
 )
 
@@ -47,38 +46,6 @@ def test_handles_pandas_nan_in_series() -> None:
     series = pd.Series(["Remote", None, float("nan"), "Paris"])
     result = series.apply(infer_is_remote)
     assert result.tolist() == [True, None, None, None]
-
-
-# --- infer_seniority --------------------------------------------------------
-
-@pytest.mark.parametrize(
-    ("title", "expected"),
-    [
-        ("Software Engineering Intern", "INTERN"),
-        ("Apprentice Frontend Developer", "INTERN"),
-        ("Chief Technology Officer", "EXECUTIVE"),
-        ("CTO", "EXECUTIVE"),
-        ("Director of Engineering", "DIRECTOR"),
-        ("VP of Product", "DIRECTOR"),
-        ("Principal Engineer", "PRINCIPAL"),
-        ("Distinguished Engineer", "PRINCIPAL"),
-        ("Staff Software Engineer", "STAFF"),
-        ("Senior Backend Developer", "SENIOR"),
-        ("Sr. ML Engineer", "SENIOR"),
-        ("Junior Designer", "ENTRY"),
-        ("Associate Researcher", "ENTRY"),
-        ("Software Engineer", "MID"),  # default fallback
-        ("Backend Engineer", "MID"),
-    ],
-)
-def test_seniority_mapping(title: str, expected: str) -> None:
-    assert infer_seniority(title) == expected
-
-
-def test_seniority_handles_nan() -> None:
-    assert infer_seniority(float("nan")) is None
-    assert infer_seniority(None) is None
-    assert infer_seniority("") is None
 
 
 # --- parse_salary_range -----------------------------------------------------

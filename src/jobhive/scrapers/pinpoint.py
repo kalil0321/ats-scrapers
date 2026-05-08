@@ -39,13 +39,29 @@ HTML_TAG_RE = re.compile(r"<[^>]+>")
 WHITESPACE_RE = re.compile(r"\s+")
 MAX_DESCRIPTION_LEN = 10_000
 
+# Pinpoint sometimes prefixes the employment-type code with the
+# contract status (``permanent_full_time``, ``permanent_part_time``,
+# ``fixed_term_full_time``…). We collapse the prefix and then match
+# against the canonical FT/PT/CONTRACT/etc. codes.
 _TYPE_MAP = {
     "full_time": "FULL_TIME",
     "part_time": "PART_TIME",
     "contract": "CONTRACT",
+    "fixed_term": "CONTRACT",
+    "fixed_term_full_time": "CONTRACT",
+    "fixed_term_part_time": "CONTRACT",
+    "freelance": "CONTRACT",
     "intern": "INTERN",
     "internship": "INTERN",
+    "trainee": "INTERN",
+    "apprentice": "INTERN",
+    "apprenticeship": "INTERN",
     "temporary": "TEMPORARY",
+    "casual": "TEMPORARY",
+    "seasonal": "TEMPORARY",
+    "permanent_full_time": "FULL_TIME",
+    "permanent_part_time": "PART_TIME",
+    "permanent": "FULL_TIME",
 }
 
 _PERIOD_MAP = {
@@ -184,9 +200,7 @@ class PinpointScraper(BaseScraper):
             ats_id=ats_id,
             location=_format_location(item.get("location")),
             is_remote=_extract_is_remote(item.get("workplace_type")),
-            employment_type=_TYPE_MAP.get(
-                (item.get("employment_type") or "").lower()
-            ),
+            employment_type=_map_employment_type(item.get("employment_type")),
             department=department,
             commitment=item.get("schedule") if isinstance(item.get("schedule"), str) else None,
             requisition_id=item.get("reference") if isinstance(item.get("reference"), str) else None,
@@ -199,6 +213,34 @@ class PinpointScraper(BaseScraper):
             fetched_at=datetime.now(),
             raw=raw or None,
         )
+
+
+def _map_employment_type(value: object) -> str | None:
+    """Coerce Pinpoint's freeform ``employment_type`` to the canonical enum.
+
+    Tries the full string first (``permanent_full_time`` → FULL_TIME),
+    then falls through to suffix matches (``permanent_full_time`` →
+    look up ``full_time``) so unprefixed and tenant-prefixed values
+    both work.
+    """
+    if not isinstance(value, str):
+        return None
+    norm = value.strip().lower()
+    if not norm:
+        return None
+    if norm in _TYPE_MAP:
+        return _TYPE_MAP[norm]
+    # Try stripping known prefixes like ``permanent_`` / ``fixed_term_``.
+    for prefix in ("permanent_", "fixed_term_", "regular_"):
+        if norm.startswith(prefix):
+            tail = norm[len(prefix):]
+            if tail in _TYPE_MAP:
+                return _TYPE_MAP[tail]
+    # Last-resort: substring match.
+    for needle, mapped in _TYPE_MAP.items():
+        if needle in norm:
+            return mapped
+    return None
 
 
 def _format_location(value: object) -> str | None:

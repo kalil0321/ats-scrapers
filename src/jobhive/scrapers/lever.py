@@ -3,7 +3,16 @@
 Lever exposes a public JSON board at:
     https://api.lever.co/v0/postings/{slug}?mode=json
 
-Includes location, team, commitment, and (rarely) salary range hints.
+Single fetch returns every posting with rich fields:
+
+* ``descriptionPlain`` — full plain-text job body (intro + sections).
+* ``categories.commitment`` — "Full-time" / "Part-time" / "Internship" /
+  "Contract"; we map to the canonical employment-type enum and keep
+  the original string in ``commitment``.
+* ``salaryRange`` — ``{min, max, currency, interval}`` when published.
+* ``workplaceType`` — "remote" / "hybrid" / "onsite" → ``is_remote``.
+
+No per-job fetch needed.
 """
 
 from __future__ import annotations
@@ -39,6 +48,30 @@ _LEVER_INTERVAL_MAP = {
     "WEEK": "WEEK",
     "DAY": "DAY",
     "HOUR": "HOUR",
+}
+
+# ``categories.commitment`` is a freeform string set by the employer.
+# Map common variants to the canonical employment-type enum; keep the
+# original string in ``commitment`` for downstream display.
+_COMMITMENT_TO_EMPLOYMENT_TYPE = {
+    "full-time": "FULL_TIME",
+    "fulltime": "FULL_TIME",
+    "full time": "FULL_TIME",
+    "regular": "FULL_TIME",
+    "part-time": "PART_TIME",
+    "parttime": "PART_TIME",
+    "part time": "PART_TIME",
+    "contract": "CONTRACT",
+    "contractor": "CONTRACT",
+    "consultant": "CONTRACT",
+    "freelance": "CONTRACT",
+    "fixed-term": "CONTRACT",
+    "internship": "INTERN",
+    "intern": "INTERN",
+    "co-op": "INTERN",
+    "temporary": "TEMPORARY",
+    "temp": "TEMPORARY",
+    "seasonal": "TEMPORARY",
 }
 
 
@@ -104,6 +137,25 @@ class LeverScraper(BaseScraper):
         salary_interval = (salary_range.get("interval") or "").upper()
         salary_period = _LEVER_INTERVAL_MAP.get(salary_interval)
 
+        # Map the freeform ``commitment`` text to our canonical
+        # employment-type enum. Keep the original in ``commitment``.
+        employment_type: str | None = None
+        if isinstance(commitment, str):
+            norm = commitment.strip().lower()
+            for key, mapped in _COMMITMENT_TO_EMPLOYMENT_TYPE.items():
+                if key in norm:
+                    employment_type = mapped
+                    break
+
+        # Description: ``descriptionPlain`` is the canonical body. Cap
+        # at 10kB; the schema field allows up to that.
+        description = item.get("descriptionPlain") or item.get("description")
+        description = (
+            description.strip()[:10_000] or None
+            if isinstance(description, str)
+            else None
+        )
+
         raw: dict[str, Any] = {}
         if categories:
             raw["categories"] = categories
@@ -114,8 +166,11 @@ class LeverScraper(BaseScraper):
 
         is_remote = None
         wp = (item.get("workplaceType") or "").lower()
-        if wp in {"remote", "hybrid"}:
-            is_remote = wp == "remote"
+        if wp == "remote":
+            is_remote = True
+        elif wp in {"on-site", "onsite", "in-office"}:
+            is_remote = False
+        # ``hybrid`` stays None — neither purely remote nor onsite.
 
         return Job(
             url=item["hostedUrl"],
@@ -127,6 +182,8 @@ class LeverScraper(BaseScraper):
             department=categories.get("department"),
             team=categories.get("team"),
             commitment=commitment,
+            employment_type=employment_type,
+            description=description,
             apply_url=item.get("applyUrl"),
             is_remote=is_remote,
             salary_min=salary_min,

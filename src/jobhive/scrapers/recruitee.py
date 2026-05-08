@@ -14,6 +14,8 @@ passing the bare hostname or full URL as `company_slug`.
 
 from __future__ import annotations
 
+import html as html_mod
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -124,22 +126,47 @@ class RecruiteeScraper(BaseScraper):
 _EMPLOYMENT_MAP = {
     "permanent": "FULL_TIME",
     "fulltime": "FULL_TIME",
+    "fulltime_permanent": "FULL_TIME",
     "full_time": "FULL_TIME",
-    "fixed_term": "TEMPORARY",
+    "permanent_fulltime": "FULL_TIME",
+    "permanent_full_time": "FULL_TIME",
+    "fixed_term": "CONTRACT",
     "temporary": "TEMPORARY",
     "contract": "CONTRACT",
     "freelance": "CONTRACT",
     "internship": "INTERN",
+    "intern": "INTERN",
     "trainee": "INTERN",
+    "apprentice": "INTERN",
     "part_time": "PART_TIME",
     "parttime": "PART_TIME",
+    "parttime_permanent": "PART_TIME",
+    "permanent_parttime": "PART_TIME",
+    "permanent_part_time": "PART_TIME",
+    "casual": "TEMPORARY",
+    "seasonal": "TEMPORARY",
 }
+
+_TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _map_employment_type(value: object) -> str | None:
-    if not isinstance(value, str):
+    """Coerce Recruitee's ``employment_type_code`` to the canonical enum.
+
+    Accepts both bare codes (``permanent``) and the prefixed variants
+    Recruitee added in 2024 (``parttime_permanent``,
+    ``fulltime_permanent``, ``fixed_term_fulltime``…).
+    """
+    if not isinstance(value, str) or not value.strip():
         return None
-    return _EMPLOYMENT_MAP.get(value.lower().replace("-", "_"))
+    norm = value.lower().replace("-", "_").strip()
+    if norm in _EMPLOYMENT_MAP:
+        return _EMPLOYMENT_MAP[norm]
+    # Substring match for tenant-specific oddities.
+    for needle, mapped in _EMPLOYMENT_MAP.items():
+        if needle in norm:
+            return mapped
+    return None
 
 
 def _format_location(offer: dict[str, Any]) -> str | None:
@@ -151,11 +178,18 @@ def _format_location(offer: dict[str, Any]) -> str | None:
 
 
 def _compose_description(offer: dict[str, Any]) -> str | None:
+    """Concatenate ``description`` and ``requirements`` into a single
+    plain-text body. Recruitee renders both fields as HTML; we strip
+    tags + decode entities so consumers don't have to."""
     parts: list[str] = []
     for key in ("description", "requirements"):
         value = offer.get(key)
         if isinstance(value, str) and value.strip():
-            parts.append(value.strip())
+            cleaned = _TAG_RE.sub(" ", value)
+            cleaned = html_mod.unescape(cleaned)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if cleaned:
+                parts.append(cleaned)
     if not parts:
         return None
     return "\n\n".join(parts)[:10_000]
@@ -176,9 +210,25 @@ def _to_float(value: object) -> float | None:
 
 
 def _parse_iso(value: object) -> datetime | None:
-    if not isinstance(value, str):
+    """Parse Recruitee's published_at / created_at timestamps.
+
+    Recruitee ships dates in the ``"2025-12-05 21:44:46 UTC"`` form
+    (space separator, trailing ``UTC``) — neither ISO 8601 nor the
+    ``Z`` suffix. We try ISO first, then fall through to the Recruitee
+    locale string.
+    """
+    if not isinstance(value, str) or not value.strip():
         return None
+    cleaned = value.strip()
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
     except ValueError:
-        return None
+        pass
+    # Recruitee form: "YYYY-MM-DD HH:MM:SS UTC"
+    cleaned_no_tz = re.sub(r"\s+UTC\s*$", "", cleaned)
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(cleaned_no_tz, fmt)
+        except ValueError:
+            continue
+    return None

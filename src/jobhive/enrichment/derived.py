@@ -1,7 +1,7 @@
 """Derive enrichment columns from existing fields.
 
 Pure functions — given a row's existing data (location string, title), infer
-fields like `is_remote` and `seniority`. Cheap to run, no network.
+fields like ``is_remote``. Cheap to run, no network.
 """
 
 from __future__ import annotations
@@ -10,16 +10,6 @@ import re
 
 REMOTE_KEYWORDS = ("remote", "anywhere", "distributed", "work from home", "wfh", "telework")
 ONSITE_KEYWORDS = ("onsite", "on-site", "in-office", "in person")
-
-_SENIORITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("INTERN", re.compile(r"\b(intern|internship|co-?op|trainee|apprentice)\b", re.I)),
-    ("EXECUTIVE", re.compile(r"\b(chief|cxo|cto|cfo|coo|ceo|cmo|cpo|c-suite|svp\b|evp\b)", re.I)),
-    ("DIRECTOR", re.compile(r"\b(director|head of|vp(?!\s*of\s*engineering\s*intern)|vice\s*president)\b", re.I)),
-    ("PRINCIPAL", re.compile(r"\b(principal|distinguished|fellow)\b", re.I)),
-    ("STAFF", re.compile(r"\bstaff\b", re.I)),
-    ("SENIOR", re.compile(r"\b(senior|sr\.?|lead|advanced)\b", re.I)),
-    ("ENTRY", re.compile(r"\b(junior|jr\.?|associate|entry[- ]?level|graduate|new[- ]?grad|early[- ]?career)\b", re.I)),
-]
 
 
 def infer_is_remote(location: object) -> bool | None:
@@ -34,16 +24,6 @@ def infer_is_remote(location: object) -> bool | None:
     if any(kw in lower for kw in ONSITE_KEYWORDS):
         return False
     return None
-
-
-def infer_seniority(title: object) -> str | None:
-    """Classify a job title into one of the `Seniority` levels."""
-    if not isinstance(title, str) or not title.strip():
-        return None
-    for level, pattern in _SENIORITY_PATTERNS:
-        if pattern.search(title):
-            return level
-    return "MID"  # default for unmarked titles
 
 
 # --- Salary parsing ---------------------------------------------------------

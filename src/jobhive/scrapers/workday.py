@@ -44,6 +44,38 @@ URL_PATTERN = re.compile(
     r"^https://(?P<company>[^.]+)\.(?P<instance>wd\d+)\.myworkdayjobs\.com/(?P<site>[^/?#]+)"
 )
 PAGE_LIMIT = 20  # Workday hard-caps `limit` at 20 — higher returns 400.
+
+# Workday's ``timeType`` is a stable enum: "Full time" / "Part time".
+_TIMETYPE_TO_EMPLOYMENT_TYPE = {
+    "full time": "FULL_TIME",
+    "full_time": "FULL_TIME",
+    "fulltime": "FULL_TIME",
+    "part time": "PART_TIME",
+    "part_time": "PART_TIME",
+    "parttime": "PART_TIME",
+    "fixed term": "CONTRACT",
+    "contract": "CONTRACT",
+    "intern": "INTERN",
+    "internship": "INTERN",
+    "temporary": "TEMPORARY",
+}
+
+# ``remoteType`` is a freeform string Workday tenants populate
+# inconsistently. Map the obvious values.
+_REMOTE_TYPE_PATTERNS = {
+    "remote": True,
+    "fully remote": True,
+    "100% remote": True,
+    "work from home": True,
+    "telecommute": True,
+    "telework": True,
+    "on-site": False,
+    "onsite": False,
+    "in office": False,
+    "in-office": False,
+    "office": False,
+    # ``flexible``, ``hybrid`` etc. stay None — neither purely remote nor onsite.
+}
 QUERY_TOTAL_CAP = 2000  # On capped tenants, total is reported as exactly 2000
                        # and pagination past offset=2000 wraps to page 1.
                        # Detection: total == QUERY_TOTAL_CAP triggers subdivision.
@@ -260,6 +292,48 @@ class WorkdayScraper(BaseScraper):
         if bullet_req:
             requisition_id = bullet_req
 
+        # ``timeType`` ("Full time" / "Part time") is the canonical
+        # Workday signal; map to our employment-type enum.
+        time_type = item.get("timeType")
+        commitment = (
+            time_type.strip()
+            if isinstance(time_type, str) and time_type.strip()
+            else None
+        )
+        employment_type: str | None = None
+        if commitment:
+            norm = commitment.strip().lower().replace("-", " ")
+            employment_type = _TIMETYPE_TO_EMPLOYMENT_TYPE.get(norm)
+            if not employment_type:
+                for needle, mapped in _TIMETYPE_TO_EMPLOYMENT_TYPE.items():
+                    if needle in norm:
+                        employment_type = mapped
+                        break
+
+        # ``remoteType`` is freeform — Workday tenants populate things
+        # like "Remote", "Fully Remote", "Hybrid", "On-site", or
+        # nothing. Map the unambiguous extremes; hybrid stays None.
+        remote_type = item.get("remoteType")
+        is_remote: bool | None = None
+        if isinstance(remote_type, str) and remote_type.strip():
+            norm = remote_type.strip().lower()
+            if norm in _REMOTE_TYPE_PATTERNS:
+                is_remote = _REMOTE_TYPE_PATTERNS[norm]
+            elif "remote" in norm and "hybrid" not in norm:
+                is_remote = True
+            elif "hybrid" not in norm and (
+                "site" in norm or "office" in norm
+            ):
+                is_remote = False
+
+        # Department from ``jobFamilyGroup`` when populated (it's the
+        # highest-level facet Workday surfaces in the listing — also
+        # the same axis we subdivide on).
+        department: str | None = None
+        jfg = item.get("jobFamilyGroup")
+        if isinstance(jfg, str) and jfg.strip():
+            department = jfg.strip()
+
         raw: dict[str, Any] = {}
         if item.get("bulletFields"):
             raw["bullet_fields"] = item["bulletFields"]
@@ -275,6 +349,10 @@ class WorkdayScraper(BaseScraper):
             ats_type=ATSType.WORKDAY,
             ats_id=ats_id,
             location=item.get("locationsText"),
+            is_remote=is_remote,
+            employment_type=employment_type,
+            commitment=commitment,
+            department=department,
             requisition_id=requisition_id,
             posted_at=_parse_workday_date(item.get("postedOn")),
             fetched_at=datetime.now(),

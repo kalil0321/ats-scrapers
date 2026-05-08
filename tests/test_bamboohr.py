@@ -1,11 +1,14 @@
 """Tests for the BambooHR scraper.
 
 The scraper consumes BambooHR's public widget at `/jobs/embed2.php` —
-server-rendered HTML grouped by department. These tests pin:
+server-rendered HTML grouped by department — and enriches each job
+from `/careers/{id}/detail` (the SPA's hydration JSON) with
+description, employment type, compensation, and posted date. Tests
+pin:
 
 1. Widget parsing (department→jobs association, location, URL forms)
-2. Retry behaviour (404 fail-fast, 429/5xx retry with backoff)
-3. Optional description enrichment (off by default, parallel when on)
+2. Detail-API enrichment (description, employment type, etc.)
+3. Retry behaviour (404 fail-fast, 429/5xx retry with backoff)
 4. Whitespace + HTML entity handling
 """
 
@@ -32,6 +35,14 @@ def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 WIDGET_URL = "https://acme.bamboohr.com/jobs/embed2.php"
+
+# The scraper always issues per-job ``/careers/{id}/detail`` calls after
+# parsing the widget. Tests that don't care about enrichment leave those
+# unmocked — pytestmark relaxes the unmatched-request check for the
+# whole module so they don't have to enumerate every detail URL.
+pytestmark = pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False,
+)
 
 
 def _widget_html(departments: list[dict[str, Any]]) -> str:
@@ -76,21 +87,6 @@ def test_get_scraper_by_string_returns_bamboohr() -> None:
     s = get_scraper("bamboohr", "acme")
     assert isinstance(s, BambooHRScraper)
     assert s.company_slug == "acme"
-
-
-# --- Construction -----------------------------------------------------------
-
-
-def test_default_fetch_descriptions_is_false() -> None:
-    """Description fetching is opt-in — N+1 HTTP requests against a
-    rate-limited host should never be the default."""
-    s = BambooHRScraper("acme")
-    assert s.fetch_descriptions is False
-
-
-def test_fetch_descriptions_settable() -> None:
-    s = BambooHRScraper("acme", fetch_descriptions=True)
-    assert s.fetch_descriptions is True
 
 
 # --- Widget parsing: happy path ---------------------------------------------
@@ -345,48 +341,41 @@ def test_network_error_raises_after_retries(monkeypatch, httpx_mock) -> None:
         BambooHRScraper("acme").fetch()
 
 
-# --- Description enrichment (opt-in) ---------------------------------------
+# --- Detail-API enrichment --------------------------------------------------
 
 
-def test_descriptions_off_by_default_skips_detail_calls(httpx_mock) -> None:
-    """If `fetch_descriptions=False`, the scraper must not request
-    `/careers/{id}` — otherwise we'd be silently rate-limiting tenants."""
+def _detail_payload(**fields: Any) -> dict[str, Any]:
+    """Build a minimal `/careers/{id}/detail` JSON response."""
+    return {"meta": {}, "result": {"jobOpening": fields}}
+
+
+def test_descriptions_enriched_via_detail_api(httpx_mock) -> None:
     httpx_mock.add_response(url=WIDGET_URL, text=_widget_html([
         {"id": 1, "name": "Eng", "jobs": [{"id": 100, "title": "X", "location": "Y"}]},
     ]))
-    # No detail mocks — if the scraper requested /careers/100, pytest-httpx
-    # would error with "no response found".
-    jobs = BambooHRScraper("acme").fetch()
-    assert jobs[0].description is None
-
-
-def test_descriptions_enriches_via_detail_pages(httpx_mock) -> None:
-    httpx_mock.add_response(url=WIDGET_URL, text=_widget_html([
-        {"id": 1, "name": "Eng", "jobs": [{"id": 100, "title": "X", "location": "Y"}]},
-    ]))
-    detail_html = (
-        '<html><body>'
-        '<div class="BambooHR-ATS-Description">'
-        '<p>Join our team of <strong>builders</strong>.</p>'
-        '<p>Salary negotiable.</p>'
-        '</div>'
-        '<footer>company info</footer>'
-        '</body></html>'
-    )
     httpx_mock.add_response(
-        url="https://acme.bamboohr.com/careers/100", text=detail_html
+        url="https://acme.bamboohr.com/careers/100/detail",
+        json=_detail_payload(
+            description=(
+                "<p>Join our team of <strong>builders</strong>.</p>"
+                "<p>Salary negotiable.</p>"
+            ),
+            employmentStatusLabel="Full-Time",
+            datePosted="2026-04-01",
+            compensation="$80,000 to $120,000",
+        ),
     )
-    jobs = BambooHRScraper("acme", fetch_descriptions=True).fetch()
-    assert jobs[0].description is not None
-    assert "Join our team of builders" in jobs[0].description
-    # Whitespace collapsed; no raw tags
-    assert "<p>" not in jobs[0].description
-    assert "<strong>" not in jobs[0].description
+    job = BambooHRScraper("acme").fetch()[0]
+    assert job.description is not None
+    assert "Join our team of builders" in job.description
+    assert "<p>" not in job.description  # tags stripped
+    assert job.employment_type == "FULL_TIME"
+    assert job.salary_summary == "$80,000 to $120,000"
+    assert job.posted_at is not None and job.posted_at.year == 2026
 
 
-def test_descriptions_failure_does_not_break_run(httpx_mock) -> None:
-    """If one job's detail page 404s or errors, other jobs still get their
-    descriptions and the listing job stays in the result with description=None."""
+def test_description_failure_keeps_listing_row(httpx_mock) -> None:
+    """A 500 on one job's detail call must not lose the listing-derived row."""
     httpx_mock.add_response(url=WIDGET_URL, text=_widget_html([
         {"id": 1, "name": "Eng", "jobs": [
             {"id": 100, "title": "Has Desc", "location": "X"},
@@ -394,31 +383,28 @@ def test_descriptions_failure_does_not_break_run(httpx_mock) -> None:
         ]},
     ]))
     httpx_mock.add_response(
-        url="https://acme.bamboohr.com/careers/100",
-        text='<html><div class="BambooHR-ATS-Description">Working description</div><div></div></html>',
+        url="https://acme.bamboohr.com/careers/100/detail",
+        json=_detail_payload(description="<p>Working</p>"),
     )
     httpx_mock.add_response(
-        url="https://acme.bamboohr.com/careers/200", status_code=500
+        url="https://acme.bamboohr.com/careers/200/detail", status_code=500
     )
-    jobs = sorted(
-        BambooHRScraper("acme", fetch_descriptions=True).fetch(),
-        key=lambda j: j.ats_id,
-    )
-    assert jobs[0].description == "Working description"
+    jobs = sorted(BambooHRScraper("acme").fetch(), key=lambda j: j.ats_id)
+    assert jobs[0].description == "Working"
     assert jobs[1].description is None  # 500 → None, not raise
 
 
-def test_description_is_truncated_to_10kb(httpx_mock) -> None:
-    """Pydantic's `description` field uses a 10kB cap (per Job docstring).
-    Verify long pages don't blow up the in-memory dataset."""
+def test_description_is_truncated(httpx_mock) -> None:
+    """Long descriptions are capped — both at the Pydantic field-level cap
+    (10kB) and our scraper-side cap (12kB) — so memory stays bounded."""
     huge = "Lorem ipsum dolor sit amet. " * 800  # ~22kB
     httpx_mock.add_response(url=WIDGET_URL, text=_widget_html([
         {"id": 1, "name": "Eng", "jobs": [{"id": 100, "title": "X", "location": "Y"}]},
     ]))
     httpx_mock.add_response(
-        url="https://acme.bamboohr.com/careers/100",
-        text=f'<html><div class="BambooHR-ATS-Description">{huge}</div><div></div></html>',
+        url="https://acme.bamboohr.com/careers/100/detail",
+        json=_detail_payload(description=f"<p>{huge}</p>"),
     )
-    jobs = BambooHRScraper("acme", fetch_descriptions=True).fetch()
-    assert jobs[0].description is not None
-    assert len(jobs[0].description) <= 10_000
+    job = BambooHRScraper("acme").fetch()[0]
+    assert job.description is not None
+    assert len(job.description) <= 10_000

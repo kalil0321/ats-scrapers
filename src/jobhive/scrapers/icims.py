@@ -29,12 +29,20 @@ Each posting is wrapped in a ``<li class="iCIMS_JobCardItem">`` block:
 
 Pagination via ``pr={N}``, 0-indexed. Each page typically holds 25 jobs.
 We paginate until a page yields no new IDs.
+
+Detail enrichment: each job's iframe URL (``/jobs/{id}/{slug}/job?in_iframe=1``)
+ships a schema.org ``JobPosting`` JSON-LD with the full description,
+``employmentType``, ``datePosted``, ``occupationalCategory``, and
+structured ``jobLocation``. We pull from JSON-LD when the listing
+truncates the summary or omits employment type / posted date.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
+import json
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -51,6 +59,22 @@ if TYPE_CHECKING:
 MAX_PAGES = 200  # Safety bound; iCIMS tenants rarely exceed 5K jobs.
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
+DETAIL_CONCURRENCY = 8  # per-tenant cap on detail-page fetches
+
+_EMPLOYMENT_TYPE_MAP = {
+    "FULL_TIME": "FULL_TIME",
+    "PART_TIME": "PART_TIME",
+    "CONTRACT": "CONTRACT",
+    "CONTRACTOR": "CONTRACT",
+    "TEMPORARY": "TEMPORARY",
+    "INTERN": "INTERN",
+    "INTERNSHIP": "INTERN",
+}
+
+_JSON_LD_RE = re.compile(
+    r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>([\s\S]+?)</script>',
+    re.IGNORECASE,
+)
 
 # Each posting is one <li class="iCIMS_JobCardItem">…</li>. We match the whole
 # card so location, posted_at and description (which sit OUTSIDE the anchor)
@@ -138,7 +162,34 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
                 for j in new:
                     seen.add(j.ats_id)
                 all_jobs.extend(new)
+
+            # Detail enrichment: pull schema.org JSON-LD from each job's
+            # iframe page. Best-effort — failures keep the listing-derived
+            # row.
+            if all_jobs:
+                sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+                await asyncio.gather(*(
+                    self._enrich_detail(client, sem, j) for j in all_jobs
+                ))
         return all_jobs
+
+    async def _enrich_detail(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        async with sem:
+            try:
+                response = await client.get(
+                    str(job.url),
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+            except httpx.HTTPError:
+                return
+        if response.status_code != 200:
+            return
+        _apply_jsonld_to_job(job, response.text)
 
     def _resolve_base_url(self, slug: str) -> str:
         if slug.startswith(("http://", "https://")):
@@ -240,6 +291,104 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
         if host.startswith("uscareers-"):
             return host.removeprefix("uscareers-").split(".", 1)[0]
         return host.split(".", 1)[0]
+
+
+def _apply_jsonld_to_job(job: Job, html_text: str) -> None:
+    """Hydrate ``job`` from the schema.org JobPosting JSON-LD on iCIMS
+    detail pages.
+
+    iCIMS embeds a clean ``<script type="application/ld+json">``
+    JobPosting block on every job iframe page. Fields:
+
+    * ``description`` — full HTML body (strip + decode for plain text).
+    * ``employmentType`` — already in ``FULL_TIME`` / ``PART_TIME`` form.
+    * ``datePosted`` — ISO 8601.
+    * ``occupationalCategory`` — the iCIMS "Category" facet.
+    * ``jobLocation`` — structured ``Place`` object with addressLocality.
+
+    Best-effort: silently skips jobs without a parseable LD block.
+    """
+    posting = _find_job_posting(html_text)
+    if posting is None:
+        return
+
+    if not job.description:
+        desc_html = posting.get("description")
+        if isinstance(desc_html, str) and desc_html.strip():
+            job.description = _strip(desc_html)[:10_000] or None
+
+    emp_raw = posting.get("employmentType")
+    if isinstance(emp_raw, str):
+        norm = emp_raw.strip().upper().replace("-", "_").replace(" ", "_")
+        mapped = _EMPLOYMENT_TYPE_MAP.get(norm)
+        if mapped and not job.employment_type:
+            job.employment_type = mapped
+
+    if not job.posted_at:
+        date_raw = posting.get("datePosted")
+        if isinstance(date_raw, str) and date_raw:
+            with contextlib.suppress(ValueError):
+                job.posted_at = datetime.fromisoformat(
+                    date_raw.replace("Z", "+00:00")
+                )
+
+    if not job.department:
+        cat = posting.get("occupationalCategory")
+        if isinstance(cat, str) and cat.strip():
+            job.department = cat.strip()
+
+    if not job.location:
+        loc_str = _location_from_jsonld(posting.get("jobLocation"))
+        if loc_str:
+            job.location = loc_str
+
+
+def _find_job_posting(html_text: str) -> dict | None:
+    """Walk every JSON-LD block until one matches ``@type: JobPosting``."""
+    for match in _JSON_LD_RE.finditer(html_text):
+        body = match.group(1).strip()
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            continue
+        for candidate in _iter_ld_dicts(data):
+            if candidate.get("@type") == "JobPosting":
+                return candidate
+    return None
+
+
+def _iter_ld_dicts(node: object):
+    """JSON-LD payloads can be a single dict, a list of dicts, or a
+    ``@graph`` wrapper. Yield every dict so the caller can pick the
+    JobPosting one."""
+    if isinstance(node, dict):
+        yield node
+        graph = node.get("@graph")
+        if isinstance(graph, list):
+            yield from (g for g in graph if isinstance(g, dict))
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_ld_dicts(item)
+
+
+def _location_from_jsonld(value: object) -> str | None:
+    """Schema.org ``jobLocation`` is either a Place dict or a list of them."""
+    candidates = value if isinstance(value, list) else [value]
+    for c in candidates:
+        if not isinstance(c, dict):
+            continue
+        addr = c.get("address")
+        if not isinstance(addr, dict):
+            continue
+        parts = [
+            str(addr.get(k) or "").strip()
+            for k in ("addressLocality", "addressRegion", "addressCountry")
+            if addr.get(k)
+        ]
+        joined = ", ".join(p for p in parts if p)
+        if joined:
+            return joined
+    return None
 
 
 def _strip(text: str) -> str:

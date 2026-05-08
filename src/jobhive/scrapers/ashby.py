@@ -115,7 +115,28 @@ class AshbyScraper(BaseScraper):
 
         emp_type = (item.get("employmentType") or "").upper()
         employment_type = _EMPLOYMENT_TYPE_MAP.get(emp_type)
+
+        # ``isRemote`` is only set when truly remote; ``workplaceType``
+        # ("Remote" / "On-site" / "Hybrid") fills the gap. Hybrid stays
+        # None — neither flag captures it cleanly.
         is_remote = item.get("isRemote") if isinstance(item.get("isRemote"), bool) else None
+        if is_remote is None:
+            wp = item.get("workplaceType")
+            if isinstance(wp, str):
+                wp_norm = wp.strip().lower().replace("-", "").replace(" ", "")
+                if wp_norm == "remote":
+                    is_remote = True
+                elif wp_norm in ("onsite", "inperson", "office"):
+                    is_remote = False
+
+        # Description — prefer plain text; HTML is a fallback in case
+        # Ashby ever drops the plaintext field.
+        description = (
+            item.get("descriptionPlain")
+            or item.get("descriptionHtml")
+            or None
+        )
+
         secondary_locations = item.get("secondaryLocations") or []
 
         raw: dict[str, Any] = {}
@@ -130,6 +151,8 @@ class AshbyScraper(BaseScraper):
             ]
         if item.get("address"):
             raw["address"] = item["address"]
+        if item.get("workplaceType"):
+            raw["workplace_type"] = item["workplaceType"]
         if comp:
             # Keep the full compensation tier structure for downstream consumers
             # who want to surface bonus/equity/commission separately.
@@ -143,6 +166,7 @@ class AshbyScraper(BaseScraper):
             ats_id=item["id"],
             location=item.get("location"),
             is_remote=is_remote,
+            description=description,
             employment_type=employment_type,
             department=item.get("department") if isinstance(item.get("department"), str) else None,
             team=item.get("team") if isinstance(item.get("team"), str) else None,

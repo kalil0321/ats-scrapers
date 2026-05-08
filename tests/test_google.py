@@ -29,6 +29,14 @@ def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(g, "RETRY_BASE_DELAY", 0.0)
 
 
+# Per-job detail enrichment fires HTML fetches against the canonical
+# job URL after the listing pass; tests that mock only the listing
+# pages tolerate the unmatched detail requests via this mark.
+pytestmark = pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False,
+)
+
+
 def _page_url(page: int) -> str:
     if page == 1:
         return (

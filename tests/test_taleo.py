@@ -16,6 +16,13 @@ def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tl, "RETRY_BASE_DELAY", 0.0)
 
 
+# Per-job JSON-LD detail enrichment fires after the listing parse.
+# Tests that don't care about it leave those calls unmocked.
+pytestmark = pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False,
+)
+
+
 URL = "https://phe.tbe.taleo.net/phe01/ats/careers/v2/searchResults?org=ACME&cws=41"
 
 

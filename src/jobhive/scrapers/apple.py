@@ -83,49 +83,152 @@ class AppleScraper(BaseScraper):
                 postings = (data.get("res") or {}).get("searchResults") or []
                 if not postings:
                     break
-                all_jobs.extend(self._parse_job(p) for p in postings)
+                for p in postings:
+                    all_jobs.extend(self._parse_job(p))
                 total = (data.get("res") or {}).get("totalRecords", 0)
                 if page * PAGE_SIZE >= total or len(postings) < PAGE_SIZE:
                     break
                 page += 1
         return all_jobs
 
-    def _parse_job(self, item: dict[str, Any]) -> Job:
+    def _parse_job(self, item: dict[str, Any]) -> list[Job]:
+        """Yield one ``Job`` per (Apple posting × location).
+
+        Apple's search returns rich structured data — most fields the
+        old scraper dropped. ``team`` is a dict (we want ``teamName``),
+        ``postDateInGMT`` is the real ISO timestamp (``postingDate`` is
+        the formatted display string), and ``jobSummary`` is the full
+        description body. ``homeOffice`` flags fully-remote roles.
+
+        Multi-location: when ``isMultiLocation`` is true (or the
+        ``locations`` list has >1 entry), emit one row per location with
+        a composite ``ats_id`` so location-based search hits each office.
+        """
+        req_id = str(item.get("reqId") or item.get("id") or "")
         position_id = str(item.get("positionId") or item.get("id") or "")
         slug = item.get("transformedPostingTitle") or item.get("titleSlug") or "role"
+        url = f"{BASE_URL}/en-us/details/{position_id}/{slug}"
+        title = item.get("postingTitle") or item.get("title") or "Untitled"
 
-        raw: dict[str, Any] = {}
-        for k in ("team", "managedPipelineRole", "homeOffice",
-                  "jobSummary", "minimumQualifications"):
-            v = item.get(k)
-            if v:
-                raw[k] = v
+        # Description — full-text body Apple ships in every search hit.
+        description = item.get("jobSummary") or None
 
-        return Job(
-            url=f"{BASE_URL}/en-us/details/{position_id}/{slug}",
-            title=item.get("postingTitle") or item.get("title") or "Untitled",
-            company="Apple",
-            ats_type=ATSType.APPLE,
-            ats_id=position_id,
-            location=_format_locations(item),
-            team=item.get("team") if isinstance(item.get("team"), str) else None,
-            requisition_id=position_id if position_id else None,
-            posted_at=_parse_iso(item.get("postingDate") or item.get("postDate")),
-            fetched_at=datetime.now(),
-            raw=raw or None,
+        # Team is a dict with teamName / teamID / teamCode. The label is
+        # the only thing that's user-meaningful for the dataset.
+        team = item.get("team")
+        team_label: str | None = None
+        if isinstance(team, dict):
+            team_label = team.get("teamName") or team.get("teamCode")
+        elif isinstance(team, str):
+            team_label = team
+
+        # Apple ships ``postDateInGMT`` as an ISO timestamp; the
+        # ``postingDate`` field is the formatted display string ("May
+        # 06, 2026") and never parses as ISO.
+        posted_at = (
+            _parse_iso(item.get("postDateInGMT"))
+            or _parse_iso(item.get("postedDate"))
         )
 
+        # Apple's only schedule signal is ``standardWeeklyHours``.
+        # 30+ → full-time; less → part-time.
+        hours = item.get("standardWeeklyHours")
+        employment_type: str | None = None
+        commitment: str | None = None
+        if isinstance(hours, (int, float)) and hours > 0:
+            commitment = f"{int(hours)}h/week"
+            employment_type = "FULL_TIME" if hours >= 30 else "PART_TIME"
 
-def _format_locations(item: dict[str, Any]) -> str | None:
+        # ``homeOffice`` is Apple's fully-remote flag. Some roles are
+        # office-only (False), others remote (True), some neither
+        # (None). Don't infer; only set when explicit.
+        is_remote = item.get("homeOffice") if isinstance(item.get("homeOffice"), bool) else None
+
+        # Location list — usually 1 entry; multi-location roles can have
+        # 2-5. Each entry has a fully-formed ``name`` ("Cupertino,
+        # California, United States") plus city/state/country parts.
+        locations = _decode_locations(item)
+        if not locations:
+            locations = [None]
+
+        raw_base: dict[str, Any] = {}
+        for k in ("type", "managedPipelineRole", "isMultiLocation",
+                  "postExternal", "minimumQualifications",
+                  "preferredQualifications", "education",
+                  "keyQualifications"):
+            v = item.get(k)
+            if v not in (None, "", [], False):
+                raw_base[k] = v
+        if isinstance(team, dict):
+            raw_base["team"] = team
+
+        rows: list[Job] = []
+        for idx, loc in enumerate(locations):
+            ats_id = (
+                position_id if (len(locations) == 1 or idx == 0)
+                else f"{position_id}@loc{idx}"
+            )
+            raw = dict(raw_base)
+            if len(locations) > 1:
+                raw["all_locations"] = [loc for loc in locations if loc]
+                raw["location_index"] = idx
+            rows.append(Job(
+                url=url,
+                title=title,
+                company="Apple",
+                ats_type=ATSType.APPLE,
+                ats_id=ats_id,
+                location=loc,
+                is_remote=is_remote,
+                team=team_label,
+                description=description,
+                employment_type=employment_type,
+                commitment=commitment,
+                requisition_id=req_id or position_id or None,
+                posted_at=posted_at,
+                fetched_at=datetime.now(),
+                raw=raw or None,
+            ))
+        return rows
+
+
+def _decode_locations(item: dict[str, Any]) -> list[str]:
+    """Return a deduped list of human-readable location strings.
+
+    Apple's ``locations`` entries look like
+    ``{"city": "Cupertino", "stateProvince": "California",
+       "countryName": "United States", "name": "Cupertino, California,
+       United States"}``.
+    The ``name`` field is already nicely formatted, so prefer it; fall
+    back to assembling city/state/country when ``name`` is empty.
+    """
     locs = item.get("locations") or item.get("locationsList") or []
-    if isinstance(locs, list) and locs:
-        first = locs[0]
-        if isinstance(first, dict):
-            return first.get("name") or first.get("city")
-        return str(first)
-    if isinstance(item.get("location"), str):
-        return item["location"]
-    return None
+    out: list[str] = []
+    seen: set[str] = set()
+    if isinstance(locs, list):
+        for entry in locs:
+            label: str | None = None
+            if isinstance(entry, dict):
+                name = (entry.get("name") or "").strip()
+                if name:
+                    label = name
+                else:
+                    parts = [
+                        (entry.get("city") or "").strip(),
+                        (entry.get("stateProvince") or "").strip(),
+                        (entry.get("countryName") or "").strip(),
+                    ]
+                    label = ", ".join(p for p in parts if p) or None
+            elif isinstance(entry, str):
+                label = entry.strip() or None
+            if label and label not in seen:
+                seen.add(label)
+                out.append(label)
+    if not out and isinstance(item.get("location"), str):
+        loc = item["location"].strip()
+        if loc:
+            out.append(loc)
+    return out
 
 
 def _parse_iso(value: str | None) -> datetime | None:

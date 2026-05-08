@@ -25,6 +25,8 @@ Some tenants sit behind Cloudflare and 403 plain ``httpx`` requests
 from __future__ import annotations
 
 import asyncio
+import html as html_mod
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
@@ -40,9 +42,12 @@ if TYPE_CHECKING:
 PAGE_SIZE = 10  # Eightfold's server-fixed page size.
 MAX_CONCURRENCY_HTTPX = 12  # PCSX comfortably handles this; raise carefully.
 MAX_CONCURRENCY_HTTPCLOAK = 4  # browser-fingerprint clients are heavier per-request
+DETAIL_CONCURRENCY = 8  # per-tenant detail-page enrichment cap
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5  # seconds; exponential for 429, linear for 5xx
 SLOW_REQUEST_THRESHOLD = 5.0  # log a warning for any single request slower than this
+
+_TAG_RE_EF = re.compile(r"<[^>]+>")
 
 ClientKind = Literal["auto", "httpx", "httpcloak"]
 
@@ -139,6 +144,61 @@ class EightfoldScraper(BaseScraper):
                     self._collect(page.get("positions") or [], seen, all_jobs)
 
             await asyncio.gather(*(task(o) for o in offsets))
+
+            # Detail enrichment — pull jobDescription from the public
+            # `position_details` XHR endpoint per job. PCSX handles the
+            # higher request volume well; the search calls were ~10
+            # pages × 12 concurrency, the detail pass is per-job but
+            # still fits inside the same WAF budget.
+            if all_jobs:
+                detail_sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+                await asyncio.gather(*(
+                    self._enrich_position_details(client, detail_sem, j)
+                    for j in all_jobs
+                ))
+
+    async def _enrich_position_details(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        """Hydrate ``job`` from `/api/pcsx/position_details`.
+
+        Best-effort — non-200 responses, JSON-shape changes, or transient
+        WAF hits leave the listing-derived fields intact.
+        """
+        # Use the position id (matches search response's ``id``, not
+        # ``displayJobId``). The id is encoded in the position URL.
+        position_id = _position_id_from_url(job.url)
+        if not position_id:
+            return
+        async with sem:
+            try:
+                response = await client.get(
+                    f"{self.base_url}/api/pcsx/position_details",
+                    params={
+                        "position_id": position_id,
+                        "domain": self.domain,
+                        "hl": "en",
+                    },
+                    headers={
+                        "User-Agent": "Mozilla/5.0",
+                        "Accept": "application/json",
+                    },
+                )
+            except httpx.HTTPError:
+                return
+        if response.status_code != 200:
+            return
+        try:
+            payload = response.json()
+        except ValueError:
+            return
+        data = payload.get("data") or {}
+        desc_html = data.get("jobDescription")
+        if isinstance(desc_html, str) and desc_html.strip() and not job.description:
+            job.description = _strip_html(desc_html)[:12_000] or None
 
     async def _fetch_page_httpx(
         self, client: httpx.AsyncClient, *, start: int
@@ -336,6 +396,26 @@ class _WAFBlocked(Exception):  # noqa: N818
         )
         self.company_name = company_name
         self.start = start
+
+
+def _position_id_from_url(url: object) -> str | None:
+    """Pull the numeric position id out of a Eightfold job URL.
+
+    URLs look like ``https://{tenant}.eightfold.ai/careers/job/563087414352251``
+    (or the same path on the custom-domain variant). The trailing
+    segment is the numeric id.
+    """
+    if not url:
+        return None
+    s = str(url).rstrip("/")
+    tail = s.rsplit("/", 1)[-1]
+    return tail if tail.isdigit() else None
+
+
+def _strip_html(text: str) -> str:
+    text = _TAG_RE_EF.sub(" ", text)
+    text = html_mod.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _format_location(item: dict[str, Any]) -> str | None:

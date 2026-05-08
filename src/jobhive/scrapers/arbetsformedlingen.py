@@ -278,24 +278,79 @@ class ArbetsformedlingenScraper(BaseScraper):
             (employer.get("name") if isinstance(employer, dict) else None)
             or "Arbetsförmedlingen"
         )
+        # ``workplace`` is the trading name / site label (e.g. parent
+        # corp uses ``name``, the actual office is ``workplace``).
+        team = (
+            employer.get("workplace") if isinstance(employer, dict) else None
+        )
+        if isinstance(team, str) and team.strip().lower() == str(company).strip().lower():
+            team = None  # Don't duplicate company name into team.
 
         wpl = item.get("workplace_address") or {}
         location = _format_location(wpl)
 
-        # Salary: rarely populated. ``salary_description`` is free-form text.
+        description = None
+        desc_obj = item.get("description")
+        if isinstance(desc_obj, dict):
+            description = (desc_obj.get("text") or "").strip() or None
+
+        # Salary: rarely populated. ``salary_description`` is free-form
+        # text; fall back to ``salary_type.label`` (e.g. "Fast månads-
+        # vecko- eller timlön") so the column carries something useful.
         salary_summary = item.get("salary_description") or None
+        if not salary_summary:
+            sal_type = item.get("salary_type") or {}
+            if isinstance(sal_type, dict):
+                salary_summary = sal_type.get("label") or None
 
         # Working hours type: heltid (full-time) / deltid (part-time).
         working_hours_type = item.get("working_hours_type") or {}
-        hours_label = working_hours_type.get("label") if isinstance(working_hours_type, dict) else None
+        hours_label = (
+            working_hours_type.get("label")
+            if isinstance(working_hours_type, dict) else None
+        )
 
         emp_type_obj = item.get("employment_type") or {}
         emp_label = emp_type_obj.get("label") if isinstance(emp_type_obj, dict) else None
+        employment_type = _map_employment_type(emp_label, hours_label)
+
+        # ``commitment`` is the schedule string. Prefer Heltid/Deltid;
+        # fall back to scope_of_work range ("0–100 %") only when the
+        # API didn't fill the working_hours_type. Don't leak the
+        # employment-contract label here — that lives in ``employment_type``.
+        commitment: str | None = (
+            hours_label.strip() if isinstance(hours_label, str) and hours_label.strip()
+            else None
+        )
+        if not commitment:
+            scope = item.get("scope_of_work") or {}
+            if isinstance(scope, dict):
+                lo, hi = scope.get("min"), scope.get("max")
+                if isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and hi > 0:
+                    commitment = (
+                        f"{int(hi)} %" if lo == hi
+                        else f"{int(lo)}–{int(hi)} %"
+                    )
+
+        # ``occupation_field`` is the high-level domain (Pedagogik,
+        # Hälso- och sjukvård, IT-data, etc.) — Arbetsförmedlingen's
+        # closest analog to a department label.
+        occ_field = item.get("occupation_field") or {}
+        department = occ_field.get("label") if isinstance(occ_field, dict) else None
 
         # ``application_details.url`` is where to actually apply (often
         # external — employer site or LinkedIn).
         apply_details = item.get("application_details") or {}
-        apply_url = apply_details.get("url") if isinstance(apply_details, dict) else None
+        apply_url = (
+            apply_details.get("url") if isinstance(apply_details, dict) else None
+        )
+
+        # Employer's own external ref — usually null but worth keeping
+        # when present.
+        requisition_id = (
+            (item.get("external_id") or item.get("original_id") or "")
+            .strip() or None
+        ) if isinstance(item.get("external_id") or item.get("original_id"), str) else None
 
         is_remote = None
         if isinstance(item.get("remote_work"), bool):
@@ -304,7 +359,8 @@ class ArbetsformedlingenScraper(BaseScraper):
         raw: dict[str, Any] = {}
         for k in ("occupation", "occupation_field", "occupation_group",
                   "duration", "scope_of_work", "experience_required",
-                  "salary_type", "must_have", "nice_to_have"):
+                  "salary_type", "must_have", "nice_to_have",
+                  "employment_type", "working_hours_type"):
             v = item.get(k)
             if v:
                 raw[k] = v
@@ -317,13 +373,62 @@ class ArbetsformedlingenScraper(BaseScraper):
             ats_id=ats_id,
             location=location,
             is_remote=is_remote,
-            commitment=hours_label or emp_label,
+            team=team if isinstance(team, str) and team.strip() else None,
+            description=description,
+            department=department if isinstance(department, str) else None,
+            employment_type=employment_type,
+            commitment=commitment,
             apply_url=apply_url if isinstance(apply_url, str) and apply_url.startswith("http") else None,
+            requisition_id=requisition_id,
             salary_summary=salary_summary,
             posted_at=_parse_iso(item.get("publication_date") or item.get("application_deadline")),
             fetched_at=datetime.now(),
             raw=raw or None,
         )
+
+
+# Swedish employment-type labels → our shared enum. The labels come from
+# ``employment_type.label`` in the search response. ``working_hours_type``
+# (heltid/deltid) refines the FT/PT split; everything else (internships,
+# fixed-term contracts, on-call work) maps directly.
+_EMP_TYPE_MAP = {
+    "praktik": "INTERN",
+    "ferieanställning": "INTERN",
+    "sommarjobb": "TEMPORARY",
+    "sommarjobb / feriejobb": "TEMPORARY",
+    "säsongsarbete": "TEMPORARY",
+    "säsongsanställning": "TEMPORARY",
+    "behovsanställning": "TEMPORARY",
+    "tidsbegränsad anställning": "CONTRACT",
+    "tidsbegränsad": "CONTRACT",
+    "vikariat": "CONTRACT",
+    "projektanställning": "CONTRACT",
+}
+
+
+def _map_employment_type(emp_label: str | None, hours_label: str | None) -> str | None:
+    """Coerce Swedish labels to our shared employment-type enum.
+
+    Permanent positions ("Tillsvidareanställning" / "Vanlig anställning")
+    don't carry a FT/PT signal on their own — those use ``hours_label``
+    (Heltid → FULL_TIME, Deltid → PART_TIME). Anything else falls into
+    one of the explicit mappings above.
+    """
+    if isinstance(emp_label, str) and emp_label.strip():
+        key = emp_label.strip().lower()
+        for needle, mapped in _EMP_TYPE_MAP.items():
+            if needle in key:
+                return mapped
+    if isinstance(hours_label, str):
+        h = hours_label.strip().lower()
+        if "heltid" in h:
+            return "FULL_TIME"
+        if "deltid" in h:
+            return "PART_TIME"
+    if isinstance(emp_label, str) and emp_label.strip():
+        # Permanent default — Tillsvidare / Vanlig anställning.
+        return "FULL_TIME"
+    return None
 
 
 def _format_location(value: object) -> str | None:

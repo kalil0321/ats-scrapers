@@ -4,10 +4,17 @@
 
 Requires `website-path: tiktok` and origin/referer headers; otherwise the
 endpoint refuses with 400.
+
+The API returns rich per-post data (description, requirement,
+recruit_type, job_category, job_subject, city_info, salary range).
+We concatenate ``description`` + ``requirement`` for the canonical
+description, map ``recruit_type.en_name`` to the employment-type enum,
+and pull ``job_category.en_name`` as the department.
 """
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -22,6 +29,22 @@ if TYPE_CHECKING:
 
 API_URL = "https://api.lifeattiktok.com/api/v1/public/supplier/search/job/posts"
 PAGE_SIZE = 100
+
+_EMPLOYMENT_TYPE_PATTERNS = {
+    "intern": "INTERN",
+    "internship": "INTERN",
+    "contract": "CONTRACT",
+    "contractor": "CONTRACT",
+    "temporary": "TEMPORARY",
+    "part-time": "PART_TIME",
+    "part time": "PART_TIME",
+    "parttime": "PART_TIME",
+    "full-time": "FULL_TIME",
+    "full time": "FULL_TIME",
+    "fulltime": "FULL_TIME",
+    "regular": "FULL_TIME",
+    "permanent": "FULL_TIME",
+}
 
 HEADERS = {
     "accept": "*/*",
@@ -75,9 +98,35 @@ class TikTokScraper(BaseScraper):
         ats_id = str(item.get("id") or "")
         post_info = item.get("job_post_info") or {}
 
+        # Description: concatenate ``description`` + ``requirement``
+        # (the API splits the body into two fields). Strip and cap.
+        description = _compose_description(
+            item.get("description"),
+            item.get("requirement"),
+        )
+
+        # ``recruit_type.en_name`` is the canonical employment-type label
+        # ("Intern" / "Regular" / "Contract") — map to our enum.
+        employment_type, commitment = _map_recruit_type(item.get("recruit_type"))
+
+        # ``job_category.en_name`` is the high-level area
+        # ("Operations" / "Engineering"); ``job_subject.en_name`` is the
+        # team/role family ("Project Intern" / "Software Engineer").
+        department = _extract_label(item.get("job_category"))
+        team = _extract_label(item.get("job_subject"))
+
+        # Use the employer-set ``code`` (e.g. "A205131") as the
+        # requisition id when present; fall back to the numeric ats_id.
+        requisition_id = (
+            item["code"].strip()
+            if isinstance(item.get("code"), str) and item["code"].strip()
+            else (ats_id or None)
+        )
+
         raw: dict[str, Any] = {}
-        for k in ("job_category", "job_subcategory", "recruit_type",
-                  "experience", "department", "skill_list"):
+        for k in ("job_category", "job_subject", "recruit_type",
+                  "experience", "department_info", "skill_list",
+                  "tag_list", "process_type"):
             v = item.get(k)
             if v:
                 raw[k] = v
@@ -89,8 +138,12 @@ class TikTokScraper(BaseScraper):
             ats_type=ATSType.TIKTOK,
             ats_id=ats_id,
             location=_extract_location(item),
-            department=item.get("department") if isinstance(item.get("department"), str) else None,
-            requisition_id=ats_id if ats_id else None,
+            department=department,
+            team=team if team and team != department else None,
+            employment_type=employment_type,
+            commitment=commitment,
+            description=description,
+            requisition_id=requisition_id,
             salary_min=_to_float(post_info.get("min_salary")),
             salary_max=_to_float(post_info.get("max_salary")),
             salary_currency=post_info.get("currency"),
@@ -98,6 +151,53 @@ class TikTokScraper(BaseScraper):
             fetched_at=datetime.now(),
             raw=raw or None,
         )
+
+
+def _compose_description(*sources: object) -> str | None:
+    """Concatenate description-like fields and cap at 10kB.
+
+    The body sometimes contains repeated whitespace from the API; we
+    collapse runs of blank lines to keep storage tight.
+    """
+    parts: list[str] = []
+    for source in sources:
+        if isinstance(source, str) and source.strip():
+            parts.append(source.strip())
+    if not parts:
+        return None
+    text = "\n\n".join(parts)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text[:10_000] or None
+
+
+def _extract_label(value: object) -> str | None:
+    """TikTok wraps category-style fields as
+    ``{"en_name": "Operations", "i18n_name": "Operations", ...}``.
+    Prefer ``en_name``; fall through to ``i18n_name`` / ``name``."""
+    if not isinstance(value, dict):
+        return None
+    for key in ("en_name", "i18n_name", "name"):
+        v = value.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+
+def _map_recruit_type(value: object) -> tuple[str | None, str | None]:
+    """Map ``recruit_type`` to ``(employment_type, commitment)``.
+
+    The API ships ``{"en_name": "Intern", "i18n_name": "Intern", ...}``.
+    We surface the human label in ``commitment`` and translate to the
+    canonical FT/PT/CONTRACT/INTERN/TEMPORARY enum.
+    """
+    label = _extract_label(value)
+    if not label:
+        return None, None
+    norm = label.lower()
+    for needle, mapped in _EMPLOYMENT_TYPE_PATTERNS.items():
+        if needle in norm:
+            return mapped, label
+    return None, label
 
 
 def _extract_location(item: dict) -> str | None:

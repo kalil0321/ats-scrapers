@@ -21,6 +21,14 @@ def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ic, "RETRY_BASE_DELAY", 0.0)
 
 
+# Per-job detail enrichment fires JSON-LD fetches against
+# ``/{job}/jobs/{id}/{slug}/job?in_iframe=1`` after the listing parse.
+# Tests that don't care about it leave those calls unmocked.
+pytestmark = pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False,
+)
+
+
 def _page_url(slug: str, page: int) -> str:
     return f"https://careers-{slug}.icims.com/jobs/search?ss=1&pr={page}&in_iframe=1"
 

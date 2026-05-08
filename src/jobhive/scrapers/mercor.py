@@ -135,19 +135,53 @@ def _parse_listing(item: dict[str, Any]) -> Job | None:
     company = (item.get("companyName") or "").strip() or "Mercor"
     url = f"{WORK_BASE_URL}/jobs/{listing_id}/{_slugify(title)}"
 
-    rate_min = item.get("rateMin")
-    rate_max = item.get("rateMax")
+    rate_min = _to_float(item.get("rateMin"))
+    rate_max = _to_float(item.get("rateMax"))
     pay_freq = (item.get("payRateFrequency") or "").lower()
     salary_period = _FREQUENCY_MAP.get(pay_freq) if pay_freq else None
+
+    # Mercor is a contract talent marketplace — every listing is a
+    # contract role regardless of the rate frequency. ``commitment``
+    # in the Mercor API is the rate frequency (``hourly`` / ``weekly``
+    # / etc.), not an employment-type label, so default to CONTRACT
+    # and surface the rate frequency in ``commitment`` for display.
+    employment_type = "CONTRACT"
+    commitment_raw = item.get("commitment")
+    commitment: str | None = None
+    if isinstance(commitment_raw, str) and commitment_raw.strip():
+        # Normalise "hourly" → "Hourly" for display; downstream UI
+        # likes title-case labels.
+        commitment = commitment_raw.strip().capitalize()
+    hours = item.get("hoursPerWeek")
+    if isinstance(hours, (int, float)) and hours > 0:
+        # Append hours/week to the commitment label when present.
+        commitment = (
+            f"{commitment} · {int(hours)}h/week"
+            if commitment else f"{int(hours)}h/week"
+        )
+
+    # ``workArrangement`` is the canonical remote/hybrid/onsite signal.
+    # ``location`` text often duplicates it ("Remote") so we set
+    # ``is_remote`` from the structured field for reliability.
+    work_arrangement = (item.get("workArrangement") or "").strip().lower()
+    is_remote: bool | None = None
+    if work_arrangement == "remote":
+        is_remote = True
+    elif work_arrangement in ("onsite", "on-site", "in-office", "office"):
+        is_remote = False
+
+    salary_summary = _build_salary_summary(rate_min, rate_max, pay_freq)
 
     raw_desc = item.get("description")
     description = raw_desc.strip()[:10_000] or None if isinstance(raw_desc, str) else None
 
     raw: dict[str, Any] = {}
     for k in ("commitment", "category", "skills", "tags",
-              "experienceLevel", "remote", "tier"):
+              "experienceLevel", "remote", "tier", "workArrangement",
+              "eligibleResidenceLocation", "ineligibleResidenceLocation",
+              "offersEquity", "hoursPerWeek"):
         v = item.get(k)
-        if v:
+        if v not in (None, "", [], False):
             raw[k] = v
 
     return Job(
@@ -157,17 +191,42 @@ def _parse_listing(item: dict[str, Any]) -> Job | None:
         ats_type=ATSType.MERCOR,
         ats_id=listing_id,
         location=(item.get("location") or "").strip() or None,
-        salary_min=_to_float(rate_min),
-        salary_max=_to_float(rate_max),
-        salary_currency="USD" if (rate_min or rate_max) else None,  # Mercor pays USD
+        is_remote=is_remote,
+        salary_min=rate_min,
+        salary_max=rate_max,
+        salary_currency="USD" if (rate_min or rate_max) else None,
         salary_period=salary_period,
-        employment_type=_map_commitment(item.get("commitment")),
-        commitment=item.get("commitment") if isinstance(item.get("commitment"), str) else None,
+        salary_summary=salary_summary,
+        employment_type=employment_type,
+        commitment=commitment,
         description=description,
         posted_at=_parse_iso(item.get("postedAt")),
         fetched_at=datetime.now(),
         raw=raw or None,
     )
+
+
+def _build_salary_summary(
+    rate_min: float | None,
+    rate_max: float | None,
+    pay_freq: str,
+) -> str | None:
+    """Format a human-readable USD pay range.
+
+    Mercor always pays USD; the public listing only ships rate min/max
+    plus a frequency label. We surface ``$55–65/hour`` style strings so
+    consumers don't have to format from the structured triple.
+    """
+    if rate_min is None and rate_max is None:
+        return None
+    suffix = f"/{pay_freq}" if pay_freq else ""
+    if rate_min == rate_max and rate_min is not None:
+        return f"${rate_min:,.0f}{suffix}"
+    if rate_min is None:
+        return f"up to ${rate_max:,.0f}{suffix}"
+    if rate_max is None:
+        return f"from ${rate_min:,.0f}{suffix}"
+    return f"${rate_min:,.0f}–{rate_max:,.0f}{suffix}"
 
 
 def _slugify(text: str) -> str:
@@ -183,23 +242,6 @@ def _to_float(value: object) -> float | None:
         return float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
-
-
-def _map_commitment(value: object) -> str | None:
-    """Mercor's `commitment` field is `"full-time"`, `"part-time"`,
-    `"contract"`, or sometimes a free-form string. Map the obvious ones."""
-    if not isinstance(value, str):
-        return None
-    v = value.strip().lower()
-    if v in {"full-time", "fulltime", "full time"}:
-        return "FULL_TIME"
-    if v in {"part-time", "parttime", "part time"}:
-        return "PART_TIME"
-    if v == "contract":
-        return "CONTRACT"
-    if v in {"intern", "internship"}:
-        return "INTERN"
-    return None
 
 
 def _parse_iso(value: str | None) -> datetime | None:

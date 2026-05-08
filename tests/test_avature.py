@@ -32,6 +32,15 @@ def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(av, "RETRY_BASE_DELAY", 0.0)
 
 
+# Avature now enriches each job with a per-job ``/careers/JobDetail/...``
+# fetch (best-effort). Tests that don't care about description/metadata
+# leave those calls unmocked — relax the unmatched-request check at the
+# module level so they don't have to enumerate every detail URL.
+pytestmark = pytest.mark.httpx_mock(
+    assert_all_requests_were_expected=False,
+)
+
+
 def _url(slug: str, offset: int) -> str:
     return (
         f"https://{slug}.avature.net/careers/SearchJobs/"

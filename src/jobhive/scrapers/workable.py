@@ -3,17 +3,33 @@
 Public widget API:
     https://apply.workable.com/api/v1/widget/accounts/{slug}
 
-Returns a single JSON payload with ``jobs[]``. No auth.
+Returns a single JSON payload with ``jobs[]``. No auth. The widget
+response carries title/department/location/employment_type/dates but
+not the description body.
+
+For descriptions we use Workable's per-job Markdown endpoint:
+
+    GET https://apply.workable.com/{slug}/jobs/view/{shortcode}.md
+
+That ships a clean Markdown render of the full posting (description +
+requirements + benefits) with a header line carrying location /
+employment-type / posted-date metadata.
 
 Workable rate-limits hard from a single IP — bulk pipeline runs at
 concurrency >2 see 429s on most tenants. The scraper retries 429/5xx
 with exponential backoff (honouring ``Retry-After`` when present); the
 caller should still keep concurrency low (2-4) for full re-scrapes.
+The per-job Markdown fetch is opt-in via
+``JOBHIVE_WORKABLE_FETCH_DESCRIPTIONS=1`` to avoid amplifying the
+rate-limit pressure during default discovery passes.
 """
 
 from __future__ import annotations
 
+import os
+import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -27,9 +43,36 @@ if TYPE_CHECKING:
     from typing import Any
 
 API_TEMPLATE = "https://apply.workable.com/api/v1/widget/accounts/{slug}"
+MARKDOWN_TEMPLATE = (
+    "https://apply.workable.com/{slug}/jobs/view/{shortcode}.md"
+)
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 1.5
 USER_AGENT = "Mozilla/5.0 (compatible; jobhive/1.0)"
+DETAIL_CONCURRENCY = 4  # rate-limit-safe pool size for per-job .md fetches
+
+_EMPLOYMENT_TYPE_PATTERNS = {
+    "intern": "INTERN",
+    "internship": "INTERN",
+    "trainee": "INTERN",
+    "contract": "CONTRACT",
+    "contractor": "CONTRACT",
+    "freelance": "CONTRACT",
+    "fixed-term": "CONTRACT",
+    "fixed term": "CONTRACT",
+    "temporary": "TEMPORARY",
+    "casual": "TEMPORARY",
+    "seasonal": "TEMPORARY",
+    "part-time": "PART_TIME",
+    "part time": "PART_TIME",
+    "parttime": "PART_TIME",
+    "full-time": "FULL_TIME",
+    "full time": "FULL_TIME",
+    "fulltime": "FULL_TIME",
+    "permanent": "FULL_TIME",
+}
+
+_HEADER_RE = re.compile(r"^#+\s+", re.MULTILINE)
 
 
 @ScraperRegistry.register(ATSType.WORKABLE)
@@ -83,13 +126,60 @@ class WorkableScraper(BaseScraper):
             )
 
         payload = response.json()
-        return [self._parse_job(item) for item in payload.get("jobs", [])]
+        jobs = [self._parse_job(item) for item in payload.get("jobs", [])]
+
+        # Optional per-job Markdown enrichment for description body.
+        # Default off — Workable rate-limits aggressively, so bulk runs
+        # opt in only when description coverage is wanted.
+        if jobs and os.getenv("JOBHIVE_WORKABLE_FETCH_DESCRIPTIONS"):
+            self._enrich_descriptions(jobs)
+        return jobs
+
+    def _enrich_descriptions(self, jobs: list[Job]) -> None:
+        """Pull the Markdown body for each job from
+        ``/{slug}/jobs/view/{shortcode}.md``. Runs in a thread pool with
+        a low cap (4) so we stay below the per-tenant rate limit."""
+        slug = self.company_slug
+        timeout = self.timeout
+
+        def fetch_one(job: Job) -> None:
+            url = MARKDOWN_TEMPLATE.format(slug=slug, shortcode=job.ats_id)
+            try:
+                with httpx.Client(timeout=timeout, follow_redirects=True) as c:
+                    resp = c.get(
+                        url,
+                        headers={"User-Agent": USER_AGENT, "Accept": "text/markdown"},
+                    )
+            except httpx.HTTPError:
+                return
+            if resp.status_code != 200:
+                return
+            text = resp.text.strip()
+            if text and not job.description:
+                job.description = text[:10_000]
+
+        with ThreadPoolExecutor(max_workers=DETAIL_CONCURRENCY) as pool:
+            list(pool.map(fetch_one, jobs))
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
         url = item.get("url") or item.get("application_url")
         apply_url = item.get("application_url")
         # Workable's "type" mirrors employment shape (full-time, contract, etc.)
-        commitment = item.get("type") or item.get("employment_type")
+        commitment_raw = item.get("type") or item.get("employment_type")
+        commitment = (
+            commitment_raw.strip()
+            if isinstance(commitment_raw, str) and commitment_raw.strip()
+            else None
+        )
+
+        # Map the freeform string to the canonical employment-type enum.
+        employment_type: str | None = None
+        if commitment:
+            norm = commitment.lower()
+            for needle, mapped in _EMPLOYMENT_TYPE_PATTERNS.items():
+                if needle in norm:
+                    employment_type = mapped
+                    break
 
         is_remote = None
         if isinstance(item.get("telecommuting"), bool):
@@ -113,7 +203,8 @@ class WorkableScraper(BaseScraper):
             location=_extract_location(item),
             is_remote=is_remote,
             department=item.get("department") if isinstance(item.get("department"), str) else None,
-            commitment=commitment if isinstance(commitment, str) else None,
+            employment_type=employment_type,
+            commitment=commitment,
             apply_url=apply_url if isinstance(apply_url, str) and apply_url != url else None,
             posted_at=_parse_iso(item.get("published_on") or item.get("created_at")),
             fetched_at=datetime.now(),

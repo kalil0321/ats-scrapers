@@ -144,7 +144,7 @@ GH_SAMPLE = {
 
 def test_greenhouse_parses_jobs(httpx_mock) -> None:
     httpx_mock.add_response(
-        url="https://boards-api.greenhouse.io/v1/boards/openai/jobs",
+        url="https://boards-api.greenhouse.io/v1/boards/openai/jobs?content=true",
         json=GH_SAMPLE,
     )
     jobs = GreenhouseScraper("openai").fetch()
@@ -158,7 +158,7 @@ def test_greenhouse_parses_jobs(httpx_mock) -> None:
 
 def test_greenhouse_raises_company_not_found_on_404(httpx_mock) -> None:
     httpx_mock.add_response(
-        url="https://boards-api.greenhouse.io/v1/boards/missing/jobs",
+        url="https://boards-api.greenhouse.io/v1/boards/missing/jobs?content=true",
         status_code=404,
     )
     with pytest.raises(CompanyNotFoundError):
@@ -167,7 +167,7 @@ def test_greenhouse_raises_company_not_found_on_404(httpx_mock) -> None:
 
 def test_greenhouse_raises_scraper_error_on_5xx(httpx_mock) -> None:
     httpx_mock.add_response(
-        url="https://boards-api.greenhouse.io/v1/boards/x/jobs",
+        url="https://boards-api.greenhouse.io/v1/boards/x/jobs?content=true",
         status_code=503,
         is_reusable=True,  # retry now fires; mock must satisfy all attempts
     )
@@ -180,7 +180,7 @@ def test_greenhouse_raises_on_network_failure(httpx_mock) -> None:
 
     httpx_mock.add_exception(
         httpx.ConnectError("boom"),
-        url="https://boards-api.greenhouse.io/v1/boards/x/jobs",
+        url="https://boards-api.greenhouse.io/v1/boards/x/jobs?content=true",
         is_reusable=True,
     )
     with pytest.raises(ScraperError):
@@ -189,7 +189,7 @@ def test_greenhouse_raises_on_network_failure(httpx_mock) -> None:
 
 def test_greenhouse_handles_empty_jobs_list(httpx_mock) -> None:
     httpx_mock.add_response(
-        url="https://boards-api.greenhouse.io/v1/boards/empty/jobs",
+        url="https://boards-api.greenhouse.io/v1/boards/empty/jobs?content=true",
         json={"jobs": []},
     )
     assert GreenhouseScraper("empty").fetch() == []

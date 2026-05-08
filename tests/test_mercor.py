@@ -52,6 +52,8 @@ def _listing(
     commitment: str = "full-time",
     description: str = "Build cool stuff.",
     posted_at: str = "2026-04-01T10:00:00Z",
+    hoursPerWeek: int | None = None,  # noqa: N803  match Mercor's API casing
+    workArrangement: str | None = None,  # noqa: N803
 ) -> dict:
     return {
         "listingId": listing_id,
@@ -64,6 +66,8 @@ def _listing(
         "commitment": commitment,
         "description": description,
         "postedAt": posted_at,
+        "hoursPerWeek": hoursPerWeek,
+        "workArrangement": workArrangement,
     }
 
 
@@ -187,29 +191,42 @@ def test_salary_currency_only_set_when_rates_present(httpx_mock) -> None:
     assert jobs[0].salary_currency is None
 
 
-# --- Commitment → employment_type ------------------------------------------
+# --- employment_type / commitment -------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("commitment", "expected"),
-    [
-        ("full-time", "FULL_TIME"),
-        ("Full Time", "FULL_TIME"),
-        ("part-time", "PART_TIME"),
-        ("contract", "CONTRACT"),
-        ("internship", "INTERN"),
-        ("freelance", None),  # unmapped — preserve None
-        ("", None),
-    ],
+    "commitment",
+    ["hourly", "weekly", "monthly", "full-time", ""],
 )
-def test_commitment_to_employment_type(
-    httpx_mock, commitment: str, expected: str | None
+def test_employment_type_is_always_contract(
+    httpx_mock, commitment: str,
 ) -> None:
+    """Mercor is a contract talent marketplace — every listing is a
+    contract role regardless of the rate frequency exposed in the
+    API's ``commitment`` field. We default ``employment_type`` to
+    ``CONTRACT`` and surface the rate-frequency label in
+    ``commitment`` for display."""
     httpx_mock.add_response(url=URL, json={"listings": [
         _listing(commitment=commitment),
     ]})
     jobs = MercorScraper("any").fetch()
-    assert jobs[0].employment_type == expected
+    assert jobs[0].employment_type == "CONTRACT"
+
+
+def test_commitment_label_includes_hours_per_week(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL, json={"listings": [
+        _listing(commitment="hourly", hoursPerWeek=40),
+    ]})
+    jobs = MercorScraper("any").fetch()
+    assert jobs[0].commitment == "Hourly · 40h/week"
+
+
+def test_commitment_label_without_hours(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL, json={"listings": [
+        _listing(commitment="hourly"),
+    ]})
+    jobs = MercorScraper("any").fetch()
+    assert jobs[0].commitment == "Hourly"
 
 
 # --- Description -----------------------------------------------------------

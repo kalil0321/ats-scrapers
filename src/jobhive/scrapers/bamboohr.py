@@ -22,13 +22,18 @@ Widget structure (one block per department, one `<li>` per job):
     </li>
 
 Tenants without open jobs return a 200 with an empty widget (~270 bytes).
-For descriptions, hit `/careers/{job_id}` (HTML) — opt in via
-`fetch_descriptions=True`.
+
+For descriptions and the rest of the per-job fields the careers detail
+page itself is JS-rendered, but the SPA hydrates from a clean public
+JSON XHR at `/careers/{id}/detail`. We hit that directly to enrich each
+job with description, employment type, compensation, posted date, and
+canonical location.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 import re
 from datetime import datetime
@@ -44,11 +49,32 @@ if TYPE_CHECKING:
     pass
 
 WIDGET_TEMPLATE = "https://{slug}.bamboohr.com/jobs/embed2.php"
-DETAIL_TEMPLATE = "https://{slug}.bamboohr.com/careers/{id}"
+DETAIL_TEMPLATE = "https://{slug}.bamboohr.com/careers/{id}/detail"
+SHARE_URL_TEMPLATE = "https://{slug}.bamboohr.com/careers/{id}"
 
 MAX_CONCURRENCY = 8
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
+
+# BambooHR's ``employmentStatusLabel`` is freeform but tenants stick to
+# a small set. Map to the shared employment-type enum.
+_EMPLOYMENT_TYPE_MAP = {
+    "full-time": "FULL_TIME",
+    "fulltime": "FULL_TIME",
+    "full time": "FULL_TIME",
+    "regular full-time": "FULL_TIME",
+    "part-time": "PART_TIME",
+    "parttime": "PART_TIME",
+    "part time": "PART_TIME",
+    "regular part-time": "PART_TIME",
+    "contract": "CONTRACT",
+    "contractor": "CONTRACT",
+    "temporary": "TEMPORARY",
+    "temp": "TEMPORARY",
+    "seasonal": "TEMPORARY",
+    "intern": "INTERN",
+    "internship": "INTERN",
+}
 
 # Each department block is wrapped in a <li class="BambooHR-ATS-Department-Item">.
 # Inside, the header div carries the department name and the <ul> holds jobs.
@@ -89,20 +115,12 @@ _TAG_RE = re.compile(r"<[^>]+>")
 class BambooHRScraper(BaseScraper):
     """BambooHR scraper — `company_slug` is the tenant subdomain.
 
-    `fetch_descriptions=True` fetches the per-job HTML page in parallel
-    (slow, capped at MAX_CONCURRENCY). Off by default to stay polite and fast."""
+    Each job is enriched with the public ``/careers/{id}/detail`` JSON,
+    which carries the full description, employment type, compensation,
+    posted date, and canonical city/state/country. The enrichment runs
+    in parallel under ``MAX_CONCURRENCY``."""
 
     ats = ATSType.BAMBOOHR
-
-    def __init__(
-        self,
-        company_slug: str,
-        *,
-        timeout: float = 30.0,
-        fetch_descriptions: bool = False,
-    ) -> None:
-        super().__init__(company_slug, timeout=timeout)
-        self.fetch_descriptions = fetch_descriptions
 
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
@@ -118,8 +136,8 @@ class BambooHRScraper(BaseScraper):
         ) as client:
             html = await self._fetch_widget(client)
             jobs = self._parse_widget(html)
-            if self.fetch_descriptions and jobs:
-                await self._enrich_descriptions(client, jobs)
+            if jobs:
+                await self._enrich_from_detail_api(client, jobs)
             return jobs
 
     async def _fetch_widget(self, client: httpx.AsyncClient) -> str:
@@ -229,37 +247,101 @@ class BambooHRScraper(BaseScraper):
             fetched_at=datetime.now(),
         )
 
-    async def _enrich_descriptions(
+    async def _enrich_from_detail_api(
         self, client: httpx.AsyncClient, jobs: list[Job]
     ) -> None:
+        """Hydrate each job from `/careers/{id}/detail` JSON.
+
+        Best-effort: failures (timeout, 404, JSON shape change) leave the
+        listing-derived fields intact rather than crashing the run.
+        """
         sem = asyncio.Semaphore(MAX_CONCURRENCY)
+        await asyncio.gather(*(self._enrich_one(client, sem, j) for j in jobs))
 
-        async def task(job: Job) -> None:
-            async with sem:
-                description = await self._fetch_description(client, job.ats_id)
-            if description is not None:
-                # Job is frozen via `model_config = ConfigDict(populate_by_name=True)`,
-                # not `frozen=True` — direct attribute set works.
-                job.description = description[:10_000]  # type: ignore[misc]
-
-        await asyncio.gather(*(task(j) for j in jobs))
-
-    async def _fetch_description(
-        self, client: httpx.AsyncClient, job_id: str
-    ) -> str | None:
-        url = DETAIL_TEMPLATE.format(slug=self.company_slug, id=job_id)
-        try:
-            response = await client.get(
-                url, headers={"User-Agent": "Mozilla/5.0"}
-            )
-        except httpx.HTTPError:
-            return None
+    async def _enrich_one(
+        self, client: httpx.AsyncClient, sem: asyncio.Semaphore, job: Job,
+    ) -> None:
+        url = DETAIL_TEMPLATE.format(slug=self.company_slug, id=job.ats_id)
+        async with sem:
+            try:
+                response = await client.get(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0",
+                        "Accept": "application/json",
+                        "X-Requested-With": "XMLHttpRequest",
+                    },
+                )
+            except httpx.HTTPError:
+                return
         if response.status_code != 200:
-            return None
-        match = _DETAIL_DESCRIPTION_RE.search(response.text)
-        if not match:
-            return None
-        return _strip_tags(match.group("body")).strip() or None
+            return
+        try:
+            payload = response.json()
+        except ValueError:
+            return
+        opening = (payload.get("result") or {}).get("jobOpening") or {}
+        if not isinstance(opening, dict) or not opening:
+            return
+        _apply_opening_to_job(job, opening)
+
+
+def _apply_opening_to_job(job: Job, opening: dict) -> None:
+    """Hydrate ``job`` in place from a BambooHR ``jobOpening`` payload.
+
+    Only fills fields that the listing pass left empty; canonical
+    location from the detail page replaces the listing's terse
+    "City, ST" snippet.
+    """
+    desc_html = opening.get("description")
+    if isinstance(desc_html, str) and desc_html.strip():
+        # ``description`` is HTML on BambooHR's side. Strip tags for
+        # plain-text storage; cap at 10kB to match the Job schema doc.
+        job.description = _strip_tags(desc_html)[:10_000] or None
+
+    emp_label = opening.get("employmentStatusLabel")
+    if isinstance(emp_label, str) and emp_label.strip():
+        norm = emp_label.strip().lower()
+        for needle, mapped in _EMPLOYMENT_TYPE_MAP.items():
+            if needle in norm:
+                job.employment_type = mapped  # type: ignore[assignment]
+                break
+
+    compensation = opening.get("compensation")
+    if (
+        isinstance(compensation, str)
+        and compensation.strip()
+        and not job.salary_summary
+    ):
+        job.salary_summary = compensation.strip()
+
+    date_posted = opening.get("datePosted")
+    if isinstance(date_posted, str) and date_posted and not job.posted_at:
+        with contextlib.suppress(ValueError):
+            job.posted_at = datetime.fromisoformat(date_posted)
+
+    location = opening.get("location") or {}
+    if isinstance(location, dict):
+        parts = [
+            str(location.get(k) or "").strip()
+            for k in ("city", "state", "addressCountry")
+            if location.get(k)
+        ]
+        canonical = ", ".join(p for p in parts if p)
+        if canonical:
+            # Listing only has "City, ST" — replace with full canonical.
+            job.location = canonical
+
+    # ``locationType`` "1" / "remote" indicates a remote role; "0" =
+    # on-site/hybrid (BambooHR doesn't distinguish hybrid).
+    loc_type = opening.get("locationType")
+    if loc_type is not None and job.is_remote is None:
+        if str(loc_type).strip() in ("1", "2", "true") or (
+            isinstance(loc_type, str) and "remote" in loc_type.lower()
+        ):
+            job.is_remote = True
+        elif str(loc_type).strip() == "0":
+            job.is_remote = False
 
 
 def _strip_tags(text: str) -> str:

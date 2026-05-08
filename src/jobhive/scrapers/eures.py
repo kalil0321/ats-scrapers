@@ -337,6 +337,34 @@ class EuresScraper(BaseScraper):
         location = _flatten_location(item.get("locationMap") or {})
         posted_at = _epoch_ms_to_dt(item.get("creationDate"))
 
+        # EURES ships a freeform-ish ``positionOfferingCode``
+        # ("directhire", "temporary", "contract", "apprenticeship",
+        # "seasonal", "oncall", "selfemployed", …) — map to the
+        # canonical employment-type enum and surface the original
+        # code as ``commitment`` for display.
+        offering = item.get("positionOfferingCode")
+        commitment: str | None = None
+        employment_type: str | None = None
+        if isinstance(offering, str) and offering.strip():
+            commitment = offering.strip()
+            norm = commitment.lower()
+            employment_type = _OFFERING_CODE_TO_EMPLOYMENT_TYPE.get(norm)
+            if not employment_type:
+                for needle, mapped in _OFFERING_CODE_TO_EMPLOYMENT_TYPE.items():
+                    if needle in norm:
+                        employment_type = mapped
+                        break
+
+        # ``positionScheduleCode`` (full-time / part-time) — used as a
+        # fallback when ``positionOfferingCode`` is missing/unspecific.
+        schedule = item.get("positionScheduleCode")
+        if isinstance(schedule, str) and schedule.strip() and not employment_type:
+            sched_norm = schedule.strip().lower()
+            if sched_norm in ("fulltime", "full-time", "full_time"):
+                employment_type = "FULL_TIME"
+            elif sched_norm in ("parttime", "part-time", "part_time"):
+                employment_type = "PART_TIME"
+
         raw: dict[str, Any] = {}
         for k in ("euresFlag", "numberOfPosts", "lastModificationDate",
                   "positionOfferingCode", "positionScheduleCode"):
@@ -351,10 +379,35 @@ class EuresScraper(BaseScraper):
             ats_type=ATSType.EURES,
             ats_id=str(jv_id),
             location=location,
+            employment_type=employment_type,
+            commitment=commitment,
             posted_at=posted_at,
             fetched_at=datetime.now(),
             raw=raw or None,
         )
+
+
+# EURES ``positionOfferingCode`` is a stable enum across PES feeds.
+_OFFERING_CODE_TO_EMPLOYMENT_TYPE = {
+    "directhire": "FULL_TIME",
+    "permanent": "FULL_TIME",
+    "regular": "FULL_TIME",
+    "fulltime": "FULL_TIME",
+    "parttime": "PART_TIME",
+    "contract": "CONTRACT",
+    "contracttohire": "CONTRACT",
+    "selfemployed": "CONTRACT",
+    "freelance": "CONTRACT",
+    "temporary": "TEMPORARY",
+    "temporarytohire": "TEMPORARY",
+    "seasonal": "TEMPORARY",
+    "oncall": "TEMPORARY",
+    "casual": "TEMPORARY",
+    "apprenticeship": "INTERN",
+    "internship": "INTERN",
+    "trainee": "INTERN",
+    "traineeship": "INTERN",
+}
 
 
 def _epoch_ms_to_dt(value: object) -> datetime | None:

@@ -297,14 +297,54 @@ class BundesagenturScraper(BaseScraper):
         # The detail endpoint expects base64(refnr); the human URL accepts refnr.
         url = f"https://www.arbeitsagentur.de/jobsuche/jobdetail/{ats_id}"
 
-        # Bundesagentur exposes ``arbeitszeit`` as the work-time bucket (vz/tz/...)
-        # and a separate ``branche`` (industry). ``hashId`` is the durable
-        # employer-side requisition identifier — same value across cross-postings.
-        commitment = item.get("arbeitszeit") or None
+        # Bundesagentur exposes ``arbeitszeit`` as the work-time bucket
+        # — ``vz`` (Vollzeit / full-time), ``tz`` (Teilzeit / part-time),
+        # ``mj`` (Minijob / contract-style), ``ho`` (Home office),
+        # ``saison`` (Seasonal), ``ne`` (Nebenjob / side gig),
+        # ``selb`` (Selbständig / self-employed). Map the canonical ones.
+        arbeitszeit = item.get("arbeitszeit")
+        commitment: str | None = None
+        employment_type: str | None = None
+        if isinstance(arbeitszeit, str) and arbeitszeit.strip():
+            commitment = _ARBEITSZEIT_LABELS.get(
+                arbeitszeit.strip().lower(), arbeitszeit.strip(),
+            )
+            employment_type = _ARBEITSZEIT_TO_EMPLOYMENT_TYPE.get(
+                arbeitszeit.strip().lower(),
+            )
+        # ``zeitarbeit=true`` (temp-agency placement) is unambiguous —
+        # surface as TEMPORARY when the time-type doesn't disambiguate.
+        if not employment_type and item.get("zeitarbeit") is True:
+            employment_type = "TEMPORARY"
+        # ``befristung=2`` indicates fixed-term in the BA taxonomy.
+        if not employment_type and str(item.get("befristung") or "") == "2":
+            employment_type = "CONTRACT"
+
+        # ``ho`` (Home office) is the only explicit remote signal.
+        is_remote = True if isinstance(arbeitszeit, str) and arbeitszeit.lower() == "ho" else None
+
+        # ``berufsfeld`` is a high-level domain (Pedagogik / IT / Sales)
+        # — closest match to a department facet.
+        berufsfeld = item.get("berufsfeld")
+        department = (
+            berufsfeld.strip()
+            if isinstance(berufsfeld, str) and berufsfeld.strip()
+            else None
+        )
+
+        # Industry / sector → ``team`` (the closest analog the API exposes).
+        branche = item.get("branche")
+        team = (
+            branche.strip()
+            if isinstance(branche, str) and branche.strip()
+            and branche.strip() != department
+            else None
+        )
+
         raw: dict[str, Any] = {}
         for k in ("branche", "berufsfeld", "befristung", "zeitarbeit",
                   "arbeitgeberHashId", "kundennummerHash", "externeUrl",
-                  "modifikationsTimestamp"):
+                  "arbeitszeit", "modifikationsTimestamp"):
             v = item.get(k)
             if v not in (None, ""):
                 raw[k] = v
@@ -319,6 +359,10 @@ class BundesagenturScraper(BaseScraper):
             ats_type=ATSType.BUNDESAGENTUR,
             ats_id=ats_id,
             location=location,
+            is_remote=is_remote,
+            department=department,
+            team=team,
+            employment_type=employment_type,
             commitment=commitment,
             apply_url=apply_url,
             requisition_id=item.get("hashId") or None,
@@ -326,6 +370,29 @@ class BundesagenturScraper(BaseScraper):
             fetched_at=datetime.now(),
             raw=raw or None,
         )
+
+
+# Bundesagentur's ``arbeitszeit`` is a single-letter-ish code; the
+# values are stable across the API surface.
+_ARBEITSZEIT_LABELS = {
+    "vz": "Vollzeit",
+    "tz": "Teilzeit",
+    "mj": "Minijob",
+    "ho": "Home office",
+    "saison": "Saisonarbeit",
+    "ne": "Nebenjob",
+    "selb": "Selbständig",
+    "snw": "Schicht/Nacht/Wochenende",
+}
+_ARBEITSZEIT_TO_EMPLOYMENT_TYPE = {
+    "vz": "FULL_TIME",
+    "tz": "PART_TIME",
+    "ho": "FULL_TIME",
+    "mj": "PART_TIME",
+    "ne": "PART_TIME",
+    "saison": "TEMPORARY",
+    "selb": "CONTRACT",
+}
 
 
 def _bucket_counts(facets: dict[str, Any], facet_name: str) -> dict[str, int]:
