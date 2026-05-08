@@ -13,26 +13,47 @@ from jobhive.enrichment.derived import (
 )
 
 # --- infer_is_remote --------------------------------------------------------
-
-@pytest.mark.parametrize(
-    "location",
-    ["Remote", "remote", "Anywhere", "Distributed - US", "Work from home", "WFH only"],
-)
-def test_remote_keywords_detected(location: str) -> None:
-    assert infer_is_remote(location) is True
+#
+# Title-only inference; never returns False (absence of keyword in
+# title is not evidence the role is on-site, LLM downstream fills
+# that nuance).
 
 
 @pytest.mark.parametrize(
-    "location",
-    ["Onsite — NYC", "On-site, San Francisco", "In-office, Berlin"],
+    "title",
+    [
+        "Remote Software Engineer",
+        "remote backend developer",
+        "Anywhere — Senior Engineer",
+        "Distributed Systems Engineer (Remote)",
+        "Work from home — Customer Success",
+        "WFH Sales Rep",
+        "Telework Researcher",
+    ],
 )
-def test_onsite_keywords_detected(location: str) -> None:
-    assert infer_is_remote(location) is False
+def test_remote_keywords_in_title_detected(title: str) -> None:
+    assert infer_is_remote(title) is True
 
 
-@pytest.mark.parametrize("location", ["Paris", "London", "Tokyo, Japan", ""])
-def test_neutral_locations_return_none(location: str) -> None:
-    assert infer_is_remote(location) is None
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Senior Software Engineer",
+        "Customer Success Manager",
+        "Backend Engineer, NYC",
+        "Onsite Recruiter — SF",  # no remote keyword in title; we don't infer False from "onsite"
+        "In-office Designer",  # ditto — never return False
+    ],
+)
+def test_titles_without_remote_marker_return_none(title: str) -> None:
+    """Never assert False from heuristic. The absence of a remote
+    keyword is not evidence of on-site."""
+    assert infer_is_remote(title) is None
+
+
+@pytest.mark.parametrize("title", ["", "   ", "\t"])
+def test_empty_title_returns_none(title: str) -> None:
+    assert infer_is_remote(title) is None
 
 
 @pytest.mark.parametrize("value", [None, math.nan, 0, 12.5, [], {}, object()])
@@ -43,7 +64,12 @@ def test_non_string_values_return_none(value: object) -> None:
 
 def test_handles_pandas_nan_in_series() -> None:
     """Regression: pandas .apply() passes NaN floats for empty cells."""
-    series = pd.Series(["Remote", None, float("nan"), "Paris"])
+    series = pd.Series([
+        "Remote Engineer",
+        None,
+        float("nan"),
+        "Senior Manager",
+    ])
     result = series.apply(infer_is_remote)
     assert result.tolist() == [True, None, None, None]
 

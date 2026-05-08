@@ -434,10 +434,18 @@ def _dedupe_cross_ats(df: pd.DataFrame) -> pd.DataFrame:
 
 def _enrich_with_derived(df: pd.DataFrame) -> pd.DataFrame:
     """Add ``is_remote`` and ``salary_min``/``salary_max`` derived columns
-    when the source data lacks them."""
+    when the source data lacks them.
+
+    ``is_remote`` is inferred from the **title** only — a title-level
+    remote marker is the only signal we consider trustworthy enough
+    for a hardcoded rule. The full posting context (description,
+    nuanced location text) is left to the downstream LLM enrichment.
+
+    Salary range parsing reads ``salary_summary`` with a tight regex.
+    """
     df = df.copy()
-    if "location" in df.columns and "is_remote" not in df.columns:
-        df["is_remote"] = df["location"].apply(infer_is_remote)
+    if "title" in df.columns and "is_remote" not in df.columns:
+        df["is_remote"] = df["title"].apply(infer_is_remote)
     if "salary_summary" in df.columns and "salary_min" not in df.columns:
         parsed = df["salary_summary"].apply(parse_salary_range)
         df["salary_min"] = parsed.apply(lambda t: t[0])
