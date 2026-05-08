@@ -44,9 +44,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_PREFIX = "jobhive/v1"
 CACHE_CONTROL_LATEST = "public, max-age=300"  # manifest + latest data files
 
-# `all` is parquet-only — the CSV equivalent would be ~150 MB and there's
-# no consumer for it that wouldn't prefer parquet.
-FORMATS_ALL = ("parquet",)
+# `all` ships in both formats — parquet is what the typed Python /
+# pandas / DuckDB consumers reach for; the CSV (~150 MB at current
+# corpus size) is for spreadsheet, grep, and other tools that don't
+# speak parquet.
+FORMATS_ALL = ("csv", "parquet")
 FORMATS_PER_ATS = ("csv", "parquet")
 
 
