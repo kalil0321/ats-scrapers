@@ -98,16 +98,18 @@ df.groupby("company").size().sort_values(ascending=False).head(20)
 Every row carries:
 
 ```
-url, title, company, ats_type, ats_id,
+global_id, url, title, company, ats_type, ats_id,
 location, is_remote, lat, lon,
 salary_min, salary_max, salary_currency, salary_period, salary_summary,
 employment_type, commitment, experience, department, team,
 description, posted_at, fetched_at, requisition_id, apply_url, raw
 ```
 
-Optional fields are `None` when the source ATS doesn't expose them.
-``raw`` keeps any provider-specific fields the canonical schema doesn't
-represent — Greenhouse `metadata`, Workday `bulletFields`, etc.
+Full per-field semantics (types, defaults, derivation rules, examples)
+live in [**`JOB_SCHEMA.md`**](./JOB_SCHEMA.md). `global_id` is the
+cross-ATS unique key in the form `{ats_type}:{ats_id}`. Optional fields
+are `None` when the source ATS doesn't expose them; `raw` keeps any
+provider-specific fields the canonical schema doesn't represent.
 
 ### 2. Scrape your own companies
 
