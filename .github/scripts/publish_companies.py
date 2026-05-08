@@ -53,6 +53,11 @@ from botocore.exceptions import ClientError
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ATS_COMPANIES_DIR = REPO_ROOT / "ats-companies"
 PREFIX = "jobhive/v1"
+# Lowest manifest version this script knows how to write. Treat as a
+# floor: bump existing manifests up to it, never down. If the
+# jobs-side publisher independently moves the manifest to a newer
+# version, that wins until this constant catches up.
+MIN_MANIFEST_VERSION = "2.0"
 
 
 def env(name: str) -> str:
@@ -173,6 +178,24 @@ def delete_legacy(client, bucket: str) -> None:
             client.delete_objects(Bucket=bucket, Delete={"Objects": chunk})
 
 
+def _parse_version(value: object) -> tuple[int, ...]:
+    """Parse ``"<int>.<int>..."`` into a comparable int-tuple.
+
+    Anything we can't read (non-string, non-numeric segment, missing)
+    sorts as ``(0,)`` so the floor wins on garbage input rather than
+    silently preserving it.
+    """
+    if not isinstance(value, str):
+        return (0,)
+    parts: list[int] = []
+    for segment in value.split("."):
+        try:
+            parts.append(int(segment))
+        except ValueError:
+            return (0,)
+    return tuple(parts) if parts else (0,)
+
+
 def public_url(bucket: str, key: str) -> str:
     """Build the canonical public URL written into the manifest entries.
 
@@ -238,10 +261,16 @@ def main() -> None:
     manifest["updated_at"] = datetime.now(tz=UTC).isoformat(
         timespec="seconds"
     ).replace("+00:00", "Z")
-    # The companies-side moved to the new per-ATS layout in this PR
-    # series; bump the manifest version to advertise it. The publisher
-    # also sets "2.0" once it runs against the jobs side.
-    manifest["version"] = "2.0"
+    # Monotonic floor: bump up to MIN_MANIFEST_VERSION if absent or
+    # below, leave anything higher untouched. Prevents this script
+    # from silently downgrading a manifest that a newer publisher
+    # has already moved forward (e.g. publisher moves to "3.0",
+    # next companies-side run preserves it).
+    existing_version = manifest.get("version")
+    if existing_version is None or _parse_version(existing_version) < _parse_version(
+        MIN_MANIFEST_VERSION
+    ):
+        manifest["version"] = MIN_MANIFEST_VERSION
     # Drop the legacy companies-side field. It pointed at
     # `<prefix>/companies/by-ats/<ats>.csv` URLs that we deleted in
     # `delete_legacy(...)` below, and its name is one underscore away
