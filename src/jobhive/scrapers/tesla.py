@@ -1,24 +1,35 @@
-"""Tesla careers scraper — Browserbase-backed.
+"""Tesla careers scraper — patchright-backed.
 
 Tesla's public listings live behind ``/cua-api/apps/careers/state``,
 which returns the entire job catalog as one JSON document. Direct
 ``httpx`` calls are 403'd by Akamai bot detection — a real browser is
-required, with cookies + JS challenges from a prior visit to
-``tesla.com``.
+required, and Akamai's behavioral fingerprinting on the
+``/cua-api/*`` endpoints is aggressive enough to block plain
+Playwright (even with stealth args + ``playwright-stealth``) AND
+default Browserbase Sessions (with or without residential proxies).
 
-We use Browserbase as the remote browser host so the public library
-doesn't ship its own Chrome binary. Set ``JOBHIVE_USE_BROWSERBASE=1``
-together with ``BROWSERBASE_API_KEY`` / ``BROWSERBASE_PROJECT_ID`` to
-enable. Without the flag, this scraper logs a warning and returns
-``[]`` so a full-pipeline run keeps moving.
+The bypass we ship is `patchright`_ — an open-source Playwright fork
+with deeper stealth patches baked into the bundled Chromium. It
+clears the Akamai challenge cleanly on a residential IP. Trade-off:
+patchright runs locally (downloads its own Chromium), so this path
+only works when the host has the binary installed
+(``patchright install chromium``). For environments where that's not
+viable, see the install notes in the docstring.
 
-Caveat — Akamai's IP and TLS fingerprinting on ``tesla.com`` is
-aggressive: as of 2026-05, default Browserbase sessions (with or
-without their built-in residential proxies) still get an "Access
-Denied" challenge page. Until the Browserbase project is configured
-with a proxy / fingerprint that Tesla accepts, this scraper will
-raise ``ScraperError`` on the JSON parse. The code path itself is
-correct; only the network frontend needs work.
+.. _patchright: https://github.com/Kaliiiiiiiiii-Vinyzu/patchright
+
+Activation:
+
+- Set ``JOBHIVE_USE_BROWSERBASE=1`` (the umbrella opt-in for
+  browser-required scrapers — kept the same name as Meta's flag for
+  consistency, even though Tesla doesn't use Browserbase).
+- Install patchright + its bundled Chromium:
+  ``pip install jobhive-py[browser]`` then
+  ``patchright install chromium``.
+
+Without the flag, ``fetch()`` returns ``[]`` with a single warning
+so the rest of the pipeline keeps moving. Without patchright but
+with the flag set, raises a clear ``ScraperError``.
 """
 
 from __future__ import annotations
@@ -39,8 +50,8 @@ _CAREERS_HOME = "/careers/search/jobs"
 _STATE_ENDPOINT = "/cua-api/apps/careers/state"
 
 # Match the JSON body whether the browser wraps it in <pre>…</pre> or
-# inlines it as plain text. Both forms appear in the wild depending on
-# user-agent / accept headers.
+# inlines it as plain text — both forms appear depending on browser /
+# user-agent.
 _PRE_RE = re.compile(r"<pre[^>]*>(.*?)</pre>", re.DOTALL)
 
 
@@ -54,39 +65,70 @@ class TeslaScraper(BaseScraper):
         if not bb.is_enabled():
             bb.warn_disabled("Tesla")
             return []
-        # Order matters: creds is a cheap env-var check, playwright is
-        # a module import. Surface the more likely misconfig (missing
-        # creds) first.
-        api_key, project_id = bb.require_creds()
-        bb.require_playwright()
-        return asyncio.run(self._fetch_via_browserbase(api_key, project_id))
+        return asyncio.run(self._fetch_via_patchright())
 
-    async def _fetch_via_browserbase(
-        self, api_key: str, project_id: str
-    ) -> list[Job]:
-        from playwright.async_api import async_playwright
+    async def _fetch_via_patchright(self) -> list[Job]:
+        try:
+            from patchright.async_api import async_playwright
+        except ImportError as exc:
+            raise ScraperError(
+                "Tesla requires `patchright` to bypass Akamai. Install "
+                "with `pip install jobhive-py[browser]`, then run "
+                "`patchright install chromium` to download its bundled "
+                "Chromium build."
+            ) from exc
 
-        ws_url = await bb.create_session_ws_url(api_key, project_id)
-        async with async_playwright() as p:
-            browser = await p.chromium.connect_over_cdp(ws_url)
+        async with async_playwright() as pw:
             try:
-                ctx = browser.contexts[0]
-                page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+                browser = await pw.chromium.launch(headless=False)
+            except Exception as exc:
+                raise ScraperError(
+                    f"Tesla: patchright Chromium launch failed ({exc}). "
+                    "Did you run `patchright install chromium`?"
+                ) from exc
+            try:
+                ctx = await browser.new_context(
+                    viewport={"width": 1440, "height": 900},
+                )
+                page = await ctx.new_page()
 
-                # Warm up Akamai cookies by visiting the careers page first.
+                # Warm up Akamai cookies by visiting the careers page.
+                # ``networkidle`` lets Akamai's challenge JS finish
+                # gathering its signals (canvas, WebGL, plugin probe,
+                # …) and submit them. patchright's masked Chromium
+                # passes the resulting bot score; default Playwright
+                # doesn't.
                 await page.goto(
                     f"{_BASE_URL}{_CAREERS_HOME}",
-                    wait_until="domcontentloaded",
+                    wait_until="networkidle",
                     timeout=60_000,
                 )
 
-                # Now hit the JSON endpoint — same browser context, same
-                # cookies, no bot-block.
-                await page.goto(
+                # Sanity check before the API call: if the warmup
+                # produced an Access Denied page, fail fast with a
+                # diagnostic the operator can act on (proxy issue,
+                # patchright outdated vs new Akamai rules, …).
+                if "access denied" in (await page.content()).lower():
+                    raise ScraperError(
+                        "Tesla: warmup page is 'Access Denied'. "
+                        "patchright did not pass Akamai — try "
+                        "upgrading patchright or running with a "
+                        "different residential IP."
+                    )
+
+                # Hit the JSON endpoint inside the same browser
+                # session — same cookies, same Akamai-validated bot
+                # score.
+                resp = await page.goto(
                     f"{_BASE_URL}{_STATE_ENDPOINT}",
                     wait_until="domcontentloaded",
                     timeout=30_000,
                 )
+                if resp is None or resp.status != 200:
+                    raise ScraperError(
+                        f"Tesla: /cua-api/state returned status="
+                        f"{resp.status if resp else 'None'} after warmup."
+                    )
                 payload = await self._extract_json(page)
             finally:
                 await browser.close()
@@ -102,8 +144,7 @@ class TeslaScraper(BaseScraper):
             return json.loads(body)
         except json.JSONDecodeError as exc:
             raise ScraperError(
-                f"Tesla: response did not parse as JSON ({exc}). "
-                "Akamai may have served a challenge page."
+                f"Tesla: response did not parse as JSON ({exc})."
             ) from exc
 
     def _parse_payload(self, payload: dict[str, Any]) -> list[Job]:

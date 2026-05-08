@@ -1,11 +1,12 @@
 """Tests for the Tesla scraper.
 
 Scope: flag-gating + ``/cua-api/apps/careers/state`` parsing. The
-Browserbase / Playwright path is verified live, not mocked.
+patchright browser path is verified live, not mocked.
 """
 
 from __future__ import annotations
 
+import builtins
 import logging
 
 import pytest
@@ -32,9 +33,20 @@ def test_flag_off_returns_empty_with_warning(caplog) -> None:
     assert any("browser required" in r.getMessage().lower() for r in caplog.records)
 
 
-def test_flag_on_without_creds_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_flag_on_without_patchright_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tesla requires patchright (not vanilla playwright) to bypass
+    Akamai. With the flag set but patchright missing, raise a clear
+    install-instruction error."""
     monkeypatch.setenv("JOBHIVE_USE_BROWSERBASE", "1")
-    with pytest.raises(ScraperError, match="BROWSERBASE_API_KEY"):
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "patchright" or name.startswith("patchright."):
+            raise ImportError("simulated: patchright not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(ScraperError, match="patchright"):
         TeslaScraper("tesla").fetch()
 
 
