@@ -1,12 +1,12 @@
 """Tests for the Meta scraper.
 
-Scope: flag-gating + GraphQL parsing. The Browserbase / Playwright
-path is exercised with live creds out-of-band — covering it here would
-mean mocking Playwright's surface, which is more brittle than useful.
+Scope: flag-gating + GraphQL parsing. The patchright browser path is
+verified live (it needs a real browser binary), not mocked.
 """
 
 from __future__ import annotations
 
+import builtins
 import logging
 
 import pytest
@@ -34,9 +34,20 @@ def test_flag_off_returns_empty_with_warning(caplog) -> None:
     assert any("browser required" in r.getMessage().lower() for r in caplog.records)
 
 
-def test_flag_on_without_creds_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_flag_on_without_patchright_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Meta now uses patchright (same as Tesla) instead of
+    Browserbase. With the flag set but patchright missing, raise a
+    clear install-instruction error."""
     monkeypatch.setenv("JOBHIVE_USE_BROWSERBASE", "1")
-    with pytest.raises(ScraperError, match="BROWSERBASE_API_KEY"):
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "patchright" or name.startswith("patchright."):
+            raise ImportError("simulated: patchright not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(ScraperError, match="patchright"):
         MetaScraper("meta").fetch()
 
 
@@ -44,8 +55,6 @@ def test_disable_overrides_use_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     """Kill-switch wins even when the opt-in is set, matching Avature."""
     monkeypatch.setenv("JOBHIVE_USE_BROWSERBASE", "1")
     monkeypatch.setenv("JOBHIVE_DISABLE_BROWSERBASE", "1")
-    monkeypatch.setenv("BROWSERBASE_API_KEY", "x")
-    monkeypatch.setenv("BROWSERBASE_PROJECT_ID", "y")
     assert MetaScraper("meta").fetch() == []
 
 

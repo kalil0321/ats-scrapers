@@ -1,28 +1,42 @@
-"""Meta careers scraper — Browserbase-backed.
+"""Meta careers scraper — patchright-backed.
 
-``metacareers.com`` is a single-page React app whose listing UI is fed
-by GraphQL queries that require browser-issued tokens (``fb_dtsg`` and
-friends). There's no public REST endpoint to call directly: the only
-reliable path is to load the page in a real browser and intercept the
-GraphQL responses.
+``metacareers.com`` is a single-page React app whose listing UI is
+fed by GraphQL queries that require browser-issued tokens
+(``fb_dtsg`` and friends). There's no public REST endpoint to call
+directly: the only reliable path is to load the page in a real
+browser and intercept the GraphQL responses.
 
-We use Browserbase as the remote browser host so the public library
-doesn't ship its own Chrome binary. Set ``JOBHIVE_USE_BROWSERBASE=1``
-together with ``BROWSERBASE_API_KEY`` / ``BROWSERBASE_PROJECT_ID`` to
-enable. Without the flag, this scraper logs a warning and returns
-``[]`` so a full-pipeline run keeps moving.
+We use `patchright`_ — a Playwright fork with stealth patches in the
+bundled Chromium — so the scraper runs locally without any paid
+service. Same opt-in flag as Tesla: set ``JOBHIVE_USE_BROWSERBASE=1``
+to enable. Without the flag, ``fetch()`` returns ``[]`` with a single
+warning so the rest of the pipeline keeps moving. Without patchright
+but with the flag set, raises a clear ``ScraperError``.
 
-Listings only — per-job descriptions would need a second pass (one
-navigation per job) and aren't worth the Browserbase minutes for v1.
+.. _patchright: https://github.com/Kaliiiiiiiiii-Vinyzu/patchright
+
+Two-pass scrape:
+
+1. **Listings** — open ``/jobs``, intercept GraphQL responses, parse
+   the canonical job entries (id, title, locations, teams, sub_teams)
+   from ``job_search_with_featured_jobs.all_jobs``.
+2. **Descriptions** — for each job, navigate to ``/jobs/{id}/`` in a
+   pool of parallel tabs and capture the rendered description text.
+   Best-effort: a single failed detail page is logged but doesn't
+   skip the job (we still ship the listing-level row, just without
+   a description).
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
+from jobhive.exceptions import ScraperError
 from jobhive.models import ATSType, Job
 from jobhive.scrapers import _browserbase as bb
 from jobhive.scrapers.base import BaseScraper, ScraperRegistry
@@ -30,12 +44,50 @@ from jobhive.scrapers.base import BaseScraper, ScraperRegistry
 log = logging.getLogger(__name__)
 
 _LISTING_URL = "https://www.metacareers.com/jobs"
+_DETAIL_URL_TEMPLATE = "https://www.metacareers.com/jobs/{id}/"
 
 # How long to keep listening for GraphQL responses after the listing
-# page finishes its initial load. The page lazy-fires more queries as
-# you scroll; we don't bother scrolling, so this just buys time for
-# the first wave to settle.
+# page finishes its initial load.
 _GRAPHQL_SETTLE_MS = 8_000
+
+# Concurrent detail tabs. 6 keeps the per-tenant time tight without
+# hammering Meta. Each tab is one navigation per job.
+_DETAIL_CONCURRENCY = 6
+_DETAIL_TIMEOUT_MS = 30_000
+
+# The detail page lays out:
+#
+#   Skip to main content / Jobs / Teams / … / Jobs / {title} /
+#   {title} / {location} / {team} / +N more / Apply now /
+#   <DESCRIPTION> / … / footer (which itself contains another
+#   "APPLY NOW" call-to-action).
+#
+# We grab the whole body text, find the FIRST "Apply now" (the per-
+# job CTA — Meta cases it lowercase; the footer's "APPLY NOW" is
+# always uppercase, so a case-sensitive match avoids the footer
+# entirely), and take everything after it. The description always
+# starts on the next line.
+_DESCRIPTION_ANCHOR = "Apply now"
+
+# When a job has been removed, the page renders this banner instead
+# of a description. We surface ``None`` rather than ship the
+# placeholder text — the listing-level row stays in the dataset,
+# just without a description until the next scrape (or until LLM
+# enrichment looks elsewhere).
+_DELETED_JOB_MARKER = "Sorry, this job is no longer available"
+
+# Cookie banners + the "Find your role" / per-job apply CTAs leak
+# into body inner_text. We trim everything starting at the FIRST
+# of these markers — they always sit AFTER the description so the
+# slice is safe. Order matters: we want the earliest match.
+_DESCRIPTION_FOOTER_MARKERS = (
+    "Apply for this job",
+    "Find your role",
+    "Take the first step",
+    "Cookie Policy",
+    "Recruiters can view your",
+    "APPLY NOW",
+)
 
 
 @ScraperRegistry.register(ATSType.META)
@@ -48,20 +100,21 @@ class MetaScraper(BaseScraper):
         if not bb.is_enabled():
             bb.warn_disabled("Meta")
             return []
-        # Order matters: creds is a cheap env-var check, playwright is a
-        # module import. Surface the more likely misconfig (missing
-        # creds) first.
-        api_key, project_id = bb.require_creds()
-        bb.require_playwright()
-        return asyncio.run(self._fetch_via_browserbase(api_key, project_id))
+        return asyncio.run(self._fetch_via_patchright())
 
-    async def _fetch_via_browserbase(
-        self, api_key: str, project_id: str
-    ) -> list[Job]:
-        from playwright.async_api import Response, async_playwright
+    async def _fetch_via_patchright(self) -> list[Job]:
+        try:
+            from patchright.async_api import Response, async_playwright
+        except ImportError as exc:
+            raise ScraperError(
+                "Meta requires `patchright` to bypass Meta's "
+                "GraphQL-token gating. Install with "
+                "`pip install jobhive-py[browser]`, then run "
+                "`patchright install chromium` to download its "
+                "bundled Chromium build."
+            ) from exc
 
-        ws_url = await bb.create_session_ws_url(api_key, project_id)
-        captured: list[dict[str, Any]] = []
+        captured_listings: list[dict[str, Any]] = []
 
         async def on_response(resp: Response) -> None:
             if "graphql" not in resp.url:
@@ -70,15 +123,35 @@ class MetaScraper(BaseScraper):
                 payload = await resp.json()
             except Exception:
                 # GraphQL endpoints occasionally stream non-JSON
-                # (errors, redirects). Silently skip.
+                # (error envelopes, redirects); skip silently.
                 return
-            captured.append(payload)
+            captured_listings.append(payload)
 
-        async with async_playwright() as p:
-            browser = await p.chromium.connect_over_cdp(ws_url)
+        async with async_playwright() as pw:
             try:
-                ctx = browser.contexts[0]
-                page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+                # Headed Chromium positioned off-screen — same trick
+                # Tesla uses. Meta's GraphQL doesn't care about
+                # headless vs headed, but keeping the launch shape
+                # identical across the two browser-required scrapers
+                # means a single cron host setup covers both, and the
+                # operator never sees a window pop up.
+                browser = await pw.chromium.launch(
+                    headless=False,
+                    args=[
+                        "--window-position=-32000,-32000",
+                        "--window-size=1440,900",
+                    ],
+                )
+            except Exception as exc:
+                raise ScraperError(
+                    f"Meta: patchright Chromium launch failed ({exc}). "
+                    "Did you run `patchright install chromium`?"
+                ) from exc
+            try:
+                ctx = await browser.new_context(
+                    viewport={"width": 1440, "height": 900},
+                )
+                page = await ctx.new_page()
                 page.on("response", on_response)
                 try:
                     await page.goto(
@@ -88,11 +161,92 @@ class MetaScraper(BaseScraper):
                     )
                     await page.wait_for_timeout(_GRAPHQL_SETTLE_MS)
                 except Exception as exc:
-                    log.warning("Meta: page load failed (%s)", exc)
+                    log.warning("Meta: listing page load failed (%s)", exc)
+
+                jobs = list(self._parse_responses(captured_listings))
+                if jobs:
+                    await self._enrich_with_descriptions(ctx, jobs)
             finally:
                 await browser.close()
 
-        return list(self._parse_responses(captured))
+        return jobs
+
+    async def _enrich_with_descriptions(
+        self,
+        ctx: Any,
+        jobs: list[Job],
+    ) -> None:
+        """Visit each job's detail URL in a pool of parallel tabs and
+        attach the description text. Best-effort — a tab failure logs
+        a warning and leaves the description ``None``."""
+        sem = asyncio.Semaphore(_DETAIL_CONCURRENCY)
+
+        async def fetch_one(job: Job) -> None:
+            async with sem:
+                tab = await ctx.new_page()
+                try:
+                    description = await self._fetch_detail_description(
+                        tab, str(job.url)
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "Meta: detail fetch failed for %s (%s)",
+                        job.ats_id, exc,
+                    )
+                    return
+                finally:
+                    with contextlib.suppress(Exception):
+                        await tab.close()
+                if description:
+                    object.__setattr__(job, "description", description)
+
+        await asyncio.gather(*(fetch_one(j) for j in jobs))
+
+    @staticmethod
+    async def _fetch_detail_description(tab: Any, url: str) -> str | None:
+        try:
+            await tab.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=_DETAIL_TIMEOUT_MS,
+            )
+        except Exception:
+            return None
+        # Give React a beat to hydrate the description.
+        await tab.wait_for_timeout(1500)
+        try:
+            body_text = await tab.inner_text("body")
+        except Exception:
+            return None
+        if not body_text:
+            return None
+        # Removed-job placeholder: ship None so the row keeps its
+        # listing-level data without lying about a description.
+        if _DELETED_JOB_MARKER in body_text:
+            return None
+        # Slice off the page chrome — everything before the FIRST
+        # "Apply now" CTA is nav / breadcrumbs / repeated title.
+        # Case-sensitive match: the footer's "APPLY NOW" button is
+        # uppercase and we don't want to slice there.
+        anchor_at = body_text.find(_DESCRIPTION_ANCHOR)
+        if anchor_at < 0:
+            return None
+        description = body_text[anchor_at + len(_DESCRIPTION_ANCHOR):]
+        # Trim everything starting at the EARLIEST footer marker —
+        # cookie banner, per-job apply CTA, "Find your role" widget.
+        cuts = [
+            description.find(m) for m in _DESCRIPTION_FOOTER_MARKERS
+        ]
+        cuts = [c for c in cuts if c >= 0]
+        if cuts:
+            description = description[: min(cuts)]
+        description = description.strip()
+        if len(description) < 80:
+            return None
+        # Trim runs of blank lines and cap at ~10kB to match the
+        # Job.description docstring contract.
+        cleaned = re.sub(r"\n{3,}", "\n\n", description)
+        return cleaned[:10_000]
 
     def _parse_responses(
         self, responses: list[dict[str, Any]]
@@ -111,7 +265,7 @@ class MetaScraper(BaseScraper):
                 seen.add(job_id)
                 jobs.append(
                     Job(
-                        url=f"https://www.metacareers.com/jobs/{job_id}/",
+                        url=_DETAIL_URL_TEMPLATE.format(id=job_id),
                         title=title,
                         company="Meta",
                         ats_type=ATSType.META,
@@ -127,17 +281,15 @@ class MetaScraper(BaseScraper):
 
     @staticmethod
     def _iter_job_entries(payload: dict[str, Any]):
-        """Yield job dicts from the various GraphQL response shapes Meta
-        has shipped. The site's queries change names without a public
-        contract, so we tolerate a few aliases.
-        """
+        """Yield job dicts from the various GraphQL response shapes
+        Meta has shipped. The site's queries change names without a
+        public contract, so we tolerate a few aliases."""
         data = payload.get("data") or {}
         # Primary shape (as of 2026-05): job_search_with_featured_jobs.all_jobs
         jobs = (data.get("job_search_with_featured_jobs") or {}).get("all_jobs") or []
         if jobs:
             yield from jobs
             return
-        # Fallback shapes seen in older responses or A/B variants.
         for key in ("job_search_results", "jobSearchResults"):
             results = (data.get(key) or {}).get("results") or []
             if results:
