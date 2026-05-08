@@ -37,24 +37,6 @@ MAX_CONCURRENCY = 4
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
 
-# Map The Muse's level labels (free-form) → canonical Seniority enum.
-_LEVEL_MAP: dict[str, str] = {
-    "internship": "INTERN",
-    "intern": "INTERN",
-    "entry level": "ENTRY",
-    "entry-level": "ENTRY",
-    "mid level": "MID",
-    "mid-level": "MID",
-    "senior level": "SENIOR",
-    "senior-level": "SENIOR",
-    "staff": "STAFF",
-    "principal": "PRINCIPAL",
-    "manager": "DIRECTOR",
-    "director": "DIRECTOR",
-    "executive": "EXECUTIVE",
-    "vice president": "EXECUTIVE",
-}
-
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -189,14 +171,15 @@ class TheMuseScraper(BaseScraper):
         ]
         location = location_names[0] if location_names else None
 
-        # Level → seniority enum (free-form labels mapped via _LEVEL_MAP).
+        # The Muse's free-form level label (Internship / Entry Level / Senior
+        # Level / Director / etc.) is surfaced as ``commitment`` since the
+        # canonical seniority enum was dropped from the ``Job`` model.
         level_name: str | None = None
         levels = item.get("levels") or []
         for lvl in levels:
             if isinstance(lvl, dict) and lvl.get("name"):
                 level_name = lvl["name"].strip()
                 break
-        seniority = _LEVEL_MAP.get((level_name or "").lower()) if level_name else None
 
         url = ((item.get("refs") or {}).get("landing_page") or "").strip()
         if not url:
@@ -225,7 +208,6 @@ class TheMuseScraper(BaseScraper):
             ats_type=ATSType.THEMUSE,
             ats_id=ats_id,
             location=location,
-            seniority=seniority,
             commitment=level_name,
             description=description or None,
             posted_at=posted_at,

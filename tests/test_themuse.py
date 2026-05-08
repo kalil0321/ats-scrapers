@@ -74,26 +74,19 @@ def test_parses_full_job(httpx_mock) -> None:
     assert j.title == "Software Engineer"
     assert j.company == "Acme"
     assert j.location == "New York, NY"
-    assert j.seniority == "SENIOR"  # Senior Level → SENIOR
     assert j.commitment == "Senior Level"
     assert j.description == "Build things."
     assert j.posted_at is not None
     assert str(j.url) == "https://www.themuse.com/jobs/acme/sw-eng-1"
 
 
-@pytest.mark.parametrize("level, expected", [
-    ("Internship", "INTERN"),
-    ("Entry Level", "ENTRY"),
-    ("Mid Level", "MID"),
-    ("Senior Level", "SENIOR"),
-    ("Director", "DIRECTOR"),
-])
-def test_level_mapping(level: str, expected: str, httpx_mock) -> None:
+@pytest.mark.parametrize("level", ["Internship", "Entry Level", "Mid Level", "Senior Level", "Director"])
+def test_level_passes_through_to_commitment(level: str, httpx_mock) -> None:
     httpx_mock.add_response(
         url=re.compile(r".*page=0.*"),
         json=_envelope([_job(job_id=1, level=level)]),
     )
-    assert TheMuseScraper("any", max_pages=1).fetch()[0].seniority == expected
+    assert TheMuseScraper("any", max_pages=1).fetch()[0].commitment == level
 
 
 def test_multi_location_first_in_location_rest_in_raw(httpx_mock) -> None:

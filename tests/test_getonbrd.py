@@ -158,7 +158,7 @@ def test_parses_full_job_payload(httpx_mock) -> None:
     assert j.company == "Acme Inc"
     assert j.location == "Lima, Peru"
     assert j.is_remote is False
-    assert j.seniority == "SENIOR"
+    assert (j.raw or {}).get("seniority") == "Senior"
     assert j.employment_type == "CONTRACT"  # Freelance → CONTRACT
     assert j.commitment == "Freelance"
     assert j.salary_currency == "USD"
@@ -257,9 +257,10 @@ def test_falls_back_to_country_list_when_city_id_unresolvable(httpx_mock) -> Non
 # --- enum mapping -----------------------------------------------------------
 
 
-def test_seniority_mapping_covers_all_locale_keys(httpx_mock) -> None:
-    """Each Get on Board seniority ``locale_key`` should land on a valid
-    Seniority enum value (or stay None)."""
+def test_seniority_name_passed_through_to_raw(httpx_mock) -> None:
+    """The Job model no longer carries a seniority enum, but the raw
+    name is preserved in ``raw["seniority"]`` so downstream consumers
+    can still map it."""
     httpx_mock.add_response(url=f"{_API}/categories", json=_categories(["programming"]))
     _stub_lookups(httpx_mock)
     httpx_mock.add_response(
@@ -273,11 +274,11 @@ def test_seniority_mapping_covers_all_locale_keys(httpx_mock) -> None:
 
     jobs = GetOnBrdScraper("any").fetch()
     by_id = {j.ats_id: j for j in jobs}
-    assert by_id["s-1"].seniority == "ENTRY"        # no_experience
-    assert by_id["s-2"].seniority == "ENTRY"        # junior
-    assert by_id["s-3"].seniority == "MID"          # semi_senior
-    assert by_id["s-4"].seniority == "SENIOR"
-    assert by_id["s-5"].seniority == "PRINCIPAL"    # expert
+    assert (by_id["s-1"].raw or {}).get("seniority") == "Sin experiencia"
+    assert (by_id["s-2"].raw or {}).get("seniority") == "Junior"
+    assert (by_id["s-3"].raw or {}).get("seniority") == "Semi senior"
+    assert (by_id["s-4"].raw or {}).get("seniority") == "Senior"
+    assert (by_id["s-5"].raw or {}).get("seniority") == "Expert"
 
 
 def test_salary_only_set_when_present(httpx_mock) -> None:

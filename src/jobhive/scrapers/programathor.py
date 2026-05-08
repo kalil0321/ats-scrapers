@@ -75,24 +75,6 @@ _SENIORITY_RE = re.compile(r"<i[^>]+fa-chart-bar[^>]*>\s*</i>(?P<v>[^<]+)")
 _CONTRACT_RE = re.compile(r"<i[^>]+fa-file-alt[^>]*>\s*</i>(?P<v>[^<]+)")
 _SKILL_TAG_RE = re.compile(r"<span class='tag-list[^']*'>([^<]+)</span>")
 
-# Programathor seniority labels (Portuguese) → canonical Seniority enum.
-_SENIORITY_MAP: dict[str, str] = {
-    "junior": "ENTRY",
-    "júnior": "ENTRY",
-    "estagiário": "INTERN",
-    "estagiario": "INTERN",
-    "estágio": "INTERN",
-    "estagio": "INTERN",
-    "trainee": "ENTRY",
-    "pleno": "MID",
-    "senior": "SENIOR",
-    "sênior": "SENIOR",
-    "especialista": "STAFF",
-    "tech lead": "STAFF",
-    "líder": "STAFF",
-    "lider": "STAFF",
-}
-
 # Contract type labels → canonical EmploymentType.
 _EMPLOYMENT_MAP: dict[str, str] = {
     "clt": "FULL_TIME",
@@ -293,7 +275,6 @@ class ProgramathorScraper(BaseScraper):
         seniority_raw = _strip_html(_extract(body, _SENIORITY_RE))
         contract_raw = _strip_html(_extract(body, _CONTRACT_RE))
 
-        seniority = _SENIORITY_MAP.get(seniority_raw.lower()) if seniority_raw else None
         employment_type = _EMPLOYMENT_MAP.get(contract_raw.lower()) if contract_raw else None
         commitment = contract_raw or None
 
@@ -318,6 +299,8 @@ class ProgramathorScraper(BaseScraper):
             raw["company_type"] = company_type
         if salary_raw and not (salary_min or salary_max):
             raw["salary_text"] = salary_raw
+        if seniority_raw:
+            raw["seniority"] = seniority_raw
 
         return Job(
             url=f"{API_ROOT}{href}",
@@ -332,7 +315,6 @@ class ProgramathorScraper(BaseScraper):
             salary_min=salary_min,
             salary_max=salary_max,
             employment_type=employment_type,
-            seniority=seniority,
             commitment=commitment,
             fetched_at=datetime.now(),
             raw=raw or None,

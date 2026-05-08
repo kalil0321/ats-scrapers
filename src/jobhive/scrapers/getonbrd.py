@@ -45,18 +45,6 @@ MAX_CONCURRENCY = 3
 MAX_RETRIES = 5
 RETRY_BASE_DELAY = 2.0
 
-# Maps Get on Board's free-form seniority labels to the canonical Seniority
-# enum on the Job model. The API exposes ``locale_key`` values that are
-# stable across UI translations — we key off those rather than the
-# Spanish/English ``name``.
-_SENIORITY_MAP: dict[str, str] = {
-    "no_experience": "ENTRY",
-    "junior": "ENTRY",
-    "semi_senior": "MID",
-    "senior": "SENIOR",
-    "expert": "PRINCIPAL",
-}
-
 # Modality ``locale_key`` → canonical ``employment_type`` enum.
 _MODALITY_MAP: dict[str, str] = {
     "full_time": "FULL_TIME",
@@ -300,13 +288,14 @@ class GetOnBrdScraper(BaseScraper):
             (modality_attrs.get("locale_key") or "").lower()
         )
 
+        # The seniority enum was removed from the Job model; the
+        # original `attrs["seniority"]` reference is preserved in
+        # ``raw`` below for downstream consumers that still want it.
         seniority_id = str(
             ((attrs.get("seniority") or {}).get("data") or {}).get("id") or ""
         )
         seniority_attrs = seniorities.get(seniority_id) or {}
-        seniority = _SENIORITY_MAP.get(
-            (seniority_attrs.get("locale_key") or "").lower()
-        )
+        seniority_name = seniority_attrs.get("name")
 
         description = _strip_html(_concat_descriptions(attrs))
         salary_min = _to_float(attrs.get("min_salary"))
@@ -323,6 +312,8 @@ class GetOnBrdScraper(BaseScraper):
             v = attrs.get(k)
             if v not in (None, "", []):
                 raw[k] = v
+        if seniority_name:
+            raw["seniority"] = seniority_name
 
         return Job(
             url=url,
@@ -337,7 +328,6 @@ class GetOnBrdScraper(BaseScraper):
             salary_min=salary_min,
             salary_max=salary_max,
             employment_type=employment_type,
-            seniority=seniority,
             commitment=commitment,
             department=attrs.get("category_name"),
             description=description,

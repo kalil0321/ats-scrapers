@@ -151,7 +151,7 @@ def test_parses_full_listing_card(httpx_mock) -> None:
     assert j.salary_period == "MONTH"
     assert j.salary_min == 3000.0
     assert j.salary_max == 5000.0
-    assert j.seniority == "MID"  # Pleno → MID
+    assert (j.raw or {}).get("seniority") == "Pleno"
     assert j.employment_type == "CONTRACT"  # PJ → CONTRACT
     assert j.commitment == "PJ"
     assert j.raw is not None
@@ -214,28 +214,24 @@ def test_parse_salary_shapes(raw: str, expected: tuple) -> None:
     assert _parse_salary(raw) == expected
 
 
-# --- seniority enum mapping -------------------------------------------------
+# --- seniority text passthrough --------------------------------------------
 
 
-@pytest.mark.parametrize("label, expected", [
-    ("Júnior", "ENTRY"),
-    ("Pleno", "MID"),
-    ("Sênior", "SENIOR"),
-    ("Estágio", "INTERN"),
-    ("Trainee", "ENTRY"),
-])
-def test_seniority_mapping(label: str, expected: str, httpx_mock) -> None:
+@pytest.mark.parametrize("label", ["Júnior", "Pleno", "Sênior", "Estágio", "Trainee"])
+def test_seniority_label_passes_through_to_raw(label: str, httpx_mock) -> None:
+    """Programathor's seniority label is preserved on Job.raw rather
+    than mapped to a canonical enum (the Job model dropped seniority)."""
     httpx_mock.add_response(
         url="https://programathor.com.br/jobs?page=1",
         text=_listing([_card(job_id="1", title="X", seniority=label)]),
     )
-    # Pages 2-4 all empty → 3 consecutive duplicate-only pages → stop.
     httpx_mock.add_response(
         url=re.compile(r"^https://programathor\.com\.br/jobs\?page=[2-9]$"),
         text=_empty_listing(),
         is_reusable=True,
     )
-    assert ProgramathorScraper("any").fetch()[0].seniority == expected
+    j = ProgramathorScraper("any").fetch()[0]
+    assert (j.raw or {}).get("seniority") == label
 
 
 # --- pagination termination --------------------------------------------------
