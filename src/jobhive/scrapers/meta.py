@@ -127,25 +127,19 @@ class MetaScraper(BaseScraper):
                 return
             captured_listings.append(payload)
 
-        # Headed off-screen + minimized + macOS focus-restore — same
-        # trick Tesla uses. Meta's GraphQL doesn't care about headless
-        # vs headed, but keeping the launch shape identical across
-        # the two browser-required scrapers means a single cron host
-        # setup covers both, and the operator's keyboard focus is
-        # never stolen.
-        prev_app = bb.capture_frontmost_app_macos()
+        # Headed Chromium — keeps the launch shape identical to
+        # Tesla (which actually requires it for the Akamai bypass)
+        # so a single cron host setup covers both browser-required
+        # scrapers. Cron runs overnight when no operator is at the
+        # keyboard, so no need to hide the window.
         async with async_playwright() as pw:
             try:
-                browser = await pw.chromium.launch(
-                    headless=False,
-                    args=list(bb.PATCHRIGHT_INVISIBLE_ARGS),
-                )
+                browser = await pw.chromium.launch(headless=False)
             except Exception as exc:
                 raise ScraperError(
                     f"Meta: patchright Chromium launch failed ({exc}). "
                     "Did you run `patchright install chromium`?"
                 ) from exc
-            bb.reactivate_app_macos(prev_app)
             try:
                 ctx = await browser.new_context(
                     viewport={"width": 1440, "height": 900},
