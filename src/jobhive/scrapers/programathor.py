@@ -71,7 +71,6 @@ _BRIEFCASE_RE = re.compile(r"<i[^>]+fa-briefcase[^>]*>\s*</i>(?P<v>[^<]+)")
 _LOCATION_RE = re.compile(r"<i[^>]+fa-map-marker-alt[^>]*>\s*</i>(?P<v>[^<]+)")
 _COMPANY_TYPE_RE = re.compile(r"<i[^>]+fa-building[^>]*>\s*</i>(?P<v>[^<]+)")
 _SALARY_RE = re.compile(r"<i[^>]+fa-money-bill-alt[^>]*>\s*</i>(?P<v>[^<]+)")
-_SENIORITY_RE = re.compile(r"<i[^>]+fa-chart-bar[^>]*>\s*</i>(?P<v>[^<]+)")
 _CONTRACT_RE = re.compile(r"<i[^>]+fa-file-alt[^>]*>\s*</i>(?P<v>[^<]+)")
 _SKILL_TAG_RE = re.compile(r"<span class='tag-list[^']*'>([^<]+)</span>")
 
@@ -272,7 +271,6 @@ class ProgramathorScraper(BaseScraper):
         location = _normalize_location(location_raw)
         company_type = _strip_html(_extract(body, _COMPANY_TYPE_RE))
         salary_raw = _strip_html(_extract(body, _SALARY_RE))
-        seniority_raw = _strip_html(_extract(body, _SENIORITY_RE))
         contract_raw = _strip_html(_extract(body, _CONTRACT_RE))
 
         employment_type = _EMPLOYMENT_MAP.get(contract_raw.lower()) if contract_raw else None
@@ -299,8 +297,6 @@ class ProgramathorScraper(BaseScraper):
             raw["company_type"] = company_type
         if salary_raw and not (salary_min or salary_max):
             raw["salary_text"] = salary_raw
-        if seniority_raw:
-            raw["seniority"] = seniority_raw
 
         return Job(
             url=f"{API_ROOT}{href}",

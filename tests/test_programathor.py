@@ -5,7 +5,7 @@ proxy). These tests exercise:
 
 - Listing-card parsing — every Programathor field maps to the right
   Job slot
-- Brazilian salary/location parsing (R$, Portuguese seniority labels,
+- Brazilian salary/location parsing (R$,
   "Remoto" → "Remote, Brazil")
 - Pagination termination (3 consecutive duplicate-only pages → stop)
 - The proxy URL helper (Evomi's host:port:user:pass shape converts to
@@ -50,7 +50,6 @@ def _card(
     location: str = "Remoto",
     company_type: str = "Startup",
     salary: str = "Até R$5.000",
-    seniority: str = "Pleno",
     contract: str = "PJ",
     skills: list[str] | None = None,
     new_label: bool = True,
@@ -73,7 +72,6 @@ def _card(
         f"<span><i class='fas fa-map-marker-alt'></i>{location}</span>"
         f"<span><i class='fa fa-building'></i>{company_type}</span>"
         f"<span><i class='far fa-money-bill-alt'></i>{salary}</span>"
-        f"<span><i class='far fa-chart-bar'></i>{seniority}</span>"
         f"<span><i class='far fa-file-alt'></i>{contract}</span>"
         f"</div>"
         f"<div>{skill_html}</div>"
@@ -126,7 +124,6 @@ def test_parses_full_listing_card(httpx_mock) -> None:
             location="Remoto",
             company_type="Startup",
             salary="R$3.000 - R$5.000",
-            seniority="Pleno",
             contract="PJ",
             skills=["Python", "API", "SQL"],
         )]),
@@ -151,7 +148,6 @@ def test_parses_full_listing_card(httpx_mock) -> None:
     assert j.salary_period == "MONTH"
     assert j.salary_min == 3000.0
     assert j.salary_max == 5000.0
-    assert (j.raw or {}).get("seniority") == "Pleno"
     assert j.employment_type == "CONTRACT"  # PJ → CONTRACT
     assert j.commitment == "PJ"
     assert j.raw is not None
@@ -212,26 +208,6 @@ def test_parse_brl_amount_handles_brazilian_thousand_separator() -> None:
 ])
 def test_parse_salary_shapes(raw: str, expected: tuple) -> None:
     assert _parse_salary(raw) == expected
-
-
-# --- seniority text passthrough --------------------------------------------
-
-
-@pytest.mark.parametrize("label", ["Júnior", "Pleno", "Sênior", "Estágio", "Trainee"])
-def test_seniority_label_passes_through_to_raw(label: str, httpx_mock) -> None:
-    """Programathor's seniority label is preserved on Job.raw rather
-    than mapped to a canonical enum (the Job model dropped seniority)."""
-    httpx_mock.add_response(
-        url="https://programathor.com.br/jobs?page=1",
-        text=_listing([_card(job_id="1", title="X", seniority=label)]),
-    )
-    httpx_mock.add_response(
-        url=re.compile(r"^https://programathor\.com\.br/jobs\?page=[2-9]$"),
-        text=_empty_listing(),
-        is_reusable=True,
-    )
-    j = ProgramathorScraper("any").fetch()[0]
-    assert (j.raw or {}).get("seniority") == label
 
 
 # --- pagination termination --------------------------------------------------

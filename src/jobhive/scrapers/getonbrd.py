@@ -9,7 +9,7 @@ Public JSON:API at ``https://www.getonbrd.com/api/v0`` — no auth, no key.
 The site-wide ``/jobs`` endpoint is auth-gated, but per-category
 ``/categories/{slug}/jobs`` is open. We enumerate the 18 categories the
 ``/categories`` endpoint advertises, paginate each (max
-``per_page=120``), and resolve the embedded company / city / seniority /
+``per_page=120``), and resolve the embedded company / city /
 modality references separately because the API doesn't support
 ``?include=`` for related resources.
 
@@ -79,11 +79,9 @@ class GetOnBrdScraper(BaseScraper):
             categories = await self._list_categories(client, sem)
 
             # Lookup tables — one fetch each, then cached in memory for
-            # the full run. Modalities and seniorities are tiny enums
-            # (~5-10 values each); cities are populated lazily as we
-            # encounter referenced IDs.
+            # the full run. Modalities is a tiny enum (~5-10 values);
+            # cities are populated lazily as we encounter referenced IDs.
             modalities = await self._fetch_lookup(client, sem, "modalities")
-            seniorities = await self._fetch_lookup(client, sem, "seniorities")
             companies: dict[str, str] = {}
             cities: dict[str, dict[str, str]] = {}
 
@@ -105,7 +103,7 @@ class GetOnBrdScraper(BaseScraper):
                         jobs.append(
                             await self._parse_job(
                                 client, sem, item,
-                                modalities=modalities, seniorities=seniorities,
+                                modalities=modalities,
                                 companies=companies, cities=cities,
                             )
                         )
@@ -190,7 +188,7 @@ class GetOnBrdScraper(BaseScraper):
         sem: asyncio.Semaphore,
         resource: str,
     ) -> dict[str, dict[str, str]]:
-        """Fetch a small enum-style resource (modalities, seniorities) and
+        """Fetch a small enum-style resource (modalities) and
         index it by id."""
         payload = await self._request_json(client, sem, f"{API_ROOT}/{resource}")
         return {
@@ -259,7 +257,6 @@ class GetOnBrdScraper(BaseScraper):
         item: dict[str, Any],
         *,
         modalities: dict[str, dict[str, str]],
-        seniorities: dict[str, dict[str, str]],
         companies: dict[str, str],
         cities: dict[str, dict[str, str]],
     ) -> Job:
@@ -288,15 +285,6 @@ class GetOnBrdScraper(BaseScraper):
             (modality_attrs.get("locale_key") or "").lower()
         )
 
-        # The seniority enum was removed from the Job model; the
-        # original `attrs["seniority"]` reference is preserved in
-        # ``raw`` below for downstream consumers that still want it.
-        seniority_id = str(
-            ((attrs.get("seniority") or {}).get("data") or {}).get("id") or ""
-        )
-        seniority_attrs = seniorities.get(seniority_id) or {}
-        seniority_name = seniority_attrs.get("name")
-
         description = _strip_html(_concat_descriptions(attrs))
         salary_min = _to_float(attrs.get("min_salary"))
         salary_max = _to_float(attrs.get("max_salary"))
@@ -312,8 +300,6 @@ class GetOnBrdScraper(BaseScraper):
             v = attrs.get(k)
             if v not in (None, "", []):
                 raw[k] = v
-        if seniority_name:
-            raw["seniority"] = seniority_name
 
         return Job(
             url=url,

@@ -172,8 +172,7 @@ class TheMuseScraper(BaseScraper):
         location = location_names[0] if location_names else None
 
         # The Muse's free-form level label (Internship / Entry Level / Senior
-        # Level / Director / etc.) is surfaced as ``commitment`` since the
-        # canonical seniority enum was dropped from the ``Job`` model.
+        # Level / Director / etc.) is surfaced as ``commitment``.
         level_name: str | None = None
         levels = item.get("levels") or []
         for lvl in levels:

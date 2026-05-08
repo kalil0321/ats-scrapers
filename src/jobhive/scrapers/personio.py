@@ -157,7 +157,7 @@ class PersonioScraper(BaseScraper):
 
         raw: dict[str, Any] = {}
         for k in ("subcompany", "department", "office", "occupation",
-                  "occupationCategory", "seniority", "yearsOfExperience",
+                  "occupationCategory", "yearsOfExperience",
                   "employment_type", "schedule", "category"):
             v = item.get(k)
             if v:

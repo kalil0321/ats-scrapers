@@ -1,7 +1,7 @@
 """Tests for the Get on Board (LATAM tech) scraper.
 
 The API doesn't support ``?include=`` for related resources, so the scraper
-makes follow-up fetches for company / city / modality / seniority. These
+makes follow-up fetches for company / city / modality. These
 tests pin the parsing contract and the lookup-cache behaviour so we don't
 re-fetch the same company every job.
 """
@@ -43,18 +43,6 @@ def _modalities() -> dict:
     }
 
 
-def _seniorities() -> dict:
-    return {
-        "data": [
-            {"id": "1", "type": "seniority", "attributes": {"name": "Sin experiencia", "locale_key": "no_experience"}},
-            {"id": "2", "type": "seniority", "attributes": {"name": "Junior", "locale_key": "junior"}},
-            {"id": "3", "type": "seniority", "attributes": {"name": "Semi senior", "locale_key": "semi_senior"}},
-            {"id": "4", "type": "seniority", "attributes": {"name": "Senior", "locale_key": "senior"}},
-            {"id": "5", "type": "seniority", "attributes": {"name": "Expert", "locale_key": "expert"}},
-        ],
-    }
-
-
 def _job(
     *,
     job_id: str,
@@ -62,7 +50,6 @@ def _job(
     company_id: str,
     city_id: str | None = None,
     countries: list[str] | None = None,
-    seniority_id: str = "4",
     modality_id: str = "1",
     remote: bool = False,
     min_salary: int | None = None,
@@ -85,7 +72,6 @@ def _job(
             ),
             "countries": countries or [],
             "modality": {"data": {"id": int(modality_id), "type": "modality"}},
-            "seniority": {"data": {"id": int(seniority_id), "type": "seniority"}},
             "remote": remote,
             "remote_modality": "remote_local" if remote else "hybrid",
             "min_salary": min_salary,
@@ -113,7 +99,6 @@ def _city(cid: str, name: str, country: str) -> dict:
 
 def _stub_lookups(httpx_mock) -> None:
     httpx_mock.add_response(url=f"{_API}/modalities", json=_modalities())
-    httpx_mock.add_response(url=f"{_API}/seniorities", json=_seniorities())
 
 
 # --- registry / wiring ------------------------------------------------------
@@ -139,7 +124,6 @@ def test_parses_full_job_payload(httpx_mock) -> None:
                 title="Senior Engineer",
                 company_id="42",
                 city_id="130",
-                seniority_id="4",
                 modality_id="3",  # Freelance
                 min_salary=3500,
                 max_salary=4200,
@@ -158,7 +142,6 @@ def test_parses_full_job_payload(httpx_mock) -> None:
     assert j.company == "Acme Inc"
     assert j.location == "Lima, Peru"
     assert j.is_remote is False
-    assert (j.raw or {}).get("seniority") == "Senior"
     assert j.employment_type == "CONTRACT"  # Freelance → CONTRACT
     assert j.commitment == "Freelance"
     assert j.salary_currency == "USD"
@@ -252,33 +235,6 @@ def test_falls_back_to_country_list_when_city_id_unresolvable(httpx_mock) -> Non
     # or fall back to country — both are acceptable; what matters is no
     # exception.
     assert len(jobs) == 1
-
-
-# --- enum mapping -----------------------------------------------------------
-
-
-def test_seniority_name_passed_through_to_raw(httpx_mock) -> None:
-    """The Job model no longer carries a seniority enum, but the raw
-    name is preserved in ``raw["seniority"]`` so downstream consumers
-    can still map it."""
-    httpx_mock.add_response(url=f"{_API}/categories", json=_categories(["programming"]))
-    _stub_lookups(httpx_mock)
-    httpx_mock.add_response(
-        url=re.compile(rf"^{re.escape(_API)}/categories/programming/jobs"),
-        json=_jobs_page([
-            _job(job_id=f"s-{sid}", title=f"Job {sid}", company_id="9", seniority_id=sid)
-            for sid in ("1", "2", "3", "4", "5")
-        ]),
-    )
-    httpx_mock.add_response(url=f"{_API}/companies/9", json=_company("9", "A"))
-
-    jobs = GetOnBrdScraper("any").fetch()
-    by_id = {j.ats_id: j for j in jobs}
-    assert (by_id["s-1"].raw or {}).get("seniority") == "Sin experiencia"
-    assert (by_id["s-2"].raw or {}).get("seniority") == "Junior"
-    assert (by_id["s-3"].raw or {}).get("seniority") == "Semi senior"
-    assert (by_id["s-4"].raw or {}).get("seniority") == "Senior"
-    assert (by_id["s-5"].raw or {}).get("seniority") == "Expert"
 
 
 def test_salary_only_set_when_present(httpx_mock) -> None:
