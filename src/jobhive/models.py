@@ -146,10 +146,15 @@ class Job(BaseModel):
     1. **Identity** (``global_id``, ``url``, ``title``, ``company``,
        ``ats_type``, ``ats_id``). What the row *is*.
 
-    2. **Location** (``location``, ``lat``, ``lon``, ``is_remote``).
-       Where the role lives. ``is_remote`` is derived from
-       ``location`` text by ``jobhive.enrichment.infer_is_remote``
-       when the ATS doesn't surface a flag of its own.
+    2. **Location** (``location``, ``country_iso``, ``region``,
+       ``lat``, ``lon``, ``is_remote``). Where the role lives.
+       ``is_remote`` is *narrowly* inferred from the ``title`` by
+       ``jobhive.enrichment.infer_is_remote`` when the ATS doesn't
+       surface a flag — it only ever returns ``True`` (never
+       ``False``) so the absence of a marker doesn't get mis-classified
+       as on-site. ``country_iso`` / ``region`` / ``lat`` / ``lon``
+       are scraper-set when the source exposes them, otherwise filled
+       by the downstream LLM enrichment pass / a geocoding service.
 
     3. **Compensation** (``salary_currency``, ``salary_period``,
        ``salary_summary``, ``salary_min``, ``salary_max``).
@@ -163,13 +168,23 @@ class Job(BaseModel):
        them, ``None`` otherwise.
 
     5. **Content & timing** (``description``, ``posted_at``,
-       ``fetched_at``).
+       ``fetched_at``, ``language``). ``language`` is the listing's
+       locale code (ISO 639-1, e.g. ``en`` / ``fr``).
 
     6. **Provider-specific overflow** (``raw``): a JSON dict captured
        at scrape-time so we don't lose ATS-specific fields the
        canonical schema can't represent (Greenhouse ``metadata``
        custom fields, Bundesagentur ``arbeitszeit``/``branche``,
        Lever ``categories.*``, etc.).
+
+    Heuristic-vs-LLM split: anything that requires reading prose
+    (description text, location strings to derive country, …) is
+    intentionally left to the downstream LLM enrichment pipeline.
+    Hardcoded inference here is restricted to (a) cheap robust
+    look-ups (employment-type label maps), (b) tight regex parsing
+    on conventionally-structured text (``salary_summary``), and
+    (c) a single title-only ``is_remote`` keyword check that only
+    ever asserts ``True``.
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -251,12 +266,40 @@ class Job(BaseModel):
             "exposes a list."
         ),
     )
+    country_iso: str | None = Field(
+        default=None,
+        description=(
+            "ISO 3166-1 alpha-2 country code (``US``, ``FR``, ``DE``, "
+            "``BR``, …). Set by the scraper when the source ATS "
+            "exposes a structured country (Bundesagentur, EURES, "
+            "SuccessFactors). Otherwise ``None`` and the LLM "
+            "enrichment pass downstream is expected to derive it from "
+            "``location`` text. Always uppercase 2 letters."
+        ),
+    )
+    region: str | None = Field(
+        default=None,
+        description=(
+            "Continent the role lives on, when known: ``Europe``, "
+            "``North America``, ``Asia``, ``South America``, "
+            "``Africa``, ``Oceania``, or ``Antarctica`` (last one is "
+            "theoretical). For remote roles the value depends on the "
+            "stated remote zone — ``None`` when unspecified. Coarser "
+            "than ``country_iso`` so consumers can group EMEA / APAC "
+            "without juggling country lists. Sub-national entities "
+            "(US states, German Bundesländer, …) live in "
+            "``location`` instead — keep this field at the continent "
+            "level."
+        ),
+    )
     lat: float | None = Field(
         default=None,
         description=(
             "Latitude in WGS-84 degrees when the ATS provides "
             "geocoded coordinates (rare — most don't). Not derived "
-            "from ``location`` text."
+            "from ``location`` text. A future geocoding service is "
+            "expected to fill this for rows where the scraper leaves "
+            "it ``None``."
         ),
     )
     lon: float | None = Field(
@@ -270,10 +313,13 @@ class Job(BaseModel):
         default=None,
         description=(
             "Whether the role can be performed remotely. Set by the "
-            "scraper when the ATS exposes a flag, otherwise derived "
-            "from ``location`` text via "
-            "``jobhive.enrichment.infer_is_remote`` at publish time. "
-            "``None`` means we genuinely don't know."
+            "scraper when the ATS exposes a flag. Otherwise inferred "
+            "from the **title** by ``jobhive.enrichment.infer_is_remote`` "
+            "at publish time — that heuristic only ever returns "
+            "``True`` (never ``False``) since the absence of a remote "
+            "marker in the title is not evidence of on-site. ``None`` "
+            "means we genuinely don't know; LLM enrichment downstream "
+            "is expected to fill the rest."
         ),
     )
 
@@ -411,6 +457,20 @@ class Job(BaseModel):
     fetched_at: datetime | None = Field(
         default=None,
         description="When jobhive last saw this posting (UTC).",
+    )
+    language: str | None = Field(
+        default=None,
+        description=(
+            "ISO 639-1 lowercase 2-letter code for the language of the "
+            "**listing itself** (``en``, ``fr``, ``de``, ``pt``, ``es``, "
+            "``ja``, …). Set by the scraper when the source ATS exposes "
+            "a locale (Lever, Bundesagentur, EURES, Welcome to the "
+            "Jungle). Otherwise ``None`` and LLM enrichment downstream "
+            "fills it from ``title`` / ``description``. Distinct from "
+            "any 'required language' the role itself might want — that "
+            "lives in ``description`` and is out of scope for the "
+            "canonical schema."
+        ),
     )
 
     # --- Provider-specific overflow ---------------------------------------
