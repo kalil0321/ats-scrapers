@@ -68,8 +68,16 @@ publish = [
 discovery = [
     "firecrawl-py>=1.0",
 ]
+browser = [
+    # Patchright is a Playwright fork with stealth patches in the
+    # bundled Chromium. Required by the Tesla scraper (Akamai blocks
+    # vanilla Playwright + Browserbase Sessions + httpcloak). After
+    # install, run `patchright install chromium` to download the
+    # browser binary.
+    "patchright>=1.50",
+]
 all = [
-    "jobhive-py[scrapers,parquet,publish,discovery]",
+    "jobhive-py[scrapers,parquet,publish,discovery,browser]",
 ]
 dev = [
     "pytest>=8.0",
