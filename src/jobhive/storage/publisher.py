@@ -433,6 +433,13 @@ class DatasetPublisher:
         manifest["version"] = "2.0"
         manifest["generator"] = f"jobhive/{__version__}"
         manifest["generated_at"] = generated_at.isoformat()
+        # ``updated_at`` is the "manifest last touched" timestamp; both
+        # writers (publisher + CI companies workflow) bump it so a
+        # client like the homepage that reads only ``updated_at`` for
+        # the freshness badge sees the latest write regardless of which
+        # writer ran most recently. Format matches what the CI script
+        # writes: UTC ``Z``-suffixed seconds.
+        manifest["updated_at"] = generated_at.strftime("%Y-%m-%dT%H:%M:%SZ")
         manifest["stats"] = stats_factory(existing)
         manifest["all"] = all_entry
         manifest["by_ats"] = {ats.value: entry for ats, entry in by_ats.items()}
