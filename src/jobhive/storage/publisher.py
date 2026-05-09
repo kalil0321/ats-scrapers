@@ -17,6 +17,13 @@ other.
 
 Old layout (``jobs/all.parquet``, ``jobs/by-ats/*``, ``jobs/by-date/*``,
 ``companies/*``) is wiped on first run by :meth:`prune_legacy_paths`.
+
+Memory: at corpus scale (~3-4M rows) the publisher streams every
+upload through a temp file on disk rather than building a `BytesIO`
+buffer of the same size in memory. Cross-ATS dedup operates on a
+key-only DataFrame so the full job rows are never copied during the
+multi-pass logic. Peak RSS is dominated by one per-ATS slice rather
+than the concatenated frame.
 """
 
 from __future__ import annotations
@@ -24,6 +31,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,6 +47,8 @@ from jobhive.exceptions import StorageError
 from jobhive.models import ATSType
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from jobhive.storage.r2 import R2Client
 
 logger = logging.getLogger(__name__)
@@ -121,20 +133,25 @@ class DatasetPublisher:
             len(full_df),
             full_df["ats_type"].nunique() if "ats_type" in full_df.columns else 0,
         )
-        full_df = _enrich_with_derived(full_df)
 
         per_ats_entries = self._upload_per_ats_slices(full_df, files_uploaded)
 
         # Cross-ATS dedup is for the canonical "all" view only — per-ATS
         # slices stay raw (a single-ATS consumer wants exactly what that
         # ATS exposes, dups and all).
-        full_df_deduped = _dedupe_cross_ats(full_df)
+        keep_mask = _compute_dedup_keep_mask(full_df)
+        n_raw = len(full_df)
+        n_kept = int(keep_mask.sum())
         logger.info(
             "Cross-ATS dedup: %d → %d rows (%d duplicates removed)",
-            len(full_df),
-            len(full_df_deduped),
-            len(full_df) - len(full_df_deduped),
+            n_raw,
+            n_kept,
+            n_raw - n_kept,
         )
+        full_df_deduped = full_df[keep_mask].reset_index(drop=True)
+        # The original frame is no longer referenced — release it
+        # before the all-upload allocates more memory.
+        del full_df
 
         all_entry = self._upload_dataframe(
             full_df_deduped,
@@ -142,6 +159,8 @@ class DatasetPublisher:
             formats=FORMATS_ALL,
         )
         files_uploaded.extend(_collect_uploaded_keys(all_entry))
+
+        schema_columns = list(full_df_deduped.columns)
 
         # ``total_companies`` is sourced from the CI-owned
         # ``by_ats_companies`` block in the existing manifest (if any).
@@ -151,12 +170,12 @@ class DatasetPublisher:
         manifest_key = self._patch_and_upload_manifest(
             generated_at=started,
             stats_factory=lambda existing: {
-                "total_jobs": len(full_df_deduped),
-                "total_jobs_raw": len(full_df),
+                "total_jobs": n_kept,
+                "total_jobs_raw": n_raw,
                 "total_companies": _sum_by_ats_companies_rows(existing),
                 "ats_count": len(per_ats_entries),
                 "schema_version": "2.0",
-                "schema_columns": list(full_df_deduped.columns),
+                "schema_columns": schema_columns,
             },
             all_entry=all_entry,
             by_ats=per_ats_entries,
@@ -171,8 +190,8 @@ class DatasetPublisher:
         return PublishResult(
             manifest_key=manifest_key,
             files=files_uploaded,
-            total_jobs=len(full_df_deduped),
-            total_jobs_raw=len(full_df),
+            total_jobs=n_kept,
+            total_jobs_raw=n_raw,
             ats_count=len(per_ats_entries),
             duration_seconds=(ended - started).total_seconds(),
         )
@@ -235,41 +254,41 @@ class DatasetPublisher:
 
         if "csv" in formats:
             csv_key = f"{base_key}.csv"
-            csv_bytes = df.to_csv(index=False).encode("utf-8")
-            self._r2.upload_bytes(
-                csv_bytes,
-                csv_key,
-                content_type="text/csv",
-                cache_control=CACHE_CONTROL_LATEST,
-            )
+            with _temp_file(".csv") as csv_path:
+                df.to_csv(csv_path, index=False)
+                sha, size = _file_sha_size(csv_path)
+                self._r2.upload(
+                    csv_path,
+                    csv_key,
+                    content_type="text/csv",
+                    cache_control=CACHE_CONTROL_LATEST,
+                )
             entry["csv"] = self._public_or_key(csv_key)
-            entry["size_bytes"] = len(csv_bytes)
-            entry["sha256"] = hashlib.sha256(csv_bytes).hexdigest()
+            entry["size_bytes"] = size
+            entry["sha256"] = sha
 
         if "parquet" in formats and self._write_parquet:
-            from io import BytesIO
-
-            buffer = BytesIO()
-            _normalize_for_parquet(df).to_parquet(
-                buffer, index=False, compression="zstd"
-            )
-            parquet_bytes = buffer.getvalue()
             parquet_key = f"{base_key}.parquet"
-            self._r2.upload_bytes(
-                parquet_bytes,
-                parquet_key,
-                content_type="application/vnd.apache.parquet",
-                cache_control=CACHE_CONTROL_LATEST,
-            )
+            with _temp_file(".parquet") as pq_path:
+                _normalize_for_parquet_inplace(df).to_parquet(
+                    pq_path, index=False, compression="zstd"
+                )
+                sha, size = _file_sha_size(pq_path)
+                self._r2.upload(
+                    pq_path,
+                    parquet_key,
+                    content_type="application/vnd.apache.parquet",
+                    cache_control=CACHE_CONTROL_LATEST,
+                )
             entry["parquet"] = self._public_or_key(parquet_key)
-            entry["parquet_size_bytes"] = len(parquet_bytes)
-            entry["parquet_sha256"] = hashlib.sha256(parquet_bytes).hexdigest()
+            entry["parquet_size_bytes"] = size
+            entry["parquet_sha256"] = sha
             if "size_bytes" not in entry:
                 # Parquet-only artifact (the global ``all``): mirror
                 # size + sha into the canonical fields so consumers
                 # don't need format-specific lookups.
-                entry["size_bytes"] = len(parquet_bytes)
-                entry["sha256"] = entry["parquet_sha256"]
+                entry["size_bytes"] = size
+                entry["sha256"] = sha
 
         return entry
 
@@ -343,99 +362,138 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
 }
 
 
-def _dedupe_cross_ats(df: pd.DataFrame) -> pd.DataFrame:
-    """Conservative deduplication for the global ``all`` snapshot.
+def _compute_dedup_keep_mask(df: pd.DataFrame) -> pd.Series:
+    """Return a bool Series (indexed like ``df``) that is True for rows
+    surviving cross-ATS dedup.
 
-    Three passes (URL exact-match → cross-ATS (c,t,l) → cross-ATS
+    Operates on a thin key-only DataFrame so the full row data is never
+    copied during the three-pass logic. The output mask is applied once
+    by the caller, which is the single big-frame allocation.
+
+    Three passes (URL exact-match → cross-ATS (c, t, l) → cross-ATS
     (company, ats_id)). See module-level comments and tests for the
     reasoning behind each pass.
     """
-    if df.empty or "ats_type" not in df.columns:
-        return df
-    if not {"title", "company"}.issubset(df.columns):
-        return df
+    n = len(df)
+    if (
+        n == 0
+        or "ats_type" not in df.columns
+        or not {"title", "company"}.issubset(df.columns)
+    ):
+        return pd.Series([True] * n, index=df.index)
 
-    work = df.reset_index(drop=False).rename(columns={"index": "_orig_idx"})
-    work["_priority"] = (
-        work["ats_type"].astype(str).map(ATS_DEDUP_PRIORITY).fillna(2).astype(int)
+    ats = df["ats_type"].astype(str).reset_index(drop=True)
+    title = (
+        df["title"].fillna("").astype(str).str.strip().str.lower().reset_index(drop=True)
     )
+    company = (
+        df["company"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .reset_index(drop=True)
+    )
+    location = (
+        df["location"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .reset_index(drop=True)
+        if "location" in df.columns
+        else pd.Series([""] * n)
+    )
+    url = (
+        df["url"].fillna("").astype(str).str.strip().reset_index(drop=True)
+        if "url" in df.columns
+        else pd.Series([""] * n)
+    )
+    ats_id = (
+        df["ats_id"].fillna("").astype(str).str.strip().reset_index(drop=True)
+        if "ats_id" in df.columns
+        else pd.Series([""] * n)
+    )
+    priority = ats.map(ATS_DEDUP_PRIORITY).fillna(2).astype(int)
 
-    # ---- Pass 1: exact-URL dedup ------------------------------------------
-    if "url" in work.columns:
-        url_norm = work["url"].fillna("").astype(str).str.strip()
-        has_url = url_norm.str.len() > 0
-        with_url = work.loc[has_url].sort_values(
-            ["_priority", "_orig_idx"], kind="stable"
+    keys = pd.DataFrame(
+        {
+            "_orig_idx": range(n),
+            "_priority": priority,
+            "ats_type": ats,
+            "url": url,
+            "title": title,
+            "company": company,
+            "location": location,
+            "ats_id": ats_id,
+        }
+    )
+    drop_idxs: set[int] = set()
+
+    # ---- Pass 1: URL exact-match dedup ------------------------------------
+    has_url = keys["url"].str.len() > 0
+    if has_url.any():
+        url_rows = keys.loc[has_url]
+        url_kept = (
+            url_rows.sort_values(["_priority", "_orig_idx"], kind="stable")
+            .drop_duplicates(subset=["url"], keep="first")["_orig_idx"]
         )
-        with_url_dedup = with_url.drop_duplicates(subset=["url"], keep="first")
-        without_url = work.loc[~has_url]
-        work = pd.concat([with_url_dedup, without_url], ignore_index=False)
+        drop_idxs.update(set(url_rows["_orig_idx"]) - set(url_kept))
+        keys = keys[~keys["_orig_idx"].isin(drop_idxs)]
 
-    # ---- Pass 2: cross-ATS (company, title, location) dedup ---------------
-    title_n = work["title"].fillna("").astype(str).str.strip().str.lower()
-    company_n = work["company"].fillna("").astype(str).str.strip().str.lower()
-    if "location" in work.columns:
-        location_n = (
-            work["location"].fillna("").astype(str).str.strip().str.lower()
-        )
-    else:
-        location_n = pd.Series([""] * len(work), index=work.index)
-    work["_dedup_key"] = company_n + "|" + title_n + "|" + location_n
-
-    valid_mask = (company_n.str.len() > 0) & (title_n.str.len() > 0)
-    invalid_kept = work.loc[~valid_mask]
-    valid = work.loc[valid_mask]
-
-    ats_per_key = valid.groupby("_dedup_key")["ats_type"].transform("nunique")
-    cross_ats_keys = ats_per_key > 1
-
-    cross_kept = (
-        valid.loc[cross_ats_keys]
-        .sort_values(["_priority", "_orig_idx"], kind="stable")
-        .drop_duplicates(subset=["_dedup_key"], keep="first")
+    # ---- Pass 2: cross-ATS (company, title, location) dedup ----------------
+    keys = keys.assign(
+        _dedup_key=keys["company"] + "|" + keys["title"] + "|" + keys["location"]
     )
-    within_passthrough = valid.loc[~cross_ats_keys]
+    valid_mask = (keys["company"].str.len() > 0) & (keys["title"].str.len() > 0)
+    valid = keys.loc[valid_mask]
 
-    # ---- Pass 3: cross-ATS (company, ats_id) dedup ------------------------
-    survivors = pd.concat([cross_kept, within_passthrough], ignore_index=False)
-    company_norm_s = (
-        survivors["company"].fillna("").astype(str).str.lower()
-        .str.replace(r"[^a-z0-9]", "", regex=True)
-    )
-    ats_id_s = (
-        survivors["ats_id"].fillna("").astype(str).str.strip()
-        if "ats_id" in survivors.columns
-        else None
-    )
-    if ats_id_s is not None:
-        survivors["_cid_key"] = company_norm_s + "|" + ats_id_s
-        cid_valid = (company_norm_s.str.len() > 0) & (ats_id_s.str.len() > 0)
-        ats_count = (
-            survivors.loc[cid_valid]
-            .groupby("_cid_key")["ats_type"]
-            .transform("nunique")
-        )
-        cross_cid_idx = ats_count[ats_count > 1].index
-        cid_kept = (
-            survivors.loc[cross_cid_idx]
-            .sort_values(["_priority", "_orig_idx"], kind="stable")
-            .drop_duplicates(subset=["_cid_key"], keep="first")
-        )
-        non_cross_cid = survivors.loc[~survivors.index.isin(cross_cid_idx)]
-        survivors = pd.concat([cid_kept, non_cross_cid], ignore_index=False)
-        survivors = survivors.drop(columns=["_cid_key"], errors="ignore")
+    if not valid.empty:
+        ats_per_key = valid.groupby("_dedup_key")["ats_type"].transform("nunique")
+        cross = valid.loc[ats_per_key > 1]
+        if not cross.empty:
+            cross_kept = (
+                cross.sort_values(["_priority", "_orig_idx"], kind="stable")
+                .drop_duplicates(subset=["_dedup_key"], keep="first")["_orig_idx"]
+            )
+            ctl_drop = set(cross["_orig_idx"]) - set(cross_kept)
+            drop_idxs.update(ctl_drop)
+            keys = keys[~keys["_orig_idx"].isin(ctl_drop)]
 
-    out = pd.concat([survivors, invalid_kept], ignore_index=False)
-    out = out.sort_values("_orig_idx", kind="stable").drop(
-        columns=["_orig_idx", "_dedup_key", "_priority"]
-    )
-    return out.reset_index(drop=True)
+    keys = keys.drop(columns=["_dedup_key"], errors="ignore")
+
+    # ---- Pass 3: cross-ATS (company_norm, ats_id) dedup --------------------
+    company_norm = keys["company"].str.replace(r"[^a-z0-9]", "", regex=True)
+    keys = keys.assign(_cid_key=company_norm + "|" + keys["ats_id"])
+    cid_valid_mask = (company_norm.str.len() > 0) & (keys["ats_id"].str.len() > 0)
+    cid_valid = keys.loc[cid_valid_mask]
+
+    if not cid_valid.empty:
+        ats_count = cid_valid.groupby("_cid_key")["ats_type"].transform("nunique")
+        cross_cid = cid_valid.loc[ats_count > 1]
+        if not cross_cid.empty:
+            cid_kept = (
+                cross_cid.sort_values(["_priority", "_orig_idx"], kind="stable")
+                .drop_duplicates(subset=["_cid_key"], keep="first")["_orig_idx"]
+            )
+            drop_idxs.update(set(cross_cid["_orig_idx"]) - set(cid_kept))
+
+    # Build the final mask: True for every original row whose positional
+    # index was never marked for drop. We reuse the caller's index so
+    # the mask aligns with df.
+    mask_values = [i not in drop_idxs for i in range(n)]
+    return pd.Series(mask_values, index=df.index)
 
 
 def _enrich_with_derived(df: pd.DataFrame) -> pd.DataFrame:
     """Add ``is_remote`` and ``salary_min``/``salary_max`` derived columns
-    when the source data lacks them."""
-    df = df.copy()
+    when the source data lacks them.
+
+    Mutates ``df`` in-place (returns it for chaining). At publisher
+    scale a defensive ``.copy()`` of a 3M+ row frame is the difference
+    between fitting in RAM and OOM-kill — the caller owns ``df`` and
+    no other consumer references it.
+    """
     if "location" in df.columns and "is_remote" not in df.columns:
         df["is_remote"] = df["location"].apply(infer_is_remote)
     if "salary_summary" in df.columns and "salary_min" not in df.columns:
@@ -446,7 +504,11 @@ def _enrich_with_derived(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _concat_thin_per_ats(source_dir: Path, ats_csv_pattern: str) -> pd.DataFrame:
-    """Concatenate the per-ATS thin CSVs into one frame."""
+    """Concatenate the per-ATS thin CSVs into one frame.
+
+    Enrichment runs per-ATS (small frames) before concat so the big
+    ``apply`` allocations don't all coexist with one giant DataFrame.
+    """
     slices: list[pd.DataFrame] = []
     for ats in ATSType:
         if ats is ATSType.CUSTOM:
@@ -456,15 +518,20 @@ def _concat_thin_per_ats(source_dir: Path, ats_csv_pattern: str) -> pd.DataFrame
             continue
         df = _read_csv_safely(path)
         df["ats_type"] = ats.value
+        df = _enrich_with_derived(df)
         slices.append(df)
     if not slices:
         raise StorageError(f"No ATS CSVs found in {source_dir}")
     return pd.concat(slices, ignore_index=True)
 
 
-def _normalize_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
-    """Cast object-dtype columns to typed nullable for parquet stability."""
-    df = df.copy()
+def _normalize_for_parquet_inplace(df: pd.DataFrame) -> pd.DataFrame:
+    """Cast object-dtype columns to typed nullable for parquet stability.
+
+    Mutates ``df`` in-place — at corpus scale the previous defensive
+    copy doubled peak memory of the frame. Caller is the publisher and
+    does not reuse ``df`` after this call.
+    """
     for col in df.columns:
         if df[col].dtype != object:
             continue
@@ -536,3 +603,32 @@ def _load_existing_manifest(r2_client: R2Client, key: str) -> dict[str, object]:
         )
         return {}
     return loaded
+
+
+@contextmanager
+def _temp_file(suffix: str) -> Iterator[Path]:
+    """Context manager yielding a temp file path that is unlinked on exit."""
+    fd, path_str = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    path = Path(path_str)
+    try:
+        yield path
+    finally:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _file_sha_size(path: Path) -> tuple[str, int]:
+    """Stream-hash a file and return ``(sha256_hex, size_bytes)``."""
+    h = hashlib.sha256()
+    size = 0
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(1 << 20)  # 1 MiB
+            if not chunk:
+                break
+            h.update(chunk)
+            size += len(chunk)
+    return h.hexdigest(), size
