@@ -33,7 +33,7 @@ import json
 import logging
 import os
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -614,10 +614,8 @@ def _temp_file(suffix: str) -> Iterator[Path]:
     try:
         yield path
     finally:
-        try:
+        with suppress(FileNotFoundError):
             path.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def _file_sha_size(path: Path) -> tuple[str, int]:
