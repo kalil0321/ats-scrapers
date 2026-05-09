@@ -12,12 +12,24 @@ at 20; >20 → 422). Each entry has ``company_name`` embedded so no
 separate company-resolution fetch is needed. The detail-page URL
 template is in ``_links.detail_*`` (German is the canonical default).
 
+The API geo-fences off datacenter IPs — bare httpx from a Hetzner /
+DigitalOcean / AWS machine returns 403 with a 919-byte block page
+(verified 2026-05-09 from Hetzner). The scraper tries direct first
+and, on 403, falls back to a residential proxy pulled from the
+``PROXY`` env var (Evomi 4-colon shape ``http://host:port:user:pass``,
+matching the Tesla / Meta pattern). With the proxy active, the same
+endpoint returns 200 + ~200 KB HTML and the public REST API works.
+When ``PROXY`` is not set the scraper raises a clear error rather
+than silently 0-scraping.
+
 Single-source scraper: ``company_slug`` is informational and ignored.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -30,6 +42,8 @@ from jobhive.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
+log = logging.getLogger(__name__)
+
 API_URL = "https://www.jobs.ch/api/v1/public/search"
 PER_PAGE = 20  # API hard-caps ``rows`` at 20 (>20 → 422).
 MAX_CONCURRENCY = 4
@@ -38,6 +52,12 @@ RETRY_BASE_DELAY = 1.5
 # Default cap on total pages to fetch — 2,500 pages × 20 jobs = full
 # 50k inventory. Set lower via ``max_pages`` for incremental runs.
 DEFAULT_MAX_PAGES = 2500
+
+
+class _BlockedError(Exception):
+    """Internal marker — the API returned 403, retry the whole fetch
+    via the residential-proxy fallback. Not raised at the public
+    boundary."""
 
 
 @ScraperRegistry.register(ATSType.JOBSCH)
@@ -66,6 +86,28 @@ class JobsChScraper(BaseScraper):
         return asyncio.run(self._fetch_async())
 
     async def _fetch_async(self) -> list[Job]:
+        # Try direct first; on 403 from the datacenter-blocked API,
+        # restart the whole fetch through the Evomi residential proxy.
+        try:
+            return await self._run_fetch(proxy_url=None)
+        except _BlockedError:
+            pass
+
+        proxy_url = _evomi_proxy_url_from_env()
+        if proxy_url is None:
+            raise ScraperError(
+                "jobs.ch returned 403 (likely datacenter IP block) and "
+                "no PROXY env var is set. Set PROXY=http://host:port:user:pass "
+                "to a residential proxy (Evomi or similar) to enable the "
+                "fallback path."
+            )
+        log.info(
+            "jobs.ch: direct request 403'd — retrying via PROXY "
+            "residential fallback."
+        )
+        return await self._run_fetch(proxy_url=proxy_url)
+
+    async def _run_fetch(self, *, proxy_url: str | None) -> list[Job]:
         seen: set[str] = set()
         jobs: list[Job] = []
         lock = asyncio.Lock()
@@ -79,9 +121,14 @@ class JobsChScraper(BaseScraper):
                     seen.add(job.ats_id)
                     jobs.append(job)
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True,
-        ) as client:
+        client_kwargs: dict[str, Any] = {
+            "timeout": self.timeout,
+            "follow_redirects": True,
+        }
+        if proxy_url is not None:
+            client_kwargs["proxy"] = proxy_url
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
             # First request to learn the real total. The API doesn't
@@ -139,6 +186,13 @@ class JobsChScraper(BaseScraper):
                     raise ScraperError(
                         f"jobs.ch returned non-JSON at start={start}: {exc}"
                     ) from exc
+            if response.status_code == 403:
+                # Datacenter IP block — escalate to ``_fetch_async`` so
+                # it can retry the whole fetch through the residential
+                # proxy. Don't burn retries here.
+                raise _BlockedError(
+                    f"jobs.ch returned 403 at start={start}"
+                )
             if response.status_code == 422:
                 # Past the search-engine cap (rare; API caps deep
                 # pagination differently per query). Treat as exhausted.
@@ -242,3 +296,28 @@ def _parse_iso(value: object) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _evomi_proxy_url_from_env() -> str | None:
+    """Parse the ``PROXY`` env var into an httpx-compatible proxy URL.
+
+    Evomi ships ``PROXY`` in the 4-colon
+    ``http://host:port:user:pass`` shape (same shape the
+    ``_browserbase`` helper consumes for patchright). We rebuild it
+    into the standard ``http://user:pass@host:port`` form that httpx
+    accepts. Returns ``None`` when no env var is set so the caller can
+    surface a clear error instead of silently no-op'ing.
+    """
+    raw = os.getenv("PROXY")
+    if not raw:
+        return None
+    rest = raw.replace("http://", "").replace("https://", "")
+    parts = rest.split(":")
+    if len(parts) != 4:
+        log.warning(
+            "PROXY env var doesn't match host:port:user:pass shape; "
+            "skipping jobs.ch fallback."
+        )
+        return None
+    host, port, user, password = parts
+    return f"http://{user}:{password}@{host}:{port}"

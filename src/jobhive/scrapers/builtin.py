@@ -6,9 +6,14 @@ a schema.org ``ItemList`` with the visible 30 jobs (per page) — title,
 URL, and a one-line description for each — which we parse without any
 JS rendering.
 
-The library defaults to direct ``httpx`` fetching and pulls only what
-the listing JSON-LD contains: title, URL, ats_id, and description. To
-recover company / location / salary on the per-job detail pages
+The scraper tries direct ``httpx`` first; on the 403 that builtin.com
+serves to bare httpx user-agents (post-Cloudflare hardening, observed
+2026-05-09) it switches to ``httpcloak`` for the rest of the fetch.
+``httpcloak`` is a TLS+h2 fingerprint impersonator already shipped in
+the ``scrapers`` extra and used by Avature/JazzHR/Eightfold; no extra
+config or paid service involved.
+
+To recover company / location / salary on the per-job detail pages
 (which Built In renders client-side and is therefore invisible to a
 plain HTTP GET) the user can opt into Firecrawl-based enrichment by
 passing ``firecrawl_api_key="…"`` to the constructor or setting the
@@ -23,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import logging
 import os
 import re
 from datetime import datetime
@@ -33,6 +39,8 @@ import httpx
 from jobhive.exceptions import ScraperError
 from jobhive.models import ATSType, Job
 from jobhive.scrapers.base import BaseScraper, ScraperRegistry
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from typing import Any
@@ -91,6 +99,10 @@ class BuiltInScraper(BaseScraper):
             or os.environ.get("FIRECRAWL_API_KEY")
             or None
         )
+        # Flipped to True the first time the direct ``httpx`` path
+        # returns 403; subsequent requests in this scraper instance
+        # then go through ``httpcloak``. Reset by re-instantiating.
+        self._use_httpcloak = False
 
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
@@ -192,6 +204,11 @@ class BuiltInScraper(BaseScraper):
         sem: asyncio.Semaphore,
         url: str,
     ) -> str:
+        # Once a 403 has flipped the instance to httpcloak mode, every
+        # subsequent request skips the wasted direct attempt.
+        if self._use_httpcloak:
+            return await self._request_via_httpcloak(url)
+
         last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
             async with sem:
@@ -214,6 +231,16 @@ class BuiltInScraper(BaseScraper):
                     continue
             if response.status_code == 200:
                 return response.text
+            if response.status_code == 403:
+                # Cloudflare-style block on the bare httpx fingerprint.
+                # Flip the scraper into httpcloak mode and retry; every
+                # subsequent page in this fetch reuses the cheap path.
+                log.info(
+                    "Built In: 403 on %s — switching to httpcloak fallback",
+                    url,
+                )
+                self._use_httpcloak = True
+                return await self._request_via_httpcloak(url)
             if response.status_code in (429,) or 500 <= response.status_code < 600:
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
@@ -233,6 +260,34 @@ class BuiltInScraper(BaseScraper):
         raise ScraperError(
             f"Built In exhausted retries for {url}: {last_exc}"
         )
+
+    async def _request_via_httpcloak(self, url: str) -> str:
+        """TLS+h2 impersonation fallback used when builtin.com 403's
+        the direct httpx user-agent. Verified live 2026-05-09: 200 with
+        full ~390 KB HTML where direct returns 403/919 B."""
+        try:
+            import httpcloak
+        except ImportError as exc:
+            raise ScraperError(
+                "Built In's 403 fallback needs httpcloak — "
+                "`pip install jobhive[scrapers]`."
+            ) from exc
+
+        def _get() -> str:
+            r = httpcloak.get(url, timeout=self.timeout)
+            if r.status_code != 200:
+                raise ScraperError(
+                    f"Built In httpcloak fallback returned "
+                    f"{r.status_code} for {url}"
+                )
+            # httpcloak returns bytes — decode as UTF-8 with replacement
+            # so a stray non-UTF-8 byte never tanks a whole page.
+            content = r.content
+            if isinstance(content, bytes):
+                return content.decode("utf-8", errors="replace")
+            return content
+
+        return await asyncio.to_thread(_get)
 
     # --- optional Firecrawl enrichment --------------------------------------
 
