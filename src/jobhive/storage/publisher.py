@@ -18,15 +18,27 @@ other.
 Old layout (``jobs/all.parquet``, ``jobs/by-ats/*``, ``jobs/by-date/*``,
 ``companies/*``) is wiped on first run by :meth:`prune_legacy_paths`.
 
-Memory: the publisher never holds more than one per-ATS slice in RAM
-at a time. The cross-ATS view (``all.parquet``) is built in three
-streaming passes — per-ATS keys are harvested into a thin
-(``url, title, company, location, ats_id, ats_type``) frame, dedup
-decisions are made on that thin frame, then the per-ATS CSVs are
-re-read in pandas chunks (filtered by the survivor set) into a
-streamed temp CSV, which pyarrow then converts to parquet
-block-by-block. Peak RSS scales with the largest single per-ATS
-slice, not the corpus total.
+Memory: every pass is built on polars LazyFrames so no full-corpus
+DataFrame is ever materialized.
+
+  Pass 1 — per-ATS lazy: ``pl.scan_csv`` → vectorized enrichment
+           expressions → ``sink_csv`` (streaming write to a temp
+           file). The same temp CSV is re-scanned to ``sink_parquet``
+           (streaming convert) and once more to harvest a thin keys
+           frame (small ``collect``). Per-ATS peak is bounded by
+           polars' streaming buffers, not the slice's row count.
+
+  Pass 2 — cross-ATS dedup as window functions on the concatenated
+           thin keys frame: a single ``sort + filter`` pass per stage
+           with ``pl.col(...).first().over(group)`` instead of
+           Python-set bookkeeping. The keys frame is the only memory
+           peak in this pass.
+
+  Pass 3 — global ``all.parquet`` is built by lazy-scanning each
+           per-ATS temp CSV, ``semi``-joining against its survivor
+           index frame, ``diagonal_relaxed``-concatenating the parts
+           and ``sink_parquet``-streaming the result. Nothing is
+           materialized whole.
 """
 
 from __future__ import annotations
@@ -36,18 +48,32 @@ import json
 import logging
 import os
 import tempfile
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import pandas as pd
+import polars as pl
 
 from jobhive._version import __version__
 from jobhive.enrichment import infer_is_remote, parse_salary_range
 from jobhive.exceptions import StorageError
 from jobhive.models import ATSType
+
+# Pull the keyword lists used by ``infer_is_remote`` so the lazy
+# enrichment path can express the rule as vectorized polars
+# expressions. Both lists are optional — if a deploy has the narrowed
+# (title-only, True/None) variant of ``derived.py`` that ships without
+# ``ONSITE_KEYWORDS``, we still build a usable ``is_remote`` column.
+try:
+    from jobhive.enrichment.derived import REMOTE_KEYWORDS as _REMOTE_KEYWORDS
+except ImportError:
+    _REMOTE_KEYWORDS = ()
+try:
+    from jobhive.enrichment.derived import ONSITE_KEYWORDS as _ONSITE_KEYWORDS
+except ImportError:
+    _ONSITE_KEYWORDS = ()
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -64,15 +90,13 @@ CACHE_CONTROL_LATEST = "public, max-age=300"  # manifest + latest data files
 FORMATS_ALL = ("parquet",)
 FORMATS_PER_ATS = ("csv", "parquet")
 
-# Pandas read_csv chunksize for the streaming "all" build. 100k rows
-# of typical job data is ~30 MB resident — small enough that several
-# chunks coexisting (read + filter + write) stay well under 1 GB.
-ALL_STREAM_CHUNKSIZE = 100_000
-
-# Pyarrow CSV → parquet block size for the streaming all.parquet
-# write. 64 MiB is large enough to amortize per-batch overhead and
-# small enough that peak memory during conversion is bounded.
-ALL_PARQUET_BLOCK_BYTES = 64 * 1024 * 1024
+# Common pl.scan_csv options across every read path. ``ignore_errors``
+# is what lets the scanner fall back to string for a column whose first
+# 10k-row sniff says int but later rows hold an alphanumeric ID.
+_SCAN_CSV_KWARGS: dict[str, object] = {
+    "infer_schema_length": 10000,
+    "ignore_errors": True,
+}
 
 
 @dataclass
@@ -140,106 +164,106 @@ class DatasetPublisher:
         started = datetime.now(tz=UTC)
         files_uploaded: list[str] = []
 
-        # ---- Pass 1: per-ATS upload + thin keys harvest ---------------------
-        # Each ATS slice is read, enriched, uploaded, and then released
-        # before the next one is loaded. The only thing carried forward
-        # is the thin keys frame for cross-ATS dedup.
-        per_ats_entries: dict[ATSType, dict[str, object]] = {}
-        keys_frames: list[pd.DataFrame] = []
-        schema_union: list[str] = []
-        seen_cols: set[str] = set()
-        cumulative_offset = 0
-        ats_lengths: dict[str, int] = {}
+        # ExitStack owns every per-ATS CSV temp: Pass 1 streams each
+        # enriched per-ATS slice into one of these, then Pass 3
+        # ``scan_csv``s the same files (no re-enrichment) to build
+        # the global all.parquet. Files are unlinked at function exit.
+        with ExitStack() as stack:
+            per_ats_csv_paths: dict[str, Path] = {}
+            per_ats_entries: dict[ATSType, dict[str, object]] = {}
+            schema_union: list[str] = []
+            seen_cols: set[str] = set()
 
-        any_csv_found = False
-        for ats in ATSType:
-            if ats is ATSType.CUSTOM:
-                continue
-            path = source_dir / ats_csv_pattern.format(ats=ats.value)
-            if not path.exists():
-                continue
-            any_csv_found = True
+            any_csv_found = False
+            for ats in ATSType:
+                if ats is ATSType.CUSTOM:
+                    continue
+                source_path = source_dir / ats_csv_pattern.format(ats=ats.value)
+                if not source_path.exists():
+                    continue
+                any_csv_found = True
 
-            df = _read_csv_safely(path)
-            df["ats_type"] = ats.value
-            _enrich_with_derived(df)
+                # Build the lazy enriched chain for this ATS slice.
+                lf = pl.scan_csv(source_path, **_SCAN_CSV_KWARGS)
+                lf = lf.with_columns(pl.lit(ats.value).alias("ats_type"))
+                lf = _enrich_lazy(lf)
 
-            for col in df.columns:
-                if col not in seen_cols:
-                    seen_cols.add(col)
-                    schema_union.append(col)
+                schema_names = lf.collect_schema().names()
+                for col in schema_names:
+                    if col not in seen_cols:
+                        seen_cols.add(col)
+                        schema_union.append(col)
 
-            entry = self._upload_dataframe(
-                df,
-                base_key=f"{self._prefix}/{ats.value}/jobs",
-                formats=FORMATS_PER_ATS,
+                csv_path = stack.enter_context(_temp_file(".csv"))
+                # ``sink_csv`` runs the lazy chain through polars'
+                # streaming engine — the per-ATS slice is never
+                # materialized as one DataFrame in RAM.
+                lf.sink_csv(csv_path)
+                per_ats_csv_paths[ats.value] = csv_path
+
+                entry, _ = self._upload_per_ats_streaming(
+                    csv_path=csv_path,
+                    base_key=f"{self._prefix}/{ats.value}/jobs",
+                )
+                per_ats_entries[ats] = entry
+                files_uploaded.extend(_collect_uploaded_keys(entry))
+
+            if not any_csv_found:
+                raise StorageError(f"No ATS CSVs found in {source_dir}")
+
+            # ---- Pass 2: cross-ATS dedup directly on the per-ATS temp CSVs ---
+            # Build the keys frame as a single lazy scan-and-concat chain
+            # rather than collecting per-ATS keys into separate eager
+            # DataFrames during Pass 1. This avoids the cumulative
+            # ~MB-per-ATS resident growth and lets polars' optimizer
+            # decide when to materialize.
+            survivors, n_raw, n_kept = _dedup_from_per_ats_csvs(
+                per_ats_csv_paths
             )
-            per_ats_entries[ats] = entry
-            files_uploaded.extend(_collect_uploaded_keys(entry))
+            logger.info(
+                "Cross-ATS dedup: %d → %d rows (%d duplicates removed)",
+                n_raw,
+                n_kept,
+                n_raw - n_kept,
+            )
 
-            keys_frames.append(_extract_dedup_keys(df, ats.value, cumulative_offset))
-            ats_lengths[ats.value] = len(df)
-            cumulative_offset += len(df)
+            # ---- Pass 3: stream all.parquet from the per-ATS temp CSVs ------
+            all_entry = self._stream_write_all_polars(
+                per_ats_csv_paths=per_ats_csv_paths,
+                survivors=survivors,
+                schema_union=schema_union,
+                rows_total=n_kept,
+            )
+            files_uploaded.extend(_collect_uploaded_keys(all_entry))
 
-            # Hand the slice back to the GC before the next ATS loads.
-            del df
+            manifest_key = self._patch_and_upload_manifest(
+                generated_at=started,
+                stats_factory=lambda existing: {
+                    "total_jobs": n_kept,
+                    "total_jobs_raw": n_raw,
+                    "total_companies": _sum_by_ats_companies_rows(existing),
+                    "ats_count": len(per_ats_entries),
+                    "schema_version": "2.0",
+                    "schema_columns": schema_union,
+                },
+                all_entry=all_entry,
+                by_ats=per_ats_entries,
+            )
+            files_uploaded.append(manifest_key)
 
-        if not any_csv_found:
-            raise StorageError(f"No ATS CSVs found in {source_dir}")
+            deleted = self.prune_legacy_paths()
+            if deleted:
+                logger.info("Deleted %d legacy keys", deleted)
 
-        # ---- Pass 2: cross-ATS dedup decision on the thin keys frame -------
-        keys = pd.concat(keys_frames, ignore_index=True)
-        keys_frames.clear()
-        n_raw = len(keys)
-        survivors_by_ats = _decide_dedup_survivors(keys)
-        n_kept = sum(len(s) for s in survivors_by_ats.values())
-        del keys
-        logger.info(
-            "Cross-ATS dedup: %d → %d rows (%d duplicates removed)",
-            n_raw,
-            n_kept,
-            n_raw - n_kept,
-        )
-
-        # ---- Pass 3: stream-build all.{csv,parquet} ------------------------
-        all_entry = self._stream_write_all(
-            source_dir=source_dir,
-            ats_csv_pattern=ats_csv_pattern,
-            survivors_by_ats=survivors_by_ats,
-            schema_union=schema_union,
-        )
-        files_uploaded.extend(_collect_uploaded_keys(all_entry))
-
-        # ``total_companies`` is sourced from the CI-owned
-        # ``by_ats_companies`` block in the existing manifest (if any).
-        manifest_key = self._patch_and_upload_manifest(
-            generated_at=started,
-            stats_factory=lambda existing: {
-                "total_jobs": n_kept,
-                "total_jobs_raw": n_raw,
-                "total_companies": _sum_by_ats_companies_rows(existing),
-                "ats_count": len(per_ats_entries),
-                "schema_version": "2.0",
-                "schema_columns": schema_union,
-            },
-            all_entry=all_entry,
-            by_ats=per_ats_entries,
-        )
-        files_uploaded.append(manifest_key)
-
-        deleted = self.prune_legacy_paths()
-        if deleted:
-            logger.info("Deleted %d legacy keys", deleted)
-
-        ended = datetime.now(tz=UTC)
-        return PublishResult(
-            manifest_key=manifest_key,
-            files=files_uploaded,
-            total_jobs=n_kept,
-            total_jobs_raw=n_raw,
-            ats_count=len(per_ats_entries),
-            duration_seconds=(ended - started).total_seconds(),
-        )
+            ended = datetime.now(tz=UTC)
+            return PublishResult(
+                manifest_key=manifest_key,
+                files=files_uploaded,
+                total_jobs=n_kept,
+                total_jobs_raw=n_raw,
+                ats_count=len(per_ats_entries),
+                duration_seconds=(ended - started).total_seconds(),
+            )
 
     def prune_legacy_paths(self) -> int:
         """Delete every key under the pre-2.0 layout. Idempotent.
@@ -264,37 +288,49 @@ class DatasetPublisher:
 
     # --- internals ---------------------------------------------------------
 
-    def _upload_dataframe(
+    def _upload_per_ats_streaming(
         self,
-        df: pd.DataFrame,
         *,
+        csv_path: Path,
         base_key: str,
-        formats: tuple[str, ...],
-    ) -> dict[str, object]:
-        entry: dict[str, object] = {"rows": len(df)}
+    ) -> tuple[dict[str, object], int]:
+        """Upload a per-ATS slice from a sunk temp CSV.
 
-        if "csv" in formats:
-            csv_key = f"{base_key}.csv"
-            with _temp_file(".csv") as csv_path:
-                df.to_csv(csv_path, index=False)
-                sha, size = _file_sha_size(csv_path)
-                self._r2.upload(
-                    csv_path,
-                    csv_key,
-                    content_type="text/csv",
-                    cache_control=CACHE_CONTROL_LATEST,
-                )
-            entry["csv"] = self._public_or_key(csv_key)
-            entry["size_bytes"] = size
-            entry["sha256"] = sha
+        Hashes + uploads the CSV, then ``scan_csv`` → ``sink_parquet``
+        streams the parquet conversion through polars (no full Arrow
+        table in RAM). Returns the manifest entry and the row count.
+        """
+        entry: dict[str, object] = {}
 
-        if "parquet" in formats and self._write_parquet:
+        csv_key = f"{base_key}.csv"
+        csv_sha, csv_size = _file_sha_size(csv_path)
+        self._r2.upload(
+            csv_path,
+            csv_key,
+            content_type="text/csv",
+            cache_control=CACHE_CONTROL_LATEST,
+        )
+        entry["csv"] = self._public_or_key(csv_key)
+        entry["size_bytes"] = csv_size
+        entry["sha256"] = csv_sha
+
+        # Counting rows from the temp CSV is cheap and avoids carrying
+        # the row count separately from the lazy chain.
+        n_rows = (
+            pl.scan_csv(csv_path, **_SCAN_CSV_KWARGS)
+            .select(pl.len())
+            .collect()
+            .item()
+        )
+        entry["rows"] = n_rows
+
+        if self._write_parquet:
             parquet_key = f"{base_key}.parquet"
             with _temp_file(".parquet") as pq_path:
-                _normalize_for_parquet_inplace(df).to_parquet(
-                    pq_path, index=False, compression="zstd"
+                pl.scan_csv(csv_path, **_SCAN_CSV_KWARGS).sink_parquet(
+                    pq_path, compression="zstd"
                 )
-                sha, size = _file_sha_size(pq_path)
+                pq_sha, pq_size = _file_sha_size(pq_path)
                 self._r2.upload(
                     pq_path,
                     parquet_key,
@@ -302,178 +338,83 @@ class DatasetPublisher:
                     cache_control=CACHE_CONTROL_LATEST,
                 )
             entry["parquet"] = self._public_or_key(parquet_key)
-            entry["parquet_size_bytes"] = size
-            entry["parquet_sha256"] = sha
-            if "size_bytes" not in entry:
-                # Parquet-only artifact (the global ``all``): mirror
-                # size + sha into the canonical fields so consumers
-                # don't need format-specific lookups.
-                entry["size_bytes"] = size
-                entry["sha256"] = sha
+            entry["parquet_size_bytes"] = pq_size
+            entry["parquet_sha256"] = pq_sha
 
-        return entry
+        return entry, n_rows
 
-    def _stream_write_all(
+    def _stream_write_all_polars(
         self,
         *,
-        source_dir: Path,
-        ats_csv_pattern: str,
-        survivors_by_ats: dict[str, set[int]],
+        per_ats_csv_paths: dict[str, Path],
+        survivors: dict[str, pl.DataFrame],
         schema_union: list[str],
+        rows_total: int,
     ) -> dict[str, object]:
-        """Stream-build ``all.{csv,parquet}`` from per-ATS source CSVs.
+        """Stream the global ``all.parquet`` from the per-ATS temp CSVs.
 
-        Pass 3a: chunk-read each per-ATS CSV with pandas; for each
-        chunk, drop the rows whose ATS-local index isn't in the
-        survivor set, then append to a single growing CSV temp file.
+        Two stages, both streaming:
 
-        Pass 3b: hand the temp CSV to pyarrow's streaming CSV reader
-        and pipe each ``RecordBatch`` into a ``ParquetWriter`` — the
-        compressed parquet bytes are written to disk in chunks rather
-        than buffered whole in RAM.
+        1. Per-ATS — ``scan_csv`` + ``semi``-join against its
+           survivor index frame, sunk to a per-ATS temp parquet via
+           ``sink_parquet``. Polars's semi-join on a small RHS is
+           hash-probe, so the LHS streams.
 
-        Per-chunk peak memory is dominated by the pandas chunk
-        (``ALL_STREAM_CHUNKSIZE`` rows ≈ 30 MB) plus the pyarrow batch
-        (``ALL_PARQUET_BLOCK_BYTES`` ≈ 64 MB). Total peak < 200 MB.
+        2. Merge — the per-ATS temp parquets are concatenated into the
+           global ``all.parquet`` via pyarrow's batch-iteration writer
+           with a unified schema (different ATSes can have different
+           columns; pyarrow promotes to the union and fills missing
+           with null). Peak memory in the merge is one Arrow batch
+           (~64 k rows, tens of MB), not the full corpus.
         """
-        all_entry: dict[str, object] = {}
+        all_entry: dict[str, object] = {"rows": rows_total}
+        if "parquet" not in FORMATS_ALL or not self._write_parquet:
+            return all_entry
 
-        # Always materialize the full intermediate CSV; we use it both
-        # to compute size/sha for the FORMATS_ALL == ("csv",) case and
-        # as the input to the parquet streaming write.
-        with _temp_file(".csv") as csv_path:
-            rows_total = self._stream_all_csv(
-                source_dir=source_dir,
-                ats_csv_pattern=ats_csv_pattern,
-                survivors_by_ats=survivors_by_ats,
-                schema_union=schema_union,
-                out_path=csv_path,
-            )
-            all_entry["rows"] = rows_total
-
-            if "csv" in FORMATS_ALL:
-                csv_key = f"{self._prefix}/all.csv"
-                csv_sha, csv_size = _file_sha_size(csv_path)
-                self._r2.upload(
-                    csv_path,
-                    csv_key,
-                    content_type="text/csv",
-                    cache_control=CACHE_CONTROL_LATEST,
-                )
-                all_entry["csv"] = self._public_or_key(csv_key)
-                all_entry["size_bytes"] = csv_size
-                all_entry["sha256"] = csv_sha
-
-            if "parquet" in FORMATS_ALL and self._write_parquet:
-                pq_key = f"{self._prefix}/all.parquet"
-                with _temp_file(".parquet") as pq_path:
-                    self._stream_csv_to_parquet(csv_path, pq_path)
-                    pq_sha, pq_size = _file_sha_size(pq_path)
-                    self._r2.upload(
-                        pq_path,
-                        pq_key,
-                        content_type="application/vnd.apache.parquet",
-                        cache_control=CACHE_CONTROL_LATEST,
-                    )
-                all_entry["parquet"] = self._public_or_key(pq_key)
-                all_entry["parquet_size_bytes"] = pq_size
-                all_entry["parquet_sha256"] = pq_sha
-                if "size_bytes" not in all_entry:
-                    all_entry["size_bytes"] = pq_size
-                    all_entry["sha256"] = pq_sha
-
-        return all_entry
-
-    def _stream_all_csv(
-        self,
-        *,
-        source_dir: Path,
-        ats_csv_pattern: str,
-        survivors_by_ats: dict[str, set[int]],
-        schema_union: list[str],
-        out_path: Path,
-    ) -> int:
-        """Append surviving rows from each per-ATS CSV to ``out_path``.
-
-        Returns the total row count written (across all ATSes).
-        """
-        rows_total = 0
-        first_chunk = True
-
-        for ats in ATSType:
-            if ats is ATSType.CUSTOM:
-                continue
-            survivors = survivors_by_ats.get(ats.value)
-            if not survivors:
-                continue
-            path = source_dir / ats_csv_pattern.format(ats=ats.value)
-            if not path.exists():
-                continue
-
-            local_offset = 0
-            for chunk in pd.read_csv(path, chunksize=ALL_STREAM_CHUNKSIZE):
-                chunk_size = len(chunk)
-                # Survivor membership test against this chunk's local
-                # row indices [local_offset, local_offset + chunk_size).
-                keep_positions = [
-                    pos
-                    for pos, local_idx in enumerate(
-                        range(local_offset, local_offset + chunk_size)
-                    )
-                    if local_idx in survivors
-                ]
-                local_offset += chunk_size
-                if not keep_positions:
+        with ExitStack() as stage_stack:
+            per_ats_parquets: list[Path] = []
+            for ats in ATSType:
+                if ats is ATSType.CUSTOM:
+                    continue
+                survivor_frame = survivors.get(ats.value)
+                if survivor_frame is None or survivor_frame.is_empty():
+                    continue
+                csv_path = per_ats_csv_paths.get(ats.value)
+                if csv_path is None:
                     continue
 
-                kept = chunk.iloc[keep_positions]
-                kept = kept.assign(ats_type=ats.value)
-                _enrich_with_derived(kept)
-                # Reindex to the union schema so missing-in-this-ATS
-                # columns appear as NaN rather than dropping out.
-                kept = kept.reindex(columns=schema_union)
-                kept.to_csv(
-                    out_path,
-                    mode="a" if not first_chunk else "w",
-                    header=first_chunk,
-                    index=False,
+                pq_temp = stage_stack.enter_context(_temp_file(".parquet"))
+                (
+                    pl.scan_csv(csv_path, **_SCAN_CSV_KWARGS)
+                    .with_row_index(name="_local_idx")
+                    .join(survivor_frame.lazy(), on="_local_idx", how="semi")
+                    .drop("_local_idx")
+                    .sink_parquet(pq_temp, compression="zstd")
                 )
-                first_chunk = False
-                rows_total += len(kept)
+                per_ats_parquets.append(pq_temp)
 
-        # Edge case: every per-ATS slice was emptied by dedup. Write a
-        # header-only CSV so downstream readers see a parseable file.
-        if first_chunk:
-            pd.DataFrame(columns=schema_union).to_csv(out_path, index=False)
+            pq_key = f"{self._prefix}/all.parquet"
+            with _temp_file(".parquet") as all_pq:
+                if per_ats_parquets:
+                    _merge_parquets_streaming(per_ats_parquets, all_pq)
+                else:
+                    pl.DataFrame(
+                        schema=dict.fromkeys(schema_union, pl.String)
+                    ).write_parquet(all_pq, compression="zstd")
+                pq_sha, pq_size = _file_sha_size(all_pq)
+                self._r2.upload(
+                    all_pq,
+                    pq_key,
+                    content_type="application/vnd.apache.parquet",
+                    cache_control=CACHE_CONTROL_LATEST,
+                )
+            all_entry["parquet"] = self._public_or_key(pq_key)
+            all_entry["parquet_size_bytes"] = pq_size
+            all_entry["parquet_sha256"] = pq_sha
+            all_entry["size_bytes"] = pq_size
+            all_entry["sha256"] = pq_sha
 
-        return rows_total
-
-    def _stream_csv_to_parquet(self, csv_path: Path, pq_path: Path) -> None:
-        """Convert ``csv_path`` to ``pq_path`` block-by-block with pyarrow.
-
-        Pyarrow infers the column types from a header sniff and reads
-        the body in fixed-size blocks. Each block is written through a
-        single ``ParquetWriter`` so peak memory stays bounded.
-        """
-        import pyarrow.csv as pacsv
-        import pyarrow.parquet as papq
-
-        read_options = pacsv.ReadOptions(block_size=ALL_PARQUET_BLOCK_BYTES)
-        reader = pacsv.open_csv(csv_path, read_options=read_options)
-        try:
-            schema = reader.schema
-            writer = papq.ParquetWriter(pq_path, schema, compression="zstd")
-            try:
-                while True:
-                    try:
-                        batch = reader.read_next_batch()
-                    except StopIteration:
-                        break
-                    writer.write_batch(batch)
-            finally:
-                writer.close()
-        finally:
-            reader.close()
+        return all_entry
 
     def _patch_and_upload_manifest(
         self,
@@ -545,187 +486,261 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
 }
 
 
-def _extract_dedup_keys(
-    df: pd.DataFrame, ats_value: str, base_offset: int
-) -> pd.DataFrame:
-    """Build the thin keys frame for one ATS slice.
+def _key_col_or_empty(schema_names: list[str], name: str) -> pl.Expr:
+    """Return ``pl.col(name)`` cast to String + filled, or an empty
+    string literal if the column doesn't exist on this slice."""
+    if name in schema_names:
+        return (
+            pl.col(name)
+            .cast(pl.String, strict=False)
+            .fill_null("")
+            .str.strip_chars()
+        )
+    return pl.lit("", dtype=pl.String)
 
-    Holds only the columns needed for the three-pass cross-ATS dedup,
-    plus ``_orig_idx`` (global concat-order position; preserved across
-    streaming so dedup is deterministic vs the pre-streaming impl) and
-    ``_local_idx`` (row index within this ATS, used by Pass 3 to
-    filter the source CSV when re-reading).
+
+def _dedup_from_per_ats_csvs(
+    per_ats_csv_paths: dict[str, Path],
+) -> tuple[dict[str, pl.DataFrame], int, int]:
+    """Build keys, run cross-ATS dedup, and return per-ATS survivors.
+
+    The keys frame is sunk to a temp parquet via ``sink_parquet``
+    (polars streaming write — peak memory bounded by one Arrow batch,
+    not the corpus) before we run the eager dedup on it. This is the
+    key memory win vs an in-memory ``pl.concat([..]).collect()``: the
+    per-ATS scans are pulled in one ATS at a time, and the keys
+    parquet on disk is small (~80 MB / million rows for the eight
+    thin string columns we project).
+
+    Returns ``(survivors_by_ats, n_raw, n_kept)``.
     """
-    n = len(df)
-    return pd.DataFrame(
-        {
-            "_orig_idx": range(base_offset, base_offset + n),
-            "_local_idx": range(n),
-            "_priority": ATS_DEDUP_PRIORITY.get(ats_value, 2),
-            "ats_type": ats_value,
-            "url": (
-                df["url"].fillna("").astype(str).str.strip().reset_index(drop=True)
-                if "url" in df.columns
-                else pd.Series([""] * n)
-            ),
-            "title": (
-                df["title"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.lower()
-                .reset_index(drop=True)
-                if "title" in df.columns
-                else pd.Series([""] * n)
-            ),
-            "company": (
-                df["company"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.lower()
-                .reset_index(drop=True)
-                if "company" in df.columns
-                else pd.Series([""] * n)
-            ),
-            "location": (
-                df["location"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.lower()
-                .reset_index(drop=True)
-                if "location" in df.columns
-                else pd.Series([""] * n)
-            ),
-            "ats_id": (
-                df["ats_id"].fillna("").astype(str).str.strip().reset_index(drop=True)
-                if "ats_id" in df.columns
-                else pd.Series([""] * n)
-            ),
-        }
+    if not per_ats_csv_paths:
+        return {}, 0, 0
+
+    key_lfs: list[pl.LazyFrame] = []
+    for ats_value, csv_path in per_ats_csv_paths.items():
+        scan = pl.scan_csv(csv_path, **_SCAN_CSV_KWARGS)
+        schema_names = scan.collect_schema().names()
+        klf = scan.with_row_index(name="_local_idx").select(
+            [
+                pl.col("_local_idx").cast(pl.Int64),
+                pl.lit(ats_value, dtype=pl.String).alias("ats_type"),
+                pl.lit(
+                    ATS_DEDUP_PRIORITY.get(ats_value, 2), dtype=pl.Int32
+                ).alias("_priority"),
+                _key_col_or_empty(schema_names, "url").alias("url"),
+                _key_col_or_empty(schema_names, "title")
+                .str.to_lowercase()
+                .alias("title"),
+                _key_col_or_empty(schema_names, "company")
+                .str.to_lowercase()
+                .alias("company"),
+                _key_col_or_empty(schema_names, "location")
+                .str.to_lowercase()
+                .alias("location"),
+                _key_col_or_empty(schema_names, "ats_id").alias("ats_id"),
+            ]
+        )
+        key_lfs.append(klf)
+
+    keys_chain = (
+        pl.concat(key_lfs, how="vertical_relaxed")
+        .with_row_index(name="_orig_idx")
+        .with_columns(pl.col("_orig_idx").cast(pl.Int64))
     )
 
+    with _temp_file(".parquet") as keys_pq:
+        keys_chain.sink_parquet(keys_pq, compression="zstd")
+        keys = pl.read_parquet(keys_pq)
 
-def _decide_dedup_survivors(keys: pd.DataFrame) -> dict[str, set[int]]:
-    """Run the three-pass cross-ATS dedup on a thin keys frame.
+    n_raw = keys.height
+    survivors = _decide_dedup_survivors_polars(keys)
+    n_kept = sum(s.height for s in survivors.values())
+    return survivors, n_raw, n_kept
 
-    Returns a per-ATS set of surviving ``_local_idx`` values that the
-    caller uses to filter the source CSVs when streaming the global
-    snapshot. Three passes:
 
-    1. URL exact-match dedup.
-    2. Cross-ATS ``(company, title, location)`` dedup.
-    3. Cross-ATS ``(company_norm, ats_id)`` dedup.
+def _decide_dedup_survivors_polars(
+    keys: pl.DataFrame,
+) -> dict[str, pl.DataFrame]:
+    """Run the three-pass cross-ATS dedup as window functions.
 
-    Pass 1 always wins over passes 2 and 3 — once a row is dropped, it
-    cannot reappear.
+    All three passes share one upfront ``sort([_priority, _orig_idx])``
+    so each "keep first per group" check reduces to
+    ``_orig_idx == _orig_idx.first().over(group_col)`` — no Python
+    sets, no ``to_list`` materializations, and no ``filter(is_in(big))``
+    rebuilding hash tables across passes.
+
+    Returns a dict mapping ``ats_value`` → polars frame with one
+    column ``_local_idx`` (the source-CSV row indices to keep). The
+    streaming Pass 3 ``semi``-joins each per-ATS scan against this
+    frame.
     """
-    if keys.empty or "ats_type" not in keys.columns:
+    if keys.is_empty():
         return {}
 
-    drop_orig: set[int] = set()
-    work = keys
+    work = keys.sort(["_priority", "_orig_idx"])
 
     # ---- Pass 1: URL exact-match dedup ------------------------------------
-    has_url = work["url"].str.len() > 0
-    if has_url.any():
-        url_rows = work.loc[has_url]
-        url_kept = (
-            url_rows.sort_values(["_priority", "_orig_idx"], kind="stable")
-            .drop_duplicates(subset=["url"], keep="first")["_orig_idx"]
-        )
-        drop_orig.update(set(url_rows["_orig_idx"]) - set(url_kept))
-        work = work[~work["_orig_idx"].isin(drop_orig)]
+    url_keep = (
+        (pl.col("url").str.len_bytes() == 0)
+        | (pl.col("_orig_idx") == pl.col("_orig_idx").first().over("url"))
+    )
+    work = work.filter(url_keep)
 
     # ---- Pass 2: cross-ATS (company, title, location) dedup ---------------
-    work = work.assign(
-        _dedup_key=work["company"] + "|" + work["title"] + "|" + work["location"]
+    work = work.with_columns(
+        (
+            pl.col("company")
+            + pl.lit("|")
+            + pl.col("title")
+            + pl.lit("|")
+            + pl.col("location")
+        ).alias("_dedup_key")
     )
-    valid_mask = (work["company"].str.len() > 0) & (work["title"].str.len() > 0)
-    valid = work.loc[valid_mask]
-    if not valid.empty:
-        ats_per_key = valid.groupby("_dedup_key")["ats_type"].transform("nunique")
-        cross = valid.loc[ats_per_key > 1]
-        if not cross.empty:
-            cross_kept = (
-                cross.sort_values(["_priority", "_orig_idx"], kind="stable")
-                .drop_duplicates(subset=["_dedup_key"], keep="first")["_orig_idx"]
-            )
-            ctl_drop = set(cross["_orig_idx"]) - set(cross_kept)
-            drop_orig.update(ctl_drop)
-            work = work[~work["_orig_idx"].isin(ctl_drop)]
-    work = work.drop(columns=["_dedup_key"], errors="ignore")
+    ctl_valid = (
+        (pl.col("company").str.len_bytes() > 0)
+        & (pl.col("title").str.len_bytes() > 0)
+    )
+    # Only count distinct ats_types AMONG VALID ROWS in each group —
+    # invalid (empty c or t) rows must not push a group into "cross-ATS"
+    # status.
+    n_ats_in_valid_ctl = (
+        pl.when(ctl_valid)
+        .then(pl.col("ats_type"))
+        .otherwise(None)
+        .n_unique()
+        .over("_dedup_key")
+    )
+    is_cross_ctl = ctl_valid & (n_ats_in_valid_ctl > 1)
+    ctl_keep = ~is_cross_ctl | (
+        pl.col("_orig_idx") == pl.col("_orig_idx").first().over("_dedup_key")
+    )
+    work = work.filter(ctl_keep).drop("_dedup_key")
 
     # ---- Pass 3: cross-ATS (company_norm, ats_id) dedup -------------------
-    company_norm = work["company"].str.replace(r"[^a-z0-9]", "", regex=True)
-    work = work.assign(_cid_key=company_norm + "|" + work["ats_id"])
-    cid_valid_mask = (company_norm.str.len() > 0) & (work["ats_id"].str.len() > 0)
-    cid_valid = work.loc[cid_valid_mask]
-    if not cid_valid.empty:
-        ats_count = cid_valid.groupby("_cid_key")["ats_type"].transform("nunique")
-        cross_cid = cid_valid.loc[ats_count > 1]
-        if not cross_cid.empty:
-            cid_kept = (
-                cross_cid.sort_values(["_priority", "_orig_idx"], kind="stable")
-                .drop_duplicates(subset=["_cid_key"], keep="first")["_orig_idx"]
-            )
-            drop_orig.update(set(cross_cid["_orig_idx"]) - set(cid_kept))
+    work = work.with_columns(
+        pl.col("company")
+        .str.replace_all(r"[^a-z0-9]", "")
+        .alias("_company_norm")
+    )
+    work = work.with_columns(
+        (pl.col("_company_norm") + pl.lit("|") + pl.col("ats_id")).alias("_cid_key")
+    )
+    cid_valid = (
+        (pl.col("_company_norm").str.len_bytes() > 0)
+        & (pl.col("ats_id").str.len_bytes() > 0)
+    )
+    n_ats_in_valid_cid = (
+        pl.when(cid_valid)
+        .then(pl.col("ats_type"))
+        .otherwise(None)
+        .n_unique()
+        .over("_cid_key")
+    )
+    is_cross_cid = cid_valid & (n_ats_in_valid_cid > 1)
+    cid_keep = ~is_cross_cid | (
+        pl.col("_orig_idx") == pl.col("_orig_idx").first().over("_cid_key")
+    )
+    work = work.filter(cid_keep).drop("_cid_key", "_company_norm")
 
-    # Materialize per-ATS survivor sets keyed on (_local_idx within ATS)
-    # so Pass 3 of the publish run can filter source CSVs by row number.
-    survivors: dict[str, set[int]] = {}
-    survivors_mask = ~keys["_orig_idx"].isin(drop_orig)
-    surviving_rows = keys.loc[survivors_mask, ["ats_type", "_local_idx"]]
-    for ats_value, group in surviving_rows.groupby("ats_type"):
-        survivors[str(ats_value)] = set(group["_local_idx"].astype(int).tolist())
+    # Materialize per-ATS survivor frames keyed on _local_idx for Pass 3.
+    # ``partition_by`` returns a dict of (key,) → frame; we keep only
+    # ``_local_idx`` so the survivor frames stay tiny (one int column
+    # per surviving row, ~8 MB per million rows).
+    survivors: dict[str, pl.DataFrame] = {}
+    parts = work.partition_by("ats_type", as_dict=True)
+    for key_tuple, part in parts.items():
+        ats_value = key_tuple[0] if isinstance(key_tuple, tuple) else key_tuple
+        survivors[str(ats_value)] = part.select("_local_idx")
     return survivors
 
 
 # --- helpers ---------------------------------------------------------------
 
 
-def _enrich_with_derived(df: pd.DataFrame) -> pd.DataFrame:
-    """Add ``is_remote`` and ``salary_min``/``salary_max`` derived columns
-    when the source data lacks them.
+def _enrich_lazy(lf: pl.LazyFrame) -> pl.LazyFrame:
+    """Add ``is_remote`` / ``salary_min`` / ``salary_max`` columns when
+    they aren't already present on the input.
 
-    Mutates ``df`` in-place (returns it for chaining). At publisher
-    scale a defensive ``.copy()`` of a 3M+ row frame is the difference
-    between fitting in RAM and OOM-kill — the caller owns ``df`` and
-    no other consumer references it.
+    Implemented as polars expressions whenever possible so the lazy
+    chain stays streamable through ``sink_csv``. ``is_remote`` reads
+    the ``REMOTE_KEYWORDS`` and ``ONSITE_KEYWORDS`` lists from the
+    canonical :mod:`jobhive.enrichment.derived` module — both are
+    optional, so a deploy that has narrowed the heuristic to title-only
+    (no ``ONSITE_KEYWORDS`` exported) still gets a usable column.
+
+    ``salary_summary`` parsing is the only path that has to go through
+    a Python callback (``map_elements``); polars' streaming engine
+    doesn't run user functions, so the lazy chain falls back to the
+    eager engine for that ATS slice (rare — most scrapers populate
+    ``salary_min`` / ``salary_max`` upstream and skip this branch).
     """
-    if "location" in df.columns and "is_remote" not in df.columns:
-        df["is_remote"] = df["location"].apply(infer_is_remote)
-    if "salary_summary" in df.columns and "salary_min" not in df.columns:
-        parsed = df["salary_summary"].apply(parse_salary_range)
-        df["salary_min"] = parsed.apply(lambda t: t[0])
-        df["salary_max"] = parsed.apply(lambda t: t[1])
-    return df
+    schema_names = lf.collect_schema().names()
+
+    if "location" in schema_names and "is_remote" not in schema_names:
+        lf = lf.with_columns(_is_remote_expr().alias("is_remote"))
+
+    if "salary_summary" in schema_names and "salary_min" not in schema_names:
+        salary_struct = pl.Struct({"min": pl.Float64, "max": pl.Float64})
+        lf = (
+            lf.with_columns(
+                pl.col("salary_summary")
+                .map_elements(_safe_parse_salary, return_dtype=salary_struct)
+                .alias("_salary_parsed")
+            )
+            .with_columns(
+                pl.col("_salary_parsed").struct.field("min").alias("salary_min"),
+                pl.col("_salary_parsed").struct.field("max").alias("salary_max"),
+            )
+            .drop("_salary_parsed")
+        )
+
+    return lf
 
 
-def _normalize_for_parquet_inplace(df: pd.DataFrame) -> pd.DataFrame:
-    """Cast object-dtype columns to typed nullable for parquet stability.
+def _is_remote_expr() -> pl.Expr:
+    """Vectorized polars version of :func:`infer_is_remote`.
 
-    Mutates ``df`` in-place — at corpus scale the previous defensive
-    copy doubled peak memory of the frame. Caller is the publisher and
-    does not reuse ``df`` after this call.
+    Falls back to a constant ``None`` expression when the deploy lacks
+    keyword lists entirely; never raises so the publisher stays usable
+    on ``derived.py`` variants that don't export them.
     """
-    for col in df.columns:
-        if df[col].dtype != object:
-            continue
-        non_null = df[col].dropna()
-        if not non_null.empty and non_null.map(lambda v: isinstance(v, bool)).all():
-            df[col] = df[col].astype("boolean")
-        else:
-            df[col] = df[col].astype("string")
-    return df
+    if not _REMOTE_KEYWORDS and not _ONSITE_KEYWORDS:
+        # No keywords — every row gets None. The publisher passed
+        # ``infer_is_remote`` via ``map_elements`` in the eager path,
+        # but here we want to stay lazy. Defer to a Python callback
+        # only when neither keyword list is importable.
+        return (
+            pl.col("location")
+            .map_elements(infer_is_remote, return_dtype=pl.Boolean)
+        )
+
+    loc_lower = (
+        pl.col("location").cast(pl.String, strict=False).str.to_lowercase()
+    )
+    remote_match: pl.Expr = pl.lit(False)
+    for kw in _REMOTE_KEYWORDS:
+        remote_match = remote_match | loc_lower.str.contains(kw, literal=True)
+    if _ONSITE_KEYWORDS:
+        onsite_match: pl.Expr = pl.lit(False)
+        for kw in _ONSITE_KEYWORDS:
+            onsite_match = onsite_match | loc_lower.str.contains(kw, literal=True)
+        return (
+            pl.when(remote_match)
+            .then(pl.lit(True))
+            .when(onsite_match)
+            .then(pl.lit(False))
+            .otherwise(None)
+        )
+    # Narrow heuristic — no onsite keywords, only True / None.
+    return pl.when(remote_match).then(pl.lit(True)).otherwise(None)
 
 
-def _read_csv_safely(path: Path) -> pd.DataFrame:
-    try:
-        return pd.read_csv(path, low_memory=False)
-    except Exception as exc:
-        raise StorageError(f"Failed to read CSV {path}: {exc}") from exc
+def _safe_parse_salary(value: object) -> dict[str, float | None]:
+    if not isinstance(value, str):
+        return {"min": None, "max": None}
+    mn, mx = parse_salary_range(value)
+    return {"min": mn, "max": mx}
 
 
 def _collect_uploaded_keys(entry: dict[str, object]) -> list[str]:
@@ -794,6 +809,25 @@ def _temp_file(suffix: str) -> Iterator[Path]:
     finally:
         with suppress(FileNotFoundError):
             path.unlink()
+
+
+def _merge_parquets_streaming(input_paths: list[Path], out_path: Path) -> None:
+    """Merge multiple parquet files into one via polars lazy concat.
+
+    Different ATSes have heterogeneous schemas — same column name,
+    different inferred dtype (an int64 ``ats_id`` on one ATS, a
+    large_string on another) — and ``pyarrow.unify_schemas`` refuses
+    to reconcile those. Polars' ``how="diagonal_relaxed"`` promotes
+    conflicting dtypes to the wider one (string wins), then
+    ``sink_parquet`` writes the unified result without buffering the
+    full corpus.
+    """
+    if not input_paths:
+        return
+    lfs = [pl.scan_parquet(str(p)) for p in input_paths]
+    pl.concat(lfs, how="diagonal_relaxed").sink_parquet(
+        out_path, compression="zstd"
+    )
 
 
 def _file_sha_size(path: Path) -> tuple[str, int]:
