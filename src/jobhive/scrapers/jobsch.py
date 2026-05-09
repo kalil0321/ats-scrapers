@@ -112,6 +112,12 @@ class JobsChScraper(BaseScraper):
         jobs: list[Job] = []
         lock = asyncio.Lock()
 
+        # Track whether we've already escalated to the proxy. After
+        # that, any further 403 mid-pagination is treated as a
+        # rate-limit / regional dropout — we keep what we have and
+        # stop, rather than re-raising and throwing away the slice.
+        already_in_proxy_mode = proxy_url is not None
+
         async def absorb(items: list[dict[str, Any]]) -> None:
             async with lock:
                 for it in items:
@@ -131,9 +137,9 @@ class JobsChScraper(BaseScraper):
         async with httpx.AsyncClient(**client_kwargs) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
-            # First request to learn the real total. The API doesn't
-            # ship total in a single field on every response shape; we
-            # use ``total_hits`` from page 1 as the planning anchor.
+            # First request to learn the real total. A 403 here on the
+            # first page (no proxy yet) escalates so the caller can
+            # retry through the residential proxy fallback.
             first = await self._fetch_page(client, sem, start=0)
             total = int(first.get("total_hits") or 0)
             await absorb(first.get("documents") or [])
@@ -147,7 +153,15 @@ class JobsChScraper(BaseScraper):
             offsets = [PER_PAGE * i for i in range(1, page_count)]
 
             async def one(offset: int) -> None:
-                payload = await self._fetch_page(client, sem, start=offset)
+                try:
+                    payload = await self._fetch_page(client, sem, start=offset)
+                except _BlockedError:
+                    if not already_in_proxy_mode:
+                        raise  # let _fetch_async escalate to proxy
+                    # Already on the proxy — different node may have
+                    # hit a per-IP rate limit. Drop this page silently
+                    # so partial pagination returns what we have.
+                    return
                 await absorb(payload.get("documents") or [])
 
             await asyncio.gather(*(one(o) for o in offsets))

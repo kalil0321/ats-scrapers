@@ -127,13 +127,27 @@ class BuiltInScraper(BaseScraper):
             consecutive_empty = 0
             page = 1
             while page <= self.max_pages and consecutive_empty < 3:
-                page_jobs = await self._fetch_listing_page(client, sem, page)
+                try:
+                    page_jobs = await self._fetch_listing_page(client, sem, page)
+                except ScraperError as exc:
+                    # Cloudflare and httpcloak both rate-limit deep
+                    # pagination — once we hit a hard wall we keep what
+                    # we already collected rather than throw it all out.
+                    # Page 1 failures are still fatal (nothing to keep).
+                    if page == 1:
+                        raise
+                    log.warning(
+                        "Built In: stopping pagination at page %d (%s); "
+                        "keeping %d jobs collected so far.",
+                        page, exc, len(jobs),
+                    )
+                    break
                 new = sum(1 for j in page_jobs if j.ats_id not in seen)
                 await absorb(page_jobs)
                 consecutive_empty = 0 if new else consecutive_empty + 1
                 page += 1
 
-            if self.firecrawl_api_key:
+            if self.firecrawl_api_key and jobs:
                 await self._enrich_via_firecrawl(client, jobs)
 
         return jobs
@@ -264,30 +278,52 @@ class BuiltInScraper(BaseScraper):
     async def _request_via_httpcloak(self, url: str) -> str:
         """TLS+h2 impersonation fallback used when builtin.com 403's
         the direct httpx user-agent. Verified live 2026-05-09: 200 with
-        full ~390 KB HTML where direct returns 403/919 B."""
-        try:
-            import httpcloak
-        except ImportError as exc:
+        full ~390 KB HTML where direct returns 403/919 B.
+
+        Cloudflare also rate-limits deep pagination via httpcloak — the
+        first 403 here is treated as transient (retry with backoff) and
+        only escalates to a hard ``ScraperError`` if it survives every
+        retry. The caller in :meth:`_fetch_async` then keeps the jobs
+        collected so far rather than throwing them away.
+        """
+        from importlib.util import find_spec
+
+        if find_spec("httpcloak") is None:
             raise ScraperError(
                 "Built In's 403 fallback needs httpcloak — "
                 "`pip install jobhive[scrapers]`."
-            ) from exc
+            )
 
-        def _get() -> str:
-            r = httpcloak.get(url, timeout=self.timeout)
-            if r.status_code != 200:
-                raise ScraperError(
-                    f"Built In httpcloak fallback returned "
-                    f"{r.status_code} for {url}"
-                )
-            # httpcloak returns bytes — decode as UTF-8 with replacement
-            # so a stray non-UTF-8 byte never tanks a whole page.
-            content = r.content
-            if isinstance(content, bytes):
-                return content.decode("utf-8", errors="replace")
-            return content
+        last_status: int | None = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            text = await asyncio.to_thread(self._httpcloak_get_sync, url)
+            if isinstance(text, str):
+                return text
+            # ``_httpcloak_get_sync`` returned the int status on non-200
+            # so we can decide here whether to retry or escalate.
+            last_status = text
+            if last_status != 403 or attempt == MAX_RETRIES:
+                break
+            await asyncio.sleep(RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+        raise ScraperError(
+            f"Built In httpcloak fallback returned {last_status} for "
+            f"{url} after {MAX_RETRIES} retries"
+        )
 
-        return await asyncio.to_thread(_get)
+    @staticmethod
+    def _httpcloak_get_sync(url: str) -> str | int:
+        """Sync fetch via httpcloak. Returns the page text on 200, the
+        bare status int otherwise so the async caller can decide
+        retry/escalate without raising for transient blocks."""
+        import httpcloak
+
+        r = httpcloak.get(url, timeout=30)
+        if r.status_code != 200:
+            return int(r.status_code)
+        content = r.content
+        if isinstance(content, bytes):
+            return content.decode("utf-8", errors="replace")
+        return content
 
     # --- optional Firecrawl enrichment --------------------------------------
 
