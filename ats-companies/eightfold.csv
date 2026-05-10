@@ -1,13 +1,15 @@
 name,url
 Amdocs,amdocs
+appliedmaterials,appliedmaterials
 Arcadis,arcadis
 Boston Scientific,bostonscientific
+caci,caci
 Citi,citi
 Coca-Cola Europacific Partners,ccep
 Corteva,corteva
-DSM,dsm
 Dexcom,dexcom
 Dolby,dolby
+DSM,dsm
 Eaton,eaton
 Ericsson,ericsson
 Estée Lauder Companies,https://elcompanies.eightfold.ai/api/pcsx/search?domain=elcompanies.com&query=&location=&start=0&sort_by=timestamp
@@ -16,6 +18,7 @@ Fortive,fortive
 Government of Puerto Rico,puertoricogov
 Grupo Bimbo,grupobimbo
 Hasbro,hasbro
+kering,kering
 Kraft Heinz,kraftheinz
 Lam Research,lamresearch
 MercadoLibre,mercadolibre
@@ -23,25 +26,22 @@ Micron,micron
 Microsoft,microsoft
 Modern Technology Solutions,mtsi-va
 Morgan Stanley,morganstanley
-NTT Data,nttdata
 Northrop Grumman,ngc
+NTT Data,nttdata
 Nvidia,nvidia
 PayPal,paypal
 Ptc,ptc
 Qualcomm,qualcomm
 Ralliant,ralliant
+slb,slb
+softtek,softtek
 Starbucks,starbucks
 Tailored Brands,tailoredbrands
-TriNet,trinet
+telekom-growthhub,https://telekom-growthhub.eightfold.ai/api/pcsx/search?domain=telekom-growthhub.com&query=&location=&start=0&sort_by=timestamp
 Trimble,trimble
+TriNet,trinet
 Twilio,twilio
 UKG,ukg
 Vialto Partners,vialto
 Vodafone,vodafone
 Whirlpool,whirlpool
-appliedmaterials,appliedmaterials
-caci,caci
-kering,kering
-slb,slb
-softtek,softtek
-telekom-growthhub,https://telekom-growthhub.eightfold.ai/api/pcsx/search?domain=telekom-growthhub.com&query=&location=&start=0&sort_by=timestamp
