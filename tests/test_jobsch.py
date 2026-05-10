@@ -84,7 +84,7 @@ def test_parses_full_doc(httpx_mock) -> None:
             detail_de="https://www.jobs.ch/de/stellenangebote/detail/abc-123/",
         )], total_hits=1),
     )
-    jobs = JobsChScraper("any").fetch()
+    jobs = JobsChScraper("any", query_seeds=()).fetch()
     assert len(jobs) == 1
     j = jobs[0]
     assert j.ats_type is ATSType.JOBSCH
@@ -108,7 +108,7 @@ def test_falls_back_to_canonical_url_when_no_links(httpx_mock) -> None:
         url=_API_RE,
         json=_page([_doc(job_id="xyz-7", title="Engineer")], total_hits=1),
     )
-    j = JobsChScraper("any").fetch()[0]
+    j = JobsChScraper("any", query_seeds=()).fetch()[0]
     assert str(j.url) == "https://www.jobs.ch/en/vacancies/detail/xyz-7/"
 
 
@@ -118,7 +118,7 @@ def test_part_time_employment_type(httpx_mock) -> None:
         url=_API_RE,
         json=_page([_doc(job_id="p1", title="X", grades=[50])], total_hits=1),
     )
-    assert JobsChScraper("any").fetch()[0].employment_type == "PART_TIME"
+    assert JobsChScraper("any", query_seeds=()).fetch()[0].employment_type == "PART_TIME"
 
 
 def test_mixed_grades_no_employment_type(httpx_mock) -> None:
@@ -128,7 +128,7 @@ def test_mixed_grades_no_employment_type(httpx_mock) -> None:
         url=_API_RE,
         json=_page([_doc(job_id="p1", title="X", grades=[80, 100])], total_hits=1),
     )
-    assert JobsChScraper("any").fetch()[0].employment_type is None
+    assert JobsChScraper("any", query_seeds=()).fetch()[0].employment_type is None
 
 
 # --- pagination -------------------------------------------------------------
@@ -153,7 +153,7 @@ def test_paginates_total_hits_into_offsets(httpx_mock) -> None:
         json=_page([_doc(job_id=f"c{i}", title=f"Job {i}") for i in range(10)],
                    total_hits=50),
     )
-    jobs = JobsChScraper("any").fetch()
+    jobs = JobsChScraper("any", query_seeds=()).fetch()
     assert len(jobs) == 50
 
 
@@ -174,7 +174,7 @@ def test_max_pages_truncates(httpx_mock) -> None:
         json=_page([_doc(job_id=f"b{i}", title="X") for i in range(20)],
                    total_hits=1000),
     )
-    jobs = JobsChScraper("any", max_pages=2).fetch()
+    jobs = JobsChScraper("any", max_pages=2, query_seeds=()).fetch()
     assert len(jobs) == 40
 
 
@@ -184,7 +184,7 @@ def test_no_fanout_when_total_under_per_page(httpx_mock) -> None:
         url=_API_RE,
         json=_page([_doc(job_id="solo", title="Only")], total_hits=1),
     )
-    jobs = JobsChScraper("any").fetch()
+    jobs = JobsChScraper("any", query_seeds=()).fetch()
     assert len(jobs) == 1
 
 
@@ -200,11 +200,11 @@ def test_skips_doc_missing_id_or_title(httpx_mock) -> None:
             {"title": "no-id"},
         ], total_hits=3),
     )
-    jobs = JobsChScraper("any").fetch()
+    jobs = JobsChScraper("any", query_seeds=()).fetch()
     assert [j.ats_id for j in jobs] == ["ok"]
 
 
 def test_persistent_500_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=_API_RE, status_code=500, is_reusable=True)
     with pytest.raises(ScraperError):
-        JobsChScraper("any").fetch()
+        JobsChScraper("any", query_seeds=()).fetch()

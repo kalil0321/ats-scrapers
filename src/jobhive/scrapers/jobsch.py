@@ -12,15 +12,27 @@ at 20; >20 → 422). Each entry has ``company_name`` embedded so no
 separate company-resolution fetch is needed. The detail-page URL
 template is in ``_links.detail_*`` (German is the canonical default).
 
-The API geo-fences off datacenter IPs — bare httpx from a Hetzner /
-DigitalOcean / AWS machine returns 403 with a 919-byte block page
-(verified 2026-05-09 from Hetzner). The scraper tries direct first
-and, on 403, falls back to a residential proxy pulled from the
-``PROXY`` env var (Evomi 4-colon shape ``http://host:port:user:pass``,
-matching the Tesla / Meta pattern). With the proxy active, the same
-endpoint returns 200 + ~200 KB HTML and the public REST API works.
-When ``PROXY`` is not set the scraper raises a clear error rather
-than silently 0-scraping.
+Two anti-bot quirks to handle:
+
+  - Datacenter IP geo-fence — bare httpx from a Hetzner / AWS /
+    DigitalOcean machine returns 403 with a 919-byte block page
+    (verified 2026-05-09 from Hetzner). The scraper tries direct
+    first and, on 403, falls back to a residential proxy pulled
+    from the ``PROXY`` env var (Evomi 4-colon shape
+    ``http://host:port:user:pass``, matching Tesla / Meta).
+    Without ``PROXY`` set we raise a clear error rather than
+    silently 0-scraping.
+
+  - Deep-pagination cap — ``start>=2000`` always returns 422
+    regardless of IP. The empty-query view therefore tops out at
+    2 000 of the ~49 000 live postings. To recover the rest we
+    issue the same paginated search under ~35 keyword seeds (the
+    only filter param the API honours; verified 2026-05-09:
+    ``industry_ids`` / ``region_ids`` / ``place`` are all silently
+    ignored — total stays at 48 892 — but ``query=developer``
+    drops it to 707). Seeds span DE / FR / IT / EN to match the
+    four official languages of Swiss job postings; results across
+    seeds are deduped by ``job_id``.
 
 Single-source scraper: ``company_slug`` is informational and ignored.
 """
@@ -49,9 +61,34 @@ PER_PAGE = 20  # API hard-caps ``rows`` at 20 (>20 → 422).
 MAX_CONCURRENCY = 4
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 1.5
-# Default cap on total pages to fetch — 2,500 pages × 20 jobs = full
-# 50k inventory. Set lower via ``max_pages`` for incremental runs.
-DEFAULT_MAX_PAGES = 2500
+# The API hard-caps deep pagination at start=2000 (==page 100). Any
+# per-query fetch therefore tops out at 2 000 rows.
+MAX_USABLE_OFFSET = 2000
+# Default cap on pages per query — 100 × 20 rows = the API's per-query
+# ceiling. Lower via ``max_pages`` for quick smoke runs.
+DEFAULT_MAX_PAGES = 100
+
+# Keyword seeds covering DE / FR / IT / EN to defeat the per-query
+# 2 000-row pagination cap. Probed live 2026-05-09: each seed below
+# returns at least 36 unique-to-the-seed hits, the broad seeds
+# (``a``, ``manager``, ``verkauf``) hit the 2 000 cap and contribute
+# their newest 2 000 each. After dedup by ``job_id`` we observed
+# ~30 k unique rows across these seeds vs the 2 000 you get with no
+# query.
+_QUERY_SEEDS: tuple[str, ...] = (
+    # English
+    "developer", "manager", "engineer", "sales", "marketing", "finance",
+    "designer", "analyst", "consultant", "support", "operations", "hr",
+    "lead", "senior", "junior", "intern", "specialist", "executive",
+    # German
+    "entwickler", "verkauf", "ingenieur", "buchhaltung", "leiter",
+    "projektleiter", "kundenberater", "fachkraft", "assistent", "praktikant",
+    # French
+    "développeur", "responsable", "vente", "ingénieur", "comptable",
+    "stagiaire", "assistant", "directeur",
+    # Italian
+    "sviluppatore", "vendita", "ingegnere", "responsabile",
+)
 
 
 class _BlockedError(Exception):
@@ -78,18 +115,26 @@ class JobsChScraper(BaseScraper):
         *,
         timeout: float = 30.0,
         max_pages: int = DEFAULT_MAX_PAGES,
+        query_seeds: tuple[str, ...] | None = None,
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
         self.max_pages = max_pages
+        # ``None`` keeps the production default (full seed list); pass
+        # ``()`` to disable seed-segmentation entirely (unit tests, or
+        # callers who only want the most-recent 2 000 rows).
+        self.query_seeds: tuple[str, ...] = (
+            _QUERY_SEEDS if query_seeds is None else tuple(query_seeds)
+        )
 
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
     async def _fetch_async(self) -> list[Job]:
-        # Try direct first; on 403 from the datacenter-blocked API,
-        # restart the whole fetch through the Evomi residential proxy.
+        # Probe IP routing on the empty query: if the datacenter IP is
+        # 403-blocked, the same probe-then-proxy escalation runs once,
+        # and every subsequent seed reuses the resulting proxy_url.
         try:
-            return await self._run_fetch(proxy_url=None)
+            return await self._fetch_all_seeds(proxy_url=None)
         except _BlockedError:
             pass
 
@@ -105,17 +150,68 @@ class JobsChScraper(BaseScraper):
             "jobs.ch: direct request 403'd — retrying via PROXY "
             "residential fallback."
         )
-        return await self._run_fetch(proxy_url=proxy_url)
+        return await self._fetch_all_seeds(proxy_url=proxy_url)
 
-    async def _run_fetch(self, *, proxy_url: str | None) -> list[Job]:
+    async def _fetch_all_seeds(self, *, proxy_url: str | None) -> list[Job]:
+        """Run the empty-query fetch followed by every keyword seed,
+        deduping by ``job_id`` across all queries.
+
+        A 403 on the empty query escalates to the caller (proxy
+        fallback). Once that's been handled (or direct works), 403s on
+        individual seeds are demoted to a warning + skip — the rest of
+        the seeds still run and contribute their unique rows.
+        """
+        seen: set[str] = set()
+        all_jobs: list[Job] = []
+
+        # Empty-query first — its 403 is the signal the caller uses
+        # to flip from direct to proxy mode.
+        first_slice = await self._run_fetch(proxy_url=proxy_url, query=None)
+        for job in first_slice:
+            if job.ats_id in seen:
+                continue
+            seen.add(job.ats_id)
+            all_jobs.append(job)
+        log.info(
+            "jobs.ch: empty query → %d rows (%d new)",
+            len(first_slice), len(all_jobs),
+        )
+
+        for seed in self.query_seeds:
+            try:
+                slice_jobs = await self._run_fetch(
+                    proxy_url=proxy_url, query=seed
+                )
+            except _BlockedError:
+                log.warning(
+                    "jobs.ch: query=%s blocked even via PROXY; "
+                    "skipping this seed.", seed,
+                )
+                continue
+            new_count = 0
+            for job in slice_jobs:
+                if job.ats_id in seen:
+                    continue
+                seen.add(job.ats_id)
+                all_jobs.append(job)
+                new_count += 1
+            log.info(
+                "jobs.ch: query=%s → %d rows (%d new, total %d)",
+                seed, len(slice_jobs), new_count, len(all_jobs),
+            )
+
+        return all_jobs
+
+    async def _run_fetch(
+        self, *, proxy_url: str | None, query: str | None
+    ) -> list[Job]:
         seen: set[str] = set()
         jobs: list[Job] = []
         lock = asyncio.Lock()
 
-        # Track whether we've already escalated to the proxy. After
-        # that, any further 403 mid-pagination is treated as a
-        # rate-limit / regional dropout — we keep what we have and
-        # stop, rather than re-raising and throwing away the slice.
+        # After the proxy switch, any further 403 mid-pagination is a
+        # per-IP rate-limit / regional dropout — drop that page so the
+        # rest of the slice survives.
         already_in_proxy_mode = proxy_url is not None
 
         async def absorb(items: list[dict[str, Any]]) -> None:
@@ -137,30 +233,27 @@ class JobsChScraper(BaseScraper):
         async with httpx.AsyncClient(**client_kwargs) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
-            # First request to learn the real total. A 403 here on the
-            # first page (no proxy yet) escalates so the caller can
-            # retry through the residential proxy fallback.
-            first = await self._fetch_page(client, sem, start=0)
+            first = await self._fetch_page(client, sem, start=0, query=query)
             total = int(first.get("total_hits") or 0)
             await absorb(first.get("documents") or [])
 
             if total <= PER_PAGE:
                 return jobs
 
+            usable = min(total, MAX_USABLE_OFFSET)
             page_count = min(
-                (total + PER_PAGE - 1) // PER_PAGE, self.max_pages
+                (usable + PER_PAGE - 1) // PER_PAGE, self.max_pages
             )
             offsets = [PER_PAGE * i for i in range(1, page_count)]
 
             async def one(offset: int) -> None:
                 try:
-                    payload = await self._fetch_page(client, sem, start=offset)
+                    payload = await self._fetch_page(
+                        client, sem, start=offset, query=query
+                    )
                 except _BlockedError:
                     if not already_in_proxy_mode:
-                        raise  # let _fetch_async escalate to proxy
-                    # Already on the proxy — different node may have
-                    # hit a per-IP rate limit. Drop this page silently
-                    # so partial pagination returns what we have.
+                        raise
                     return
                 await absorb(payload.get("documents") or [])
 
@@ -173,8 +266,11 @@ class JobsChScraper(BaseScraper):
         sem: asyncio.Semaphore,
         *,
         start: int,
+        query: str | None = None,
     ) -> dict[str, Any]:
-        params = {"start": start, "rows": PER_PAGE}
+        params: dict[str, Any] = {"start": start, "rows": PER_PAGE}
+        if query:
+            params["query"] = query
         last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
             async with sem:
