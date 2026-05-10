@@ -3,7 +3,7 @@
 Layout produced under ``<prefix>`` (default ``jobhive/v1``):
 
     jobhive/v1/manifest.json
-    jobhive/v1/all.parquet           # full snapshot, parquet only
+    jobhive/v1/all.{csv,parquet}     # full snapshot, both formats
     jobhive/v1/<ats>/jobs.csv        # per-ATS jobs slice
     jobhive/v1/<ats>/jobs.parquet    # idem in parquet
 
@@ -81,9 +81,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_PREFIX = "jobhive/v1"
 CACHE_CONTROL_LATEST = "public, max-age=300"  # manifest + latest data files
 
-# `all` is parquet-only — the CSV equivalent would be ~150 MB and there's
-# no consumer for it that wouldn't prefer parquet.
-FORMATS_ALL = ("parquet",)
+# ``all`` ships both formats — parquet for typed pandas / DuckDB
+# consumers, CSV (~2.3 GB at the current ~4M-row corpus) for
+# spreadsheet, ``grep``, and tools that don't speak parquet. The CSV
+# is built by streaming the merged parquet back through polars, so
+# the per-row data lives on disk in two places but never both in
+# RAM.
+FORMATS_ALL = ("csv", "parquet")
 FORMATS_PER_ATS = ("csv", "parquet")
 
 # Common pl.scan_csv options across every read path. ``ignore_errors``
@@ -149,7 +153,7 @@ class DatasetPublisher:
         1. Per-ATS slice ``<prefix>/<ats>/jobs.{csv,parquet}`` (raw —
            no cross-ATS dedup, so single-ATS consumers see what that
            ATS exposes).
-        2. Cross-ATS deduped global snapshot ``<prefix>/all.parquet``.
+        2. Cross-ATS deduped global snapshot ``<prefix>/all.{csv,parquet}``.
         3. Patched ``<prefix>/manifest.json`` with refreshed
            ``all`` and ``by_ats`` jobs entries; ``companies`` and
            ``by_ats_companies`` (CI-owned) are preserved untouched.
@@ -369,23 +373,25 @@ class DatasetPublisher:
     ) -> dict[str, object]:
         """Stream the global ``all.parquet`` from the per-ATS temp CSVs.
 
-        Two stages, both streaming:
+        Three stages, all streaming:
 
         1. Per-ATS — ``scan_csv`` + ``semi``-join against its
            survivor index frame, sunk to a per-ATS temp parquet via
            ``sink_parquet``. Polars's semi-join on a small RHS is
            hash-probe, so the LHS streams.
 
-        2. Merge — the per-ATS temp parquets are concatenated into the
-           global ``all.parquet`` via pyarrow's batch-iteration writer
-           with a unified schema (different ATSes can have different
-           columns; pyarrow promotes to the union and fills missing
-           with null). Peak memory in the merge is one Arrow batch
-           (~64 k rows, tens of MB), not the full corpus.
+        2. Merge parquet — the per-ATS temp parquets are concatenated
+           into the global ``all.parquet`` via polars' lazy
+           ``concat(diagonal_relaxed)`` + ``sink_parquet``, so
+           heterogeneous per-ATS schemas are unified and peak memory
+           is one Arrow batch.
+
+        3. Convert to CSV — the merged parquet is re-scanned and
+           ``sink_csv``'d for the ``all.csv`` artifact (~2.3 GB at
+           current corpus size). Polars streams batches; nothing is
+           materialized whole.
         """
         all_entry: dict[str, object] = {"rows": rows_total}
-        if "parquet" not in FORMATS_ALL or not self._write_parquet:
-            return all_entry
 
         with ExitStack() as stage_stack:
             per_ats_parquets: list[Path] = []
@@ -409,14 +415,19 @@ class DatasetPublisher:
                 )
                 per_ats_parquets.append(pq_temp)
 
-            pq_key = f"{self._prefix}/all.parquet"
-            with _temp_file(".parquet") as all_pq:
-                if per_ats_parquets:
-                    _merge_parquets_streaming(per_ats_parquets, all_pq)
-                else:
-                    pl.DataFrame(
-                        schema=dict.fromkeys(schema_union, pl.String)
-                    ).write_parquet(all_pq, compression="zstd")
+            # Build the merged parquet first — both ``all.parquet`` and
+            # ``all.csv`` (when configured) source from this file so the
+            # CSV path doesn't re-do the per-ATS semi-joins.
+            all_pq = stage_stack.enter_context(_temp_file(".parquet"))
+            if per_ats_parquets:
+                _merge_parquets_streaming(per_ats_parquets, all_pq)
+            else:
+                pl.DataFrame(
+                    schema=dict.fromkeys(schema_union, pl.String)
+                ).write_parquet(all_pq, compression="zstd")
+
+            if "parquet" in FORMATS_ALL and self._write_parquet:
+                pq_key = f"{self._prefix}/all.parquet"
                 pq_sha, pq_size = _file_sha_size(all_pq)
                 self._r2.upload(
                     all_pq,
@@ -424,11 +435,30 @@ class DatasetPublisher:
                     content_type="application/vnd.apache.parquet",
                     cache_control=CACHE_CONTROL_LATEST,
                 )
-            all_entry["parquet"] = self._public_or_key(pq_key)
-            all_entry["parquet_size_bytes"] = pq_size
-            all_entry["parquet_sha256"] = pq_sha
-            all_entry["size_bytes"] = pq_size
-            all_entry["sha256"] = pq_sha
+                all_entry["parquet"] = self._public_or_key(pq_key)
+                all_entry["parquet_size_bytes"] = pq_size
+                all_entry["parquet_sha256"] = pq_sha
+                all_entry["size_bytes"] = pq_size
+                all_entry["sha256"] = pq_sha
+
+            if "csv" in FORMATS_ALL:
+                csv_key = f"{self._prefix}/all.csv"
+                with _temp_file(".csv") as all_csv:
+                    pl.scan_parquet(all_pq).sink_csv(all_csv)
+                    csv_sha, csv_size = _file_sha_size(all_csv)
+                    self._r2.upload(
+                        all_csv,
+                        csv_key,
+                        content_type="text/csv",
+                        cache_control=CACHE_CONTROL_LATEST,
+                    )
+                all_entry["csv"] = self._public_or_key(csv_key)
+                # CSV's size + sha live in the canonical ``size_bytes``
+                # / ``sha256`` slots (consumers default-fetching the
+                # text format see the matching pair). Parquet keeps its
+                # own ``parquet_*`` fields populated above.
+                all_entry["size_bytes"] = csv_size
+                all_entry["sha256"] = csv_sha
 
         return all_entry
 

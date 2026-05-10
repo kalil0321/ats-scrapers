@@ -31,8 +31,8 @@ from jobhive.storage.publisher import (
 
 
 def test_publish_writes_per_ats_and_full_snapshot(ats_csv_dir, fake_r2) -> None:
-    """``all.parquet`` lives at the top level (parquet only); per-ATS
-    slices ship CSV+parquet under ``<ats>/jobs.{csv,parquet}``."""
+    """``all.{csv,parquet}`` live at the top level; per-ATS slices
+    ship CSV+parquet under ``<ats>/jobs.{csv,parquet}``."""
     publisher = DatasetPublisher(fake_r2, write_parquet=True)
     result = publisher.publish_from_directory(ats_csv_dir)
 
@@ -40,7 +40,7 @@ def test_publish_writes_per_ats_and_full_snapshot(ats_csv_dir, fake_r2) -> None:
     assert result.ats_count == 3
     assert "jobhive/v1/manifest.json" in fake_r2.uploads
     assert "jobhive/v1/all.parquet" in fake_r2.uploads
-    assert "jobhive/v1/all.csv" not in fake_r2.uploads  # parquet-only
+    assert "jobhive/v1/all.csv" in fake_r2.uploads
     for ats in ("greenhouse", "lever", "ashby"):
         assert f"jobhive/v1/{ats}/jobs.csv" in fake_r2.uploads
         assert f"jobhive/v1/{ats}/jobs.parquet" in fake_r2.uploads
@@ -77,9 +77,9 @@ def test_manifest_contains_expected_structure(ats_csv_dir, fake_r2) -> None:
     assert manifest["stats"]["ats_count"] == 3
     assert "greenhouse" in manifest["by_ats"]
     assert manifest["by_ats"]["greenhouse"]["rows"] == 3
-    # `all` lives at the top level now, parquet only.
+    # `all` lives at the top level now and ships both formats.
     assert manifest["all"]["parquet"].endswith("/all.parquet")
-    assert manifest["all"].get("csv") is None  # parquet-only
+    assert manifest["all"]["csv"].endswith("/all.csv")
 
 
 def test_manifest_includes_generator_string(ats_csv_dir, fake_r2) -> None:
@@ -417,8 +417,8 @@ def test_result_reports_counts_and_duration(ats_csv_dir, fake_r2) -> None:
     assert result.ats_count == 3
     assert result.duration_seconds >= 0.0
     assert result.manifest_key == "jobhive/v1/manifest.json"
-    # 3 ATS slices × 2 formats + all.parquet + manifest.json = 8 files
-    assert len(result.files) == 8
+    # 3 ATS slices × 2 formats + all.{csv,parquet} + manifest.json = 9 files
+    assert len(result.files) == 9
 
 
 # --- Cross-ATS deduplication ------------------------------------------------
