@@ -181,6 +181,18 @@ class DatasetPublisher:
                 source_path = source_dir / ats_csv_pattern.format(ats=ats.value)
                 if not source_path.exists():
                     continue
+                # Defense against the publisher firing while a scraper
+                # is mid-write (cron + ad-hoc publish race): a 0-byte
+                # CSV will blow up ``collect_schema`` with NoDataError.
+                # Skip the slice for this run; the next cron publish
+                # picks it up once the scraper has finished.
+                if source_path.stat().st_size == 0:
+                    logger.warning(
+                        "%s: source CSV is empty (likely mid-write by a "
+                        "concurrent scraper); skipping for this publish.",
+                        ats.value,
+                    )
+                    continue
                 any_csv_found = True
 
                 # Build the lazy enriched chain for this ATS slice.
@@ -188,7 +200,15 @@ class DatasetPublisher:
                 lf = lf.with_columns(pl.lit(ats.value).alias("ats_type"))
                 lf = _enrich_lazy(lf)
 
-                schema_names = lf.collect_schema().names()
+                try:
+                    schema_names = lf.collect_schema().names()
+                except pl.exceptions.NoDataError:
+                    # Header-only or otherwise empty CSV — same recovery
+                    # as the size==0 branch above.
+                    logger.warning(
+                        "%s: source CSV has no rows; skipping.", ats.value,
+                    )
+                    continue
                 for col in schema_names:
                     if col not in seen_cols:
                         seen_cols.add(col)
