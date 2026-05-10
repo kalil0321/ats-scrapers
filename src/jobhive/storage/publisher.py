@@ -61,19 +61,15 @@ from jobhive.enrichment import infer_is_remote, parse_salary_range
 from jobhive.exceptions import StorageError
 from jobhive.models import ATSType
 
-# Pull the keyword lists used by ``infer_is_remote`` so the lazy
+# Pull the keyword list used by ``infer_is_remote`` so the lazy
 # enrichment path can express the rule as vectorized polars
-# expressions. Both lists are optional — if a deploy has the narrowed
-# (title-only, True/None) variant of ``derived.py`` that ships without
-# ``ONSITE_KEYWORDS``, we still build a usable ``is_remote`` column.
+# expressions. The list is optional — if a deploy ships a stripped
+# variant of ``derived.py`` that doesn't export it, the publisher
+# falls back to the Python callback via ``map_elements``.
 try:
     from jobhive.enrichment.derived import REMOTE_KEYWORDS as _REMOTE_KEYWORDS
 except ImportError:
     _REMOTE_KEYWORDS = ()
-try:
-    from jobhive.enrichment.derived import ONSITE_KEYWORDS as _ONSITE_KEYWORDS
-except ImportError:
-    _ONSITE_KEYWORDS = ()
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -704,7 +700,7 @@ def _enrich_lazy(lf: pl.LazyFrame) -> pl.LazyFrame:
     """
     schema_names = lf.collect_schema().names()
 
-    if "location" in schema_names and "is_remote" not in schema_names:
+    if "title" in schema_names and "is_remote" not in schema_names:
         lf = lf.with_columns(_is_remote_expr().alias("is_remote"))
 
     if "salary_summary" in schema_names and "salary_min" not in schema_names:
@@ -728,38 +724,30 @@ def _enrich_lazy(lf: pl.LazyFrame) -> pl.LazyFrame:
 def _is_remote_expr() -> pl.Expr:
     """Vectorized polars version of :func:`infer_is_remote`.
 
-    Falls back to a constant ``None`` expression when the deploy lacks
-    keyword lists entirely; never raises so the publisher stays usable
-    on ``derived.py`` variants that don't export them.
+    Reads ``title`` (not ``location``) — the canonical heuristic
+    in :mod:`jobhive.enrichment.derived` is intentionally narrow and
+    only treats title-level remote markers as definitive. Free-form
+    location text is left for the downstream LLM enrichment pipeline.
+
+    Falls back to the eager ``map_elements`` callback when the deploy
+    ships a stripped variant of ``derived.py`` that doesn't export
+    ``REMOTE_KEYWORDS`` — the publisher stays usable, but that branch
+    breaks lazy streaming for the slice that needs it.
     """
-    if not _REMOTE_KEYWORDS and not _ONSITE_KEYWORDS:
-        # No keywords — every row gets None. The publisher passed
-        # ``infer_is_remote`` via ``map_elements`` in the eager path,
-        # but here we want to stay lazy. Defer to a Python callback
-        # only when neither keyword list is importable.
+    if not _REMOTE_KEYWORDS:
         return (
-            pl.col("location")
+            pl.col("title")
             .map_elements(infer_is_remote, return_dtype=pl.Boolean)
         )
 
-    loc_lower = (
-        pl.col("location").cast(pl.String, strict=False).str.to_lowercase()
+    title_lower = (
+        pl.col("title").cast(pl.String, strict=False).str.to_lowercase()
     )
     remote_match: pl.Expr = pl.lit(False)
     for kw in _REMOTE_KEYWORDS:
-        remote_match = remote_match | loc_lower.str.contains(kw, literal=True)
-    if _ONSITE_KEYWORDS:
-        onsite_match: pl.Expr = pl.lit(False)
-        for kw in _ONSITE_KEYWORDS:
-            onsite_match = onsite_match | loc_lower.str.contains(kw, literal=True)
-        return (
-            pl.when(remote_match)
-            .then(pl.lit(True))
-            .when(onsite_match)
-            .then(pl.lit(False))
-            .otherwise(None)
-        )
-    # Narrow heuristic — no onsite keywords, only True / None.
+        remote_match = remote_match | title_lower.str.contains(kw, literal=True)
+    # Narrow heuristic — never returns False; absence of a remote
+    # marker in the title is not evidence the role is on-site.
     return pl.when(remote_match).then(pl.lit(True)).otherwise(None)
 
 

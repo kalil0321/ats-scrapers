@@ -22,10 +22,16 @@ import re
 # Conservative on purpose — "Remote Engineer" is unambiguous; titles
 # like "Remote Sales Director" also fire True and the role really is
 # remote in those cases.
+#
+# ``distributed`` is intentionally excluded: titles like
+# "Distributed Systems Engineer" / "Senior Engineer, Distributed
+# Storage" use the word as a technical-domain qualifier (distributed
+# computing) rather than a workforce-placement signal. The downstream
+# LLM enrichment pipeline can still classify such roles as remote
+# from the full posting context if they actually are.
 REMOTE_KEYWORDS = (
     "remote",
     "anywhere",
-    "distributed",
     "work from home",
     "wfh",
     "telework",

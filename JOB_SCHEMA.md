@@ -327,7 +327,8 @@ a JSON string in CSV exports, native dict in parquet.
   `"32h/week"`). Display this.
 
 **`is_remote` and `salary_min/max` are sometimes derived** —
-the publisher fills them from `location` text and `salary_summary`
-when the ATS doesn't ship them structured. The CSV / parquet doesn't
-distinguish derived from source-provided values; if you need to tell
-them apart, look at the raw ATS payload via `raw`.
+the publisher fills them from `title` text (narrow, title-only) and
+`salary_summary` when the ATS doesn't ship them structured. The CSV
+/ parquet doesn't distinguish derived from source-provided values;
+if you need to tell them apart, look at the raw ATS payload via
+`raw`.
