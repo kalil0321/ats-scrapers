@@ -16,13 +16,23 @@ the Pydantic descriptions are the source of truth; please update both.
 | Group | Fields |
 |---|---|
 | **Identity** | `global_id`, `url`, `title`, `company`, `ats_type`, `ats_id` |
-| **Location** | `location`, `lat`, `lon`, `is_remote` |
+| **Location** | `location`, `country_iso`, `region`, `lat`, `lon`, `is_remote` |
 | **Compensation** | `salary_currency`, `salary_period`, `salary_summary`, `salary_min`, `salary_max` |
 | **Classification** | `experience`, `employment_type`, `department`, `team`, `requisition_id`, `apply_url`, `commitment` |
-| **Content & timing** | `description`, `posted_at`, `fetched_at` |
+| **Content & timing** | `description`, `posted_at`, `fetched_at`, `language` |
 | **Provider overflow** | `raw` |
 
-26 columns total in the published CSV.
+29 columns total in the published CSV.
+
+> **Heuristic vs LLM split.** The publisher's hardcoded inference is
+> intentionally narrow: title-only `is_remote` (returns `True` or
+> `None`, never `False`), tight-regex `salary_min`/`salary_max`
+> parsing of `salary_summary`, and ATS-specific employment-type label
+> maps. Anything that requires reading prose — figuring out a country
+> from a free-form location string, parsing nuanced remote phrasing
+> from a description — is left to the downstream LLM enrichment
+> pipeline. Lots of these fields land as `None` when the ATS doesn't
+> ship them structured; the LLM pass fills the gap.
 
 ---
 
@@ -105,21 +115,51 @@ Free-form location string as posted. Examples: `Paris, France`,
 `Remote — US`, `Berlin or Remote`. Multi-location postings are rendered
 as comma-joined when the ATS exposes a list.
 
+### `country_iso` &nbsp;`str | None`
+
+ISO 3166-1 alpha-2 country code, always uppercase 2 letters: `US`,
+`FR`, `DE`, `BR`, `JP`, `IN`. Set by the scraper when the source ATS
+exposes a structured country (Bundesagentur, EURES, SuccessFactors).
+Otherwise `None` — the downstream LLM enrichment pass derives it from
+`location` text.
+
+### `region` &nbsp;`str | None`
+
+Continent the role lives on, when known. One of:
+
+- `Europe`
+- `North America`
+- `South America`
+- `Asia`
+- `Africa`
+- `Oceania`
+- `Antarctica` (theoretical)
+
+Coarser than `country_iso` so consumers can group EMEA / APAC without
+juggling country lists. Sub-national entities (US states, German
+Bundesländer, Indian states) are *not* stored here — they live in
+`location` text.
+
 ### `lat`, `lon` &nbsp;`float | None`
 
 WGS-84 geocoded coordinates when the ATS provides them (rare — most
-don't). Not derived from `location` text. Populated together or not at
-all.
+don't). Not derived from `location` text. A future geocoding service
+is expected to fill these for rows where the scraper leaves them
+`None`.
 
 ### `is_remote` &nbsp;`bool | None`
 
 Whether the role can be performed remotely.
 
 - Set by the scraper when the ATS exposes a flag (e.g. Lever's
-  `workplaceType`, Bundesagentur's `arbeitszeit` heuristic).
-- Otherwise **derived** from `location` text via
-  `jobhive.enrichment.infer_is_remote` at publish time.
-- `None` means we genuinely don't know.
+  `workplaceType`).
+- Otherwise narrowly inferred from the **title** at publish time by
+  `jobhive.enrichment.infer_is_remote` — that heuristic only ever
+  returns `True` (never `False`), since the absence of a remote
+  keyword in the title is **not** evidence the role is on-site.
+- `None` means we genuinely don't know. LLM-based enrichment
+  downstream is expected to fill the rest from the full posting
+  context.
 
 ---
 
@@ -234,6 +274,19 @@ legacy ATSes.
 ### `fetched_at` &nbsp;`datetime | None`
 
 When jobhive last saw this posting. UTC.
+
+### `language` &nbsp;`str | None`
+
+ISO 639-1 lowercase 2-letter code for the language of the **listing
+itself**: `en`, `fr`, `de`, `pt`, `es`, `ja`, … Set by the scraper
+when the source ATS exposes a locale (Lever's locale path,
+Bundesagentur's `sprache`, EURES `language`, Welcome to the Jungle's
+locale prefix). Otherwise `None` and LLM enrichment downstream fills
+it from `title` / `description`.
+
+Distinct from any "required language" the role itself might want for
+the work — that lives in `description` and is out of scope for the
+canonical schema.
 
 ---
 

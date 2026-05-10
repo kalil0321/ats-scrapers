@@ -99,10 +99,11 @@ Every row carries:
 
 ```
 global_id, url, title, company, ats_type, ats_id,
-location, is_remote, lat, lon,
+location, country_iso, region, is_remote, lat, lon,
 salary_min, salary_max, salary_currency, salary_period, salary_summary,
 employment_type, commitment, experience, department, team,
-description, posted_at, fetched_at, requisition_id, apply_url, raw
+description, posted_at, fetched_at, language,
+requisition_id, apply_url, raw
 ```
 
 Full per-field semantics (types, defaults, derivation rules, examples)

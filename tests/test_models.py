@@ -319,3 +319,75 @@ def test_global_id_user_supplied_value_is_overwritten() -> None:
         global_id="some-bogus-value",
     )
     assert job.global_id == "greenhouse:123"
+
+
+# --- Job.country_iso, region, language --------------------------------------
+#
+# Three new optional fields scrapers populate when the source ATS
+# exposes them structured. Heuristic derivation from free text is
+# deliberately out of scope — that's the LLM enrichment's job.
+
+
+def test_country_iso_defaults_to_none() -> None:
+    """Most scrapers don't have a structured country, so None is the
+    common case."""
+    job = _minimal_job()
+    assert job.country_iso is None
+
+
+@pytest.mark.parametrize("code", ["US", "FR", "DE", "BR", "JP", "IN", "GB"])
+def test_country_iso_accepts_alpha_2_codes(code: str) -> None:
+    job = _minimal_job(country_iso=code)
+    assert job.country_iso == code
+
+
+def test_country_iso_round_trips() -> None:
+    job = _minimal_job(country_iso="DE")
+    payload = job.model_dump(mode="json")
+    restored = Job.model_validate(payload)
+    assert restored.country_iso == "DE"
+
+
+def test_region_defaults_to_none() -> None:
+    job = _minimal_job()
+    assert job.region is None
+
+
+@pytest.mark.parametrize(
+    "continent",
+    ["Europe", "North America", "South America", "Asia", "Africa", "Oceania"],
+)
+def test_region_accepts_continent_strings(continent: str) -> None:
+    job = _minimal_job(region=continent)
+    assert job.region == continent
+
+
+def test_language_defaults_to_none() -> None:
+    job = _minimal_job()
+    assert job.language is None
+
+
+@pytest.mark.parametrize("code", ["en", "fr", "de", "pt", "es", "ja", "zh"])
+def test_language_accepts_iso_639_1_codes(code: str) -> None:
+    job = _minimal_job(language=code)
+    assert job.language == code
+
+
+def test_new_fields_are_in_model_fields() -> None:
+    """Pin the public schema — these fields must show up on every
+    Job instance and in the published CSV columns."""
+    fields = set(Job.model_fields.keys())
+    assert {"country_iso", "region", "language"}.issubset(fields)
+
+
+def test_new_fields_round_trip_together() -> None:
+    job = _minimal_job(
+        country_iso="FR",
+        region="Europe",
+        language="fr",
+    )
+    payload = job.model_dump(mode="json")
+    restored = Job.model_validate(payload)
+    assert restored.country_iso == "FR"
+    assert restored.region == "Europe"
+    assert restored.language == "fr"

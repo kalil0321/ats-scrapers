@@ -1,28 +1,51 @@
 """Derive enrichment columns from existing fields.
 
-Pure functions — given a row's existing data (location string, title), infer
-fields like ``is_remote``. Cheap to run, no network.
+Pure functions, cheap to run, no network. Deliberately narrow:
+
+- We only return ``True`` for ``is_remote`` when the **title** carries
+  an unambiguous remote marker. The absence of such a marker is *not*
+  evidence the role is on-site, so we return ``None`` (unknown) rather
+  than ``False``.
+- We do not parse the description for remote signals — phrasing there
+  is too ambiguous for a hardcoded rule. LLM-based enrichment
+  downstream fills the rest.
+- Salary range parsing on free text is preserved (see
+  :func:`parse_salary_range`) — the regex is tight and the input is
+  conventionally structured.
 """
 
 from __future__ import annotations
 
 import re
 
-REMOTE_KEYWORDS = ("remote", "anywhere", "distributed", "work from home", "wfh", "telework")
-ONSITE_KEYWORDS = ("onsite", "on-site", "in-office", "in person")
+# Markers we treat as definitive when they appear in a title.
+# Conservative on purpose — "Remote Engineer" is unambiguous; titles
+# like "Remote Sales Director" also fire True and the role really is
+# remote in those cases.
+REMOTE_KEYWORDS = (
+    "remote",
+    "anywhere",
+    "distributed",
+    "work from home",
+    "wfh",
+    "telework",
+)
 
 
-def infer_is_remote(location: object) -> bool | None:
-    """Return True if the location string clearly indicates remote, False if it
-    clearly indicates onsite, None otherwise. Accepts NaN/None gracefully.
+def infer_is_remote(title: object) -> bool | None:
+    """Return ``True`` when the title contains a remote marker, else
+    ``None``.
+
+    Never returns ``False`` — the absence of "remote" in the title is
+    not evidence the role is on-site. Many remote roles have plain
+    titles like "Senior Engineer". LLM-based enrichment downstream is
+    expected to fill ``True`` / ``False`` from the full posting
+    context.
     """
-    if not isinstance(location, str) or not location.strip():
+    if not isinstance(title, str) or not title.strip():
         return None
-    lower = location.lower()
-    if any(kw in lower for kw in REMOTE_KEYWORDS):
+    if any(kw in title.lower() for kw in REMOTE_KEYWORDS):
         return True
-    if any(kw in lower for kw in ONSITE_KEYWORDS):
-        return False
     return None
 
 
