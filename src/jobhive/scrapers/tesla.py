@@ -23,6 +23,7 @@ pipeline keeps moving (per the optional-browser-fallback contract).
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import re
@@ -44,6 +45,9 @@ _STATE_ENDPOINT = "/cua-api/apps/careers/state"
 # ``jobResponsibilities``, ``jobRequirements``,
 # ``jobCompensationAndBenefits``, ``department``, ``timeType``.
 # Pattern lifted from the legacy scraper at ``legacy/tesla/main.py``.
+# Passed into the in-page fetch as a JS template-arg (see
+# ``_fetch_details``) so this constant is the single source of truth
+# and the path can't drift between Python and JS.
 _JOB_DETAIL_ENDPOINT = "/cua-api/careers/job/{job_id}"
 
 # Page-load waits that let Akamai's risk-score settle before the
@@ -165,11 +169,11 @@ class TeslaScraper(BaseScraper):
             batch = job_ids[i : i + _DETAIL_CONCURRENCY]
             try:
                 results = await page.evaluate(
-                    """async (ids) => {
+                    """async ({ids, pathTpl}) => {
                         return await Promise.all(ids.map(async (id) => {
                             try {
                                 const r = await fetch(
-                                    `/cua-api/careers/job/${id}`,
+                                    pathTpl.replace('{job_id}', id),
                                     {credentials: 'include',
                                      headers: {'Accept': 'application/json'}},
                                 );
@@ -182,7 +186,7 @@ class TeslaScraper(BaseScraper):
                             }
                         }));
                     }""",
-                    batch,
+                    {"ids": batch, "pathTpl": _JOB_DETAIL_ENDPOINT},
                 )
             except Exception as exc:
                 # Whole-batch failure (e.g. page crashed). Log and
@@ -194,7 +198,10 @@ class TeslaScraper(BaseScraper):
             for item in results or []:
                 if item.get("status") == 200 and item.get("data"):
                     out[str(item["id"])] = item["data"]
-            await asyncio.sleep(_DETAIL_BATCH_DELAY_S)
+            # Sleep only between batches, not after the last one — saves
+            # a needless ~300 ms per scraper run on the tail batch.
+            if i + _DETAIL_CONCURRENCY < len(job_ids):
+                await asyncio.sleep(_DETAIL_BATCH_DELAY_S)
         log.info(
             "Tesla: fetched %d/%d job descriptions",
             len(out), len(job_ids),
@@ -238,6 +245,39 @@ class TeslaScraper(BaseScraper):
         return f"{slug}-{job_id}" if slug else job_id
 
 
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RUN_RE = re.compile(r"[ \t]+")
+_BLANK_LINES_RE = re.compile(r"\n{3,}")
+
+
+def _html_to_text(raw: str) -> str:
+    """Strip HTML tags + unescape entities + normalise whitespace.
+
+    Tesla's detail endpoint ships ``jobResponsibilities`` /
+    ``jobRequirements`` with embedded ``<li>``, ``<ul>``, ``<p>``
+    markup; ``Job.description`` is documented as plain text and
+    several downstream consumers assume that. A simple
+    regex-strip is sufficient here — these payloads are
+    well-formed snippets, not arbitrary HTML.
+    """
+    # Replace block-level tags with newlines before stripping so we
+    # don't glue list items together. ``<br>`` and ``</li>`` /
+    # ``</p>`` / ``</div>`` etc. become line breaks; opening tags
+    # of those elements are stripped without a newline.
+    text = re.sub(
+        r"<\s*(?:br\s*/?|/li|/p|/div|/h[1-6]|/tr|/ul|/ol)\s*>",
+        "\n",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    text = _TAG_RE.sub("", text)
+    text = html.unescape(text)
+    # Collapse runs of horizontal whitespace; squash 3+ newlines.
+    text = _WS_RUN_RE.sub(" ", text)
+    text = _BLANK_LINES_RE.sub("\n\n", text)
+    return text.strip()
+
+
 def _format_description(detail: dict[str, Any]) -> str:
     """Concatenate the four description-bearing fields from the
     Tesla per-job detail payload into a single string.
@@ -246,7 +286,10 @@ def _format_description(detail: dict[str, Any]) -> str:
     description column reads with section headers (Description /
     Responsibilities / Requirements / Compensation & Benefits) — Tesla
     surfaces those as distinct fields and the structure is worth
-    preserving for downstream consumers.
+    preserving for downstream consumers. Each section value is run
+    through ``_html_to_text`` first because Tesla mixes HTML markup
+    (``<li>``, ``<ul>``, ``<p>``) into these fields and
+    ``Job.description`` must be plain text.
     """
     sections = (
         ("Description", detail.get("jobDescription")),
@@ -255,9 +298,11 @@ def _format_description(detail: dict[str, Any]) -> str:
         ("Compensation & Benefits",
          detail.get("jobCompensationAndBenefits")),
     )
-    parts = [
-        f"{label}:\n{value.strip()}"
-        for label, value in sections
-        if isinstance(value, str) and value.strip()
-    ]
+    parts = []
+    for label, value in sections:
+        if not isinstance(value, str):
+            continue
+        cleaned = _html_to_text(value)
+        if cleaned:
+            parts.append(f"{label}:\n{cleaned}")
     return "\n\n".join(parts)
