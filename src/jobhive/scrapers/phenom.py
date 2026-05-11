@@ -83,9 +83,10 @@ class PhenomScraper(BaseScraper):
     site (e.g. ``"https://jobs.bell.ca"``). ``locale`` and ``country`` are
     tenant-specific and typically appear in the public URL path.
 
-    Legacy-discovered configurations (``data/phenom/companies.csv``) ship the
-    correct ``locale``/``country`` per tenant. For brand-new tenants, default
-    ``"en_us"``/``"us"`` works for the majority of US sites."""
+    The canonical tenant list at ``ats-companies/phenom.csv`` ships the
+    correct ``locale``/``country`` per tenant (columns:
+    ``url,name,company_code,locale,country``). For brand-new tenants the
+    default ``"en_us"``/``"us"`` works for the majority of US sites."""
 
     ats = ATSType.PHENOM
 
