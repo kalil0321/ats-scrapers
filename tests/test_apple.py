@@ -8,7 +8,6 @@ discard the dozens of pages already accumulated — that was the
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 import httpx
