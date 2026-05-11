@@ -8,6 +8,7 @@ in `jobhive.pipeline` so a scraper stays usable on its own.
 >>> jobs = GreenhouseScraper("openai").fetch()
 """
 
+from jobhive.scrapers.akhtaboot import AkhtabootScraper
 from jobhive.scrapers.amazon import AmazonScraper
 from jobhive.scrapers.apple import AppleScraper
 from jobhive.scrapers.arbetsformedlingen import ArbetsformedlingenScraper
@@ -60,6 +61,7 @@ from jobhive.scrapers.workday import WorkdayScraper
 from jobhive.scrapers.ycombinator import YCombinatorScraper
 
 __all__ = [
+    "AkhtabootScraper",
     "AmazonScraper",
     "AppleScraper",
     "ArbetsformedlingenScraper",
