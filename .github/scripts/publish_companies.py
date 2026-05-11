@@ -21,7 +21,11 @@ Notes:
 - Hashes are computed locally (sha256) so consumers can verify
   downloads without trusting the bucket's ETag.
 - Parquet is generated with ``pandas.to_parquet`` (snappy by default).
-  Schema: ``ats,name,url`` — same simple shape as the CSVs.
+  Schema: ``ats,name,slug,url``. The ``slug`` column was introduced in
+  the 2026-05 migration as the scraper/API identifier; ``url`` holds
+  the canonical public careers URL. Per-ATS files that haven't been
+  migrated yet (still ``name,url``) get an empty ``slug`` column in
+  the aggregate so the published schema stays uniform.
 
 Known limitation — manifest read-modify-write race:
   This script and ``DatasetPublisher`` both read+modify+write
@@ -117,21 +121,32 @@ def file_entry(url: str, *, data: bytes, parquet_url: str | None = None) -> dict
 
 def build_aggregated(ats_files: dict[str, bytes]) -> tuple[bytes, bytes, int]:
     """Concatenate per-ATS CSVs adding an ``ats`` column. Returns
-    ``(csv_bytes, parquet_bytes, row_count)``."""
+    ``(csv_bytes, parquet_bytes, row_count)``.
+
+    Aggregated schema is ``ats,name,slug,url``. The ``slug`` column was
+    introduced in the 2026-05 migration as the scraper/API identifier;
+    ``url`` is now the canonical public careers URL. CSVs that haven't
+    been migrated yet (still ``name,url``) get an empty ``slug`` value
+    so the published schema is uniform across all ATSes.
+    """
     frames: list[pd.DataFrame] = []
     for ats, raw in sorted(ats_files.items()):
         df = pd.read_csv(io.BytesIO(raw), dtype=str, keep_default_na=False)
         # Some legacy phenom rows carry a 5-column schema (url, name,
         # company_code, locale, country). For the aggregate we keep
-        # only the universal pair to match the documented schema.
+        # only the universal trio to match the documented schema.
         if not {"name", "url"}.issubset(df.columns):
             print(f"  WARN: {ats} CSV missing name/url columns: {df.columns.tolist()}")
             continue
-        df = df[["name", "url"]].copy()
+        if "slug" in df.columns:
+            df = df[["name", "slug", "url"]].copy()
+        else:
+            df = df[["name", "url"]].copy()
+            df.insert(1, "slug", "")
         df.insert(0, "ats", ats)
         frames.append(df)
     combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
-        columns=["ats", "name", "url"]
+        columns=["ats", "name", "slug", "url"]
     )
     csv_buf = io.BytesIO()
     combined.to_csv(csv_buf, index=False)

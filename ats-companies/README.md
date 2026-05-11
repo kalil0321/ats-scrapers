@@ -3,18 +3,28 @@
 Tenant lists per ATS — every company that **jobhive** scrapes lives in
 one of the CSVs here. New rows here = new companies in the dataset.
 
-One file per ATS, named `{ats}.csv`. Schema is uniform across all of
-them:
+One file per ATS, named `{ats}.csv`. The canonical schema is
+`name,slug,url`:
 
 ```csv
-name,url
-Acme Corp,https://acme.greenhouse.io
+name,slug,url
+Acme Corp,acme,https://acme.greenhouse.io
 ```
 
 - `name` — display name. Free-form. Used as `Job.company` until the
   scraper resolves a richer value from the live page.
-- `url` — the URL or slug the matching scraper accepts. Format depends
-  on the ATS (see examples below).
+- `slug` — the scraper/API identifier the matching scraper accepts
+  (lowercase, deterministic). Pipelines should prefer this column when
+  reading the CSV.
+- `url` — the canonical public careers URL. User-facing — safe to
+  ship to consumers as a link. **Not** guaranteed to be a valid
+  scraper input on its own; scraper code parses/rejects case-by-case.
+
+> **Schema migration in flight.** A few files still use the legacy
+> two-column shape (`name,url`) where `url` is the bare slug. The
+> publisher tolerates both: legacy files get an empty `slug` in the
+> aggregated R2 output so the published schema (`ats,name,slug,url`)
+> stays uniform.
 
 ## URL formats by ATS
 
@@ -46,10 +56,12 @@ Acme Corp,https://acme.greenhouse.io
 | workable | `https://apply.workable.com/<slug>` |
 | workday | `https://<host>.myworkdayjobs.com/<board>` |
 
-> **Phenom is the one exception to the 2-column schema.**
+> **Phenom is the exception.**
 > `phenom.csv` carries `url,name,company_code,locale,country` because
 > Phenom search endpoints are scoped per `(locale, country)` and we
-> want to keep that wiring close to the tenant list.
+> want to keep that wiring close to the tenant list. The publisher
+> aggregate keeps only `name`/`slug`/`url` from this file (the rest
+> stays in the per-ATS CSV).
 
 When in doubt, look at the existing rows in the file you're editing —
 the scraper accepts whatever shape is already there.
