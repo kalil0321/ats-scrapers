@@ -16,6 +16,7 @@ import pytest
 from jobhive.exceptions import ScraperError
 from jobhive.models import ATSType
 from jobhive.scrapers import AppleScraper, ScraperRegistry
+from jobhive.scrapers.apple import MAX_RETRIES
 
 _CSRF_URL = "https://jobs.apple.com/api/v1/CSRFToken"
 _SEARCH_URL = "https://jobs.apple.com/api/v1/search"
@@ -86,22 +87,48 @@ def test_5xx_is_retried_to_success(httpx_mock) -> None:
     assert len(jobs) == 1
 
 
-def test_retry_exhaustion_returns_partial_jobs(httpx_mock) -> None:
-    """When all retries on page N are exhausted, return what was already
-    accumulated from pages 1..N-1 instead of raising. This is the
-    central fix: previously a single late timeout wiped the whole run."""
+def test_retry_exhaustion_after_partial_returns_those_jobs(httpx_mock) -> None:
+    """When all retries on page N (N≥2) are exhausted, return what was
+    already accumulated from pages 1..N-1 instead of raising. This is
+    the central fix: previously a single late timeout wiped the whole
+    run."""
     _csrf_mock(httpx_mock)
     # Page 1: succeeds, full page (PAGE_SIZE=20 postings, totalRecords
     # tells the loop more pages exist).
     page1 = [_posting(str(i)) for i in range(20)]
     httpx_mock.add_response(url=_SEARCH_URL, json=_envelope(page1, total=40))
-    # Page 2: timeout three times in a row (MAX_RETRIES=3).
-    for _ in range(3):
+    # Page 2: timeout MAX_RETRIES times in a row. Use the constant so
+    # this test does not drift if the retry budget changes.
+    for _ in range(MAX_RETRIES):
         httpx_mock.add_exception(httpx.ReadTimeout("page 2 down"), url=_SEARCH_URL)
 
     jobs = AppleScraper("apple").fetch()
     # 20 rows from page 1 survived even though page 2 never landed.
     assert len(jobs) == 20
+
+
+def test_page_1_exhaustion_raises_instead_of_masking_outage(httpx_mock) -> None:
+    """When page 1 itself fails every retry, ``all_jobs`` is empty.
+    Returning ``[]`` would let cron / downstream consumers treat a full
+    outage as "Apple has no jobs today." Raise so the failure surfaces
+    as a non-zero exit code."""
+    _csrf_mock(httpx_mock)
+    for _ in range(MAX_RETRIES):
+        httpx_mock.add_exception(httpx.ReadTimeout("apple down"), url=_SEARCH_URL)
+
+    with pytest.raises(ScraperError, match=r"page 1 failed after \d+ retries"):
+        AppleScraper("apple").fetch()
+
+
+def test_page_1_exhaustion_with_5xx_raises(httpx_mock) -> None:
+    """Same invariant via 5xx exhaustion path rather than exception
+    path — both must funnel to the same raise."""
+    _csrf_mock(httpx_mock)
+    for _ in range(MAX_RETRIES):
+        httpx_mock.add_response(url=_SEARCH_URL, status_code=503, text="upstream")
+
+    with pytest.raises(ScraperError, match=r"page 1 failed after \d+ retries"):
+        AppleScraper("apple").fetch()
 
 
 def test_non_retryable_4xx_still_raises(httpx_mock) -> None:

@@ -106,6 +106,20 @@ class AppleScraper(BaseScraper):
                         f"Apple search returned {r.status_code}: {r.text[:120]}"
                     )
                 if response is None:
+                    # When page 1 exhausts retries we have no partial
+                    # data — returning ``[]`` would silently masquerade
+                    # as a successful zero-result scrape and let cron
+                    # / downstream consumers treat an outage as
+                    # "Apple has no jobs today." Only the
+                    # partial-result fallback (page ≥ 2) is safe; for
+                    # page 1 raise so the failure surfaces as a non-
+                    # zero exit code.
+                    if not all_jobs:
+                        raise ScraperError(
+                            f"Apple search page {page} failed after "
+                            f"{MAX_RETRIES} retries (last_status="
+                            f"{last_status} last_exc={last_exc})"
+                        )
                     _LOG.warning(
                         "Apple search page %d failed after %d retries "
                         "(last_status=%s last_exc=%s); returning %d "
