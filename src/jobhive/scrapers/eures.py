@@ -72,20 +72,20 @@ _COUNTRIES = (
 # NACE sectors A..U.
 _NACE_SECTORS = tuple("abcdefghijklmnopqrstu")
 
-# Many EURES rows ship with a placeholder employer ("non renseigné",
-# "EURES" etc.) — confirmed at ~33% of all rows in a May 2026 dump,
-# 97% in NL. They're real jobs but useless without an identifiable
-# employer; downstream dedup and any per-company analytics get
-# polluted. Drop at parse time so the scraper output stays clean.
-_PLACEHOLDER_COMPANIES: frozenset[str] = frozenset({
-    "non renseigné", "non renseigne", "non rensigne",
-    "eures",
-    "siehe beschreibung", "see description",
-    "no se especifica", "no especificado",
-    "n/a", "na", "n.a.", "-", "—", "unspecified", "unknown",
-    "company name not provided", "anonymous",
-    "anoniem", "konfidentiell", "confidentiel", "confidential",
-})
+# Many EURES rows ship with a placeholder employer — confirmed
+# 86% of FR rows ("non renseigné") and 60% of ES rows ("") in a
+# May 2026 dump. These are real jobs (titles, descriptions and
+# locations are all meaningful) but the employer is hidden by the
+# source NES (France Travail, SEPE, …) for privacy reasons and is
+# only revealed once a candidate applies via the official portal.
+#
+# Earlier versions dropped these rows entirely — costing the 1.7 M
+# FR+ES catalog the user asked us to keep. We now pass the source
+# value through verbatim (including the localized placeholder
+# string or empty value): the locale of the placeholder is itself
+# useful signal about the source NES, and downstream consumers
+# can decide how to render it without us hard-coding a canonical
+# English marker on their behalf.
 
 # Position schedule values from the API enum.
 _SCHEDULES = ("fulltime", "parttime", "flextime", "NS")
@@ -352,17 +352,17 @@ class EuresScraper(BaseScraper):
             return None
 
         # Employer — sometimes nested in ``employerName``, sometimes a
-        # flat string. Drop the row entirely if the source PES never
-        # filled in the employer; the placeholder fallbacks
-        # ("EURES", "non renseigné") are noise that pollutes downstream
-        # dedup and analytics.
+        # flat string. The source NES often anonymizes the employer
+        # for privacy reasons (FR uses "non renseigné" at ~86%,
+        # ES uses an empty string at ~60%). Pass the source value
+        # through verbatim — see the module-level comment for the
+        # rationale around keeping the localized placeholder text
+        # instead of canonicalizing it.
         employer = (
             item.get("employerName")
             or (item.get("employer") or {}).get("name")
             or ""
         ).strip()
-        if not employer or employer.lower() in _PLACEHOLDER_COMPANIES:
-            return None
 
         location = _flatten_location(item.get("locationMap") or {})
         posted_at = _epoch_ms_to_dt(item.get("creationDate"))
