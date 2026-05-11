@@ -38,7 +38,7 @@ Acme Corp,acme,https://acme.greenhouse.io
 | eightfold | `https://<slug>.eightfold.ai/careers` |
 | gem | `https://jobs.gem.com/<slug>` |
 | greenhouse | `https://job-boards.greenhouse.io/<slug>` |
-| icims | `<slug>` (raw subdomain — see existing rows) |
+| icims | `https://careers-<slug>.icims.com` |
 | jazzhr | `https://<slug>.applytojob.com` |
 | join_com | `https://join.com/companies/<slug>` |
 | lever | `https://jobs.lever.co/<slug>` |
