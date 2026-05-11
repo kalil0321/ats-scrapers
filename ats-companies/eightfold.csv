@@ -1,47 +1,47 @@
-name,url
-Amdocs,amdocs
-Arcadis,arcadis
-Boston Scientific,bostonscientific
-Citi,citi
-Coca-Cola Europacific Partners,ccep
-Corteva,corteva
-DSM,dsm
-Dexcom,dexcom
-Dolby,dolby
-Eaton,eaton
-Ericsson,ericsson
-Estée Lauder Companies,https://elcompanies.eightfold.ai/api/pcsx/search?domain=elcompanies.com&query=&location=&start=0&sort_by=timestamp
-Ford,ford
-Fortive,fortive
-Government of Puerto Rico,puertoricogov
-Grupo Bimbo,grupobimbo
-Hasbro,hasbro
-Kraft Heinz,kraftheinz
-Lam Research,lamresearch
-MercadoLibre,mercadolibre
-Micron,micron
-Microsoft,microsoft
-Modern Technology Solutions,mtsi-va
-Morgan Stanley,morganstanley
-NTT Data,nttdata
-Northrop Grumman,ngc
-Nvidia,nvidia
-PayPal,paypal
-Ptc,ptc
-Qualcomm,qualcomm
-Ralliant,ralliant
-Starbucks,starbucks
-Tailored Brands,tailoredbrands
-TriNet,trinet
-Trimble,trimble
-Twilio,twilio
-UKG,ukg
-Vialto Partners,vialto
-Vodafone,vodafone
-Whirlpool,whirlpool
-appliedmaterials,appliedmaterials
-caci,caci
-kering,kering
-slb,slb
-softtek,softtek
-telekom-growthhub,https://telekom-growthhub.eightfold.ai/api/pcsx/search?domain=telekom-growthhub.com&query=&location=&start=0&sort_by=timestamp
+name,slug,url
+Amdocs,amdocs,https://amdocs.eightfold.ai/careers
+Arcadis,arcadis,https://arcadis.eightfold.ai/careers
+Boston Scientific,bostonscientific,https://bostonscientific.eightfold.ai/careers
+Citi,citi,https://citi.eightfold.ai/careers
+Coca-Cola Europacific Partners,ccep,https://ccep.eightfold.ai/careers
+Corteva,corteva,https://corteva.eightfold.ai/careers
+DSM,dsm,https://dsm.eightfold.ai/careers
+Dexcom,dexcom,https://dexcom.eightfold.ai/careers
+Dolby,dolby,https://dolby.eightfold.ai/careers
+Eaton,eaton,https://eaton.eightfold.ai/careers
+Ericsson,ericsson,https://ericsson.eightfold.ai/careers
+Estée Lauder Companies,elcompanies,https://elcompanies.eightfold.ai/careers
+Ford,ford,https://ford.eightfold.ai/careers
+Fortive,fortive,https://fortive.eightfold.ai/careers
+Government of Puerto Rico,puertoricogov,https://puertoricogov.eightfold.ai/careers
+Grupo Bimbo,grupobimbo,https://grupobimbo.eightfold.ai/careers
+Hasbro,hasbro,https://hasbro.eightfold.ai/careers
+Kraft Heinz,kraftheinz,https://kraftheinz.eightfold.ai/careers
+Lam Research,lamresearch,https://lamresearch.eightfold.ai/careers
+MercadoLibre,mercadolibre,https://mercadolibre.eightfold.ai/careers
+Micron,micron,https://micron.eightfold.ai/careers
+Microsoft,microsoft,https://microsoft.eightfold.ai/careers
+Modern Technology Solutions,mtsi-va,https://mtsi-va.eightfold.ai/careers
+Morgan Stanley,morganstanley,https://morganstanley.eightfold.ai/careers
+NTT Data,nttdata,https://nttdata.eightfold.ai/careers
+Northrop Grumman,ngc,https://ngc.eightfold.ai/careers
+Nvidia,nvidia,https://nvidia.eightfold.ai/careers
+PayPal,paypal,https://paypal.eightfold.ai/careers
+Ptc,ptc,https://ptc.eightfold.ai/careers
+Qualcomm,qualcomm,https://qualcomm.eightfold.ai/careers
+Ralliant,ralliant,https://ralliant.eightfold.ai/careers
+Starbucks,starbucks,https://starbucks.eightfold.ai/careers
+Tailored Brands,tailoredbrands,https://tailoredbrands.eightfold.ai/careers
+TriNet,trinet,https://trinet.eightfold.ai/careers
+Trimble,trimble,https://trimble.eightfold.ai/careers
+Twilio,twilio,https://twilio.eightfold.ai/careers
+UKG,ukg,https://ukg.eightfold.ai/careers
+Vialto Partners,vialto,https://vialto.eightfold.ai/careers
+Vodafone,vodafone,https://vodafone.eightfold.ai/careers
+Whirlpool,whirlpool,https://whirlpool.eightfold.ai/careers
+appliedmaterials,appliedmaterials,https://appliedmaterials.eightfold.ai/careers
+caci,caci,https://caci.eightfold.ai/careers
+kering,kering,https://kering.eightfold.ai/careers
+slb,slb,https://slb.eightfold.ai/careers
+softtek,softtek,https://softtek.eightfold.ai/careers
+telekom-growthhub,telekom-growthhub,https://telekom-growthhub.eightfold.ai/careers
