@@ -10,6 +10,8 @@ The CSRF flow is held in a single httpx.Client session.
 
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -26,6 +28,10 @@ BASE_URL = "https://jobs.apple.com"
 CSRF_URL = f"{BASE_URL}/api/v1/CSRFToken"
 SEARCH_URL = f"{BASE_URL}/api/v1/search"
 PAGE_SIZE = 20
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 1.0
+
+_LOG = logging.getLogger(__name__)
 
 
 @ScraperRegistry.register(ATSType.APPLE)
@@ -71,14 +77,43 @@ class AppleScraper(BaseScraper):
                         "mediumDate": "MMM D, YYYY",
                     },
                 }
-                try:
-                    response = client.post(SEARCH_URL, json=payload)
-                except httpx.HTTPError as exc:
-                    raise ScraperError(f"Apple search failed: {exc}") from exc
-                if response.status_code != 200:
+                # Apple's catalog (~5 k jobs / 250 pages) means a single
+                # mid-fetch ``ReadTimeout`` or transient 5xx must not
+                # discard the dozens of pages already accumulated. Retry
+                # transient failures with exponential backoff; if all
+                # retries are exhausted, log a warning and break out
+                # of the pagination loop, returning ``all_jobs`` so far.
+                response: httpx.Response | None = None
+                last_exc: Exception | None = None
+                last_status: int | None = None
+                for attempt in range(1, MAX_RETRIES + 1):
+                    try:
+                        r = client.post(SEARCH_URL, json=payload)
+                    except httpx.HTTPError as exc:
+                        last_exc = exc
+                        if attempt < MAX_RETRIES:
+                            time.sleep(RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+                        continue
+                    if r.status_code == 200:
+                        response = r
+                        break
+                    last_status = r.status_code
+                    if r.status_code == 429 or 500 <= r.status_code < 600:
+                        if attempt < MAX_RETRIES:
+                            time.sleep(RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+                        continue
                     raise ScraperError(
-                        f"Apple search returned {response.status_code}: {response.text[:120]}"
+                        f"Apple search returned {r.status_code}: {r.text[:120]}"
                     )
+                if response is None:
+                    _LOG.warning(
+                        "Apple search page %d failed after %d retries "
+                        "(last_status=%s last_exc=%s); returning %d "
+                        "partial jobs",
+                        page, MAX_RETRIES, last_status, last_exc,
+                        len(all_jobs),
+                    )
+                    break
                 data = response.json()
                 postings = (data.get("res") or {}).get("searchResults") or []
                 if not postings:
