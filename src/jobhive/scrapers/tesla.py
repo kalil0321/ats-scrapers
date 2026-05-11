@@ -1,47 +1,51 @@
-"""Tesla careers scraper — Browserbase-backed.
+"""Tesla careers scraper — cloakbrowser-backed.
 
-Tesla's public listings live behind ``/cua-api/apps/careers/state``,
-which returns the entire job catalog as one JSON document. Direct
-``httpx`` calls are 403'd by Akamai bot detection — a real browser is
-required, with cookies + JS challenges from a prior visit to
-``tesla.com``.
+Tesla's public listings live at
+``https://www.tesla.com/cua-api/apps/careers/state``, which returns
+the entire job catalog as one JSON document. Direct ``httpx`` calls
+are 403'd by Akamai bot management — TLS-impersonation libraries
+(``httpcloak``, ``curl_cffi``) and even Browserbase Sessions get
+"Access Denied" because Akamai pins the IP / TLS fingerprint /
+JavaScript challenge stack together.
 
-We use Browserbase as the remote browser host so the public library
-doesn't ship its own Chrome binary. Set ``JOBHIVE_USE_BROWSERBASE=1``
-together with ``BROWSERBASE_API_KEY`` / ``BROWSERBASE_PROJECT_ID`` to
-enable. Without the flag, this scraper logs a warning and returns
-``[]`` so a full-pipeline run keeps moving.
+``cloakbrowser`` (stealth-patched Chromium) clears the bot manager
+in our 2026-05-11 retesting. From a datacenter VPS the unproxied
+request to ``cua-api`` gets rate-limited (429) even via cloakbrowser,
+so we route the whole flow through the Evomi residential proxy when
+``PROXY`` is set. The behavioural warm-up (scroll + mouse moves +
+short waits) primes Akamai's risk-score before we touch the API.
 
-Caveat — Akamai's IP and TLS fingerprinting on ``tesla.com`` is
-aggressive: as of 2026-05, default Browserbase sessions (with or
-without their built-in residential proxies) still get an "Access
-Denied" challenge page. Until the Browserbase project is configured
-with a proxy / fingerprint that Tesla accepts, this scraper will
-raise ``ScraperError`` on the JSON parse. The code path itself is
-correct; only the network frontend needs work.
+Graceful degradation: when ``cloakbrowser`` isn't installed, the
+scraper logs a warning and returns ``[]`` so the rest of the publish
+pipeline keeps moving (per the optional-browser-fallback contract).
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from typing import Any
 
 from jobhive.exceptions import ScraperError
 from jobhive.models import ATSType, Job
-from jobhive.scrapers import _browserbase as bb
+from jobhive.scrapers import _cloakbrowser as cb
 from jobhive.scrapers.base import BaseScraper, ScraperRegistry
 
+log = logging.getLogger(__name__)
+
 _BASE_URL = "https://www.tesla.com"
-_CAREERS_HOME = "/careers/search/jobs"
+_CAREERS_HOME = "/careers/search/"
 _STATE_ENDPOINT = "/cua-api/apps/careers/state"
 
-# Match the JSON body whether the browser wraps it in <pre>…</pre> or
-# inlines it as plain text. Both forms appear in the wild depending on
-# user-agent / accept headers.
-_PRE_RE = re.compile(r"<pre[^>]*>(.*?)</pre>", re.DOTALL)
+# Page-load waits that let Akamai's risk-score settle before the
+# ``cua-api`` call. Tuned to ~10 s total wall — long enough to look
+# human, short enough to leave headroom for cron's 02:40 budget.
+_INITIAL_SETTLE_S = 5
+_POST_SCROLL_S = 2
+_POST_MOUSE_S = 2
 
 
 @ScraperRegistry.register(ATSType.TESLA)
@@ -51,60 +55,64 @@ class TeslaScraper(BaseScraper):
     ats = ATSType.TESLA
 
     def fetch(self) -> list[Job]:
-        if not bb.is_enabled():
-            bb.warn_disabled("Tesla")
+        if not cb.is_enabled():
+            cb.warn_disabled("Tesla")
             return []
-        # Order matters: creds is a cheap env-var check, playwright is
-        # a module import. Surface the more likely misconfig (missing
-        # creds) first.
-        api_key, project_id = bb.require_creds()
-        bb.require_playwright()
-        return asyncio.run(self._fetch_via_browserbase(api_key, project_id))
+        return asyncio.run(self._fetch_via_cloakbrowser())
 
-    async def _fetch_via_browserbase(
-        self, api_key: str, project_id: str
-    ) -> list[Job]:
-        from playwright.async_api import async_playwright
+    async def _fetch_via_cloakbrowser(self) -> list[Job]:
+        from cloakbrowser import launch_async
 
-        ws_url = await bb.create_session_ws_url(api_key, project_id)
-        async with async_playwright() as p:
-            browser = await p.chromium.connect_over_cdp(ws_url)
-            try:
-                ctx = browser.contexts[0]
-                page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-
-                # Warm up Akamai cookies by visiting the careers page first.
-                await page.goto(
-                    f"{_BASE_URL}{_CAREERS_HOME}",
-                    wait_until="domcontentloaded",
-                    timeout=60_000,
-                )
-
-                # Now hit the JSON endpoint — same browser context, same
-                # cookies, no bot-block.
-                await page.goto(
-                    f"{_BASE_URL}{_STATE_ENDPOINT}",
-                    wait_until="domcontentloaded",
-                    timeout=30_000,
-                )
-                payload = await self._extract_json(page)
-            finally:
-                await browser.close()
-
-        return list(self._parse_payload(payload))
-
-    @staticmethod
-    async def _extract_json(page: Any) -> dict[str, Any]:
-        html = await page.content()
-        match = _PRE_RE.search(html)
-        body = match.group(1) if match else await page.inner_text("body")
+        proxy = cb.evomi_proxy_from_env()
+        browser = await launch_async(
+            headless=True, humanize=True, proxy=proxy,
+        )
         try:
-            return json.loads(body)
+            page = await browser.new_page()
+
+            # Warm up Akamai cookies + risk-score with a real-looking
+            # visit to the careers page.
+            await page.goto(
+                f"{_BASE_URL}{_CAREERS_HOME}",
+                wait_until="domcontentloaded",
+                timeout=60_000,
+            )
+            await asyncio.sleep(_INITIAL_SETTLE_S)
+            await page.mouse.wheel(0, 500)
+            await asyncio.sleep(_POST_SCROLL_S)
+            await page.mouse.wheel(0, -300)
+            await asyncio.sleep(_POST_SCROLL_S)
+            await page.mouse.move(400, 400, steps=20)
+            await page.mouse.move(800, 600, steps=20)
+            await asyncio.sleep(_POST_MOUSE_S)
+
+            # Fetch the state endpoint from inside the page context
+            # so we keep the warm-up cookies. ``fetch`` returns the
+            # raw text — Tesla's endpoint is JSON, not the legacy
+            # ``<pre>``-wrapped form.
+            resp = await page.evaluate(
+                """async (url) => {
+                    const r = await fetch(url, {credentials: 'include'});
+                    return {status: r.status, body: await r.text()};
+                }""",
+                _STATE_ENDPOINT,
+            )
+        finally:
+            await browser.close()
+
+        if resp["status"] != 200:
+            raise ScraperError(
+                f"Tesla cua-api returned status {resp['status']} "
+                f"(body preview: {resp['body'][:200]!r})"
+            )
+        try:
+            payload = json.loads(resp["body"])
         except json.JSONDecodeError as exc:
             raise ScraperError(
-                f"Tesla: response did not parse as JSON ({exc}). "
-                "Akamai may have served a challenge page."
+                f"Tesla: response did not parse as JSON ({exc})."
             ) from exc
+
+        return list(self._parse_payload(payload))
 
     def _parse_payload(self, payload: dict[str, Any]) -> list[Job]:
         listings = payload.get("listings") or []

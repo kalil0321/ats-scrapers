@@ -57,6 +57,11 @@ scrapers = [
     # load balancer 406-blocks plain httpx (Avature, JazzHR, Eightfold).
     # 1.6.x ships fingerprint refreshes that fix recent breakages.
     "httpcloak>=1.6",
+    # Stealth-patched Chromium used by Tesla / Meta (Akamai bot manager
+    # blocks every cheaper fingerprint — httpcloak, curl_cffi, even
+    # Browserbase Sessions). cloakbrowser ships its own binary and
+    # caches under ~/.cache/cloakbrowser, no separate playwright install.
+    "cloakbrowser>=0.3",
 ]
 parquet = [
     "pyarrow>=15.0",

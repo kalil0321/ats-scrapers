@@ -1,4 +1,4 @@
-"""Meta careers scraper — Browserbase-backed.
+"""Meta careers scraper — cloakbrowser-backed.
 
 ``metacareers.com`` is a single-page React app whose listing UI is fed
 by GraphQL queries that require browser-issued tokens (``fb_dtsg`` and
@@ -6,14 +6,13 @@ friends). There's no public REST endpoint to call directly: the only
 reliable path is to load the page in a real browser and intercept the
 GraphQL responses.
 
-We use Browserbase as the remote browser host so the public library
-doesn't ship its own Chrome binary. Set ``JOBHIVE_USE_BROWSERBASE=1``
-together with ``BROWSERBASE_API_KEY`` / ``BROWSERBASE_PROJECT_ID`` to
-enable. Without the flag, this scraper logs a warning and returns
-``[]`` so a full-pipeline run keeps moving.
+``cloakbrowser`` (stealth-patched Chromium) ships its own binary and
+bypasses Meta's bot-detection without a paid browser-as-a-service.
+When the package isn't installed the scraper logs a warning and
+returns ``[]`` so the rest of the publish pipeline keeps moving.
 
 Listings only — per-job descriptions would need a second pass (one
-navigation per job) and aren't worth the Browserbase minutes for v1.
+navigation per job) and aren't worth the wall-clock for v1.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from jobhive.models import ATSType, Job
-from jobhive.scrapers import _browserbase as bb
+from jobhive.scrapers import _cloakbrowser as cb
 from jobhive.scrapers.base import BaseScraper, ScraperRegistry
 
 log = logging.getLogger(__name__)
@@ -45,25 +44,18 @@ class MetaScraper(BaseScraper):
     ats = ATSType.META
 
     def fetch(self) -> list[Job]:
-        if not bb.is_enabled():
-            bb.warn_disabled("Meta")
+        if not cb.is_enabled():
+            cb.warn_disabled("Meta")
             return []
-        # Order matters: creds is a cheap env-var check, playwright is a
-        # module import. Surface the more likely misconfig (missing
-        # creds) first.
-        api_key, project_id = bb.require_creds()
-        bb.require_playwright()
-        return asyncio.run(self._fetch_via_browserbase(api_key, project_id))
+        return asyncio.run(self._fetch_via_cloakbrowser())
 
-    async def _fetch_via_browserbase(
-        self, api_key: str, project_id: str
-    ) -> list[Job]:
-        from playwright.async_api import Response, async_playwright
+    async def _fetch_via_cloakbrowser(self) -> list[Job]:
+        from cloakbrowser import launch_async
 
-        ws_url = await bb.create_session_ws_url(api_key, project_id)
+        proxy = cb.evomi_proxy_from_env()
         captured: list[dict[str, Any]] = []
 
-        async def on_response(resp: Response) -> None:
+        async def on_response(resp: Any) -> None:
             if "graphql" not in resp.url:
                 return
             try:
@@ -74,23 +66,23 @@ class MetaScraper(BaseScraper):
                 return
             captured.append(payload)
 
-        async with async_playwright() as p:
-            browser = await p.chromium.connect_over_cdp(ws_url)
+        browser = await launch_async(
+            headless=True, humanize=True, proxy=proxy,
+        )
+        try:
+            page = await browser.new_page()
+            page.on("response", on_response)
             try:
-                ctx = browser.contexts[0]
-                page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-                page.on("response", on_response)
-                try:
-                    await page.goto(
-                        _LISTING_URL,
-                        wait_until="domcontentloaded",
-                        timeout=60_000,
-                    )
-                    await page.wait_for_timeout(_GRAPHQL_SETTLE_MS)
-                except Exception as exc:
-                    log.warning("Meta: page load failed (%s)", exc)
-            finally:
-                await browser.close()
+                await page.goto(
+                    _LISTING_URL,
+                    wait_until="domcontentloaded",
+                    timeout=60_000,
+                )
+                await page.wait_for_timeout(_GRAPHQL_SETTLE_MS)
+            except Exception as exc:
+                log.warning("Meta: page load failed (%s)", exc)
+        finally:
+            await browser.close()
 
         return list(self._parse_responses(captured))
 

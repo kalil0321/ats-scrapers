@@ -1,8 +1,9 @@
 """Tests for the Meta scraper.
 
-Scope: flag-gating + GraphQL parsing. The Browserbase / Playwright
-path is exercised with live creds out-of-band — covering it here would
-mean mocking Playwright's surface, which is more brittle than useful.
+Scope: cloakbrowser gating + GraphQL parsing. The cloakbrowser /
+Playwright path is exercised with live creds out-of-band — covering
+it here would mean mocking Playwright's surface, which is more
+brittle than useful.
 """
 
 from __future__ import annotations
@@ -11,42 +12,22 @@ import logging
 
 import pytest
 
-from jobhive.exceptions import ScraperError
 from jobhive.scrapers.meta import MetaScraper
 
 
-@pytest.fixture(autouse=True)
-def _clear_browserbase_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in (
-        "JOBHIVE_USE_BROWSERBASE",
-        "JOBHIVE_DISABLE_BROWSERBASE",
-        "BROWSERBASE_API_KEY",
-        "BROWSERBASE_PROJECT_ID",
-    ):
-        monkeypatch.delenv(key, raising=False)
+def test_returns_empty_with_warning_when_cloakbrowser_missing(
+    monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """When ``cloakbrowser`` isn't installed, the scraper degrades
+    gracefully — logs a warning and returns ``[]`` so a publish run
+    keeps moving."""
+    from jobhive.scrapers import _cloakbrowser
 
-
-def test_flag_off_returns_empty_with_warning(caplog) -> None:
-    """Default (no flag) skips cleanly so a full pipeline keeps moving."""
+    monkeypatch.setattr(_cloakbrowser, "is_enabled", lambda: False)
     with caplog.at_level(logging.WARNING):
         jobs = MetaScraper("meta").fetch()
     assert jobs == []
     assert any("browser required" in r.getMessage().lower() for r in caplog.records)
-
-
-def test_flag_on_without_creds_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("JOBHIVE_USE_BROWSERBASE", "1")
-    with pytest.raises(ScraperError, match="BROWSERBASE_API_KEY"):
-        MetaScraper("meta").fetch()
-
-
-def test_disable_overrides_use_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Kill-switch wins even when the opt-in is set, matching Avature."""
-    monkeypatch.setenv("JOBHIVE_USE_BROWSERBASE", "1")
-    monkeypatch.setenv("JOBHIVE_DISABLE_BROWSERBASE", "1")
-    monkeypatch.setenv("BROWSERBASE_API_KEY", "x")
-    monkeypatch.setenv("BROWSERBASE_PROJECT_ID", "y")
-    assert MetaScraper("meta").fetch() == []
 
 
 # --- GraphQL parsing -------------------------------------------------------

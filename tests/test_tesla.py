@@ -1,7 +1,7 @@
 """Tests for the Tesla scraper.
 
-Scope: flag-gating + ``/cua-api/apps/careers/state`` parsing. The
-Browserbase / Playwright path is verified live, not mocked.
+Scope: cloakbrowser gating + ``/cua-api/apps/careers/state`` parsing.
+The cloakbrowser network path is verified live, not mocked.
 """
 
 from __future__ import annotations
@@ -10,32 +10,22 @@ import logging
 
 import pytest
 
-from jobhive.exceptions import ScraperError
 from jobhive.scrapers.tesla import TeslaScraper
 
 
-@pytest.fixture(autouse=True)
-def _clear_browserbase_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in (
-        "JOBHIVE_USE_BROWSERBASE",
-        "JOBHIVE_DISABLE_BROWSERBASE",
-        "BROWSERBASE_API_KEY",
-        "BROWSERBASE_PROJECT_ID",
-    ):
-        monkeypatch.delenv(key, raising=False)
+def test_returns_empty_with_warning_when_cloakbrowser_missing(
+    monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """When ``cloakbrowser`` isn't installed, the scraper degrades
+    gracefully — logs a warning and returns ``[]`` so a publish run
+    keeps moving (per the optional-browser-fallback contract)."""
+    from jobhive.scrapers import _cloakbrowser
 
-
-def test_flag_off_returns_empty_with_warning(caplog) -> None:
+    monkeypatch.setattr(_cloakbrowser, "is_enabled", lambda: False)
     with caplog.at_level(logging.WARNING):
         jobs = TeslaScraper("tesla").fetch()
     assert jobs == []
     assert any("browser required" in r.getMessage().lower() for r in caplog.records)
-
-
-def test_flag_on_without_creds_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("JOBHIVE_USE_BROWSERBASE", "1")
-    with pytest.raises(ScraperError, match="BROWSERBASE_API_KEY"):
-        TeslaScraper("tesla").fetch()
 
 
 def test_parses_state_payload() -> None:
