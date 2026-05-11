@@ -58,6 +58,7 @@ from jobhive.scrapers.weworkremotely import WeWorkRemotelyScraper
 from jobhive.scrapers.workable import WorkableScraper
 from jobhive.scrapers.workday import WorkdayScraper
 from jobhive.scrapers.ycombinator import YCombinatorScraper
+from jobhive.scrapers.zhaopin import ZhaopinScraper
 
 __all__ = [
     "AmazonScraper",
@@ -110,6 +111,7 @@ __all__ = [
     "WorkableScraper",
     "WorkdayScraper",
     "YCombinatorScraper",
+    "ZhaopinScraper",
     "get_scraper",
     "iCIMSScraper",
 ]
