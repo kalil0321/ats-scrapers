@@ -86,11 +86,14 @@ discovery = [
 all = [
     "jobhive-py[scrapers,parquet,publish,discovery]",
 ]
-# Minimal set to run the test suite (covers httpx_mock fixtures used
-# by every scraper test). External CI / reviewers should install this
-# extra (not just ``publish``) — Kind AI flagged on PR #33 that
-# ``pytest -q`` fails out of the box otherwise.
+# Set to run the test suite cleanly. Pulls in every runtime extra
+# (``all``) so ``pytest`` can collect ``test_publisher.py`` (which
+# imports ``polars`` / ``boto3`` / ``rapidfuzz`` via the publisher
+# module). External CI / reviewers should install this extra rather
+# than ``publish`` alone — Kind AI flagged on PR #33 / #34 that the
+# minimal extras left the suite uncollectable.
 test = [
+    "jobhive-py[all]",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-httpx>=0.30",
