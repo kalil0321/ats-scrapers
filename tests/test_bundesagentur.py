@@ -186,3 +186,75 @@ def test_malformed_json_crashes_not_skips(httpx_mock) -> None:
     )
     with pytest.raises(ScraperError):
         BundesagenturScraper("any").fetch()
+
+
+# ---------------------------------------------------------------------------
+# Streaming mode — :meth:`_fetch_async(on_job=...)` and :meth:`fetch_stream`
+# ---------------------------------------------------------------------------
+#
+# At ~750 k jobs the legacy list-accumulating ``_fetch_async`` holds a
+# few GB of Job objects in memory, which is tight on the 7.6 GB VPS
+# when other scrapers are also resident. The streaming variant pushes
+# each parsed Job to an async callback (or asyncio.Queue in the
+# ``fetch_stream`` wrapper) instead of accumulating, leaving only the
+# ``seen`` ID set in RAM (~30 MB at full scale).
+import asyncio
+
+
+def _fake_exhaust(items_to_emit):
+    """Mimic ``_exhaust_query``'s contract: call ``absorb`` once with
+    a single batch of items, then return."""
+    async def _fake(client, sem, *, base_params, depth, absorb):
+        await absorb(items_to_emit)
+    return _fake
+
+
+def test_on_job_callback_invoked_per_deduped_job(monkeypatch) -> None:
+    """``_fetch_async(on_job=cb)`` must call ``cb`` for every parsed
+    job that survives dedup, and must NOT accumulate them into the
+    returned list. Dedup is by ``refnr`` / ``ats_id``."""
+    scraper = BundesagenturScraper("any")
+    items = [
+        _job("REF-A", "Job A", ort="Berlin"),
+        _job("REF-B", "Job B", ort="Munich"),
+        _job("REF-A", "Job A duplicate"),  # same refnr — dropped
+    ]
+    monkeypatch.setattr(scraper, "_exhaust_query", _fake_exhaust(items))
+
+    received: list = []
+    async def collect(job):
+        received.append(job)
+
+    out = asyncio.run(scraper._fetch_async(on_job=collect))
+    # Streaming mode → returned list is empty.
+    assert out == []
+    # 2 jobs survived dedup (A, B).
+    assert [j.ats_id for j in received] == ["REF-A", "REF-B"]
+
+
+def test_on_job_none_accumulates_to_list(monkeypatch) -> None:
+    """Without an ``on_job`` sink we keep the legacy behaviour:
+    every deduped job lands in the returned list."""
+    scraper = BundesagenturScraper("any")
+    items = [_job("R1", "T1"), _job("R2", "T2"), _job("R1", "T1 dup")]
+    monkeypatch.setattr(scraper, "_exhaust_query", _fake_exhaust(items))
+    out = asyncio.run(scraper._fetch_async())
+    assert [j.ats_id for j in out] == ["R1", "R2"]
+
+
+def test_fetch_stream_yields_same_jobs_as_legacy(monkeypatch) -> None:
+    """``fetch_stream()`` is an async-iterator façade over
+    ``_fetch_async`` — every job legacy ``_fetch_async`` would have
+    returned must come out of the stream in some order."""
+    scraper = BundesagenturScraper("any")
+    items = [_job(f"R-{i}", f"Job {i}") for i in range(7)]
+    monkeypatch.setattr(scraper, "_exhaust_query", _fake_exhaust(items))
+
+    async def collect_stream() -> list:
+        out = []
+        async for job in scraper.fetch_stream():
+            out.append(job)
+        return out
+
+    streamed = asyncio.run(collect_stream())
+    assert sorted(j.ats_id for j in streamed) == sorted(f"R-{i}" for i in range(7))

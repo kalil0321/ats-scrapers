@@ -125,3 +125,117 @@ def test_missing_title_still_drops_row() -> None:
     item2 = _base_item()
     del item2["id"]
     assert EuresScraper("eures")._parse(item2) is None
+
+
+# ---------------------------------------------------------------------------
+# Streaming mode — :meth:`_fetch_async(on_job=...)` and :meth:`fetch_stream`
+# ---------------------------------------------------------------------------
+#
+# Memory model: projection from a 10 k FR sample showed the legacy
+# list-accumulating ``_fetch_async`` would peak at ~10 GB RSS on the
+# ~2.7 M-job full corpus — over the 7.6 GB VPS RAM. The streaming
+# variant pushes each parsed Job to an async callback (or asyncio.Queue
+# in the ``fetch_stream`` wrapper) instead of accumulating, leaving
+# only the ``seen`` ID set in memory (~100 MB at full scale).
+import asyncio
+
+
+def _fake_exhaust(items_to_emit):
+    """Build a coroutine that mimics ``_exhaust_query``'s contract:
+    it calls the supplied ``absorb`` callback with a single batch of
+    items, then returns."""
+    async def _fake(client, sem, *, base, depth, used_dims, absorb):
+        await absorb(items_to_emit)
+    return _fake
+
+
+def test_on_job_callback_invoked_per_deduped_job(monkeypatch) -> None:
+    """``_fetch_async(on_job=cb)`` must call ``cb`` for every parsed
+    job that survives dedup, and must NOT accumulate them into the
+    returned list. Dedup is by ``ats_id``."""
+    scraper = EuresScraper("eures")
+    items = [
+        _base_item(id="a", title="Job A"),
+        _base_item(id="b", title="Job B"),
+        _base_item(id="a", title="Job A duplicate"),   # same id — dropped
+        _base_item(id="c", title="Job C", employerName="non renseigné"),
+        _base_item(id="d", title="", employerName="OK"),  # blank title — dropped
+    ]
+    monkeypatch.setattr(scraper, "_exhaust_query", _fake_exhaust(items))
+
+    received: list = []
+    async def collect(job):
+        received.append(job)
+
+    out = asyncio.run(scraper._fetch_async(on_job=collect))
+    # Streaming mode → returned list is empty.
+    assert out == []
+    # 3 jobs survived dedup + blank-title filter (a, b, c).
+    assert [j.ats_id for j in received] == ["a", "b", "c"]
+    # Anonymous-employer row still survives (verbatim, not dropped).
+    assert received[2].company == "non renseigné"
+
+
+def test_on_job_none_accumulates_to_list(monkeypatch) -> None:
+    """Without an ``on_job`` sink we keep the legacy behaviour:
+    every deduped job lands in the returned list."""
+    scraper = EuresScraper("eures")
+    items = [
+        _base_item(id="a"),
+        _base_item(id="b"),
+        _base_item(id="a"),  # dup
+    ]
+    monkeypatch.setattr(scraper, "_exhaust_query", _fake_exhaust(items))
+
+    out = asyncio.run(scraper._fetch_async())
+    assert [j.ats_id for j in out] == ["a", "b"]
+
+
+def test_fetch_stream_yields_same_jobs_as_legacy(monkeypatch) -> None:
+    """``fetch_stream()`` is an async-iterator façade over
+    ``_fetch_async`` — every job legacy ``_fetch_async`` would have
+    returned must come out of the stream in some order."""
+    scraper = EuresScraper("eures")
+    items = [_base_item(id=str(i)) for i in range(7)]
+    monkeypatch.setattr(scraper, "_exhaust_query", _fake_exhaust(items))
+
+    async def collect_stream() -> list:
+        out = []
+        async for job in scraper.fetch_stream():
+            out.append(job)
+        return out
+
+    streamed = asyncio.run(collect_stream())
+    assert sorted(j.ats_id for j in streamed) == sorted(str(i) for i in range(7))
+
+
+def test_fetch_stream_terminates_cleanly_when_all_countries_fail(
+    monkeypatch, caplog
+) -> None:
+    """``_gather_tolerant`` (used for the country fan-out) swallows
+    per-country exceptions by design — see PR #35. ``fetch_stream``
+    must therefore still terminate cleanly when every country task
+    raises: the consumer iterator finishes with zero jobs and the
+    failures show up as warning logs (not a re-raised error)."""
+    scraper = EuresScraper("eures")
+
+    async def boom(client, sem, *, base, depth, used_dims, absorb):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(scraper, "_exhaust_query", boom)
+
+    import logging
+    async def consume():
+        out = []
+        async for job in scraper.fetch_stream():
+            out.append(job)
+        return out
+
+    with caplog.at_level(logging.WARNING):
+        result = asyncio.run(consume())
+    assert result == []
+    # The per-country failures are logged so an operator can see them.
+    assert any(
+        "EURES country subtask failed" in r.getMessage()
+        for r in caplog.records
+    )

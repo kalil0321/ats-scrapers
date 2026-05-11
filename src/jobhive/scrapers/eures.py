@@ -42,6 +42,7 @@ from jobhive.models import ATSType, Job
 from jobhive.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable
     from typing import Any
 
 log = logging.getLogger(__name__)
@@ -124,21 +125,97 @@ class EuresScraper(BaseScraper):
     ats = ATSType.EURES
 
     def fetch(self) -> list[Job]:
+        """Legacy in-memory fetch — accumulates the full corpus into a
+        list. At ~2.7 M jobs that's ~10 GB RSS which exceeds our 7.6 GB
+        VPS, so prefer :meth:`fetch_stream` from cron contexts that
+        write straight to disk."""
         return asyncio.run(self._fetch_async())
 
-    async def _fetch_async(self) -> list[Job]:
+    async def fetch_stream(self) -> "AsyncIterator[Job]":
+        """Stream jobs as they're parsed.
+
+        Memory profile: ~200 MB regardless of corpus size — only the
+        ``seen`` ID set + a bounded in-flight queue stays resident.
+        The producer-side fan-out and dedup logic is shared with the
+        legacy :meth:`fetch` via :meth:`_fetch_async`; we just plug a
+        queue-pushing ``on_job`` callback into it and yield from the
+        queue on the consumer side.
+
+        Usage from :func:`scripts.run_pipeline.run` (for ATSes whose
+        full output would exceed RAM):
+
+        .. code-block:: python
+
+            scraper = EuresScraper("eures", timeout=30)
+            async for job in scraper.fetch_stream():
+                writer.writerow(_job_to_row(job))
+        """
+        queue: asyncio.Queue[Job | None] = asyncio.Queue(maxsize=2000)
+        DONE = None  # sentinel posted by the producer when done
+
+        async def on_job(job: Job) -> None:
+            await queue.put(job)
+
+        async def producer() -> None:
+            try:
+                await self._fetch_async(on_job=on_job)
+            finally:
+                await queue.put(DONE)
+
+        task = asyncio.create_task(producer())
+        try:
+            while True:
+                item = await queue.get()
+                if item is DONE:
+                    break
+                yield item
+            # Propagate any producer exception once the queue is drained.
+            await task
+        except BaseException:
+            task.cancel()
+            raise
+
+    async def _fetch_async(
+        self,
+        *,
+        on_job: "Callable[[Job], Awaitable[None]] | None" = None,
+    ) -> list[Job]:
+        """Drive the per-country fan-out + dedup.
+
+        Two modes:
+
+        - ``on_job is None`` (default): accumulate every deduped job
+          into a list and return it. Used by :meth:`fetch` for small-
+          corpus / test paths.
+
+        - ``on_job`` set to an async callback: dispatch each deduped
+          job to the callback instead of accumulating. Used by
+          :meth:`fetch_stream` so the queue consumer can write jobs
+          to disk as they land; the in-memory footprint drops to just
+          the ``seen`` ID set (~100 MB at full corpus). Returns an
+          empty list in this mode.
+        """
         seen: set[str] = set()
         all_jobs: list[Job] = []
         lock = asyncio.Lock()
 
         async def absorb(items: list[dict[str, Any]]) -> None:
+            # Dedup under the lock, then dispatch to the sink outside
+            # the lock so a slow ``on_job`` callback can't serialise
+            # every absorbing task on the lock.
+            new_jobs: list[Job] = []
             async with lock:
                 for it in items:
                     job = self._parse(it)
                     if job is None or job.ats_id in seen:
                         continue
                     seen.add(job.ats_id)
-                    all_jobs.append(job)
+                    new_jobs.append(job)
+            if on_job is not None:
+                for job in new_jobs:
+                    await on_job(job)
+            else:
+                all_jobs.extend(new_jobs)
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
