@@ -7,6 +7,7 @@ neither may silently look like a clean ``maxErgebnisse=0`` response.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from urllib.parse import parse_qs, urlparse
@@ -198,7 +199,6 @@ def test_malformed_json_crashes_not_skips(httpx_mock) -> None:
 # each parsed Job to an async callback (or asyncio.Queue in the
 # ``fetch_stream`` wrapper) instead of accumulating, leaving only the
 # ``seen`` ID set in RAM (~30 MB at full scale).
-import asyncio
 
 
 def _fake_exhaust(items_to_emit):

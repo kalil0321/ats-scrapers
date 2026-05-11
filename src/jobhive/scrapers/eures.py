@@ -160,13 +160,16 @@ class EuresScraper(BaseScraper):
             try:
                 await self._fetch_async(on_job=on_job)
             finally:
-                # Use ``put_nowait`` so a cancelled / exited consumer
-                # with a full queue can't deadlock the producer's
-                # cleanup on the sentinel. If the queue is full and
-                # the consumer has already stopped draining, the
-                # sentinel is unnecessary anyway.
-                with contextlib.suppress(asyncio.QueueFull):
-                    queue.put_nowait(None)
+                # The consumer needs to see the ``None`` sentinel to
+                # exit its ``async for`` loop cleanly. If the consumer
+                # is still draining we must wait — but a stalled /
+                # exited consumer with a full queue could otherwise
+                # block this ``finally`` forever, so cap the wait
+                # with a generous timeout (cubic PR #69 P1).
+                with contextlib.suppress(
+                    asyncio.TimeoutError, asyncio.CancelledError,
+                ):
+                    await asyncio.wait_for(queue.put(None), timeout=10.0)
 
         task = asyncio.create_task(producer())
         try:

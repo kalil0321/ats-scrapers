@@ -14,6 +14,8 @@ canonicalize it.
 
 from __future__ import annotations
 
+import asyncio
+
 from jobhive.scrapers.eures import EuresScraper
 
 
@@ -137,7 +139,6 @@ def test_missing_title_still_drops_row() -> None:
 # variant pushes each parsed Job to an async callback (or asyncio.Queue
 # in the ``fetch_stream`` wrapper) instead of accumulating, leaving
 # only the ``seen`` ID set in memory (~100 MB at full scale).
-import asyncio
 
 
 def _fake_exhaust(items_to_emit):
