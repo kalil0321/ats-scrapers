@@ -259,20 +259,28 @@ def _html_to_text(raw: str) -> str:
     several downstream consumers assume that. A simple
     regex-strip is sufficient here — these payloads are
     well-formed snippets, not arbitrary HTML.
+
+    Order matters: unescape entities *first*, then strip tags. If
+    we stripped tags before unescaping, an encoded tag like
+    ``&lt;script&gt;...`` would survive the strip pass and then
+    unescape back into a literal ``<script>`` in the output —
+    leaking real HTML into ``Job.description``. Doing the unescape
+    first means any decoded tags get caught by the strip pass.
     """
-    # Replace block-level tags with newlines before stripping so we
-    # don't glue list items together. ``<br>`` and ``</li>`` /
-    # ``</p>`` / ``</div>`` etc. become line breaks; opening tags
-    # of those elements are stripped without a newline.
+    # 1. Unescape entities so any encoded tags surface as real
+    #    angle-brackets that the strip pass below will then remove.
+    text = html.unescape(raw)
+    # 2. Replace block-level closing/self-closing tags with newlines
+    #    before stripping so list items stay on separate lines.
     text = re.sub(
         r"<\s*(?:br\s*/?|/li|/p|/div|/h[1-6]|/tr|/ul|/ol)\s*>",
         "\n",
-        raw,
+        text,
         flags=re.IGNORECASE,
     )
+    # 3. Strip any remaining tags.
     text = _TAG_RE.sub("", text)
-    text = html.unescape(text)
-    # Collapse runs of horizontal whitespace; squash 3+ newlines.
+    # 4. Collapse runs of horizontal whitespace; squash 3+ newlines.
     text = _WS_RUN_RE.sub(" ", text)
     text = _BLANK_LINES_RE.sub("\n\n", text)
     return text.strip()

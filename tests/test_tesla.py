@@ -180,6 +180,27 @@ def test_html_to_text_empty_passthrough() -> None:
     assert _html_to_text("   ") == ""
 
 
+def test_html_to_text_unescapes_before_stripping_tags() -> None:
+    """Order matters. If we stripped tags first, then unescaped, an
+    encoded tag like ``&lt;script&gt;alert(1)&lt;/script&gt;`` would
+    survive the strip pass and then unescape into a literal
+    ``<script>...`` in the output — leaking HTML into
+    ``Job.description``. Doing the unescape first means any decoded
+    tags get caught by the subsequent strip."""
+    raw = "Salary range &lt;script&gt;alert(1)&lt;/script&gt; 100k"
+    out = _html_to_text(raw)
+    # The encoded tag must be GONE — not just decoded.
+    assert "<script>" not in out
+    assert "</script>" not in out
+    assert "<" not in out
+    assert ">" not in out
+    # The surrounding text and the literal payload inside the tag
+    # remain (we strip tags but keep their text content).
+    assert "Salary range" in out
+    assert "alert(1)" in out
+    assert "100k" in out
+
+
 def test_format_description_strips_tesla_html_in_sections() -> None:
     """End-to-end: Tesla's real-world payload has HTML in
     Responsibilities/Requirements — the formatter must yield plain
