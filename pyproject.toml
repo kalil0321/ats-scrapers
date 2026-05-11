@@ -74,6 +74,11 @@ publish = [
     # so peak RSS stays below 1 GB on a 7.6 GB box; pandas equivalents
     # peaked at 5-6 GB.
     "polars>=0.20",
+    # Cross-source fuzzy-match dedup (Phase 2): catches near-dups that
+    # the exact-key passes miss because of formatting variations
+    # between aggregators (eures NUTS-code locations vs Bundesagentur
+    # full text, trailing parenthesized occupation codes, etc.).
+    "rapidfuzz>=3.0",
 ]
 discovery = [
     "firecrawl-py>=1.0",

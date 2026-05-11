@@ -47,6 +47,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
@@ -552,6 +553,94 @@ def _key_col_or_empty(schema_names: list[str], name: str) -> pl.Expr:
     return pl.lit("", dtype=pl.String)
 
 
+# Country-code map for the locations the EU aggregators (eures /
+# bundesagentur / France Travail / arbetsformedlingen) emit. We don't
+# need to recognise every country in the world — only the ones that
+# show up in the duplicate-prone pairs. Anything we don't match falls
+# through to ``""`` and Phase 1 / 2 dedup just skip that row.
+_COUNTRY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("DE", ("deutschland", "germany", "allemagne")),
+    ("FR", ("france", "frankreich")),
+    ("BE", ("belgique", "belgium", "belgien", "belgië")),
+    ("AT", ("österreich", "austria", "autriche")),
+    ("NL", ("nederland", "netherlands", "pays-bas", "niederlande")),
+    ("IT", ("italia", "italy", "italien")),
+    ("ES", ("españa", "spain", "espagne", "spanien")),
+    ("PT", ("portugal",)),
+    ("PL", ("polska", "poland", "pologne", "polen")),
+    ("CH", ("schweiz", "suisse", "switzerland", "svizzera")),
+    ("LU", ("luxembourg", "luxemburg")),
+    ("DK", ("danmark", "denmark", "dänemark")),
+    ("SE", ("sverige", "sweden", "schweden")),
+    ("NO", ("norge", "norway", "norwegen")),
+    ("FI", ("suomi", "finland", "finnland")),
+    ("IE", ("ireland", "irlande", "irland")),
+    ("CZ", ("česko", "czech", "tschechien")),
+    ("US", ("united states", "u.s.a", "usa")),
+    ("GB", ("united kingdom", "england", "scotland", "wales")),
+    ("CA", ("canada",)),
+)
+
+# eures encodes the country as a 2-letter NUTS prefix followed by a
+# parenthesised region code, e.g. ``"DE (DEA58)"`` / ``"FR (FRK21)"``.
+# Matching just the two-letter prefix would false-positive on
+# titles-as-locations like ``"Software Engineer, Remote"`` — we
+# require the parens too. Case-insensitive: the pipeline lowercases
+# ``location`` during harvest.
+_NUTS_PREFIX_RE = re.compile(r"^\s*([a-z]{2})\s*\(", re.IGNORECASE)
+
+
+def _country_iso_from_location(loc: object) -> str:
+    """Heuristic ISO 3166-1 alpha-2 extraction from a free-form
+    ``location`` string. Returns ``""`` when nothing matches.
+
+    Covers the patterns observed across the duplicate-prone EU
+    aggregators: full country names in DE/FR/EN, NUTS-region prefixes
+    (``DE (DEA58)``), and ``"<City>, <Country>"`` suffixes.
+    """
+    if not isinstance(loc, str) or not loc.strip():
+        return ""
+    lowered = loc.strip().lower()
+    for code, needles in _COUNTRY_PATTERNS:
+        if any(n in lowered for n in needles):
+            return code
+    m = _NUTS_PREFIX_RE.match(loc.strip())
+    if m:
+        return m.group(1).upper()
+    return ""
+
+
+# Trailing parenthesised occupational classification that eures
+# appends to titles like ``"Anlagenmechaniker (m/w/d) ab 20€/Std.
+# (Anlagenmechaniker/in)"``. Bundesagentur ships the same job without
+# the trailing tag, so the exact-match dedup misses it. We strip the
+# trailing ``(...)`` block **only** when at least one other parens
+# block remains in the title — otherwise a clean
+# ``"Backend Engineer (m/w/d)"`` would lose its qualifier and stop
+# matching the eures-side cleaned version.
+_PAREN_GROUP_RE = re.compile(r"\([^()]*\)")
+_TRAILING_PARENS_RE = re.compile(r"\s*\([^()]*\)\s*$")
+_WHITESPACE_RUN_RE = re.compile(r"\s+")
+
+
+def _title_core(title: object) -> str:
+    """Normalised title for cross-source dedup.
+
+    Lowercases, collapses whitespace, and (when the title carries
+    *multiple* parenthesised blocks) strips the last one — the eures
+    "Berufenet code" tag. Single-parens titles like
+    ``"Backend Engineer (m/w/d)"`` are returned unchanged (lowercased)
+    so they still match the eures version after its trailing tag is
+    stripped.
+    """
+    if not isinstance(title, str) or not title.strip():
+        return ""
+    stripped = title
+    if len(_PAREN_GROUP_RE.findall(title)) >= 2:
+        stripped = _TRAILING_PARENS_RE.sub("", title)
+    return _WHITESPACE_RUN_RE.sub(" ", stripped.lower()).strip()
+
+
 def _dedup_from_per_ats_csvs(
     per_ats_csv_paths: dict[str, Path],
 ) -> tuple[dict[str, pl.DataFrame], int, int]:
@@ -574,6 +663,9 @@ def _dedup_from_per_ats_csvs(
     for ats_value, csv_path in per_ats_csv_paths.items():
         scan = pl.scan_csv(csv_path, **_SCAN_CSV_KWARGS)
         schema_names = scan.collect_schema().names()
+        # ``title_raw`` keeps the original (pre-strip-parens, pre-lower)
+        # title so Phase 2 can compare titles with rapidfuzz over the
+        # same text a human would compare.
         klf = scan.with_row_index(name="_local_idx").select(
             [
                 pl.col("_local_idx").cast(pl.Int64),
@@ -582,6 +674,7 @@ def _dedup_from_per_ats_csvs(
                     ATS_DEDUP_PRIORITY.get(ats_value, 2), dtype=pl.Int32
                 ).alias("_priority"),
                 _key_col_or_empty(schema_names, "url").alias("url"),
+                _key_col_or_empty(schema_names, "title").alias("title_raw"),
                 _key_col_or_empty(schema_names, "title")
                 .str.to_lowercase()
                 .alias("title"),
@@ -614,14 +707,24 @@ def _dedup_from_per_ats_csvs(
 
 def _decide_dedup_survivors_polars(
     keys: pl.DataFrame,
+    *,
+    fuzzy_threshold: int = 90,
+    fuzzy_max_block_size: int = 5000,
 ) -> dict[str, pl.DataFrame]:
-    """Run the three-pass cross-ATS dedup as window functions.
+    """Run the five-pass cross-ATS dedup.
 
-    All three passes share one upfront ``sort([_priority, _orig_idx])``
-    so each "keep first per group" check reduces to
-    ``_orig_idx == _orig_idx.first().over(group_col)`` — no Python
-    sets, no ``to_list`` materializations, and no ``filter(is_in(big))``
-    rebuilding hash tables across passes.
+    Passes 1-3 are exact-match window-function passes (cheap). Pass 4
+    is the normalisation pass that catches aggregator formatting
+    variations (eures NUTS-code locations vs Bundesagentur full text,
+    trailing Berufenet tags on titles). Pass 5 layers rapidfuzz over
+    the remaining cross-ATS pairs within ``(company_norm, country_iso)``
+    blocks to catch typo / minor-wording dups.
+
+    The fuzzy pass is bounded by ``fuzzy_max_block_size`` (default
+    5 000 rows per block) so a pathological block — a recruiting agency
+    with tens of thousands of postings — doesn't blow up the wall
+    clock with n² fuzz calls. Blocks beyond the cap fall through to
+    exact-match-only.
 
     Returns a dict mapping ``ats_value`` → polars frame with one
     column ``_local_idx`` (the source-CSV row indices to keep). The
@@ -694,18 +797,141 @@ def _decide_dedup_survivors_polars(
     cid_keep = ~is_cross_cid | (
         pl.col("_orig_idx") == pl.col("_orig_idx").first().over("_cid_key")
     )
-    work = work.filter(cid_keep).drop("_cid_key", "_company_norm")
+    work = work.filter(cid_keep).drop("_cid_key")
 
-    # Materialize per-ATS survivor frames keyed on _local_idx for Pass 3.
-    # ``partition_by`` returns a dict of (key,) → frame; we keep only
-    # ``_local_idx`` so the survivor frames stay tiny (one int column
-    # per surviving row, ~8 MB per million rows).
+    # ---- Pass 4 (Phase 1): cross-ATS (company_norm, title_core, country) -
+    # ``title_core`` strips the trailing parenthesised Berufenet tag
+    # that eures appends but Bundesagentur doesn't. ``country_iso`` is
+    # extracted from free-form ``location`` text (eures encodes it as
+    # the leading ``DE``/``FR``/… token, Bundesagentur as a full
+    # ``", Deutschland"`` suffix). The combination catches the
+    # formatting-only cross-source dups that Pass 2 misses entirely.
+    work = work.with_columns(
+        pl.col("title_raw")
+        .map_elements(_title_core, return_dtype=pl.String)
+        .alias("_title_core"),
+        pl.col("location")
+        .map_elements(_country_iso_from_location, return_dtype=pl.String)
+        .alias("_country_iso"),
+    )
+    work = work.with_columns(
+        (
+            pl.col("_company_norm")
+            + pl.lit("|")
+            + pl.col("_title_core")
+            + pl.lit("|")
+            + pl.col("_country_iso")
+        ).alias("_p1_key")
+    )
+    p1_valid = (
+        (pl.col("_company_norm").str.len_bytes() > 0)
+        & (pl.col("_title_core").str.len_bytes() > 0)
+        & (pl.col("_country_iso").str.len_bytes() > 0)
+    )
+    n_ats_in_valid_p1 = (
+        pl.when(p1_valid)
+        .then(pl.col("ats_type"))
+        .otherwise(None)
+        .n_unique()
+        .over("_p1_key")
+    )
+    is_cross_p1 = p1_valid & (n_ats_in_valid_p1 > 1)
+    p1_keep = ~is_cross_p1 | (
+        pl.col("_orig_idx") == pl.col("_orig_idx").first().over("_p1_key")
+    )
+    work = work.filter(p1_keep).drop("_p1_key")
+
+    # ---- Pass 5 (Phase 2): fuzzy within (company_norm, country) blocks ---
+    drop_orig_idxs = _phase2_fuzzy_drops(
+        work,
+        threshold=fuzzy_threshold,
+        max_block_size=fuzzy_max_block_size,
+    )
+    if drop_orig_idxs:
+        work = work.filter(~pl.col("_orig_idx").is_in(list(drop_orig_idxs)))
+
+    work = work.drop("_company_norm", "_title_core", "_country_iso")
+
+    # Materialize per-ATS survivor frames keyed on _local_idx for Pass 3
+    # of the publish run.
     survivors: dict[str, pl.DataFrame] = {}
     parts = work.partition_by("ats_type", as_dict=True)
     for key_tuple, part in parts.items():
         ats_value = key_tuple[0] if isinstance(key_tuple, tuple) else key_tuple
         survivors[str(ats_value)] = part.select("_local_idx")
     return survivors
+
+
+def _phase2_fuzzy_drops(
+    work: pl.DataFrame,
+    *,
+    threshold: int,
+    max_block_size: int,
+) -> set[int]:
+    """Within each ``(company_norm, country_iso)`` block, greedily drop
+    cross-ATS rows whose title fuzz-matches a higher-priority row's
+    title at ``token_set_ratio >= threshold``.
+
+    Greedy, sorted by ``(_priority, _orig_idx)``: each new row is
+    compared against every already-kept row from a *different* ATS.
+    Same-ATS rows pass through (we never dedup within an ATS — that's
+    the publisher's per-ATS-slice contract).
+
+    Skips blocks where either side of the block key is empty (we have
+    no signal for those), where every row shares one ATS (no
+    cross-source dup possible), and where the block has more rows
+    than ``max_block_size`` (avoids n² fuzz on pathological recruiting
+    agencies with tens of thousands of postings).
+
+    Returns the set of ``_orig_idx`` to drop.
+    """
+    from rapidfuzz import fuzz
+
+    drop: set[int] = set()
+    block_groups = work.filter(
+        (pl.col("_company_norm").str.len_bytes() > 0)
+        & (pl.col("_country_iso").str.len_bytes() > 0)
+    ).group_by(["_company_norm", "_country_iso"], maintain_order=True)
+
+    for _, block in block_groups:
+        if block.height < 2:
+            continue
+        if block["ats_type"].n_unique() < 2:
+            continue
+        if block.height > max_block_size:
+            logger.warning(
+                "Phase-2 fuzzy dedup: skipping oversize block "
+                "(%d rows, company=%s country=%s).",
+                block.height,
+                block.row(0, named=True)["_company_norm"],
+                block.row(0, named=True)["_country_iso"],
+            )
+            continue
+        block = block.sort(["_priority", "_orig_idx"])
+
+        # Greedy scan. ``kept`` is a list of (title_raw, ats_type)
+        # tuples seen so far; for each new row we check fuzz against
+        # every kept row from a DIFFERENT ATS.
+        kept: list[tuple[str, str]] = []
+        for row in block.iter_rows(named=True):
+            title_raw = row["title_raw"]
+            ats = row["ats_type"]
+            orig_idx = row["_orig_idx"]
+            if not title_raw:
+                continue
+            matched = False
+            for kept_title, kept_ats in kept:
+                if kept_ats == ats:
+                    continue
+                if fuzz.token_set_ratio(title_raw, kept_title) >= threshold:
+                    matched = True
+                    break
+            if matched:
+                drop.add(int(orig_idx))
+            else:
+                kept.append((title_raw, ats))
+
+    return drop
 
 
 # --- helpers ---------------------------------------------------------------
