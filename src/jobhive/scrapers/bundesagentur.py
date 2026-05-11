@@ -41,7 +41,6 @@ publisher's cross-ATS dedup still works.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import random
 from datetime import datetime
@@ -136,8 +135,16 @@ class BundesagenturScraper(BaseScraper):
         consumer iterator yields each job as it lands so callers
         (e.g. :func:`scripts.run_pipeline.run`) can write straight
         to a CSV writer without ever holding the full corpus in RAM.
+
+        Termination uses an ``asyncio.Event`` rather than a queue
+        sentinel: the consumer polls ``queue.get`` with a 500 ms
+        timeout and checks ``producer_done`` between polls. This
+        avoids the deadlock that a bounded-queue sentinel-put would
+        introduce if the consumer ever stops draining (cubic PR #69
+        P1) and keeps producer cleanup non-blocking.
         """
-        queue: asyncio.Queue[Job | None] = asyncio.Queue(maxsize=2000)
+        queue: asyncio.Queue[Job] = asyncio.Queue(maxsize=2000)
+        producer_done = asyncio.Event()
 
         async def on_job(job: Job) -> None:
             await queue.put(job)
@@ -146,25 +153,19 @@ class BundesagenturScraper(BaseScraper):
             try:
                 await self._fetch_async(on_job=on_job)
             finally:
-                # The consumer needs to see the ``None`` sentinel to
-                # exit its ``async for`` loop cleanly. If the consumer
-                # is still draining we must wait — but a stalled /
-                # exited consumer with a full queue could otherwise
-                # block this ``finally`` forever, so cap the wait
-                # with a generous timeout (cubic PR #69 P1).
-                with contextlib.suppress(
-                    asyncio.TimeoutError, asyncio.CancelledError,
-                ):
-                    await asyncio.wait_for(queue.put(None), timeout=10.0)
+                producer_done.set()
 
         task = asyncio.create_task(producer())
         try:
             while True:
-                item = await queue.get()
-                if item is None:  # sentinel
+                if producer_done.is_set() and queue.empty():
+                    await task  # propagate any producer exception
                     break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=0.5)
+                except TimeoutError:
+                    continue
                 yield item
-            await task  # propagate any producer exception
         except BaseException:
             task.cancel()
             raise
