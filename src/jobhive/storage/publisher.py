@@ -589,6 +589,24 @@ _COUNTRY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # ``location`` during harvest.
 _NUTS_PREFIX_RE = re.compile(r"^\s*([a-z]{2})\s*\(", re.IGNORECASE)
 
+# Word-boundary-anchored country needle patterns. Substring matching
+# false-positived on common European place names — e.g. ``"usa"``
+# inside ``"Lausanne"`` (CH) had Lausanne jobs ending up tagged as
+# US. ``\b`` flanks every needle so the match requires non-word
+# context on each side; the multi-character needles (``"u.s.a"``,
+# ``"new zealand"``) still work because ``re.escape`` keeps the
+# internal punctuation literal.
+_COUNTRY_PATTERNS_RE: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (
+        code,
+        re.compile(
+            "|".join(rf"\b{re.escape(n)}\b" for n in needles),
+            re.IGNORECASE,
+        ),
+    )
+    for code, needles in _COUNTRY_PATTERNS
+)
+
 
 def _country_iso_from_location(loc: object) -> str:
     """Heuristic ISO 3166-1 alpha-2 extraction from a free-form
@@ -597,12 +615,14 @@ def _country_iso_from_location(loc: object) -> str:
     Covers the patterns observed across the duplicate-prone EU
     aggregators: full country names in DE/FR/EN, NUTS-region prefixes
     (``DE (DEA58)``), and ``"<City>, <Country>"`` suffixes.
+    Word-boundary-anchored so ``"Lausanne"`` doesn't get tagged as US
+    via a substring match on ``"usa"``.
     """
     if not isinstance(loc, str) or not loc.strip():
         return ""
     lowered = loc.strip().lower()
-    for code, needles in _COUNTRY_PATTERNS:
-        if any(n in lowered for n in needles):
+    for code, pat in _COUNTRY_PATTERNS_RE:
+        if pat.search(lowered):
             return code
     m = _NUTS_PREFIX_RE.match(loc.strip())
     if m:

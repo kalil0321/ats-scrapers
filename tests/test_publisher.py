@@ -647,58 +647,47 @@ def test_phase2_respects_priority_when_dedupping(tmp_path, fake_r2):
     assert "workday.example" in df.iloc[0]["url"]
 
 
-def test_phase2_oversize_block_skipped(tmp_path, fake_r2, caplog):
+def test_phase2_oversize_block_skipped(caplog):
     """A block with more rows than ``fuzzy_max_block_size`` must be
     skipped (rather than blowing up the wall clock with n² fuzz
-    calls); a warning is logged so the operator can investigate."""
-    eures_dir = tmp_path / "eures"
-    eures_dir.mkdir()
-    bundes_dir = tmp_path / "bundesagentur"
-    bundes_dir.mkdir()
+    calls); a warning is logged so the operator can investigate.
 
-    # 20 rows × 2 ATSes = 40-row block (> the test cap of 30 below).
-    rows_e = [{
-        "url": f"https://eures.example/{i}",
-        "title": f"Engineer {i:03d}",
-        "company": "Mega GmbH",
-        "location": "Berlin, Deutschland",
-        "ats_id": f"e{i}",
-    } for i in range(20)]
-    rows_b = [{
-        "url": f"https://arbeitsagentur.example/{i}",
-        "title": f"Engineer {i:03d}",  # identical, would normally dedup
-        "company": "Mega GmbH",
-        "location": "München, Deutschland",
-        "ats_id": f"b{i}",
-    } for i in range(20)]
-    pd.DataFrame(rows_e).to_csv(eures_dir / "jobs.csv", index=False)
-    pd.DataFrame(rows_b).to_csv(bundes_dir / "jobs.csv", index=False)
-
+    Titles are made *distinct* between the two ATS slices so Phase 1
+    (exact ``(company_norm, title_core, country)`` collapse) doesn't
+    eat the rows before Phase 2 sees them — otherwise the oversize
+    code path is never exercised.
+    """
     import polars as pl
 
     from jobhive.storage.publisher import _decide_dedup_survivors_polars
 
-    # Smaller cap forces the warning path. We test the inner function
-    # directly because the publisher's top-level call uses the default
-    # 5000 cap, which our 40-row block doesn't reach.
-
-    # Build a fake keys frame matching the harvest schema.
+    # 20 + 20 = 40-row block. Each ATS uses a different role family per
+    # row so no two rows across slices share the same ``title_core``
+    # (Phase 1 stays a no-op). The titles are still close enough that
+    # rapidfuzz's ``token_set_ratio`` would fire if Phase 2 reached
+    # them — which is exactly what the oversize guard prevents.
     keys_rows = []
-    for i, r in enumerate(rows_e):
+    for i in range(20):
         keys_rows.append({
             "_local_idx": i, "_orig_idx": i,
             "_priority": 6, "ats_type": "eures",
-            "url": r["url"], "title_raw": r["title"],
-            "title": r["title"].lower(), "company": "mega gmbh",
-            "location": r["location"].lower(), "ats_id": r["ats_id"],
+            "url": f"https://eures.example/{i}",
+            "title_raw": f"Backend Engineer Role {i:03d}",
+            "title": f"backend engineer role {i:03d}",
+            "company": "mega gmbh",
+            "location": "berlin, deutschland",
+            "ats_id": f"e{i}",
         })
-    for i, r in enumerate(rows_b):
+    for i in range(20):
         keys_rows.append({
             "_local_idx": i, "_orig_idx": 20 + i,
             "_priority": 6, "ats_type": "bundesagentur",
-            "url": r["url"], "title_raw": r["title"],
-            "title": r["title"].lower(), "company": "mega gmbh",
-            "location": r["location"].lower(), "ats_id": r["ats_id"],
+            "url": f"https://arbeitsagentur.example/{i}",
+            "title_raw": f"Senior Frontend Engineer Role {i:03d}",
+            "title": f"senior frontend engineer role {i:03d}",
+            "company": "mega gmbh",
+            "location": "münchen, deutschland",
+            "ats_id": f"b{i}",
         })
     keys = pl.DataFrame(keys_rows)
 
@@ -707,12 +696,16 @@ def test_phase2_oversize_block_skipped(tmp_path, fake_r2, caplog):
             keys, fuzzy_threshold=90, fuzzy_max_block_size=30,
         )
 
-    # Phase 1 collapses the 20 (company, title_core, country) pairs
-    # cleanly so the eures slice keeps all 20 and bundes keeps 0 here
-    # — the block never reaches Phase 2. So we trigger oversize by
-    # using a fuzzy-only test on a more degenerate block below.
-    # For this test we just assert no crash and a sane survivor count.
-    assert sum(s.height for s in survivors.values()) >= 20
+    # The warning is the contract: this block is skipped, not silently
+    # dedupped past the cap.
+    assert any(
+        "Phase-2 fuzzy" in r.getMessage() and "oversize" in r.getMessage()
+        for r in caplog.records
+    ), f"expected oversize warning in {[r.getMessage() for r in caplog.records]}"
+
+    # And the skip means nothing got dropped: all 40 rows survive
+    # (eures 20 + bundesagentur 20).
+    assert sum(s.height for s in survivors.values()) == 40
 
 
 # --- helper-function unit tests ---------------------------------------------
@@ -726,6 +719,32 @@ def test_country_iso_extracts_common_eu_patterns():
     assert f("Paris, France") == "FR"
     assert f("Wien, Österreich") == "AT"
     assert f("Brussels, Belgium") == "BE"
+
+
+def test_country_iso_uses_word_boundaries():
+    """``"usa"`` is a substring of common European place names like
+    ``"Lausanne"`` (CH). The earlier substring-match implementation
+    tagged Lausanne jobs as US — cubic #1 on PR #33. The fix
+    word-boundary-anchors every needle so the substring no longer
+    matches."""
+    from jobhive.storage.publisher import _country_iso_from_location as f
+
+    # Lausanne (CH) standalone — no country suffix. The bare city name
+    # used to false-positive on US via the ``usa`` substring; now it
+    # returns empty until something else identifies the country.
+    assert f("Lausanne") == ""
+    assert f("Lausanne (Vaud)") == ""
+    assert f("Lausanne, Vaud") == ""
+    # With the country suffix the CH match wins because CH appears
+    # before US in the patterns list.
+    assert f("Lausanne, Suisse") == "CH"
+    assert f("Lausanne, Switzerland") == "CH"
+    # Other word-fragment false positives that used to fire:
+    assert f("Glausage") == ""
+    assert f("usable") == ""
+    # Real US strings still match.
+    assert f("New York, USA") == "US"
+    assert f("U.S.A. office") == "US"
 
     # NUTS-prefix style (eures)
     assert f("DE (DEA58)") == "DE"

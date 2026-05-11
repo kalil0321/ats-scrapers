@@ -86,10 +86,17 @@ discovery = [
 all = [
     "jobhive-py[scrapers,parquet,publish,discovery]",
 ]
-dev = [
+# Minimal set to run the test suite (covers httpx_mock fixtures used
+# by every scraper test). External CI / reviewers should install this
+# extra (not just ``publish``) — Kind AI flagged on PR #33 that
+# ``pytest -q`` fails out of the box otherwise.
+test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-httpx>=0.30",
+]
+dev = [
+    "jobhive-py[test]",
     "ruff>=0.5",
     "mypy>=1.10",
     "pandas-stubs",
