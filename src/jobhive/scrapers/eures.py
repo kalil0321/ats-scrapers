@@ -31,6 +31,7 @@ the publisher's cross-ATS dedup still works.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -42,7 +43,7 @@ from jobhive.models import ATSType, Job
 from jobhive.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncGenerator, Awaitable, Callable
     from typing import Any
 
 log = logging.getLogger(__name__)
@@ -131,7 +132,7 @@ class EuresScraper(BaseScraper):
         write straight to disk."""
         return asyncio.run(self._fetch_async())
 
-    async def fetch_stream(self) -> "AsyncIterator[Job]":
+    async def fetch_stream(self) -> AsyncGenerator[Job, None]:
         """Stream jobs as they're parsed.
 
         Memory profile: ~200 MB regardless of corpus size — only the
@@ -151,7 +152,6 @@ class EuresScraper(BaseScraper):
                 writer.writerow(_job_to_row(job))
         """
         queue: asyncio.Queue[Job | None] = asyncio.Queue(maxsize=2000)
-        DONE = None  # sentinel posted by the producer when done
 
         async def on_job(job: Job) -> None:
             await queue.put(job)
@@ -160,13 +160,19 @@ class EuresScraper(BaseScraper):
             try:
                 await self._fetch_async(on_job=on_job)
             finally:
-                await queue.put(DONE)
+                # Use ``put_nowait`` so a cancelled / exited consumer
+                # with a full queue can't deadlock the producer's
+                # cleanup on the sentinel. If the queue is full and
+                # the consumer has already stopped draining, the
+                # sentinel is unnecessary anyway.
+                with contextlib.suppress(asyncio.QueueFull):
+                    queue.put_nowait(None)
 
         task = asyncio.create_task(producer())
         try:
             while True:
                 item = await queue.get()
-                if item is DONE:
+                if item is None:  # sentinel
                     break
                 yield item
             # Propagate any producer exception once the queue is drained.
@@ -178,7 +184,7 @@ class EuresScraper(BaseScraper):
     async def _fetch_async(
         self,
         *,
-        on_job: "Callable[[Job], Awaitable[None]] | None" = None,
+        on_job: Callable[[Job], Awaitable[None]] | None = None,
     ) -> list[Job]:
         """Drive the per-country fan-out + dedup.
 
