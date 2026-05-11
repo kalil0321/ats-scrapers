@@ -312,7 +312,19 @@ class EuresScraper(BaseScraper):
                 # Past pagination cap or invalid filter — return empty
                 # so the caller treats this slice as exhausted.
                 return {"numberRecords": 0, "jvs": [], "facets": {}}
-            if r.status_code == 429 or 500 <= r.status_code < 600:
+            # 307 with an HTML "Network Error" body is the
+            # CDN/load-balancer in front of EURES timing out; the
+            # next attempt routes through a fresh upstream and almost
+            # always succeeds. Treat it the same as 429/5xx so we
+            # exhaust ``MAX_RETRIES`` instead of giving up on the
+            # very first redirect. Observed 2026-05-11: 5 711 page
+            # failures were 307-with-error-page, costing ~285 k rows
+            # of the EURES corpus when the previous code treated 307
+            # as terminal.
+            if (
+                r.status_code in (307, 429)
+                or 500 <= r.status_code < 600
+            ):
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
                         f"EURES returned {r.status_code} after "
