@@ -31,6 +31,7 @@ the publisher's cross-ATS dedup still works.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -42,6 +43,8 @@ from jobhive.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
+
+log = logging.getLogger(__name__)
 
 API_URL = (
     "https://europa.eu/eures/api/jv-searchengine/public/jv-search/search"
@@ -149,7 +152,10 @@ class EuresScraper(BaseScraper):
                     depth=0, used_dims=set(),
                     absorb=absorb,
                 )
-            await asyncio.gather(*(per_country(c) for c in _COUNTRIES))
+            await _gather_tolerant(
+                (per_country(c) for c in _COUNTRIES),
+                label="country",
+            )
         return all_jobs
 
     async def _exhaust_query(
@@ -200,7 +206,10 @@ class EuresScraper(BaseScraper):
                         used_dims=used_dims | {"region"},
                         absorb=absorb,
                     )
-                await asyncio.gather(*(child_region(c) for c in children))
+                await _gather_tolerant(
+                    (child_region(c) for c in children),
+                    label="region",
+                )
                 return
 
         if "sector" not in used_dims:
@@ -217,7 +226,10 @@ class EuresScraper(BaseScraper):
                     used_dims=used_dims | {"sector"},
                     absorb=absorb,
                 )
-            await asyncio.gather(*(child_sector(c) for c in sectors))
+            await _gather_tolerant(
+                (child_sector(c) for c in sectors),
+                label="sector",
+            )
             return
 
         if "schedule" not in used_dims:
@@ -229,7 +241,10 @@ class EuresScraper(BaseScraper):
                     used_dims=used_dims | {"schedule"},
                     absorb=absorb,
                 )
-            await asyncio.gather(*(child_sched(c) for c in _SCHEDULES))
+            await _gather_tolerant(
+                (child_sched(c) for c in _SCHEDULES),
+                label="schedule",
+            )
             return
 
         # Exhausted dimensions — accept the cap loss for this slice.
@@ -255,7 +270,10 @@ class EuresScraper(BaseScraper):
             payload = await self._search(client, sem, base=base, page=page)
             await absorb(payload.get("jvs") or [])
 
-        await asyncio.gather(*(one(p) for p in range(2, page_count + 1)))
+        await _gather_tolerant(
+            (one(p) for p in range(2, page_count + 1)),
+            label="page",
+        )
 
     async def _search(
         self,
@@ -432,6 +450,27 @@ def _flatten_location(loc_map: dict[str, Any]) -> str | None:
     if regions:
         return f"{country} ({', '.join(regions[:3])})"
     return country
+
+
+async def _gather_tolerant(
+    coros: Any,
+    *,
+    label: str,
+) -> None:
+    """Run every coroutine concurrently, log + swallow failures instead
+    of cancelling siblings.
+
+    The default ``asyncio.gather`` re-raises the first exception, which
+    cancels every other pending task — one transient network blip in a
+    deep recursion (300+ sub-queries per country) used to abort the
+    whole scrape and leave the CSV at ~12 k of the ~1 M corpus
+    (observed on the 2026-05-11 cron). With this helper, a failed
+    sibling logs a warning and the rest of the tree keeps writing.
+    """
+    results = await asyncio.gather(*coros, return_exceptions=True)
+    for r in results:
+        if isinstance(r, BaseException):
+            log.warning("EURES %s subtask failed: %s", label, r)
 
 
 def _region_children_for(
