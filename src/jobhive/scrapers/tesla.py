@@ -39,6 +39,12 @@ log = logging.getLogger(__name__)
 _BASE_URL = "https://www.tesla.com"
 _CAREERS_HOME = "/careers/search/"
 _STATE_ENDPOINT = "/cua-api/apps/careers/state"
+# Per-job detail endpoint — note the path differs from state
+# (no ``apps/`` segment). Yields ``jobDescription``,
+# ``jobResponsibilities``, ``jobRequirements``,
+# ``jobCompensationAndBenefits``, ``department``, ``timeType``.
+# Pattern lifted from the legacy scraper at ``legacy/tesla/main.py``.
+_JOB_DETAIL_ENDPOINT = "/cua-api/careers/job/{job_id}"
 
 # Page-load waits that let Akamai's risk-score settle before the
 # ``cua-api`` call. Tuned to ~10 s total wall — long enough to look
@@ -46,6 +52,13 @@ _STATE_ENDPOINT = "/cua-api/apps/careers/state"
 _INITIAL_SETTLE_S = 5
 _POST_SCROLL_S = 2
 _POST_MOUSE_S = 2
+
+# Description-fetch knobs. We fan out N detail requests via
+# Promise.all inside the warmed-up page (so they share Akamai
+# cookies + risk-score), then sleep between batches so we don't
+# trip the per-IP rate limiter.
+_DETAIL_CONCURRENCY = 10
+_DETAIL_BATCH_DELAY_S = 0.3
 
 
 @ScraperRegistry.register(ATSType.TESLA)
@@ -97,22 +110,96 @@ class TeslaScraper(BaseScraper):
                 }""",
                 _STATE_ENDPOINT,
             )
+
+            if resp["status"] != 200:
+                raise ScraperError(
+                    f"Tesla cua-api returned status {resp['status']} "
+                    f"(body preview: {resp['body'][:200]!r})"
+                )
+            try:
+                payload = json.loads(resp["body"])
+            except json.JSONDecodeError as exc:
+                raise ScraperError(
+                    f"Tesla: response did not parse as JSON ({exc})."
+                ) from exc
+
+            jobs = list(self._parse_payload(payload))
+
+            # Per-job descriptions — fetched in-session from inside
+            # the warmed-up page so we keep cookies + risk-score. The
+            # state-endpoint listings are description-less, so without
+            # this step every Tesla row ships with an empty
+            # ``description`` (violates the
+            # always-include-descriptions invariant).
+            ids = [j.ats_id for j in jobs]
+            details = await self._fetch_details(page, ids)
+            for j in jobs:
+                d = details.get(j.ats_id)
+                if d:
+                    j.description = _format_description(d) or None
+                    if not j.department:
+                        j.department = d.get("department") or None
         finally:
             await browser.close()
 
-        if resp["status"] != 200:
-            raise ScraperError(
-                f"Tesla cua-api returned status {resp['status']} "
-                f"(body preview: {resp['body'][:200]!r})"
-            )
-        try:
-            payload = json.loads(resp["body"])
-        except json.JSONDecodeError as exc:
-            raise ScraperError(
-                f"Tesla: response did not parse as JSON ({exc})."
-            ) from exc
+        return jobs
 
-        return list(self._parse_payload(payload))
+    async def _fetch_details(
+        self,
+        page: Any,
+        job_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch ``/cua-api/careers/job/{id}`` for every id, batched.
+
+        Uses Promise.all inside the page so the cookies set during
+        warm-up are reused. Errors per job are swallowed and the id
+        is simply absent from the returned dict — the caller treats
+        a missing entry as "no description available" so a partial
+        Akamai trip doesn't drop the whole listings payload we
+        already paid for.
+        """
+        if not job_ids:
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for i in range(0, len(job_ids), _DETAIL_CONCURRENCY):
+            batch = job_ids[i : i + _DETAIL_CONCURRENCY]
+            try:
+                results = await page.evaluate(
+                    """async (ids) => {
+                        return await Promise.all(ids.map(async (id) => {
+                            try {
+                                const r = await fetch(
+                                    `/cua-api/careers/job/${id}`,
+                                    {credentials: 'include',
+                                     headers: {'Accept': 'application/json'}},
+                                );
+                                if (r.status !== 200) {
+                                    return {id, status: r.status, data: null};
+                                }
+                                return {id, status: 200, data: await r.json()};
+                            } catch (e) {
+                                return {id, status: -1, error: String(e)};
+                            }
+                        }));
+                    }""",
+                    batch,
+                )
+            except Exception as exc:
+                # Whole-batch failure (e.g. page crashed). Log and
+                # keep going — partial coverage beats zero.
+                log.warning(
+                    "Tesla: detail batch %d failed: %s", i, exc,
+                )
+                continue
+            for item in results or []:
+                if item.get("status") == 200 and item.get("data"):
+                    out[str(item["id"])] = item["data"]
+            await asyncio.sleep(_DETAIL_BATCH_DELAY_S)
+        log.info(
+            "Tesla: fetched %d/%d job descriptions",
+            len(out), len(job_ids),
+        )
+        return out
 
     def _parse_payload(self, payload: dict[str, Any]) -> list[Job]:
         listings = payload.get("listings") or []
@@ -149,3 +236,28 @@ class TeslaScraper(BaseScraper):
     def _url_slug(title: str, job_id: str) -> str:
         slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
         return f"{slug}-{job_id}" if slug else job_id
+
+
+def _format_description(detail: dict[str, Any]) -> str:
+    """Concatenate the four description-bearing fields from the
+    Tesla per-job detail payload into a single string.
+
+    Mirrors the legacy formatter at ``legacy/tesla/main.py`` so the
+    description column reads with section headers (Description /
+    Responsibilities / Requirements / Compensation & Benefits) — Tesla
+    surfaces those as distinct fields and the structure is worth
+    preserving for downstream consumers.
+    """
+    sections = (
+        ("Description", detail.get("jobDescription")),
+        ("Responsibilities", detail.get("jobResponsibilities")),
+        ("Requirements", detail.get("jobRequirements")),
+        ("Compensation & Benefits",
+         detail.get("jobCompensationAndBenefits")),
+    )
+    parts = [
+        f"{label}:\n{value.strip()}"
+        for label, value in sections
+        if isinstance(value, str) and value.strip()
+    ]
+    return "\n\n".join(parts)
