@@ -29,7 +29,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         # Hybrid jobboards (companies post directly)
         "welcometothejungle", "getonbrd", "wanted", "remoteok",
         "weworkremotely", "programathor", "builtin", "jobsch",
-        "manfred", "thehub", "themuse", "ycombinator", "wellfound",
+        "manfred", "thehub", "ycombinator", "wellfound",
         # Additional multi-tenant ATSes
         "bamboohr", "breezy", "jazzhr", "jobvite",
         "recruitee", "taleo", "teamtailor",
