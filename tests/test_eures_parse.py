@@ -73,6 +73,19 @@ def test_nested_employer_dict_supported() -> None:
     assert job.company == "Real Co"
 
 
+def test_nested_employer_dict_with_placeholder_kept_verbatim() -> None:
+    """Defensive: when ``employerName`` is missing/null and the
+    nested ``employer.name`` is itself a placeholder, the row still
+    survives and the placeholder text flows through. Guards against
+    a future refactor accidentally short-circuiting the nested
+    branch before the row-keep contract applies. (Flagged by
+    Greptile on PR #68.)"""
+    item = _base_item(employerName=None, employer={"name": "non renseigné"})
+    job = EuresScraper("eures")._parse(item)
+    assert job is not None
+    assert job.company == "non renseigné"
+
+
 def test_locale_specific_placeholders_kept_verbatim() -> None:
     """Spanish "no se especifica", German "siehe beschreibung",
     English "anonymous", etc. — all pass through with their
