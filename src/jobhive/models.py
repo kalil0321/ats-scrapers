@@ -76,6 +76,7 @@ class ATSType(StrEnum):
     PROGRAMATHOR = "programathor"
     BUILTIN = "builtin"
     JOBSCH = "jobsch"
+    JOBKOREA = "jobkorea"
     MANFRED = "manfred"
     THEHUB = "thehub"
     YCOMBINATOR = "ycombinator"
