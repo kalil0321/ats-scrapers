@@ -78,6 +78,7 @@ class ATSType(StrEnum):
     JOBSCH = "jobsch"
     MANFRED = "manfred"
     THEHUB = "thehub"
+    TIMESJOBS = "timesjobs"
     YCOMBINATOR = "ycombinator"
     WELLFOUND = "wellfound"
     # Additional multi-tenant ATSes (post-0.1)
