@@ -23,7 +23,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "successfactors", "workable", "workday",
         # Big-tech custom careers systems
         "amazon", "apple", "google", "meta",
-        "tesla", "tiktok", "uber", "usajobs",
+        "tesla", "tiktok", "jd", "uber", "usajobs",
         # National / supranational public-sector aggregators
         "bundesagentur", "arbetsformedlingen", "eures",
         # Hybrid jobboards (companies post directly)

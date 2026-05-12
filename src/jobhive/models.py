@@ -60,6 +60,7 @@ class ATSType(StrEnum):
     META = "meta"
     TESLA = "tesla"
     TIKTOK = "tiktok"
+    JD = "jd"
     UBER = "uber"
     USAJOBS = "usajobs"
     # National public-sector job boards (single-source, single-tenant
