@@ -25,7 +25,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "amazon", "apple", "google", "meta",
         "tesla", "tiktok", "uber", "usajobs",
         # National / supranational public-sector aggregators
-        "bundesagentur", "arbetsformedlingen", "eures",
+        "bundesagentur", "arbetsformedlingen", "eures", "mycareersfuture",
         # Hybrid jobboards (companies post directly)
         "welcometothejungle", "getonbrd", "wanted", "remoteok",
         "weworkremotely", "programathor", "builtin", "jobsch",
