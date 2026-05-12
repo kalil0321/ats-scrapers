@@ -77,6 +77,7 @@ class ATSType(StrEnum):
     BUILTIN = "builtin"
     JOBSCH = "jobsch"
     MANFRED = "manfred"
+    PROFESSIONHU = "profession_hu"
     THEHUB = "thehub"
     YCOMBINATOR = "ycombinator"
     WELLFOUND = "wellfound"
