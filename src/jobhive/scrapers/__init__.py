@@ -21,6 +21,7 @@ from jobhive.scrapers.bundesagentur import BundesagenturScraper
 from jobhive.scrapers.cornerstone import CornerstoneScraper
 from jobhive.scrapers.eightfold import EightfoldScraper
 from jobhive.scrapers.eures import EuresScraper
+from jobhive.scrapers.foundit import FounditScraper
 from jobhive.scrapers.gem import GemScraper
 from jobhive.scrapers.getonbrd import GetOnBrdScraper
 from jobhive.scrapers.google import GoogleScraper
@@ -73,6 +74,7 @@ __all__ = [
     "CornerstoneScraper",
     "EightfoldScraper",
     "EuresScraper",
+    "FounditScraper",
     "GemScraper",
     "GetOnBrdScraper",
     "GoogleScraper",
