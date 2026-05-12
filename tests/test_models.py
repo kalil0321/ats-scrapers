@@ -27,7 +27,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         # National / supranational public-sector aggregators
         "bundesagentur", "arbetsformedlingen", "eures",
         # Hybrid jobboards (companies post directly)
-        "welcometothejungle", "getonbrd", "wanted", "remoteok",
+        "welcometothejungle", "getonbrd", "wanted", "saramin", "remoteok",
         "weworkremotely", "programathor", "builtin", "jobsch",
         "manfred", "thehub", "ycombinator", "wellfound",
         # Additional multi-tenant ATSes
