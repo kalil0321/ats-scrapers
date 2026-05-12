@@ -58,6 +58,7 @@ class ATSType(StrEnum):
     APPLE = "apple"
     GOOGLE = "google"
     META = "meta"
+    MICROSOFT = "microsoft"
     TESLA = "tesla"
     TIKTOK = "tiktok"
     UBER = "uber"
