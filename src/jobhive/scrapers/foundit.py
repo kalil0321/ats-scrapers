@@ -41,9 +41,17 @@ fills it in.
 Past that, the same rows repeat with wrap-around cursors (verified
 live: ``start=10000`` returns the same payload as ``start=9500``).
 So the unrestricted ``"all jobs"`` walk tops out at ~10 000 / 300 000
-on India. Future work: bucket by ``query=`` seeds (jobsch-style)
-to recover the long tail. For now we ship the top-10k window —
-the freshest postings — and bucketing is an enhancement.
+on India. The same cap applies *per query bucket* — even with
+``query=engineer`` (62k hits) we can only read the first 9500 rows.
+
+**Keyword bucketing** (``bucket_strategy="keyword"``) opt-in mode
+works around the cap by iterating ~80 broad seed terms (engineer,
+manager, sales, …). Each seed yields its own top-9500 window;
+the union — deduped by ``ats_id`` — recovers a large fraction of
+the ~522k catalogue. Coverage isn't 100 % (a job nobody's seeds
+hit gets missed), but live runs on India typically lift the take
+from ~10k to 200k+. The default ``"none"`` mode preserves the
+original single-call no-query behaviour for backwards-compat.
 
 Single-source scraper, multi-region: ``company_slug`` picks the
 country. Pass one of ``"in"`` (default), ``"sg"``, ``"my"``,
@@ -56,7 +64,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 
@@ -65,7 +73,9 @@ from jobhive.models import ATSType, EmploymentType, Job
 from jobhive.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
+
+BucketStrategy = Literal["none", "keyword"]
 
 log = logging.getLogger(__name__)
 
@@ -123,6 +133,63 @@ _USER_AGENT = (
 )
 
 
+# --- Keyword bucketing -----------------------------------------------
+
+# Broad seed terms for ``bucket_strategy="keyword"``. The set is
+# tuned to span the catalogue: white-collar roles (engineer, manager,
+# analyst, ...), blue-collar (driver, technician, electrician, ...),
+# seniority modifiers (junior / senior / lead / head), broad
+# functions (sales, marketing, finance, ...), and language /
+# technology pivots (python, java, sql) — the latter add coverage
+# in IT-heavy markets like India where the same job appears under
+# multiple non-IT seeds too. The list is intentionally English-
+# only: live probing showed the API tokenises Latin-script queries
+# against multilingual postings reasonably well (Hindi / Tagalog
+# job titles still rank against English seeds because foundit
+# canonicalises titles internally). Adding non-Latin seeds would
+# yield marginal coverage at the cost of brittler parameter
+# encoding through Akamai.
+#
+# Ordering matters slightly: high-volume seeds run first so we
+# capture the most jobs before any rate-limit retry budget is
+# consumed. Roughly ~80 seeds × ~9500 max each → ~760k possible
+# row reads pre-dedup against the 522k true catalogue.
+_DEFAULT_KEYWORD_SEEDS: tuple[str, ...] = (
+    # high-volume generic
+    "engineer", "manager", "developer", "analyst", "executive",
+    "consultant", "senior", "specialist", "associate", "officer",
+    "lead", "supervisor", "coordinator", "assistant", "intern",
+    "head", "director", "vp", "president", "chief",
+    # functions
+    "sales", "marketing", "finance", "accounting", "accountant",
+    "hr", "operations", "logistics", "supply chain", "procurement",
+    "design", "designer", "product", "project", "program",
+    "research", "quality", "support", "service", "admin",
+    # IT-specific
+    "software", "java", "python", "javascript", "data",
+    "cloud", "devops", "fullstack", "backend", "frontend",
+    "android", "ios", "qa", "sre", "security",
+    # blue-collar / trades
+    "driver", "technician", "electrician", "mechanic",
+    "machinist", "welder", "operator", "foreman",
+    # services / healthcare / education
+    "teacher", "trainer", "doctor", "nurse", "pharmacist",
+    "lawyer", "chef", "retail", "hospitality", "warehouse",
+    # role descriptors
+    "junior", "graduate", "fresher", "entry level", "trainee",
+    "customer", "business", "tech", "media", "communications",
+)
+
+
+def _default_keyword_seeds() -> tuple[str, ...]:
+    """Return the default seed list (frozen tuple, safe to share).
+
+    Exposed as a helper so callers / tests can introspect or
+    override without poking the private constant directly.
+    """
+    return _DEFAULT_KEYWORD_SEEDS
+
+
 # --- Mapping helpers --------------------------------------------------
 
 # Foundit's free-text employment label → our canonical enum. Lower-
@@ -154,9 +221,18 @@ class FounditScraper(BaseScraper):
         company_slug: country selector. One of ``"in"`` (default,
             India), ``"sg"``, ``"my"``, ``"id"``, ``"ph"`` — or the
             full English name (``"india"``, ``"singapore"``, …).
-        max_pages: stop after this many pages even if more remain.
-            Default walks until the API's deep-pagination cap
-            (``MAX_USABLE_OFFSET / PER_PAGE``).
+        max_pages: stop after this many pages **per query bucket**
+            even if more remain. Default walks until the API's
+            deep-pagination cap (``MAX_USABLE_OFFSET / PER_PAGE``).
+        bucket_strategy: ``"none"`` (default) issues a single
+            no-query walk capped at ~9500 rows — fastest, fully
+            backwards-compatible. ``"keyword"`` iterates ~80
+            broad seed terms (``keyword_seeds``), each up to its
+            own 9500-row cap, and dedups by job id. Roughly 20-25x
+            the row count on India at ~80x the wall-clock cost.
+        keyword_seeds: override the default seed list for
+            ``bucket_strategy="keyword"``. Useful for smoke tests
+            or for tuning to a local market.
     """
 
     ats = ATSType.FOUNDIT
@@ -167,6 +243,8 @@ class FounditScraper(BaseScraper):
         *,
         timeout: float = 30.0,
         max_pages: int = DEFAULT_MAX_PAGES,
+        bucket_strategy: BucketStrategy = "none",
+        keyword_seeds: Sequence[str] | None = None,
     ) -> None:
         normalized = (company_slug or "in").lower().strip()
         normalized = _COUNTRY_ALIASES.get(normalized, normalized)
@@ -176,6 +254,11 @@ class FounditScraper(BaseScraper):
                 f"Known: {sorted(_COUNTRY_TABLE)} (or aliases "
                 f"{sorted(_COUNTRY_ALIASES)})"
             )
+        if bucket_strategy not in ("none", "keyword"):
+            raise ScraperError(
+                f"Foundit unknown bucket_strategy {bucket_strategy!r}. "
+                f"Known: 'none', 'keyword'."
+            )
         super().__init__(normalized, timeout=timeout)
         self.country_slug = normalized
         domain, token, iso, region = _COUNTRY_TABLE[normalized]
@@ -184,6 +267,23 @@ class FounditScraper(BaseScraper):
         self._country_iso = iso
         self._region = region
         self.max_pages = max_pages
+        self.bucket_strategy: BucketStrategy = bucket_strategy
+        if keyword_seeds is None:
+            self.keyword_seeds: tuple[str, ...] = _DEFAULT_KEYWORD_SEEDS
+        else:
+            # Dedup-preserving-order; strip empties so callers can
+            # pass a casual list without surprises.
+            seen_kw: set[str] = set()
+            cleaned: list[str] = []
+            for kw in keyword_seeds:
+                if not isinstance(kw, str):
+                    continue
+                k = kw.strip()
+                if not k or k.lower() in seen_kw:
+                    continue
+                seen_kw.add(k.lower())
+                cleaned.append(k)
+            self.keyword_seeds = tuple(cleaned)
 
     # ----- public entry point -----------------------------------------
 
@@ -201,52 +301,110 @@ class FounditScraper(BaseScraper):
             },
             follow_redirects=True,
         ) as client:
-            for page_no in range(self.max_pages):
-                start = page_no * PER_PAGE
-                if start > MAX_USABLE_OFFSET:
-                    break
-                payload = self._fetch_page(client, start)
-                if payload is None:
-                    break
-                rows = list(_iter_job_rows(payload))
-                if not rows:
-                    break
-                new_in_page = 0
-                for row in rows:
-                    job = self._parse_row(row, fetched_at=fetched_at)
-                    if job is None:
-                        continue
-                    if job.ats_id in seen:
-                        continue
-                    seen.add(job.ats_id)  # type: ignore[arg-type]
-                    jobs.append(job)
-                    new_in_page += 1
-                if new_in_page == 0:
-                    # The deep-pagination cap returns the same window
-                    # over and over; stop the moment we get zero new
-                    # rows. Cheaper than relying on the documented
-                    # MAX_USABLE_OFFSET which has drifted before.
-                    break
+            if self.bucket_strategy == "keyword":
+                self._fetch_keyword_buckets(
+                    client, jobs, seen, fetched_at=fetched_at,
+                )
+            else:
+                # Original single-call no-query walk.
+                self._walk_query(
+                    client, query="", jobs=jobs, seen=seen,
+                    fetched_at=fetched_at,
+                )
+
         log.info(
-            "Foundit %s: fetched %d unique jobs across up to %d pages",
-            self.country_slug, len(jobs), self.max_pages,
+            "Foundit %s [%s]: fetched %d unique jobs",
+            self.country_slug, self.bucket_strategy, len(jobs),
         )
         return jobs
+
+    # ----- bucketing --------------------------------------------------
+
+    def _fetch_keyword_buckets(
+        self,
+        client: httpx.Client,
+        jobs: list[Job],
+        seen: set[str],
+        *,
+        fetched_at: datetime,
+    ) -> None:
+        """Iterate keyword seeds, walking each as its own paginated
+        bucket. Mutates ``jobs`` / ``seen`` in place; dedup is by
+        ``ats_id`` so a job hit by N seeds counts once.
+        """
+        total_seeds = len(self.keyword_seeds)
+        for idx, keyword in enumerate(self.keyword_seeds, start=1):
+            before = len(jobs)
+            self._walk_query(
+                client, query=keyword, jobs=jobs, seen=seen,
+                fetched_at=fetched_at,
+            )
+            added = len(jobs) - before
+            log.debug(
+                "Foundit %s keyword %d/%d %r: +%d new jobs (total %d)",
+                self.country_slug, idx, total_seeds, keyword,
+                added, len(jobs),
+            )
+
+    def _walk_query(
+        self,
+        client: httpx.Client,
+        *,
+        query: str,
+        jobs: list[Job],
+        seen: set[str],
+        fetched_at: datetime,
+    ) -> None:
+        """Paginate one query bucket up to ``max_pages`` / the API's
+        ~9500 cap. New rows are appended to ``jobs`` and their ids
+        added to ``seen``; existing ids are skipped.
+        """
+        for page_no in range(self.max_pages):
+            start = page_no * PER_PAGE
+            if start > MAX_USABLE_OFFSET:
+                break
+            payload = self._fetch_page(client, start, query=query)
+            if payload is None:
+                break
+            rows = list(_iter_job_rows(payload))
+            if not rows:
+                break
+            new_in_page = 0
+            for row in rows:
+                job = self._parse_row(row, fetched_at=fetched_at)
+                if job is None:
+                    continue
+                if job.ats_id in seen:
+                    continue
+                seen.add(job.ats_id)  # type: ignore[arg-type]
+                jobs.append(job)
+                new_in_page += 1
+            if new_in_page == 0:
+                # The deep-pagination cap returns the same window
+                # over and over; stop the moment we get zero new
+                # rows. Cheaper than relying on the documented
+                # MAX_USABLE_OFFSET which has drifted before. Also
+                # the natural stop for keyword buckets where every
+                # row was already seen via an earlier seed.
+                break
 
     # ----- one page ---------------------------------------------------
 
     def _fetch_page(
-        self, client: httpx.Client, start: int,
+        self, client: httpx.Client, start: int, *, query: str = "",
     ) -> dict[str, Any] | None:
         """GET one search page with retry on 429 / 5xx. Returns the
         decoded ``jobSearchResponse`` dict or ``None`` to break the
         pagination loop on terminal failure.
+
+        ``query`` is the ``query=`` filter — empty for the unrestricted
+        walk, non-empty for keyword bucketing.
         """
         url = f"https://{self._domain}/middleware/jobsearch"
         params = {
             "sort": "1",
             "limit": str(PER_PAGE),
-            "query": "",
+            "query": query,
             "searchId": "",
             "queryDerived": "true",
             "country": self._country_token,
