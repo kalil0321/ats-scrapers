@@ -13,6 +13,7 @@ from jobhive.scrapers.apple import AppleScraper
 from jobhive.scrapers.arbetsformedlingen import ArbetsformedlingenScraper
 from jobhive.scrapers.ashby import AshbyScraper
 from jobhive.scrapers.avature import AvatureScraper
+from jobhive.scrapers.avito_ma import AvitoMarocScraper
 from jobhive.scrapers.bamboohr import BambooHRScraper
 from jobhive.scrapers.base import BaseScraper, ScraperRegistry, get_scraper
 from jobhive.scrapers.breezy import BreezyScraper
@@ -40,6 +41,7 @@ from jobhive.scrapers.pinpoint import PinpointScraper
 from jobhive.scrapers.programathor import ProgramathorScraper
 from jobhive.scrapers.recruitee import RecruiteeScraper
 from jobhive.scrapers.recruiterbox import RecruiterboxScraper
+from jobhive.scrapers.rekrute import RekruteScraper
 from jobhive.scrapers.remoteok import RemoteOKScraper
 from jobhive.scrapers.rippling import RipplingScraper
 from jobhive.scrapers.smartrecruiters import SmartRecruitersScraper
@@ -65,6 +67,7 @@ __all__ = [
     "ArbetsformedlingenScraper",
     "AshbyScraper",
     "AvatureScraper",
+    "AvitoMarocScraper",
     "BambooHRScraper",
     "BaseScraper",
     "BreezyScraper",
@@ -91,6 +94,7 @@ __all__ = [
     "ProgramathorScraper",
     "RecruiteeScraper",
     "RecruiterboxScraper",
+    "RekruteScraper",
     "RemoteOKScraper",
     "RipplingScraper",
     "ScraperRegistry",
