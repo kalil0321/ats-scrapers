@@ -80,6 +80,7 @@ class ATSType(StrEnum):
     THEHUB = "thehub"
     YCOMBINATOR = "ycombinator"
     WELLFOUND = "wellfound"
+    OLX_JOBS = "olx_jobs"
     # Additional multi-tenant ATSes (post-0.1)
     BAMBOOHR = "bamboohr"
     BREEZY = "breezy"
