@@ -57,6 +57,7 @@ from jobhive.scrapers.wellfound import WellfoundScraper
 from jobhive.scrapers.weworkremotely import WeWorkRemotelyScraper
 from jobhive.scrapers.workable import WorkableScraper
 from jobhive.scrapers.workday import WorkdayScraper
+from jobhive.scrapers.wuzzuf import WuzzufScraper
 from jobhive.scrapers.ycombinator import YCombinatorScraper
 
 __all__ = [
@@ -109,6 +110,7 @@ __all__ = [
     "WellfoundScraper",
     "WorkableScraper",
     "WorkdayScraper",
+    "WuzzufScraper",
     "YCombinatorScraper",
     "get_scraper",
     "iCIMSScraper",
