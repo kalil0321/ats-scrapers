@@ -18,6 +18,7 @@ from jobhive.scrapers.base import BaseScraper, ScraperRegistry, get_scraper
 from jobhive.scrapers.breezy import BreezyScraper
 from jobhive.scrapers.builtin import BuiltInScraper
 from jobhive.scrapers.bundesagentur import BundesagenturScraper
+from jobhive.scrapers.bytedance import BytedanceScraper
 from jobhive.scrapers.cornerstone import CornerstoneScraper
 from jobhive.scrapers.eightfold import EightfoldScraper
 from jobhive.scrapers.eures import EuresScraper
@@ -70,6 +71,7 @@ __all__ = [
     "BreezyScraper",
     "BuiltInScraper",
     "BundesagenturScraper",
+    "BytedanceScraper",
     "CornerstoneScraper",
     "EightfoldScraper",
     "EuresScraper",

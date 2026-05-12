@@ -56,6 +56,7 @@ class ATSType(StrEnum):
     # Big-tech custom careers systems (single-tenant, bespoke APIs)
     AMAZON = "amazon"
     APPLE = "apple"
+    BYTEDANCE = "bytedance"
     GOOGLE = "google"
     META = "meta"
     TESLA = "tesla"

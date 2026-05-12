@@ -22,7 +22,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "pinpoint", "recruiterbox", "rippling", "smartrecruiters",
         "successfactors", "workable", "workday",
         # Big-tech custom careers systems
-        "amazon", "apple", "google", "meta",
+        "amazon", "apple", "bytedance", "google", "meta",
         "tesla", "tiktok", "uber", "usajobs",
         # National / supranational public-sector aggregators
         "bundesagentur", "arbetsformedlingen", "eures",
