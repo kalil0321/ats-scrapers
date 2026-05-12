@@ -80,6 +80,8 @@ class ATSType(StrEnum):
     THEHUB = "thehub"
     YCOMBINATOR = "ycombinator"
     WELLFOUND = "wellfound"
+    # Regional multi-source aggregators (one brand-family per scraper)
+    SEEK = "seek"
     # Additional multi-tenant ATSes (post-0.1)
     BAMBOOHR = "bamboohr"
     BREEZY = "breezy"

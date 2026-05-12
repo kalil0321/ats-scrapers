@@ -30,6 +30,8 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "welcometothejungle", "getonbrd", "wanted", "remoteok",
         "weworkremotely", "programathor", "builtin", "jobsch",
         "manfred", "thehub", "ycombinator", "wellfound",
+        # Regional multi-source aggregators
+        "seek",
         # Additional multi-tenant ATSes
         "bamboohr", "breezy", "jazzhr", "jobvite",
         "recruitee", "taleo", "teamtailor",
