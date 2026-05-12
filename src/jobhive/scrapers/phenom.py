@@ -1,7 +1,7 @@
 """Phenom (PhenomPeople) scraper.
 
-Phenom-powered career sites (Bell Canada, GE Healthcare, T-Mobile, etc.) all
-share the same search widget endpoint:
+Phenom-powered career sites (Bell Canada, GE Healthcare, T-Mobile, Cisco,
+etc.) all share the same search widget endpoint:
 
     POST {base_url}/widgets
 
@@ -86,7 +86,12 @@ class PhenomScraper(BaseScraper):
     The canonical tenant list at ``ats-companies/phenom.csv`` ships the
     correct ``locale``/``country`` per tenant (columns:
     ``url,name,company_code,locale,country``). For brand-new tenants the
-    default ``"en_us"``/``"us"`` works for the majority of US sites."""
+    default ``"en_us"``/``"us"`` works for the majority of US sites.
+
+    Note: pass the canonical Phenom hostname, not a vanity domain that
+    redirects to it. e.g. Cisco uses ``https://careers.cisco.com``;
+    ``https://jobs.cisco.com`` redirects there but the CSRF cookie does
+    not survive the cross-host redirect, so widget POSTs return 403/HTML."""
 
     ats = ATSType.PHENOM
 
