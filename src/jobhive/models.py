@@ -71,6 +71,7 @@ class ATSType(StrEnum):
     WELCOMETOTHEJUNGLE = "welcometothejungle"
     GETONBRD = "getonbrd"
     WANTED = "wanted"
+    JOB104 = "104"
     REMOTEOK = "remoteok"
     WEWORKREMOTELY = "weworkremotely"
     PROGRAMATHOR = "programathor"
