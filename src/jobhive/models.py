@@ -67,6 +67,7 @@ class ATSType(StrEnum):
     BUNDESAGENTUR = "bundesagentur"
     ARBETSFORMEDLINGEN = "arbetsformedlingen"
     EURES = "eures"
+    JOBBANKCA = "jobbankca"
     # Hybrid jobboards (companies post directly, not aggregated)
     WELCOMETOTHEJUNGLE = "welcometothejungle"
     GETONBRD = "getonbrd"
