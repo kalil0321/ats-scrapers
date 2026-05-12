@@ -62,6 +62,10 @@ scrapers = [
     # Browserbase Sessions). cloakbrowser ships its own binary and
     # caches under ~/.cache/cloakbrowser, no separate playwright install.
     "cloakbrowser>=0.3",
+    # Naukri's search API sits behind Akamai and requires Chrome-like TLS
+    # plus an RSA-encrypted timestamp header.
+    "curl_cffi>=0.10",
+    "pycryptodome>=3.20",
 ]
 parquet = [
     "pyarrow>=15.0",
