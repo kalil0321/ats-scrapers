@@ -75,6 +75,7 @@ class ATSType(StrEnum):
     WEWORKREMOTELY = "weworkremotely"
     PROGRAMATHOR = "programathor"
     BUILTIN = "builtin"
+    KARIYER = "kariyer"
     JOBSCH = "jobsch"
     MANFRED = "manfred"
     THEHUB = "thehub"
