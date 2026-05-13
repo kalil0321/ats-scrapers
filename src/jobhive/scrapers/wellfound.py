@@ -156,9 +156,7 @@ class WellfoundScraper(BaseScraper):
         if job.description:
             return job.description
         if not self.firecrawl_api_key:
-            raise ScraperError(
-                "Wellfound requires a Firecrawl API key to fetch descriptions."
-            )
+            return None
         copy = job.model_copy()
 
         async def run() -> str | None:

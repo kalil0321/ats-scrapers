@@ -234,6 +234,60 @@ def test_pipeline_fetches_missing_description_after_cache_lookup(
     assert MissingScraper.calls == 1
 
 
+def test_pipeline_keeps_job_when_description_fetch_raises(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "ats-companies").mkdir()
+    (tmp_path / "ats-companies" / "fake.csv").write_text(
+        "name,slug,url\nAcme,acme,https://example.com\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "fake"
+    out_dir.mkdir()
+    out_path = out_dir / "jobs.csv"
+    out_path.write_text(
+        "url,title,company,ats_type,ats_id,description\n",
+        encoding="utf-8",
+    )
+
+    class RaisingDescriptionScraper:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.include_descriptions = True
+
+        def fetch(self):
+            return [
+                Job(
+                    url="https://example.com/jobs/2",
+                    title="Engineer",
+                    company="Acme",
+                    ats_type=ATSType.CUSTOM,
+                    ats_id="2",
+                )
+            ]
+
+        def get_description(self, _job):
+            raise RuntimeError("detail API unavailable")
+
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "fake",
+        {
+            "scraper": RaisingDescriptionScraper,
+            "slug": lambda r: r["slug"],
+            "csv": "ats-companies/fake.csv",
+            "output": "fake/jobs.csv",
+        },
+    )
+
+    rc = asyncio.run(runner.run("fake", concurrency=1, max_tenants=None, timeout=1))
+
+    assert rc == 0
+    rows = list(csv.DictReader(out_path.open(newline="")))
+    assert rows[0]["ats_id"] == "2"
+    assert rows[0]["description"] == ""
+
+
 def test_pipeline_writes_full_description_instead_of_preview(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -319,6 +373,30 @@ def test_description_cache_count_ignores_duplicate_keys(tmp_path) -> None:
         assert cache.count == 2
     finally:
         cache.close()
+
+
+def test_load_description_cache_closes_when_load_csv_fails(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created = []
+
+    class FakeCache:
+        def __init__(self) -> None:
+            self.closed = False
+            created.append(self)
+
+        def load_csv(self, _path) -> None:
+            raise RuntimeError("bad csv")
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(runner, "DescriptionCache", FakeCache)
+
+    with pytest.raises(RuntimeError, match="bad csv"):
+        runner._load_description_cache(tmp_path / "jobs.csv")
+
+    assert created[0].closed is True
 
 
 def test_description_cache_unlinks_temp_file_when_init_fails(

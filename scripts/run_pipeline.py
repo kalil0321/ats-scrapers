@@ -768,7 +768,11 @@ def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
 
 def _load_description_cache(path: Path) -> DescriptionCache:
     cache = DescriptionCache()
-    cache.load_csv(path)
+    try:
+        cache.load_csv(path)
+    except Exception:
+        cache.close()
+        raise
     return cache
 
 
@@ -787,10 +791,14 @@ async def _ensure_description(
         return
     if job.description:
         return
-    get_description = getattr(scraper, "get_description", None)
-    if get_description is None:
+    try:
+        description = await asyncio.to_thread(scraper.get_description, job)
+    except Exception as exc:
+        print(
+            "  description fetch failed for "
+            f"{job.url}: {type(exc).__name__}: {str(exc)[:200]}"
+        )
         return
-    description = await asyncio.to_thread(get_description, job)
     if description:
         job.description = description[:25_000]
         cache.set(job, job.description)

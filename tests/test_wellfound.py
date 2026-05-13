@@ -22,7 +22,7 @@ import httpx
 import pytest
 
 from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
+from jobhive.models import ATSType, Job
 from jobhive.scrapers import ScraperRegistry, WellfoundScraper
 from jobhive.scrapers.wellfound import (
     DEFAULT_ROLE_SLUGS,
@@ -96,6 +96,21 @@ def test_raises_without_firecrawl_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
     with pytest.raises(ScraperError, match="Firecrawl"):
         WellfoundScraper("any").fetch()
+
+
+def test_get_description_without_firecrawl_key_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+    job = Job(
+        url="https://wellfound.com/jobs/1",
+        title="Engineer",
+        company="Acme",
+        ats_type=ATSType.WELLFOUND,
+        ats_id="1",
+    )
+
+    assert WellfoundScraper("any").get_description(job) is None
 
 
 def test_uses_env_var_when_no_constructor_arg(monkeypatch: pytest.MonkeyPatch) -> None:
