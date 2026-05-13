@@ -181,7 +181,7 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
             # Detail enrichment: pull schema.org JSON-LD from each job's
             # iframe page. Best-effort — failures keep the listing-derived
             # row.
-            if all_jobs:
+            if self.include_descriptions and all_jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_detail(client, sem, j) for j in all_jobs

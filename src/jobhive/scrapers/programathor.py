@@ -211,7 +211,7 @@ class ProgramathorScraper(BaseScraper):
                 else:
                     consecutive_empty = 0
                 page += 1
-            if jobs:
+            if self.include_descriptions and jobs:
                 detail_sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_description(client, detail_sem, job) for job in jobs

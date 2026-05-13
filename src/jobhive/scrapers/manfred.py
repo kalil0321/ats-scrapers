@@ -114,7 +114,7 @@ class ManfredScraper(BaseScraper):
                     continue
                 seen.add(job.ats_id)
                 jobs.append(job)
-            if jobs:
+            if self.include_descriptions and jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(self._enrich_description(client, sem, j) for j in jobs))
         return jobs

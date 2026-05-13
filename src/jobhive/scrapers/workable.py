@@ -126,7 +126,7 @@ class WorkableScraper(BaseScraper):
         payload = response.json()
         jobs = [self._parse_job(item) for item in payload.get("jobs", [])]
 
-        if jobs:
+        if self.include_descriptions and jobs:
             self._enrich_descriptions(jobs)
         return jobs
 

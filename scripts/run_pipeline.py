@@ -79,6 +79,7 @@ from jobhive.scrapers import (
     YCombinatorScraper,
     iCIMSScraper,
 )
+from jobhive.scrapers.base import BaseScraper
 
 
 def _slug_col(row: dict[str, Any]) -> str | None:
@@ -645,6 +646,79 @@ JOB_CSV_FIELDS = [
 ]
 
 
+DescriptionCache = dict[tuple[str, str], str]
+
+
+def _description_keys(job: Job) -> list[tuple[str, str]]:
+    keys: list[tuple[str, str]] = []
+    company = (job.company or "").strip()
+    ats_id = (job.ats_id or "").strip()
+    if company and ats_id:
+        keys.append(("company_ats_id", f"{company}\0{ats_id}"))
+    url = str(job.url).strip()
+    if url:
+        keys.append(("url", url))
+    return keys
+
+
+def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
+    keys: list[tuple[str, str]] = []
+    company = (row.get("company") or "").strip()
+    ats_id = (row.get("ats_id") or "").strip()
+    if company and ats_id:
+        keys.append(("company_ats_id", f"{company}\0{ats_id}"))
+    url = (row.get("url") or "").strip()
+    if url:
+        keys.append(("url", url))
+    return keys
+
+
+def _load_description_cache(path: Path) -> DescriptionCache:
+    if not path.exists():
+        return {}
+
+    cache: DescriptionCache = {}
+    try:
+        with path.open(newline="") as fh:
+            for row in csv.DictReader(fh):
+                description = (row.get("description") or "").strip()
+                if not description:
+                    continue
+                for key in _row_description_keys(row):
+                    cache.setdefault(key, description)
+    except (OSError, csv.Error):
+        return {}
+    return cache
+
+
+def _cached_description(job: Job, cache: DescriptionCache) -> str | None:
+    for key in _description_keys(job):
+        if description := cache.get(key):
+            return description
+    return None
+
+
+async def _ensure_description(
+    scraper: BaseScraper,
+    job: Job,
+    cache: DescriptionCache,
+) -> None:
+    cached = _cached_description(job, cache)
+    if cached:
+        job.description = cached
+        return
+    if job.description:
+        return
+    get_description = getattr(scraper, "get_description", None)
+    if get_description is None:
+        return
+    description = await asyncio.to_thread(get_description, job)
+    if description:
+        job.description = description[:25_000]
+        for key in _description_keys(job):
+            cache.setdefault(key, job.description)
+
+
 def _job_to_row(job: Job) -> dict[str, Any]:
     """Flatten a Job to CSV-friendly fields. ``raw`` is JSON-serialized."""
     raw_json = ""
@@ -669,7 +743,7 @@ def _job_to_row(job: Job) -> dict[str, Any]:
         "employment_type": job.employment_type or "",
         "department": job.department or "",
         "team": job.team or "",
-        "description": (job.description or "")[:500].replace("\n", " "),
+        "description": (job.description or "")[:25_000].replace("\n", " "),
         "posted_at": job.posted_at.isoformat() if job.posted_at else "",
         "requisition_id": job.requisition_id or "",
         "apply_url": str(job.apply_url) if job.apply_url else "",
@@ -678,20 +752,29 @@ def _job_to_row(job: Job) -> dict[str, Any]:
     }
 
 
-async def _run_scraper(scraper_cls, slug, kwargs=None, timeout=30) -> tuple[str, list[Job], str | None]:
-    """Run one scraper in a thread (most are sync). Returns (slug, jobs, error_or_None)."""
+async def _run_scraper(
+    scraper_cls,
+    slug,
+    kwargs=None,
+    timeout=30,
+    *,
+    include_descriptions: bool = True,
+) -> tuple[str, BaseScraper | None, list[Job], str | None]:
+    """Run one scraper in a thread (most are sync)."""
     extra = kwargs or {}
 
-    def _run() -> list[Job]:
-        return scraper_cls(slug, timeout=timeout, **extra).fetch()
+    def _run() -> tuple[BaseScraper, list[Job]]:
+        scraper = scraper_cls(slug, timeout=timeout, **extra)
+        scraper.include_descriptions = include_descriptions
+        return scraper, scraper.fetch()
 
     try:
-        jobs = await asyncio.to_thread(_run)
-        return slug, jobs, None
+        scraper, jobs = await asyncio.to_thread(_run)
+        return slug, scraper, jobs, None
     except CompanyNotFoundError:
-        return slug, [], "not_found"
+        return slug, None, [], "not_found"
     except Exception as exc:
-        return slug, [], f"{type(exc).__name__}: {str(exc)[:120]}"
+        return slug, None, [], f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
 async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: float) -> int:
@@ -727,6 +810,10 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
     output_path = DATA_ROOT / cfg["output"]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_output_path = output_path.with_name(f".{output_path.name}.tmp")
+    description_cache = _load_description_cache(output_path)
+    cache_descriptions = bool(description_cache)
+    if description_cache:
+        print(f"[{ats}] Loaded {len(description_cache):,} cached description keys")
     seen_keys: set[tuple[str, str]] = set()  # (company, ats_id) for cross-tenant dedup
 
     t0 = time.time()
@@ -767,7 +854,13 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
         else:
             async def task(slug: str, kw: dict[str, Any]) -> None:
                 async with sem:
-                    _, jobs, err = await _run_scraper(cfg["scraper"], slug, kw, timeout)
+                    _, scraper, jobs, err = await _run_scraper(
+                        cfg["scraper"],
+                        slug,
+                        kw,
+                        timeout,
+                        include_descriptions=not cache_descriptions,
+                    )
                 if err == "not_found":
                     counts["not_found"] += 1
                     return
@@ -780,6 +873,8 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                     if key in seen_keys:
                         continue
                     seen_keys.add(key)
+                    if scraper is not None:
+                        await _ensure_description(scraper, job, description_cache)
                     writer.writerow(_job_to_row(job))
                     counts["jobs"] += 1
 

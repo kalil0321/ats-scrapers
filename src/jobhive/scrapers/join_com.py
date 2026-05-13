@@ -96,7 +96,7 @@ class JoinComScraper(BaseScraper):
                     break
                 page += 1
 
-            if all_jobs:
+            if self.include_descriptions and all_jobs:
                 self._enrich_with_details(client, all_jobs)
         return all_jobs
 

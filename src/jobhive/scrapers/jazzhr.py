@@ -173,7 +173,7 @@ class JazzHRScraper(BaseScraper):
 
         # Detail enrichment via JSON-LD on each job's detail page.
         # Best-effort: errors fall through silently.
-        if jobs:
+        if self.include_descriptions and jobs:
             async with httpx.AsyncClient(
                 timeout=self.timeout, follow_redirects=True,
             ) as client:

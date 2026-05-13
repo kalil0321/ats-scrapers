@@ -235,7 +235,7 @@ class JobsChScraper(BaseScraper):
                 seed, len(slice_jobs), new_count, len(all_jobs),
             )
 
-        if all_jobs:
+        if self.include_descriptions and all_jobs:
             await self._enrich_descriptions(all_jobs, proxy_url=proxy_url)
         return all_jobs
 

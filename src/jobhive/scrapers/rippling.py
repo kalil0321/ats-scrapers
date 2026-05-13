@@ -111,7 +111,7 @@ class RipplingScraper(BaseScraper):
                 items = []
             jobs = [self._parse_job(item) for item in items]
 
-            if jobs:
+            if self.include_descriptions and jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_detail(client, sem, j) for j in jobs

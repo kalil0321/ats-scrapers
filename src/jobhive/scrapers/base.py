@@ -41,6 +41,7 @@ class BaseScraper(ABC):
     def __init__(self, company_slug: str, *, timeout: float = 30.0) -> None:
         self.company_slug = company_slug
         self.timeout = timeout
+        self.include_descriptions = True
 
     @abstractmethod
     def fetch(self) -> list[Job]:
