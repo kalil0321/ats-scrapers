@@ -274,21 +274,30 @@ def test_pipeline_writes_full_description_instead_of_preview(
     assert rows[0]["description"] == long_description
 
 
-def test_description_cache_skips_oversized_previous_csv(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_description_cache_loads_previous_csv_on_disk(tmp_path) -> None:
     path = tmp_path / "jobs.csv"
     path.write_text(
         "url,title,company,ats_type,ats_id,description\n"
         "https://example.com/jobs/1,Old,Acme,custom,1,cached\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv(runner.DESCRIPTION_CACHE_MAX_BYTES_ENV, "1")
+    cache = runner._load_description_cache(path)
+    try:
+        job = Job(
+            url="https://example.com/jobs/1",
+            title="Engineer",
+            company="Acme",
+            ats_type=ATSType.CUSTOM,
+            ats_id="1",
+        )
 
-    assert runner._load_description_cache(path) == {}
+        assert cache.get(job) == "cached"
+        assert cache.count == 2
+    finally:
+        cache.close()
 
 
-def test_streaming_pipeline_does_not_load_previous_description_cache(
+def test_streaming_pipeline_reuses_sqlite_description_cache(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     out_dir = tmp_path / "stream"
@@ -315,11 +324,7 @@ def test_streaming_pipeline_does_not_load_previous_description_cache(
                 ats_id="1",
             )
 
-    def fail_load_cache(_path):
-        raise AssertionError("streaming providers must not load description cache")
-
     monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
-    monkeypatch.setattr(runner, "_load_description_cache", fail_load_cache)
     monkeypatch.setitem(
         runner.CONFIGS,
         "stream",
@@ -334,4 +339,4 @@ def test_streaming_pipeline_does_not_load_previous_description_cache(
 
     assert rc == 0
     rows = list(csv.DictReader(out_path.open(newline="")))
-    assert rows[0]["description"] == ""
+    assert rows[0]["description"] == "cached"

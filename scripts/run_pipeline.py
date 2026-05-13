@@ -21,9 +21,10 @@ import argparse
 import asyncio
 import csv
 import json
-import os
 import re
+import sqlite3
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -647,20 +648,89 @@ JOB_CSV_FIELDS = [
 ]
 
 
-DescriptionCache = dict[tuple[str, str], str]
-DEFAULT_DESCRIPTION_CACHE_MAX_BYTES = 1024 * 1024 * 1024
-DESCRIPTION_CACHE_MAX_BYTES_ENV = "JOBHIVE_DESCRIPTION_CACHE_MAX_BYTES"
+class DescriptionCache:
+    """Disk-backed description cache built from the previous jobs CSV."""
 
+    def __init__(self) -> None:
+        with tempfile.NamedTemporaryFile(
+            prefix="jobhive-description-cache-",
+            suffix=".sqlite3",
+            delete=False,
+        ) as tmp:
+            self.path = Path(tmp.name)
+        self.conn = sqlite3.connect(self.path)
+        self.conn.execute("PRAGMA journal_mode=OFF")
+        self.conn.execute("PRAGMA synchronous=OFF")
+        self.conn.execute("PRAGMA temp_store=MEMORY")
+        self.conn.execute(
+            """
+            CREATE TABLE descriptions (
+                kind TEXT NOT NULL,
+                cache_key TEXT NOT NULL,
+                description TEXT NOT NULL,
+                PRIMARY KEY (kind, cache_key)
+            )
+            """
+        )
+        self.count = 0
 
-def _description_cache_max_bytes() -> int:
-    raw = os.environ.get(DESCRIPTION_CACHE_MAX_BYTES_ENV)
-    if not raw:
-        return DEFAULT_DESCRIPTION_CACHE_MAX_BYTES
-    try:
-        value = int(raw)
-    except ValueError:
-        return DEFAULT_DESCRIPTION_CACHE_MAX_BYTES
-    return max(0, value)
+    def close(self) -> None:
+        self.conn.close()
+        self.path.unlink(missing_ok=True)
+
+    def load_csv(self, path: Path) -> None:
+        if not path.exists():
+            return
+
+        batch: list[tuple[str, str, str]] = []
+        try:
+            with path.open(newline="") as fh:
+                for row in csv.DictReader(fh):
+                    description = (row.get("description") or "").strip()
+                    if not description:
+                        continue
+                    for key in _row_description_keys(row):
+                        batch.append((*key, description))
+                    if len(batch) >= 2_000:
+                        self._insert_many(batch)
+                        batch.clear()
+                if batch:
+                    self._insert_many(batch)
+        except (OSError, csv.Error, sqlite3.Error):
+            self.conn.execute("DELETE FROM descriptions")
+            self.conn.commit()
+        self.count = self.conn.execute(
+            "SELECT COUNT(*) FROM descriptions"
+        ).fetchone()[0]
+
+    def _insert_many(self, rows: list[tuple[str, str, str]]) -> None:
+        self.conn.executemany(
+            """
+            INSERT OR IGNORE INTO descriptions (kind, cache_key, description)
+            VALUES (?, ?, ?)
+            """,
+            rows,
+        )
+        self.conn.commit()
+
+    def get(self, job: Job) -> str | None:
+        for kind, key in _description_keys(job):
+            row = self.conn.execute(
+                """
+                SELECT description FROM descriptions
+                WHERE kind = ? AND cache_key = ?
+                """,
+                (kind, key),
+            ).fetchone()
+            if row:
+                return row[0]
+        return None
+
+    def set(self, job: Job, description: str) -> None:
+        rows = [(*key, description) for key in _description_keys(job)]
+        if rows:
+            self._insert_many(rows)
+            self.count += len(rows)
 
 
 def _description_keys(job: Job) -> list[tuple[str, str]]:
@@ -688,39 +758,13 @@ def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
 
 
 def _load_description_cache(path: Path) -> DescriptionCache:
-    if not path.exists():
-        return {}
-    max_bytes = _description_cache_max_bytes()
-    try:
-        size_bytes = path.stat().st_size
-    except OSError:
-        return {}
-    if max_bytes and size_bytes > max_bytes:
-        print(
-            f"[cache] Skipping description cache for {path}: "
-            f"{size_bytes:,} bytes exceeds {max_bytes:,} byte limit"
-        )
-        return {}
-
-    cache: DescriptionCache = {}
-    try:
-        with path.open(newline="") as fh:
-            for row in csv.DictReader(fh):
-                description = (row.get("description") or "").strip()
-                if not description:
-                    continue
-                for key in _row_description_keys(row):
-                    cache.setdefault(key, description)
-    except (OSError, csv.Error):
-        return {}
+    cache = DescriptionCache()
+    cache.load_csv(path)
     return cache
 
 
 def _cached_description(job: Job, cache: DescriptionCache) -> str | None:
-    for key in _description_keys(job):
-        if description := cache.get(key):
-            return description
-    return None
+    return cache.get(job)
 
 
 async def _ensure_description(
@@ -740,8 +784,7 @@ async def _ensure_description(
     description = await asyncio.to_thread(get_description, job)
     if description:
         job.description = description[:25_000]
-        for key in _description_keys(job):
-            cache.setdefault(key, job.description)
+        cache.set(job, job.description)
 
 
 def _job_to_row(job: Job) -> dict[str, Any]:
@@ -836,10 +879,10 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_output_path = output_path.with_name(f".{output_path.name}.tmp")
     uses_streaming = bool(cfg.get("singleton") and hasattr(cfg["scraper"], "fetch_stream"))
-    description_cache = {} if uses_streaming else _load_description_cache(output_path)
-    cache_descriptions = bool(description_cache)
-    if description_cache:
-        print(f"[{ats}] Loaded {len(description_cache):,} cached description keys")
+    description_cache = _load_description_cache(output_path)
+    cache_descriptions = bool(description_cache.count)
+    if description_cache.count:
+        print(f"[{ats}] Loaded {description_cache.count:,} cached description keys")
     seen_keys: set[tuple[str, str]] = set()  # (company, ats_id) for cross-tenant dedup
 
     t0 = time.time()
@@ -857,8 +900,10 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
         # RSS in legacy mode, exceeding the VPS RAM budget.
         if uses_streaming:
             scraper = cfg["scraper"](ats, timeout=timeout)
+            scraper.include_descriptions = not cache_descriptions
             try:
                 async for job in scraper.fetch_stream():
+                    await _ensure_description(scraper, job, description_cache)
                     writer.writerow(_job_to_row(job))
                     counts["jobs"] += 1
                     # Periodic flush so the file is consultable while
@@ -932,6 +977,7 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
     )
     if catastrophic_failure:
         tmp_output_path.unlink(missing_ok=True)
+        description_cache.close()
         if output_path.exists():
             print(
                 f"[{ats}] ACTION keep_previous: scrape produced 0 jobs with "
@@ -947,6 +993,7 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
         return 1
 
     tmp_output_path.replace(output_path)
+    description_cache.close()
     if counts["error"] >= failure_threshold:
         print(
             f"[{ats}] ACTION investigate: scrape kept partial data but "
