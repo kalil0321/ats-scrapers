@@ -192,7 +192,7 @@ def _compose_description(offer: dict[str, Any]) -> str | None:
                 parts.append(cleaned)
     if not parts:
         return None
-    return "\n\n".join(parts)[:10_000]
+    return "\n\n".join(parts)[:25_000]
 
 
 def _fallback_url(slug: str, offer: dict[str, Any]) -> str:

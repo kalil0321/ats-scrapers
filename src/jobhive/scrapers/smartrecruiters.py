@@ -74,6 +74,21 @@ class SmartRecruitersScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_detail(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         url = API_TEMPLATE.format(slug=self.company_slug)
         all_jobs: list[Job] = []
@@ -214,7 +229,7 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
     ``companyDescription`` / ``jobDescription`` / ``qualifications`` /
     ``additionalInformation`` — each carrying ``title`` + HTML
     ``text``). We concatenate the four sections' plain text into a
-    single body, capped at 10kB, with the actual job description
+    single body, capped at 25k chars, with the actual job description
     first so consumers see the most relevant content if truncated.
     """
     if not job.description:
@@ -233,7 +248,7 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
                     if isinstance(text, str) and text.strip():
                         parts.append(_strip_html(text))
             if parts:
-                job.description = "\n\n".join(parts)[:10_000]
+                job.description = "\n\n".join(parts)[:25_000]
 
     if not job.apply_url:
         apply_url = detail.get("applyUrl")

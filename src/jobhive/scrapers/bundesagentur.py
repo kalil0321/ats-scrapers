@@ -129,6 +129,19 @@ class BundesagenturScraper(BaseScraper):
         from cron contexts that write straight to disk."""
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_description(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def fetch_stream(self) -> AsyncGenerator[Job, None]:
         """Stream jobs as they're parsed.
 
@@ -258,7 +271,7 @@ class BundesagenturScraper(BaseScraper):
             return
         description = detail.get("stellenangebotsBeschreibung")
         if isinstance(description, str) and description.strip():
-            job.description = description.strip()[:10_000]
+            job.description = description.strip()[:25_000]
 
     async def _exhaust_query(
         self,
@@ -546,7 +559,7 @@ class BundesagenturScraper(BaseScraper):
             apply_url=apply_url,
             requisition_id=item.get("hashId") or None,
             description=(
-                item.get("stellenangebotsBeschreibung").strip()[:10_000]
+                item.get("stellenangebotsBeschreibung").strip()[:25_000]
                 if isinstance(item.get("stellenangebotsBeschreibung"), str)
                 and item.get("stellenangebotsBeschreibung").strip()
                 else None

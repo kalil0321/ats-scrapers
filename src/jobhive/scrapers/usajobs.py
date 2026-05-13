@@ -44,7 +44,7 @@ ENV_USER_AGENT = "USAJOBS_USER_AGENT"  # Optional override; defaults to email be
 DEFAULT_USER_AGENT = "stapply-ai (open-source jobs dataset)"
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 WHITESPACE_RE = re.compile(r"\s+")
-MAX_DESCRIPTION_LEN = 10_000
+MAX_DESCRIPTION_LEN = 25_000
 
 _TYPE_MAP = {
     "full-time": "FULL_TIME",

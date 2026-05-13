@@ -462,7 +462,7 @@ def _compose_description(item: dict[str, Any]) -> str | None:
             if cleaned:
                 parts.append("\n".join(cleaned))
     text = "\n\n".join(p for p in parts if p).strip()
-    return text[:10_000] or None
+    return text[:25_000] or None
 
 
 def _clean_description_text(value: str) -> str:

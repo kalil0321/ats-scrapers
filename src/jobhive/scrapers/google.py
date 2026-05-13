@@ -74,6 +74,21 @@ class GoogleScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_detail(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
@@ -211,7 +226,7 @@ def _apply_detail_to_job(job: Job, html: str) -> None:
     # Description — prefer the wider h3 container; fall back to meta.
     description = _extract_full_description(html)
     if description and not job.description:
-        job.description = description[:10_000]
+        job.description = description[:25_000]
 
     # Location + team chips.
     for chip in _CHIP_RE.finditer(html):

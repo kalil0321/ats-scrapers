@@ -115,6 +115,28 @@ class OracleScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+        base, _site = _normalize_oracle_target(self.company_slug)
+        if not base.startswith(("http://", "https://")):
+            return None
+        detail_url = (
+            f"{base}/hcmRestApi/resources/latest/"
+            "recruitingCEJobRequisitionDetails"
+        )
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_detail(client, sem, detail_url, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         base, site = _normalize_oracle_target(self.company_slug)
         if not base.startswith(("http://", "https://")):
@@ -200,7 +222,7 @@ class OracleScraper(BaseScraper):
 
         # Concatenate the three external sections — description /
         # qualifications / responsibilities — into a single plain-text
-        # body, capped at 10kB.
+        # body, capped at 25k chars.
         parts: list[str] = []
         for key in (
             "ExternalDescriptionStr",
@@ -211,7 +233,7 @@ class OracleScraper(BaseScraper):
             if isinstance(v, str) and v.strip():
                 parts.append(_strip_html(v))
         if parts:
-            job.description = "\n\n".join(parts)[:10_000]
+            job.description = "\n\n".join(parts)[:25_000]
 
     async def _fetch_with_retry(
         self,
@@ -275,7 +297,7 @@ class OracleScraper(BaseScraper):
         # ``ExternalDescriptionStr`` when enabled.
         short_desc = item.get("ShortDescriptionStr")
         description = (
-            _strip_html(short_desc)[:10_000]
+            _strip_html(short_desc)[:25_000]
             if isinstance(short_desc, str) and short_desc.strip()
             else None
         )

@@ -165,7 +165,7 @@ class TeamtailorScraper(BaseScraper):
         text = re.sub(r"\s+", " ", text).strip()
         if not text:
             return None
-        return text[:10_000]
+        return text[:25_000]
 
 
 def _format_location(item: ET.Element) -> str | None:

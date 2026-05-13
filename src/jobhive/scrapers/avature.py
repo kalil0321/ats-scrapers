@@ -141,6 +141,24 @@ class AvatureScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_with_detail(client, sem, copy)
+            if not copy.description:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_with_detail_via_httpcloak(sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         base = self._resolve_base_url()
         company = _company_from_base(base) or self.company_slug
@@ -796,7 +814,7 @@ def _apply_detail_to_job(
     # Description.
     if description and not job.description:
         # Cap at ~12kB to avoid Pydantic warnings on extreme outliers.
-        job.description = description[:12_000]
+        job.description = description[:25_000]
 
 
 def _company_from_base(base: str) -> str | None:

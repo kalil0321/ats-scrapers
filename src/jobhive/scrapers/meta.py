@@ -59,6 +59,17 @@ class MetaScraper(BaseScraper):
             return []
         return asyncio.run(self._fetch_via_cloakbrowser())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        jobs = [job.model_copy()]
+
+        async def run() -> str | None:
+            await self._enrich_detail_descriptions(jobs)
+            return jobs[0].description
+
+        return asyncio.run(run())
+
     async def _fetch_via_cloakbrowser(self) -> list[Job]:
         from cloakbrowser import launch_async
 
@@ -191,7 +202,7 @@ class MetaScraper(BaseScraper):
                 if items:
                     parts.append("\n".join(items))
         text = "\n\n".join(parts).strip()
-        return text[:10_000] or None
+        return text[:25_000] or None
 
     async def _enrich_detail_descriptions(self, jobs: list[Job]) -> None:
         """Fetch Meta detail pages for descriptions missing from listing GraphQL.
@@ -231,7 +242,7 @@ class MetaScraper(BaseScraper):
             return
         description = _description_from_detail_html(response.text)
         if description:
-            jobs[index] = job.model_copy(update={"description": description[:10_000]})
+            jobs[index] = job.model_copy(update={"description": description[:25_000]})
 
 
 __all__ = ["MetaScraper"]

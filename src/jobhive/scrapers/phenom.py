@@ -401,7 +401,7 @@ def _clean_description(value: object) -> str | None:
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if not cleaned:
         return None
-    return cleaned[:10_000]
+    return cleaned[:25_000]
 
 
 def _parse_iso(value: object) -> datetime | None:

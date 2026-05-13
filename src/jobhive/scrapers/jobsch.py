@@ -144,6 +144,26 @@ class JobsChScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+        proxy_url = _evomi_proxy_url_from_env()
+
+        async def run() -> str | None:
+            client_kwargs: dict[str, Any] = {
+                "timeout": self.timeout,
+                "follow_redirects": True,
+            }
+            if proxy_url is not None:
+                client_kwargs["proxy"] = proxy_url
+            async with httpx.AsyncClient(**client_kwargs) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_description(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         # Probe IP routing on the empty query: if the datacenter IP is
         # 403-blocked, the same probe-then-proxy escalation runs once,
@@ -311,7 +331,7 @@ class JobsChScraper(BaseScraper):
             return
         description = _extract_description(response.text)
         if description and not job.description:
-            job.description = description[:10_000]
+            job.description = description[:25_000]
 
     async def _fetch_page(
         self,

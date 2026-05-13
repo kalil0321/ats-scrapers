@@ -218,11 +218,11 @@ def _iso_to_dt(value: object) -> datetime | None:
 
 def _clean_description(value: object) -> str | None:
     """Strip Remote OK's anti-bot reminder line + HTML, collapse whitespace,
-    and truncate to the canonical ~10kB budget."""
+    and truncate to the canonical ~25k chars budget."""
     if not isinstance(value, str) or not value.strip():
         return None
     text = html.unescape(value)
     text = _ANTIBOT_RE.sub("", text)
     text = _TAG_RE.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    return text[:10_000] or None
+    return text[:25_000] or None

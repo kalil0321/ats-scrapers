@@ -40,7 +40,7 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 WHITESPACE_RE = re.compile(r"\s+")
-MAX_DESCRIPTION_LEN = 10_000
+MAX_DESCRIPTION_LEN = 25_000
 
 _TYPE_MAP = {
     "full_time": "FULL_TIME",

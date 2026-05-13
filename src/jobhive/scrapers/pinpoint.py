@@ -37,7 +37,7 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 WHITESPACE_RE = re.compile(r"\s+")
-MAX_DESCRIPTION_LEN = 10_000
+MAX_DESCRIPTION_LEN = 25_000
 
 # Pinpoint sometimes prefixes the employment-type code with the
 # contract status (``permanent_full_time``, ``permanent_part_time``,

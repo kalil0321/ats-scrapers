@@ -239,7 +239,7 @@ def test_description_truncated_to_10kb(httpx_mock) -> None:
     ]})
     jobs = MercorScraper("any").fetch()
     assert jobs[0].description is not None
-    assert len(jobs[0].description) <= 10_000
+    assert len(jobs[0].description) <= 25_000
 
 
 def test_description_none_when_empty(httpx_mock) -> None:

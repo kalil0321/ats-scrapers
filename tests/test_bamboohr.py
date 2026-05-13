@@ -396,7 +396,7 @@ def test_description_failure_keeps_listing_row(httpx_mock) -> None:
 
 def test_description_is_truncated(httpx_mock) -> None:
     """Long descriptions are capped — both at the Pydantic field-level cap
-    (10kB) and our scraper-side cap (12kB) — so memory stays bounded."""
+    (25k chars) and our scraper-side cap (12kB) — so memory stays bounded."""
     huge = "Lorem ipsum dolor sit amet. " * 800  # ~22kB
     httpx_mock.add_response(url=WIDGET_URL, text=_widget_html([
         {"id": 1, "name": "Eng", "jobs": [{"id": 100, "title": "X", "location": "Y"}]},
@@ -407,4 +407,4 @@ def test_description_is_truncated(httpx_mock) -> None:
     )
     job = BambooHRScraper("acme").fetch()[0]
     assert job.description is not None
-    assert len(job.description) <= 10_000
+    assert len(job.description) <= 25_000

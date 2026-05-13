@@ -131,6 +131,28 @@ class WorkdayScraper(BaseScraper):
 
         return asyncio.run(self._fetch_async(api, base, company, detail_prefix))
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        match = URL_PATTERN.match(self.company_slug.rstrip("/"))
+        if not match:
+            return None
+        company = match.group("company")
+        instance = match.group("instance")
+        site = match.group("site")
+        detail_prefix = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}"
+        jobs = [job.model_copy()]
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_details(client, sem, detail_prefix, jobs)
+            return jobs[0].description
+
+        return asyncio.run(run())
+
     async def _fetch_async(
         self,
         api: str,
@@ -216,7 +238,7 @@ class WorkdayScraper(BaseScraper):
 
             description = _extract_description(jpi)
             if description and not job.description:
-                updates["description"] = description[:10_000]
+                updates["description"] = description[:25_000]
 
             if isinstance(job.location, str) and _LOCATION_ROLLUP_RE.match(job.location):
                 primary = jpi.get("location")

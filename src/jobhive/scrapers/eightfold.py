@@ -92,6 +92,23 @@ class EightfoldScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0"},
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_position_details(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     # --- async pipeline -------------------------------------------------
 
     async def _fetch_async(self) -> list[Job]:
@@ -198,7 +215,7 @@ class EightfoldScraper(BaseScraper):
         data = payload.get("data") or {}
         desc_html = data.get("jobDescription")
         if isinstance(desc_html, str) and desc_html.strip() and not job.description:
-            job.description = _strip_html(desc_html)[:12_000] or None
+            job.description = _strip_html(desc_html)[:25_000] or None
 
     async def _fetch_page_httpx(
         self, client: httpx.AsyncClient, *, start: int

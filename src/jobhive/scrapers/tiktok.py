@@ -154,7 +154,7 @@ class TikTokScraper(BaseScraper):
 
 
 def _compose_description(*sources: object) -> str | None:
-    """Concatenate description-like fields and cap at 10kB.
+    """Concatenate description-like fields and cap at 25k chars.
 
     The body sometimes contains repeated whitespace from the API; we
     collapse runs of blank lines to keep storage tight.
@@ -167,7 +167,7 @@ def _compose_description(*sources: object) -> str | None:
         return None
     text = "\n\n".join(parts)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return text[:10_000] or None
+    return text[:25_000] or None
 
 
 def _extract_label(value: object) -> str | None:

@@ -123,6 +123,21 @@ class GemScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+        posting = {"extId": job.ats_id}
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                await self._enrich_with_details(client, [copy], [posting])
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         async with httpx.AsyncClient(
             timeout=self.timeout, follow_redirects=True,
@@ -274,7 +289,7 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
     """
     desc_html = detail.get("descriptionHtml")
     if isinstance(desc_html, str) and desc_html.strip():
-        job.description = _strip_html(desc_html)[:12_000] or None
+        job.description = _strip_html(desc_html)[:25_000] or None
 
     # Posted date — Gem ships ``firstPublishedTsSec`` (epoch seconds) and
     # ``startDateTs`` (epoch seconds, *future* go-live). Prefer the

@@ -86,6 +86,21 @@ class ManfredScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_description(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         async with httpx.AsyncClient(
             timeout=self.timeout, follow_redirects=True,
@@ -131,7 +146,7 @@ class ManfredScraper(BaseScraper):
             return
         description = _compose_description(detail)
         if description and not job.description:
-            job.description = description[:10_000]
+            job.description = description[:25_000]
 
     async def _fetch_with_retry(
         self, client: httpx.AsyncClient

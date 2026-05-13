@@ -311,7 +311,7 @@ def _clean_description(value: object) -> str | None:
         return None
     if cleaned.lower() in _PLACEHOLDER_DESCRIPTIONS:
         return None
-    return cleaned[:10_000]
+    return cleaned[:25_000]
 
 
 def _parse_iso(value: object) -> datetime | None:

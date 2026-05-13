@@ -165,7 +165,7 @@ def _clean_description(value: object) -> str | None:
     text = html_mod.unescape(value)
     text = _TAG_RE.sub(" ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    return text[:10_000] or None
+    return text[:25_000] or None
 
 
 def _parse_iso(value: object) -> datetime | None:

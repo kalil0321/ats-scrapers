@@ -305,8 +305,8 @@ def _compose_description(hit: dict[str, object]) -> str | None:
     full = "\n\n".join(parts).strip()
     if not full:
         return None
-    # Cap at ~10kB as documented in the Job model
-    return full[:10_000]
+    # Cap at ~25k chars as documented in the Job model
+    return full[:25_000]
 
 
 def _parse_iso(value: object) -> datetime | None:

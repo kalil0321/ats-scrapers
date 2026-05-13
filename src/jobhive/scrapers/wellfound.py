@@ -152,6 +152,23 @@ class WellfoundScraper(BaseScraper):
             )
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        if not self.firecrawl_api_key:
+            raise ScraperError(
+                "Wellfound requires a Firecrawl API key to fetch descriptions."
+            )
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_description(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         seen: set[str] = set()
         jobs: list[Job] = []
@@ -201,7 +218,7 @@ class WellfoundScraper(BaseScraper):
             return
         description = _description_from_markdown(markdown, title=job.title)
         if description and not job.description:
-            job.description = description[:10_000]
+            job.description = description[:25_000]
 
     async def _fetch_role(
         self,

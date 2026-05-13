@@ -573,7 +573,7 @@ def _extract_description(item: dict[str, Any]) -> str | None:
     text = html.unescape(text)
     text = re.sub(r"[ \t\r\f\v]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()[:10_000] or None
+    return text.strip()[:25_000] or None
 
 
 async def _gather_tolerant(

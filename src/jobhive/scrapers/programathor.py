@@ -148,6 +148,26 @@ class ProgramathorScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            client_kwargs: dict[str, Any] = {
+                "timeout": self.timeout,
+                "follow_redirects": True,
+            }
+            if self.proxy_url:
+                client_kwargs["proxy"] = self.proxy_url
+                client_kwargs["verify"] = False
+            async with httpx.AsyncClient(**client_kwargs) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_description(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         seen_ids: set[str] = set()
         jobs: list[Job] = []
@@ -210,7 +230,7 @@ class ProgramathorScraper(BaseScraper):
             return
         description = _extract_description(text)
         if description and not job.description:
-            job.description = description[:10_000]
+            job.description = description[:25_000]
 
     async def _fetch_page(
         self,

@@ -148,10 +148,10 @@ class LeverScraper(BaseScraper):
                     break
 
         # Description: ``descriptionPlain`` is the canonical body. Cap
-        # at 10kB; the schema field allows up to that.
+        # at 25k chars; the schema field allows up to that.
         description = item.get("descriptionPlain") or item.get("description")
         description = (
-            description.strip()[:10_000] or None
+            description.strip()[:25_000] or None
             if isinstance(description, str)
             else None
         )

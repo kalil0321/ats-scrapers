@@ -67,6 +67,21 @@ class BreezyScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=False,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_description(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         # ``follow_redirects=False`` on the client default — the JSON
         # listing endpoint must NOT follow redirects so we can detect
@@ -120,7 +135,7 @@ class BreezyScraper(BaseScraper):
             return
         description = _extract_description(response.text)
         if description:
-            job.description = description[:12_000]
+            job.description = description[:25_000]
 
     async def _fetch_with_retry(
         self, client: httpx.AsyncClient

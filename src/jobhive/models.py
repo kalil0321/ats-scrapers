@@ -441,7 +441,7 @@ class Job(BaseModel):
         default=None,
         description=(
             "Plain-text job description. HTML and markdown are "
-            "stripped to text. Truncated to ~10kB when the source "
+            "stripped to text. Truncated to ~25k chars when the source "
             "exceeds it."
         ),
     )
