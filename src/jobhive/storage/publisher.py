@@ -588,6 +588,7 @@ _COUNTRY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # require the parens too. Case-insensitive: the pipeline lowercases
 # ``location`` during harvest.
 _NUTS_PREFIX_RE = re.compile(r"^\s*([a-z]{2})\s*\(", re.IGNORECASE)
+_TRAILING_ISO_RE = re.compile(r"(?:^|[,\s(/])([a-z]{2})(?:[\s).]*)$", re.IGNORECASE)
 
 # Word-boundary-anchored country needle patterns. Substring matching
 # false-positived on common European place names — e.g. ``"usa"``
@@ -606,6 +607,7 @@ _COUNTRY_PATTERNS_RE: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     )
     for code, needles in _COUNTRY_PATTERNS
 )
+_COUNTRY_CODES = {country_code for country_code, _ in _COUNTRY_PATTERNS}
 
 
 def _country_iso_from_location(loc: object) -> str:
@@ -620,13 +622,19 @@ def _country_iso_from_location(loc: object) -> str:
     """
     if not isinstance(loc, str) or not loc.strip():
         return ""
-    lowered = loc.strip().lower()
+    stripped = loc.strip()
+    lowered = stripped.lower()
     for code, pat in _COUNTRY_PATTERNS_RE:
         if pat.search(lowered):
             return code
-    m = _NUTS_PREFIX_RE.match(loc.strip())
+    m = _NUTS_PREFIX_RE.match(stripped)
     if m:
         return m.group(1).upper()
+    m = _TRAILING_ISO_RE.search(stripped)
+    if m:
+        code = m.group(1).upper()
+        if code in _COUNTRY_CODES:
+            return code
     return ""
 
 

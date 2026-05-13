@@ -14,10 +14,10 @@ each run.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import io
 import json
-import csv
 
 import pandas as pd
 import pytest
@@ -134,10 +134,9 @@ def test_manifest_includes_schema_version_and_columns(ats_csv_dir, fake_r2) -> N
 
 def test_publisher_derives_country_iso_column(ats_csv_dir, fake_r2) -> None:
     gh_csv = ats_csv_dir / "greenhouse" / "jobs.csv"
-    gh_csv.write_text(
-        gh_csv.read_text(encoding="utf-8").replace("Paris", '"Paris, France"'),
-        encoding="utf-8",
-    )
+    df = pd.read_csv(gh_csv)
+    df.loc[df["location"] == "Paris", "location"] = "Paris, France"
+    df.to_csv(gh_csv, index=False)
 
     publisher = DatasetPublisher(fake_r2, write_parquet=True)
     publisher.publish_from_directory(ats_csv_dir)
@@ -147,7 +146,9 @@ def test_publisher_derives_country_iso_column(ats_csv_dir, fake_r2) -> None:
 
     csv_text = fake_r2.uploads["jobhive/v1/greenhouse/jobs.csv"]["data"].decode()
     rows = list(csv.DictReader(io.StringIO(csv_text)))
-    assert rows[0]["country_iso"] == "FR"
+    france_rows = [row for row in rows if row["location"] == "Paris, France"]
+    assert france_rows
+    assert {row["country_iso"] for row in france_rows} == {"FR"}
 
 
 # --- Manifest patch (read-modify-write) -------------------------------------
@@ -739,6 +740,9 @@ def test_country_iso_extracts_common_eu_patterns():
     assert f("Paris, France") == "FR"
     assert f("Wien, Österreich") == "AT"
     assert f("Brussels, Belgium") == "BE"
+    # API-style alpha-2 suffixes (SmartRecruiters/Recruitee style)
+    assert f("Berlin, DE") == "DE"
+    assert f("Paris, FR") == "FR"
 
 
 def test_country_iso_uses_word_boundaries():
@@ -777,6 +781,7 @@ def test_country_iso_uses_word_boundaries():
     assert f("") == ""
     assert f(None) == ""
     assert f("Remote") == ""
+    assert f("Remote, XX") == ""
 
 
 def test_title_core_strips_trailing_parenthesised_tag():
