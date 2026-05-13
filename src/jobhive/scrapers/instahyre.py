@@ -7,7 +7,7 @@ Two-step **JSON-only** flow (no HTML job pages):
    payload and refresh the composed description. Instahyre's public API
    does not expose a separate long-form JD field; we build plain text
    from structured API fields (title, location, keywords, employer
-   metadata).
+   profile fields).
 
 Detail failures keep listing-derived fields — same pattern as BambooHR /
 Rippling enrichment.
