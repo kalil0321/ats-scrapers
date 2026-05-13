@@ -272,3 +272,66 @@ def test_pipeline_writes_full_description_instead_of_preview(
     assert rc == 0
     rows = list(csv.DictReader((tmp_path / "single" / "jobs.csv").open(newline="")))
     assert rows[0]["description"] == long_description
+
+
+def test_description_cache_skips_oversized_previous_csv(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "jobs.csv"
+    path.write_text(
+        "url,title,company,ats_type,ats_id,description\n"
+        "https://example.com/jobs/1,Old,Acme,custom,1,cached\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(runner.DESCRIPTION_CACHE_MAX_BYTES_ENV, "1")
+
+    assert runner._load_description_cache(path) == {}
+
+
+def test_streaming_pipeline_does_not_load_previous_description_cache(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "stream"
+    out_dir.mkdir()
+    out_path = out_dir / "jobs.csv"
+    out_path.write_text(
+        (
+            "url,title,company,ats_type,ats_id,description\n"
+            "https://example.com/jobs/1,Old,Acme,custom,1,cached\n"
+        ),
+        encoding="utf-8",
+    )
+
+    class StreamingScraper:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def fetch_stream(self):
+            yield Job(
+                url="https://example.com/jobs/1",
+                title="Engineer",
+                company="Acme",
+                ats_type=ATSType.CUSTOM,
+                ats_id="1",
+            )
+
+    def fail_load_cache(_path):
+        raise AssertionError("streaming providers must not load description cache")
+
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(runner, "_load_description_cache", fail_load_cache)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "stream",
+        {
+            "scraper": StreamingScraper,
+            "singleton": True,
+            "output": "stream/jobs.csv",
+        },
+    )
+
+    rc = asyncio.run(runner.run("stream", concurrency=1, max_tenants=None, timeout=1))
+
+    assert rc == 0
+    rows = list(csv.DictReader(out_path.open(newline="")))
+    assert rows[0]["description"] == ""

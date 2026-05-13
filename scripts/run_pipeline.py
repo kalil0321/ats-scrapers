@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import csv
 import json
+import os
 import re
 import sys
 import time
@@ -647,6 +648,19 @@ JOB_CSV_FIELDS = [
 
 
 DescriptionCache = dict[tuple[str, str], str]
+DEFAULT_DESCRIPTION_CACHE_MAX_BYTES = 256 * 1024 * 1024
+DESCRIPTION_CACHE_MAX_BYTES_ENV = "JOBHIVE_DESCRIPTION_CACHE_MAX_BYTES"
+
+
+def _description_cache_max_bytes() -> int:
+    raw = os.environ.get(DESCRIPTION_CACHE_MAX_BYTES_ENV)
+    if not raw:
+        return DEFAULT_DESCRIPTION_CACHE_MAX_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_DESCRIPTION_CACHE_MAX_BYTES
+    return max(0, value)
 
 
 def _description_keys(job: Job) -> list[tuple[str, str]]:
@@ -675,6 +689,17 @@ def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
 
 def _load_description_cache(path: Path) -> DescriptionCache:
     if not path.exists():
+        return {}
+    max_bytes = _description_cache_max_bytes()
+    try:
+        size_bytes = path.stat().st_size
+    except OSError:
+        return {}
+    if max_bytes and size_bytes > max_bytes:
+        print(
+            f"[cache] Skipping description cache for {path}: "
+            f"{size_bytes:,} bytes exceeds {max_bytes:,} byte limit"
+        )
         return {}
 
     cache: DescriptionCache = {}
@@ -810,7 +835,8 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
     output_path = DATA_ROOT / cfg["output"]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_output_path = output_path.with_name(f".{output_path.name}.tmp")
-    description_cache = _load_description_cache(output_path)
+    uses_streaming = bool(cfg.get("singleton") and hasattr(cfg["scraper"], "fetch_stream"))
+    description_cache = {} if uses_streaming else _load_description_cache(output_path)
     cache_descriptions = bool(description_cache)
     if description_cache:
         print(f"[{ats}] Loaded {len(description_cache):,} cached description keys")
@@ -829,7 +855,7 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
         # accumulating the full corpus. EURES is the only such ATS
         # today — its ~2.7 M-row pan-EU catalog would peak at ~10 GB
         # RSS in legacy mode, exceeding the VPS RAM budget.
-        if cfg.get("singleton") and hasattr(cfg["scraper"], "fetch_stream"):
+        if uses_streaming:
             scraper = cfg["scraper"](ats, timeout=timeout)
             try:
                 async for job in scraper.fetch_stream():
