@@ -21,10 +21,16 @@ _API_RE = re.compile(r"^https://www\.jobs\.ch/api/v1/public/search")
 
 
 @pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+def _fast_retries(monkeypatch: pytest.MonkeyPatch, httpx_mock) -> None:
     import jobhive.scrapers.jobsch as j
     monkeypatch.setattr(j, "MAX_RETRIES", 1)
     monkeypatch.setattr(j, "RETRY_BASE_DELAY", 0.0)
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.jobs\.ch/(?:de/stellenangebote|en/vacancies)/detail/"),
+        text="<html><body><div class='vacancy-description'>Build Swiss products.</div></body></html>",
+        is_reusable=True,
+        is_optional=True,
+    )
 
 
 def _doc(
@@ -97,6 +103,7 @@ def test_parses_full_doc(httpx_mock) -> None:
     assert j.raw is not None
     assert j.raw["languages"] == ["de", "en"]
     assert j.raw["employment_grades"] == [100]
+    assert j.description == "Build Swiss products."
     # _links.detail_de is preferred over the constructed fallback URL.
     assert str(j.url) == "https://www.jobs.ch/de/stellenangebote/detail/abc-123/"
 

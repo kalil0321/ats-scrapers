@@ -199,6 +199,8 @@ class YCombinatorScraper(BaseScraper):
             if v not in (None, "", []):
                 raw[key] = v
 
+        description = _compose_description(item)
+
         return Job(
             url=job_url,
             title=title,
@@ -217,6 +219,7 @@ class YCombinatorScraper(BaseScraper):
                 item.get("prettyRole") if isinstance(item.get("prettyRole"), str) else None
             ),
             apply_url=apply_url,
+            description=description,
             posted_at=posted_at,
             fetched_at=datetime.now(),
             raw=raw or None,
@@ -434,6 +437,40 @@ def _employment_from_type(raw: object) -> str | None:
     if not isinstance(raw, str):
         return None
     return _TYPE_TO_EMPLOYMENT.get(raw.lower())
+
+
+def _compose_description(item: dict[str, Any]) -> str | None:
+    """Build a plain-text body from YC's embedded posting fields."""
+    parts: list[str] = []
+    for key in (
+        "description",
+        "descriptionPlain",
+        "aboutRole",
+        "responsibilities",
+        "requirements",
+        "companyOneLiner",
+    ):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(_clean_description_text(value))
+        elif isinstance(value, list):
+            cleaned = [
+                _clean_description_text(v)
+                for v in value
+                if isinstance(v, str) and v.strip()
+            ]
+            if cleaned:
+                parts.append("\n".join(cleaned))
+    text = "\n\n".join(p for p in parts if p).strip()
+    return text[:10_000] or None
+
+
+def _clean_description_text(value: str) -> str:
+    text = html.unescape(value)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"[*_`#>]+", "", text)
+    return re.sub(r"[ \t\r\f\v]+", " ", text).strip()
 
 
 _RELATIVE_RE = re.compile(

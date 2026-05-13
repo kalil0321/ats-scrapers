@@ -19,6 +19,8 @@ and ignored.
 from __future__ import annotations
 
 import asyncio
+import html
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -32,10 +34,12 @@ if TYPE_CHECKING:
     from typing import Any
 
 API_URL = "https://www.getmanfred.com/api/v2/public/offers"
+DETAIL_URL_TEMPLATE = "https://www.getmanfred.com/api/v2/public/offers/{offer_id}"
 JOB_URL_TEMPLATE = "https://www.getmanfred.com/job-offers/{slug}"
 DEFAULT_LANG = "EN"
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
+DETAIL_CONCURRENCY = 6
 
 # Manfred's currency field is the human symbol ('€', '$', '£'); map
 # to ISO 4217 codes our Job model expects.
@@ -87,15 +91,47 @@ class ManfredScraper(BaseScraper):
             timeout=self.timeout, follow_redirects=True,
         ) as client:
             offers = await self._fetch_with_retry(client)
-        seen: set[str] = set()
-        jobs: list[Job] = []
-        for item in offers:
-            job = self._parse(item)
-            if job is None or job.ats_id in seen:
-                continue
-            seen.add(job.ats_id)
-            jobs.append(job)
+            seen: set[str] = set()
+            jobs: list[Job] = []
+            for item in offers:
+                job = self._parse(item)
+                if job is None or job.ats_id in seen:
+                    continue
+                seen.add(job.ats_id)
+                jobs.append(job)
+            if jobs:
+                sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+                await asyncio.gather(*(self._enrich_description(client, sem, j) for j in jobs))
         return jobs
+
+    async def _enrich_description(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        offer_id = (job.raw or {}).get("id")
+        if offer_id is None:
+            return
+        url = DETAIL_URL_TEMPLATE.format(offer_id=offer_id)
+        async with sem:
+            try:
+                response = await client.get(
+                    url,
+                    params={"lang": self.lang},
+                    headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+                )
+            except httpx.HTTPError:
+                return
+        if response.status_code != 200:
+            return
+        try:
+            detail = response.json()
+        except ValueError:
+            return
+        description = _compose_description(detail)
+        if description and not job.description:
+            job.description = description[:10_000]
 
     async def _fetch_with_retry(
         self, client: httpx.AsyncClient
@@ -177,6 +213,8 @@ class ManfredScraper(BaseScraper):
         posted_at = _parse_iso(item.get("updatedAt"))
 
         raw: dict[str, Any] = {}
+        if item.get("id") is not None:
+            raw["id"] = item["id"]
         if isinstance(remote_pct, (int, float)):
             raw["remote_percentage"] = remote_pct
         if isinstance(item.get("offerLanguages"), list) and item["offerLanguages"]:
@@ -235,3 +273,42 @@ def _parse_iso(value: object) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _compose_description(item: dict[str, Any]) -> str | None:
+    parts: list[str] = []
+    for key in (
+        "introduction",
+        "whatWillYouDo",
+        "responsibilities",
+        "howWillYouDoIt",
+        "whatOffering",
+        "whereWillDoIt",
+        "whenWillDoIt",
+        "whoWillDoItWith",
+    ):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(_markdown_to_text(value))
+        elif isinstance(value, list):
+            cleaned = [
+                _markdown_to_text(v)
+                for v in value
+                if isinstance(v, str) and v.strip()
+            ]
+            if cleaned:
+                parts.append("\n".join(f"- {v}" for v in cleaned))
+    text = "\n\n".join(p for p in parts if p).strip()
+    return text or None
+
+
+def _markdown_to_text(value: str) -> str:
+    text = html.unescape(value)
+    text = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"[*_`#>]+", "", text)
+    text = re.sub(r"\r\n?", "\n", text)
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()

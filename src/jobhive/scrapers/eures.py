@@ -31,7 +31,9 @@ the publisher's cross-ATS dedup still works.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -498,6 +500,7 @@ class EuresScraper(BaseScraper):
             location=location,
             employment_type=employment_type,
             commitment=commitment,
+            description=_extract_description(item),
             posted_at=posted_at,
             fetched_at=datetime.now(),
             raw=raw or None,
@@ -549,6 +552,28 @@ def _flatten_location(loc_map: dict[str, Any]) -> str | None:
     if regions:
         return f"{country} ({', '.join(regions[:3])})"
     return country
+
+
+def _extract_description(item: dict[str, Any]) -> str | None:
+    value = item.get("description")
+    if not isinstance(value, str) or not value.strip():
+        translations = item.get("translations") or {}
+        if isinstance(translations, dict):
+            for translation in translations.values():
+                if isinstance(translation, dict):
+                    candidate = translation.get("description")
+                    if isinstance(candidate, str) and candidate.strip():
+                        value = candidate
+                        break
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = html.unescape(value)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()[:10_000] or None
 
 
 async def _gather_tolerant(

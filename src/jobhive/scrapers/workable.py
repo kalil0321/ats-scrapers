@@ -19,14 +19,12 @@ Workable rate-limits hard from a single IP — bulk pipeline runs at
 concurrency >2 see 429s on most tenants. The scraper retries 429/5xx
 with exponential backoff (honouring ``Retry-After`` when present); the
 caller should still keep concurrency low (2-4) for full re-scrapes.
-The per-job Markdown fetch is opt-in via
-``JOBHIVE_WORKABLE_FETCH_DESCRIPTIONS=1`` to avoid amplifying the
-rate-limit pressure during default discovery passes.
+The per-job Markdown fetch is best-effort so the listing row survives
+when a detail request is rate-limited or unavailable.
 """
 
 from __future__ import annotations
 
-import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -128,10 +126,7 @@ class WorkableScraper(BaseScraper):
         payload = response.json()
         jobs = [self._parse_job(item) for item in payload.get("jobs", [])]
 
-        # Optional per-job Markdown enrichment for description body.
-        # Default off — Workable rate-limits aggressively, so bulk runs
-        # opt in only when description coverage is wanted.
-        if jobs and os.getenv("JOBHIVE_WORKABLE_FETCH_DESCRIPTIONS"):
+        if jobs:
             self._enrich_descriptions(jobs)
         return jobs
 

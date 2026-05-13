@@ -25,7 +25,6 @@ This scraper uses only the public unauthenticated endpoint.
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -92,14 +91,10 @@ class BreezyScraper(BaseScraper):
                 seen.add(job.ats_id)
                 jobs.append(job)
 
-            # Detail-page enrichment is opt-in. Breezy's edge blocks
-            # bursty traffic with 403s; pulling descriptions for the full
-            # tenant universe needs a slower path (Browserbase or
-            # tightly-rate-limited httpx). Disabled by default so the
-            # listing pass still recovers the full job set.
-            #
-            # Set ``JOBHIVE_BREEZY_FETCH_DESCRIPTIONS=1`` to enable.
-            if jobs and os.getenv("JOBHIVE_BREEZY_FETCH_DESCRIPTIONS"):
+            # Detail-page enrichment is best-effort. Breezy's edge blocks
+            # bursty traffic with 403s, so per-job failures keep the
+            # listing-derived row instead of failing the tenant.
+            if jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_description(client, sem, j) for j in jobs

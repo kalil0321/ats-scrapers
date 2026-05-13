@@ -24,6 +24,7 @@ def _base_item(**overrides):
     base = {
         "id": "abc123",
         "title": "Software Engineer",
+        "description": "<p>Build European services.</p>",
         "employerName": "Acme Corp",
         "locationMap": {},
         "creationDate": 1715000000000,
@@ -37,6 +38,7 @@ def test_real_employer_passes_through_verbatim() -> None:
     job = EuresScraper("eures")._parse(item)
     assert job is not None
     assert job.company == "Acme Corp"
+    assert job.description == "Build European services."
 
 
 def test_french_non_renseigne_kept_verbatim() -> None:

@@ -393,6 +393,7 @@ def test_workday_resolves_n_locations_rollup(httpx_mock) -> None:
         url=detail_url,
         json={
             "jobPostingInfo": {
+                "jobDescription": "<p>Build internal platforms.</p>",
                 "location": "USA - NY - New York",
                 "additionalLocations": ["USA - CA - San Francisco"],
             }
@@ -402,14 +403,47 @@ def test_workday_resolves_n_locations_rollup(httpx_mock) -> None:
     jobs = WorkdayScraper("https://acme.wd1.myworkdayjobs.com/External").fetch()
     by_title = {j.title: j.location for j in jobs}
     assert by_title["Engineer"] == "USA - NY - New York | USA - CA - San Francisco"
-    # Single-location job untouched — no detail fetch should have been issued
-    # for it (httpx_mock would error on un-stubbed requests).
+    by_desc = {j.title: j.description for j in jobs}
+    assert by_desc["Engineer"] == "Build internal platforms."
+    # Single-location job location stays untouched even though the detail
+    # enrichment now also attempts to hydrate descriptions for every row.
     assert by_title["Manager"] == "San Francisco, CA"
 
 
+def test_workday_enriches_description_from_detail_endpoint(httpx_mock) -> None:
+    api = "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs"
+    httpx_mock.add_response(
+        url=api,
+        json={
+            "jobPostings": [
+                {
+                    "title": "Engineer",
+                    "externalPath": "/job/USA/Engineer_R-1",
+                    "locationsText": "New York, NY",
+                    "bulletFields": ["R-1"],
+                },
+            ],
+            "total": 1,
+        },
+    )
+    httpx_mock.add_response(
+        url="https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/job/USA/Engineer_R-1",
+        json={
+            "jobPostingInfo": {
+                "jobDescription": "<div><p>Build <strong>search</strong>.</p></div>",
+            }
+        },
+    )
+
+    jobs = WorkdayScraper("https://acme.wd1.myworkdayjobs.com/External").fetch()
+
+    assert len(jobs) == 1
+    assert jobs[0].description == "Build search ."
+
+
 def test_workday_rollup_resolution_failure_is_silent(httpx_mock) -> None:
-    """If the detail fetch 404s or returns malformed JSON, the original
-    rollup string is kept rather than crashing the whole scrape."""
+    """If the detail fetch 404s or returns malformed JSON, listing fields
+    are kept rather than crashing the whole scrape."""
     api = "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs"
     httpx_mock.add_response(
         url=api,
@@ -432,6 +466,7 @@ def test_workday_rollup_resolution_failure_is_silent(httpx_mock) -> None:
     jobs = WorkdayScraper("https://acme.wd1.myworkdayjobs.com/External").fetch()
     assert len(jobs) == 1
     assert jobs[0].location == "3 Locations"  # original rollup kept
+    assert jobs[0].description is None
 
 
 # --- Avature: covered in test_avature.py ------------------------------------

@@ -15,8 +15,10 @@ the tests focus on:
 
 from __future__ import annotations
 
+import json
 import re
 
+import httpx
 import pytest
 
 from jobhive.exceptions import ScraperError
@@ -145,6 +147,35 @@ def test_parses_jobs_from_firecrawl_markdown(httpx_mock) -> None:
     assert j.salary_max == 370000
     assert j.posted_at is not None
     assert str(j.url) == "https://wellfound.com/jobs/4173486-staff-software-engineer"
+
+
+def test_enriches_description_from_job_page_markdown(httpx_mock) -> None:
+    listing = _markdown_with_jobs([{"id": "1001", "title": "Founding Engineer"}])
+    detail = "\n".join([
+        "# Founding Engineer",
+        "",
+        "Build the core product for startup customers.",
+        "",
+        "You will own backend systems.",
+    ])
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        url = json.loads(request.content)["url"]
+        markdown = detail if "/jobs/1001-" in url else listing
+        return httpx.Response(200, json={"data": {"markdown": markdown}})
+
+    httpx_mock.add_callback(serve, url=_FIRECRAWL_RE, is_reusable=True)
+
+    jobs = WellfoundScraper(
+        "any",
+        firecrawl_api_key="test-key",
+        role_slugs=(),
+    ).fetch()
+
+    assert jobs[0].description == (
+        "Build the core product for startup customers.\n\n"
+        "You will own backend systems."
+    )
 
 
 # --- multi-role fan-out + dedup --------------------------------------------

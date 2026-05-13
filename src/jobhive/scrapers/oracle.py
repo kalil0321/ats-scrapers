@@ -16,10 +16,8 @@ The unauthenticated REST endpoint:
 The companion detail endpoint
 ``/recruitingCEJobRequisitionDetails?finder=ById;Id={id}`` exposes the
 full job description (``ExternalDescriptionStr``) plus the qualifications
-and responsibilities sections. Detail enrichment is opt-in via
-``JOBHIVE_ORACLE_FETCH_DESCRIPTIONS=1`` because Oracle's tenant universe
-runs into hundreds of thousands of jobs — a per-job fan-out makes a
-default scrape impractically slow.
+and responsibilities sections. Detail enrichment is best-effort so
+published rows carry descriptions when Oracle exposes them.
 
 Pass the full base URL (and optionally a site number) as the slug.
 """
@@ -27,7 +25,6 @@ Pass the full base URL (and optionally a site number) as the slug.
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -143,13 +140,7 @@ class OracleScraper(BaseScraper):
                         seen.add(job.ats_id)
                         all_jobs.append(job)
 
-            # Optional per-job detail enrichment. Disabled by default
-            # because Oracle's tenant universe (a few hundred enterprise
-            # tenants × hundreds-to-thousands of reqs each) makes a fan-out
-            # scrape take hours. Toggle with
-            # ``JOBHIVE_ORACLE_FETCH_DESCRIPTIONS=1`` when description
-            # coverage is wanted.
-            if all_jobs and os.getenv("JOBHIVE_ORACLE_FETCH_DESCRIPTIONS"):
+            if all_jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 detail_url = (
                     f"{base}/hcmRestApi/resources/latest/"

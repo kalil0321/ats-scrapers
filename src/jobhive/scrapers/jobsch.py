@@ -40,8 +40,10 @@ Single-source scraper: ``company_slug`` is informational and ignored.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -61,12 +63,23 @@ PER_PAGE = 20  # API hard-caps ``rows`` at 20 (>20 → 422).
 MAX_CONCURRENCY = 4
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 1.5
+DETAIL_CONCURRENCY = 4
 # The API hard-caps deep pagination at start=2000 (==page 100). Any
 # per-query fetch therefore tops out at 2 000 rows.
 MAX_USABLE_OFFSET = 2000
 # Default cap on pages per query — 100 × 20 rows = the API's per-query
 # ceiling. Lower via ``max_pages`` for quick smoke runs.
 DEFAULT_MAX_PAGES = 100
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_META_DESCRIPTION_RE = re.compile(
+    r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\'](?P<content>.*?)["\']',
+    re.IGNORECASE | re.DOTALL,
+)
+_DESCRIPTION_BLOCK_RE = re.compile(
+    r'<(?:div|section|article)[^>]+class=["\'][^"\']*(?:job-description|vacancy-description|description|jobad)[^"\']*["\'][^>]*>(?P<body>.*?)</(?:div|section|article)>',
+    re.IGNORECASE | re.DOTALL,
+)
 
 # Keyword seeds covering DE / FR / IT / EN to defeat the per-query
 # 2 000-row pagination cap. Probed live 2026-05-09: each seed below
@@ -238,6 +251,11 @@ class JobsChScraper(BaseScraper):
             await absorb(first.get("documents") or [])
 
             if total <= PER_PAGE:
+                if jobs:
+                    detail_sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+                    await asyncio.gather(*(
+                        self._enrich_description(client, detail_sem, job) for job in jobs
+                    ))
                 return jobs
 
             usable = min(total, MAX_USABLE_OFFSET)
@@ -258,7 +276,32 @@ class JobsChScraper(BaseScraper):
                 await absorb(payload.get("documents") or [])
 
             await asyncio.gather(*(one(o) for o in offsets))
+            if jobs:
+                detail_sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+                await asyncio.gather(*(
+                    self._enrich_description(client, detail_sem, job) for job in jobs
+                ))
         return jobs
+
+    async def _enrich_description(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        async with sem:
+            try:
+                response = await client.get(
+                    str(job.url),
+                    headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*"},
+                )
+            except httpx.HTTPError:
+                return
+        if response.status_code != 200:
+            return
+        description = _extract_description(response.text)
+        if description and not job.description:
+            job.description = description[:10_000]
 
     async def _fetch_page(
         self,
@@ -406,6 +449,24 @@ def _parse_iso(value: object) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _extract_description(text: str) -> str | None:
+    for pattern in (_DESCRIPTION_BLOCK_RE, _META_DESCRIPTION_RE):
+        match = pattern.search(text)
+        if not match:
+            continue
+        raw = match.groupdict().get("body") or match.groupdict().get("content") or ""
+        cleaned = _strip_html(raw)
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _strip_html(value: str) -> str:
+    text = html.unescape(value)
+    text = _TAG_RE.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _evomi_proxy_url_from_env() -> str | None:

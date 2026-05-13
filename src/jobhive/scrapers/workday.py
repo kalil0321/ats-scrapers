@@ -27,6 +27,7 @@ The ``facets`` field in every response carries each value's true ``count``
 from __future__ import annotations
 
 import asyncio
+import html as html_mod
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -96,6 +97,7 @@ RETRY_BACKOFF = 1.5
 # ``additionalLocations``) to recover the real cities. About 9% of typical
 # Workday rows hit this code path on multi-tenant runs.
 _LOCATION_ROLLUP_RE = re.compile(r"^\s*\d+\s+Locations?\s*$", re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
 
 # Facets we'll try as subdivision dimensions, in priority order. After
 # `jobFamilyGroup` (which usually covers level 1 well), `timeType`
@@ -158,29 +160,32 @@ class WorkdayScraper(BaseScraper):
                 applied_facets={}, absorb=absorb, depth=0,
             )
 
-            await self._resolve_location_rollups(
+            await self._enrich_details(
                 client, sem, detail_prefix, all_jobs,
             )
         return all_jobs
 
-    async def _resolve_location_rollups(
+    async def _enrich_details(
         self,
         client: httpx.AsyncClient,
         sem: asyncio.Semaphore,
         detail_prefix: str,
         jobs: list[Job],
     ) -> None:
-        """Replace 'N Locations' rollup strings with the actual city list.
+        """Best-effort per-job detail hydration.
 
-        The search endpoint returns ``locationsText="2 Locations"`` for any
-        posting that spans multiple offices but does not include the
-        underlying location array in the response. We can recover the real
-        cities from the per-job detail endpoint
-        (``jobPostingInfo.location`` + ``additionalLocations``).
+        The search endpoint intentionally omits full posting bodies, so rows
+        built only from ``jobPostings`` have ``description=None``. The detail
+        endpoint exposes ``jobPostingInfo.jobDescription`` for the same
+        ``externalPath``. It also exposes real locations for search rows whose
+        ``locationsText`` is only a rollup string like ``"2 Locations"``.
+
+        Detail failures stay non-fatal: a blocked/moved single posting should
+        not discard the listing row or the rest of the tenant.
         """
         targets = [
             (i, j) for i, j in enumerate(jobs)
-            if isinstance(j.location, str) and _LOCATION_ROLLUP_RE.match(j.location)
+            if (j.raw or {}).get("externalPath") or _external_path(j.url)
         ]
         if not targets:
             return
@@ -208,12 +213,21 @@ class WorkdayScraper(BaseScraper):
             except ValueError:
                 return
             jpi = payload.get("jobPostingInfo") or {}
-            primary = jpi.get("location")
-            additional = jpi.get("additionalLocations") or []
-            resolved = _format_locations(primary, additional)
-            if resolved:
-                # Job is frozen — rebuild via model_copy.
-                jobs[i] = job.model_copy(update={"location": resolved})
+            updates: dict[str, str] = {}
+
+            description = _extract_description(jpi)
+            if description and not job.description:
+                updates["description"] = description[:10_000]
+
+            if isinstance(job.location, str) and _LOCATION_ROLLUP_RE.match(job.location):
+                primary = jpi.get("location")
+                additional = jpi.get("additionalLocations") or []
+                resolved = _format_locations(primary, additional)
+                if resolved:
+                    updates["location"] = resolved
+
+            if updates:
+                jobs[i] = job.model_copy(update=updates)
 
         await asyncio.gather(*(resolve(i, j) for i, j in targets))
 
@@ -472,6 +486,24 @@ def _format_locations(primary: object, additional: object) -> str | None:
             if isinstance(v, str) and v.strip() and v.strip() not in locs:
                 locs.append(v.strip())
     return " | ".join(locs) if locs else None
+
+
+def _extract_description(job_posting_info: dict[str, Any]) -> str | None:
+    """Return Workday's full posting body as plain text.
+
+    The canonical detail field is ``jobDescription`` and is usually HTML.
+    A few tenants expose closely named fallback fields, so try those before
+    giving up.
+    """
+    for key in ("jobDescription", "externalJobDescription", "description"):
+        value = job_posting_info.get(key)
+        if isinstance(value, str) and value.strip():
+            text = html_mod.unescape(value)
+            text = _TAG_RE.sub(" ", text)
+            text = html_mod.unescape(text)
+            text = re.sub(r"\s+", " ", text).strip()
+            return text or None
+    return None
 
 
 def _pick_subdivision_facet(

@@ -55,8 +55,17 @@ DEFAULT_MAX_PAGES = 200
 MAX_CONCURRENCY = 4
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2.0
+DETAIL_CONCURRENCY = 4
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_META_DESCRIPTION_RE = re.compile(
+    r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\'](?P<content>.*?)["\']',
+    re.IGNORECASE | re.DOTALL,
+)
+_DETAIL_DESCRIPTION_RE = re.compile(
+    r'<(?:div|section|article)[^>]+class=["\'][^"\']*(?:job-description|description|job-detail)[^"\']*["\'][^>]*>(?P<body>.*?)</(?:div|section|article)>',
+    re.IGNORECASE | re.DOTALL,
+)
 _JOB_LINK_RE = re.compile(r'href="(/jobs/(?P<id>\d+)-[a-z0-9-]+)"')
 # Each card is wrapped in `<div class="cell-list ">…</div>` containing
 # one anchor with the job link. We anchor the regex on the cell start
@@ -180,7 +189,26 @@ class ProgramathorScraper(BaseScraper):
                 else:
                     consecutive_empty = 0
                 page += 1
+            if jobs:
+                detail_sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+                await asyncio.gather(*(
+                    self._enrich_description(client, detail_sem, job) for job in jobs
+                ))
         return jobs
+
+    async def _enrich_description(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        try:
+            text = await self._request_html(client, sem, str(job.url))
+        except ScraperError:
+            return
+        description = _extract_description(text)
+        if description and not job.description:
+            job.description = description[:10_000]
 
     async def _fetch_page(
         self,
@@ -331,6 +359,18 @@ def _strip_html(text: str) -> str:
     cleaned = _TAG_RE.sub(" ", text)
     cleaned = html.unescape(cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _extract_description(text: str) -> str | None:
+    for pattern in (_DETAIL_DESCRIPTION_RE, _META_DESCRIPTION_RE):
+        match = pattern.search(text)
+        if not match:
+            continue
+        raw = match.groupdict().get("body") or match.groupdict().get("content") or ""
+        cleaned = _strip_html(raw)
+        if cleaned:
+            return cleaned
+    return None
 
 
 def _normalize_location(raw: str) -> str | None:

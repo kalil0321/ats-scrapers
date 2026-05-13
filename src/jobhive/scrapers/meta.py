@@ -11,8 +11,8 @@ bypasses Meta's bot-detection without a paid browser-as-a-service.
 When the package isn't installed the scraper logs a warning and
 returns ``[]`` so the rest of the publish pipeline keeps moving.
 
-Listings only — per-job descriptions would need a second pass (one
-navigation per job) and aren't worth the wall-clock for v1.
+GraphQL listing payloads sometimes include description-like fields; when
+present, the scraper carries them into ``Job.description``.
 """
 
 from __future__ import annotations
@@ -111,6 +111,7 @@ class MetaScraper(BaseScraper):
                         location=self._format_locations(entry.get("locations")),
                         team=self._first(entry.get("teams")),
                         department=self._first(entry.get("sub_teams")),
+                        description=self._description(entry),
                         fetched_at=fetched_at,
                         raw=entry,
                     )
@@ -157,6 +158,27 @@ class MetaScraper(BaseScraper):
         if isinstance(value, str):
             return value
         return None
+
+    @staticmethod
+    def _description(entry: dict[str, Any]) -> str | None:
+        parts: list[str] = []
+        for key in (
+            "description",
+            "description_plain",
+            "descriptionPlain",
+            "responsibilities",
+            "minimum_qualifications",
+            "preferred_qualifications",
+        ):
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+            elif isinstance(value, list):
+                items = [v.strip() for v in value if isinstance(v, str) and v.strip()]
+                if items:
+                    parts.append("\n".join(items))
+        text = "\n\n".join(parts).strip()
+        return text[:10_000] or None
 
 
 __all__ = ["MetaScraper"]

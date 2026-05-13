@@ -41,6 +41,7 @@ publisher's cross-ATS dedup still works.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import random
 from datetime import datetime
@@ -59,6 +60,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 API_URL = "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobs"
+DETAIL_URL_TEMPLATE = (
+    "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobdetails/{encoded_ref}"
+)
 API_KEY = "jobboerse-jobsuche"  # Public key shared by the official frontend.
 PAGE_SIZE = 100
 PAGE_LIMIT = 100  # size × page caps at 10,000 → max page=100 at size=100.
@@ -206,6 +210,11 @@ class BundesagenturScraper(BaseScraper):
                         continue
                     seen.add(job.ats_id)
                     new_jobs.append(job)
+            await asyncio.gather(*(
+                self._enrich_description(client, sem, job)
+                for job in new_jobs
+                if not job.description
+            ))
             if on_job is not None:
                 for job in new_jobs:
                     await on_job(job)
@@ -218,6 +227,38 @@ class BundesagenturScraper(BaseScraper):
                 client, sem, base_params={}, depth=0, absorb=absorb,
             )
         return all_jobs
+
+    async def _enrich_description(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        if not job.ats_id:
+            return
+        encoded = base64.b64encode(job.ats_id.encode()).decode()
+        url = DETAIL_URL_TEMPLATE.format(encoded_ref=encoded)
+        async with sem:
+            try:
+                response = await client.get(
+                    url,
+                    headers={
+                        "X-API-Key": API_KEY,
+                        "User-Agent": "Mozilla/5.0",
+                        "Accept": "application/json",
+                    },
+                )
+            except httpx.HTTPError:
+                return
+        if response.status_code != 200:
+            return
+        try:
+            detail = response.json()
+        except ValueError:
+            return
+        description = detail.get("stellenangebotsBeschreibung")
+        if isinstance(description, str) and description.strip():
+            job.description = description.strip()[:10_000]
 
     async def _exhaust_query(
         self,
@@ -504,6 +545,12 @@ class BundesagenturScraper(BaseScraper):
             commitment=commitment,
             apply_url=apply_url,
             requisition_id=item.get("hashId") or None,
+            description=(
+                item.get("stellenangebotsBeschreibung").strip()[:10_000]
+                if isinstance(item.get("stellenangebotsBeschreibung"), str)
+                and item.get("stellenangebotsBeschreibung").strip()
+                else None
+            ),
             posted_at=_parse_iso(item.get("eintrittsdatum") or item.get("aktuelleVeroeffentlichungsdatum")),
             fetched_at=datetime.now(),
             raw=raw or None,

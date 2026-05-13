@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 
 API_ROOT = "https://www.wanted.co.kr"
 JOBS_PATH = "/api/v4/jobs"
+DETAIL_PATH_TEMPLATE = "/api/v4/jobs/{job_id}"
 PER_PAGE = 100  # API hard-caps limit at 100 (>100 → 422).
 MAX_CONCURRENCY = 4
 MAX_RETRIES = 4
@@ -116,7 +117,27 @@ class WantedScraper(BaseScraper):
                     )
 
             await asyncio.gather(*(per_country(cc) for cc in self.country_codes))
+            if jobs:
+                await asyncio.gather(*(self._enrich_description(client, sem, j) for j in jobs))
         return jobs
+
+    async def _enrich_description(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        if not job.ats_id:
+            return
+        url = f"{API_ROOT}{DETAIL_PATH_TEMPLATE.format(job_id=job.ats_id)}"
+        try:
+            payload = await self._request_json(client, sem, url)
+        except ScraperError:
+            return
+        detail = ((payload.get("job") or {}).get("detail") or {})
+        description = _compose_description(detail)
+        if description and not job.description:
+            job.description = description[:10_000]
 
     # --- HTTP layer ---------------------------------------------------------
 
@@ -265,3 +286,20 @@ def _to_int(value: object) -> int | None:
     if isinstance(value, str) and value.isdigit():
         return int(value)
     return None
+
+
+def _compose_description(detail: dict[str, Any]) -> str | None:
+    parts: list[str] = []
+    for key in (
+        "intro",
+        "main_tasks",
+        "requirements",
+        "preferred_points",
+        "benefits",
+        "hire_round",
+    ):
+        value = detail.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    text = "\n\n".join(parts).strip()
+    return text or None
