@@ -140,7 +140,7 @@ def test_pipeline_reuses_previous_description_without_refetching(
             self.include_descriptions = True
 
         def fetch(self):
-            assert self.include_descriptions is False
+            assert self.include_descriptions is True
             return [
                 Job(
                     url="https://example.com/jobs/1",
@@ -199,7 +199,7 @@ def test_pipeline_fetches_missing_description_after_cache_lookup(
             self.include_descriptions = True
 
         def fetch(self):
-            assert self.include_descriptions is False
+            assert self.include_descriptions is True
             return [
                 Job(
                     url="https://example.com/jobs/2",

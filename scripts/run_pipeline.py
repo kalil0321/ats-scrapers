@@ -880,7 +880,6 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
     tmp_output_path = output_path.with_name(f".{output_path.name}.tmp")
     uses_streaming = bool(cfg.get("singleton") and hasattr(cfg["scraper"], "fetch_stream"))
     description_cache = _load_description_cache(output_path)
-    cache_descriptions = bool(description_cache.count)
     if description_cache.count:
         print(f"[{ats}] Loaded {description_cache.count:,} cached description keys")
     seen_keys: set[tuple[str, str]] = set()  # (company, ats_id) for cross-tenant dedup
@@ -900,7 +899,6 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
         # RSS in legacy mode, exceeding the VPS RAM budget.
         if uses_streaming:
             scraper = cfg["scraper"](ats, timeout=timeout)
-            scraper.include_descriptions = not cache_descriptions
             try:
                 async for job in scraper.fetch_stream():
                     await _ensure_description(scraper, job, description_cache)
@@ -930,7 +928,6 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                         slug,
                         kw,
                         timeout,
-                        include_descriptions=not cache_descriptions,
                     )
                 if err == "not_found":
                     counts["not_found"] += 1
