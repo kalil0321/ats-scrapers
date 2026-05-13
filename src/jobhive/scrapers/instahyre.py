@@ -1,4 +1,17 @@
-"""Instahyre — India-focused direct employer hiring platform."""
+"""Instahyre — India-focused direct employer hiring platform.
+
+Two-step **JSON-only** flow (no HTML job pages):
+
+1. Paginate ``GET /api/v1/job_search`` for listing objects.
+2. Best-effort ``GET /api/v1/job_search/{id}`` per job to re-validate the
+   payload and refresh the composed description. Instahyre's public API
+   does not expose a separate long-form JD field; we build plain text
+   from structured API fields (title, location, keywords, employer
+   metadata).
+
+Detail failures keep listing-derived fields — same pattern as BambooHR /
+Rippling enrichment.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +33,15 @@ DEFAULT_PAGE_SIZE = 20
 DEFAULT_MAX_PAGES = 100
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
+DETAIL_CONCURRENCY = 8
+
+
+def _request_headers() -> dict[str, str]:
+    return {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+        "Referer": "https://www.instahyre.com/search-jobs/",
+    }
 
 
 @ScraperRegistry.register(ATSType.INSTAHYRE)
@@ -35,10 +57,12 @@ class InstahyreScraper(BaseScraper):
         timeout: float = 30.0,
         page_size: int = DEFAULT_PAGE_SIZE,
         max_pages: int = DEFAULT_MAX_PAGES,
+        detail_concurrency: int = DETAIL_CONCURRENCY,
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
         self.page_size = page_size
         self.max_pages = max_pages
+        self.detail_concurrency = detail_concurrency
 
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
@@ -56,6 +80,11 @@ class InstahyreScraper(BaseScraper):
                     if page == 0:
                         raise
                     break
+                if not isinstance(payload, dict):
+                    raise ScraperError(
+                        "Instahyre job_search returned non-object JSON "
+                        f"at offset={page * self.page_size}"
+                    )
                 items = payload.get("objects") or []
                 if not items:
                     break
@@ -69,6 +98,13 @@ class InstahyreScraper(BaseScraper):
                     new_count += 1
                 if new_count == 0 or len(items) < self.page_size:
                     break
+
+            if jobs:
+                sem = asyncio.Semaphore(self.detail_concurrency)
+                await asyncio.gather(*(
+                    self._enrich_from_detail_api(client, sem, job)
+                    for job in jobs
+                ))
         return jobs
 
     async def _fetch_page(
@@ -90,11 +126,7 @@ class InstahyreScraper(BaseScraper):
                 response = await client.get(
                     API_URL,
                     params=params,
-                    headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Accept": "application/json",
-                        "Referer": "https://www.instahyre.com/search-jobs/",
-                    },
+                    headers=_request_headers(),
                 )
             except httpx.HTTPError as exc:
                 last_exc = exc
@@ -106,11 +138,16 @@ class InstahyreScraper(BaseScraper):
                 continue
             if response.status_code == 200:
                 try:
-                    return response.json()
+                    data = response.json()
                 except ValueError as exc:
                     raise ScraperError(
                         f"Instahyre returned non-JSON at offset={offset}: {exc}"
                     ) from exc
+                if not isinstance(data, dict):
+                    raise ScraperError(
+                        f"Instahyre job_search JSON was not an object at offset={offset}"
+                    )
+                return data
             if response.status_code in (429,) or 500 <= response.status_code < 600:
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
@@ -125,6 +162,55 @@ class InstahyreScraper(BaseScraper):
         raise ScraperError(
             f"Instahyre exhausted retries at offset={offset}: {last_exc}"
         )
+
+    async def _enrich_from_detail_api(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        if not job.ats_id:
+            return
+        detail = await self._fetch_detail_json(client, sem, job.ats_id)
+        if detail is None:
+            return
+        if str(detail.get("id")) != job.ats_id:
+            return
+        composed = _compose_description(detail)
+        if composed:
+            job.description = composed
+        loc = _format_location(detail.get("locations"))
+        if loc:
+            job.location = loc
+
+    async def _fetch_detail_json(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        job_id: str,
+    ) -> dict[str, Any] | None:
+        url = f"{API_URL}/{job_id}"
+        async with sem:
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    response = await client.get(url, headers=_request_headers())
+                except httpx.HTTPError:
+                    if attempt == MAX_RETRIES:
+                        return None
+                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
+                    continue
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                    except ValueError:
+                        return None
+                    return data if isinstance(data, dict) else None
+                if response.status_code in (429,) or 500 <= response.status_code < 600:
+                    if attempt == MAX_RETRIES:
+                        return None
+                    await asyncio.sleep(RETRY_BASE_DELAY * (2**attempt))
+                    continue
+                return None
 
     def _parse(self, item: dict[str, Any]) -> Job | None:
         raw_id = item.get("id")
@@ -158,10 +244,42 @@ class InstahyreScraper(BaseScraper):
             ats_type=ATSType.INSTAHYRE,
             ats_id=str(raw_id),
             location=_format_location(item.get("locations")),
-            description=employer.get("instahyre_note") or None,
+            description=_compose_description(item),
             fetched_at=datetime.now(),
             raw=raw or None,
         )
+
+
+def _compose_description(item: dict[str, Any]) -> str | None:
+    """Plain-text body from Instahyre JSON fields only (no HTML)."""
+    parts: list[str] = []
+    title = (item.get("title") or item.get("candidate_title") or "").strip()
+    if title:
+        parts.append(title)
+    loc = _format_location(item.get("locations"))
+    if loc:
+        parts.append(f"Location: {loc}")
+    keywords = item.get("keywords")
+    if isinstance(keywords, list) and keywords:
+        flat = ", ".join(
+            str(k).strip() for k in keywords if k and str(k).strip()
+        )
+        if flat:
+            parts.append(f"Skills: {flat}")
+    employer = item.get("employer") or {}
+    company = (employer.get("company_name") or "").strip()
+    tagline = (employer.get("company_tagline") or "").strip()
+    if company and tagline:
+        parts.append(f"{company} — {tagline}")
+    elif company or tagline:
+        parts.append(company or tagline)
+    note = (employer.get("instahyre_note") or "").strip()
+    if note:
+        parts.append(f"About the company: {note}")
+    if not parts:
+        return None
+    text = "\n\n".join(parts)
+    return text[:10_000] if text else None
 
 
 def _format_location(value: object) -> str | None:
