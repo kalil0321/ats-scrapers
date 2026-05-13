@@ -958,8 +958,8 @@ def _phase2_fuzzy_drops(
 
 
 def _enrich_lazy(lf: pl.LazyFrame) -> pl.LazyFrame:
-    """Add ``is_remote`` / ``salary_min`` / ``salary_max`` columns when
-    they aren't already present on the input.
+    """Add ``is_remote`` / ``salary_min`` / ``salary_max`` / ``country_iso``
+    columns when they aren't already present on the input.
 
     Implemented as polars expressions whenever possible so the lazy
     chain stays streamable through ``sink_csv``. ``is_remote`` reads
@@ -968,11 +968,14 @@ def _enrich_lazy(lf: pl.LazyFrame) -> pl.LazyFrame:
     optional, so a deploy that has narrowed the heuristic to title-only
     (no ``ONSITE_KEYWORDS`` exported) still gets a usable column.
 
-    ``salary_summary`` parsing is the only path that has to go through
-    a Python callback (``map_elements``); polars' streaming engine
+    ``salary_summary`` and ``country_iso`` parsing both go through a
+    Python callback (``map_elements``); polars' streaming engine
     doesn't run user functions, so the lazy chain falls back to the
-    eager engine for that ATS slice (rare — most scrapers populate
-    ``salary_min`` / ``salary_max`` upstream and skip this branch).
+    eager engine for an ATS slice that needs either. The country
+    extractor was already used internally for Pass 1 dedup
+    (``_country_iso_from_location``); exposing it as a public column
+    means downstream consumers (D1 sync, R2 parquet readers) can
+    filter / facet by ISO code without re-parsing the location string.
     """
     schema_names = lf.collect_schema().names()
 
@@ -992,6 +995,13 @@ def _enrich_lazy(lf: pl.LazyFrame) -> pl.LazyFrame:
                 pl.col("_salary_parsed").struct.field("max").alias("salary_max"),
             )
             .drop("_salary_parsed")
+        )
+
+    if "location" in schema_names and "country_iso" not in schema_names:
+        lf = lf.with_columns(
+            pl.col("location")
+            .map_elements(_country_iso_from_location, return_dtype=pl.String)
+            .alias("country_iso")
         )
 
     return lf

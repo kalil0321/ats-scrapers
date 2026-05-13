@@ -15,7 +15,9 @@ each run.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import csv
 
 import pandas as pd
 import pytest
@@ -128,6 +130,24 @@ def test_manifest_includes_schema_version_and_columns(ats_csv_dir, fake_r2) -> N
     manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
     assert manifest["stats"]["schema_version"] == "2.0"
     assert "schema_columns" in manifest["stats"]
+
+
+def test_publisher_derives_country_iso_column(ats_csv_dir, fake_r2) -> None:
+    gh_csv = ats_csv_dir / "greenhouse" / "jobs.csv"
+    gh_csv.write_text(
+        gh_csv.read_text(encoding="utf-8").replace("Paris", '"Paris, France"'),
+        encoding="utf-8",
+    )
+
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    assert "country_iso" in manifest["stats"]["schema_columns"]
+
+    csv_text = fake_r2.uploads["jobhive/v1/greenhouse/jobs.csv"]["data"].decode()
+    rows = list(csv.DictReader(io.StringIO(csv_text)))
+    assert rows[0]["country_iso"] == "FR"
 
 
 # --- Manifest patch (read-modify-write) -------------------------------------
