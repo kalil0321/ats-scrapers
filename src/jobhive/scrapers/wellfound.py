@@ -198,7 +198,7 @@ class WellfoundScraper(BaseScraper):
 
             tasks = [fetch_overall()] + [per_role(s) for s in self.role_slugs]
             await asyncio.gather(*tasks)
-            if jobs:
+            if self.include_descriptions and jobs:
                 await asyncio.gather(*(
                     self._enrich_description(client, sem, job) for job in jobs
                 ))

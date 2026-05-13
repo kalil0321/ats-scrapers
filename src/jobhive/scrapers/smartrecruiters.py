@@ -121,7 +121,7 @@ class SmartRecruitersScraper(BaseScraper):
                     break
                 offset += PAGE_LIMIT
 
-            if all_jobs:
+            if self.include_descriptions and all_jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_detail(client, sem, j) for j in all_jobs

@@ -144,7 +144,7 @@ class GemScraper(BaseScraper):
         ) as client:
             postings = await self._fetch_list(client)
             jobs = [self._parse_job(item) for item in postings]
-            if jobs:
+            if self.include_descriptions and jobs:
                 await self._enrich_with_details(client, jobs, postings)
             return jobs
 

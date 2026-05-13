@@ -108,7 +108,7 @@ class GoogleScraper(BaseScraper):
 
             # Per-job detail enrichment: pull description, location, team
             # from each job's HTML detail page. Best-effort.
-            if all_jobs:
+            if self.include_descriptions and all_jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_detail(client, sem, j) for j in all_jobs

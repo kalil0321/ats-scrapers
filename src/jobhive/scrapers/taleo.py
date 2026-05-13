@@ -119,7 +119,7 @@ class TaleoScraper(BaseScraper):
         ) as client:
             html_text = await self._fetch_with_retry(client, url)
             jobs = self._parse_listing(html_text, base_url=url)
-            if jobs:
+            if self.include_descriptions and jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_detail(client, sem, j) for j in jobs

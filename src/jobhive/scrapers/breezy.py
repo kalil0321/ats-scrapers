@@ -109,7 +109,7 @@ class BreezyScraper(BaseScraper):
             # Detail-page enrichment is best-effort. Breezy's edge blocks
             # bursty traffic with 403s, so per-job failures keep the
             # listing-derived row instead of failing the tenant.
-            if jobs:
+            if self.include_descriptions and jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_description(client, sem, j) for j in jobs

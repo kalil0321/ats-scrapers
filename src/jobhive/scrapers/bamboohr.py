@@ -152,7 +152,7 @@ class BambooHRScraper(BaseScraper):
         ) as client:
             html = await self._fetch_widget(client)
             jobs = self._parse_widget(html)
-            if jobs:
+            if self.include_descriptions and jobs:
                 await self._enrich_from_detail_api(client, jobs)
             return jobs
 

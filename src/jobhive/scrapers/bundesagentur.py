@@ -223,11 +223,12 @@ class BundesagenturScraper(BaseScraper):
                         continue
                     seen.add(job.ats_id)
                     new_jobs.append(job)
-            await asyncio.gather(*(
-                self._enrich_description(client, sem, job)
-                for job in new_jobs
-                if not job.description
-            ))
+            if self.include_descriptions:
+                await asyncio.gather(*(
+                    self._enrich_description(client, sem, job)
+                    for job in new_jobs
+                    if not job.description
+                ))
             if on_job is not None:
                 for job in new_jobs:
                     await on_job(job)

@@ -22,7 +22,9 @@ import asyncio
 import csv
 import json
 import re
+import sqlite3
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -79,6 +81,7 @@ from jobhive.scrapers import (
     YCombinatorScraper,
     iCIMSScraper,
 )
+from jobhive.scrapers.base import BaseScraper
 
 
 def _slug_col(row: dict[str, Any]) -> str | None:
@@ -645,6 +648,154 @@ JOB_CSV_FIELDS = [
 ]
 
 
+class DescriptionCache:
+    """Disk-backed description cache built from the previous jobs CSV."""
+
+    def __init__(self) -> None:
+        self.conn: sqlite3.Connection | None = None
+        with tempfile.NamedTemporaryFile(
+            prefix="jobhive-description-cache-",
+            suffix=".sqlite3",
+            delete=False,
+        ) as tmp:
+            self.path = Path(tmp.name)
+        try:
+            self.conn = sqlite3.connect(self.path)
+            self.conn.execute("PRAGMA journal_mode=OFF")
+            self.conn.execute("PRAGMA synchronous=OFF")
+            self.conn.execute("PRAGMA temp_store=MEMORY")
+            self.conn.execute(
+                """
+                CREATE TABLE descriptions (
+                    kind TEXT NOT NULL,
+                    cache_key TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    PRIMARY KEY (kind, cache_key)
+                )
+                """
+            )
+        except Exception:
+            if self.conn is not None:
+                self.conn.close()
+            self.path.unlink(missing_ok=True)
+            raise
+        self.count = 0
+
+    def close(self) -> None:
+        if self.conn is not None:
+            self.conn.close()
+            self.conn = None
+        self.path.unlink(missing_ok=True)
+
+    def load_csv(self, path: Path) -> None:
+        if not path.exists():
+            return
+
+        batch: list[tuple[str, str, str]] = []
+        try:
+            with path.open(newline="") as fh:
+                for row in csv.DictReader(fh):
+                    description = (row.get("description") or "").strip()
+                    if not description:
+                        continue
+                    for key in _row_description_keys(row):
+                        batch.append((*key, description))
+                    if len(batch) >= 2_000:
+                        self._insert_many(batch)
+                        batch.clear()
+                if batch:
+                    self._insert_many(batch)
+        except (OSError, csv.Error, sqlite3.Error):
+            self.conn.execute("DELETE FROM descriptions")
+            self.conn.commit()
+        self.count = self.conn.execute(
+            "SELECT COUNT(*) FROM descriptions"
+        ).fetchone()[0]
+
+    def _insert_many(self, rows: list[tuple[str, str, str]]) -> int:
+        cur = self.conn.executemany(
+            """
+            INSERT OR IGNORE INTO descriptions (kind, cache_key, description)
+            VALUES (?, ?, ?)
+            """,
+            rows,
+        )
+        self.conn.commit()
+        return cur.rowcount
+
+    def get(self, job: Job) -> str | None:
+        for kind, key in _description_keys(job):
+            row = self.conn.execute(
+                """
+                SELECT description FROM descriptions
+                WHERE kind = ? AND cache_key = ?
+                """,
+                (kind, key),
+            ).fetchone()
+            if row:
+                return row[0]
+        return None
+
+    def set(self, job: Job, description: str) -> None:
+        rows = [(*key, description) for key in _description_keys(job)]
+        if rows:
+            self.count += self._insert_many(rows)
+
+
+def _description_keys(job: Job) -> list[tuple[str, str]]:
+    keys: list[tuple[str, str]] = []
+    company = (job.company or "").strip()
+    ats_id = (job.ats_id or "").strip()
+    if company and ats_id:
+        keys.append(("company_ats_id", f"{company}\0{ats_id}"))
+    url = str(job.url).strip()
+    if url:
+        keys.append(("url", url))
+    return keys
+
+
+def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
+    keys: list[tuple[str, str]] = []
+    company = (row.get("company") or "").strip()
+    ats_id = (row.get("ats_id") or "").strip()
+    if company and ats_id:
+        keys.append(("company_ats_id", f"{company}\0{ats_id}"))
+    url = (row.get("url") or "").strip()
+    if url:
+        keys.append(("url", url))
+    return keys
+
+
+def _load_description_cache(path: Path) -> DescriptionCache:
+    cache = DescriptionCache()
+    cache.load_csv(path)
+    return cache
+
+
+def _cached_description(job: Job, cache: DescriptionCache) -> str | None:
+    return cache.get(job)
+
+
+async def _ensure_description(
+    scraper: BaseScraper,
+    job: Job,
+    cache: DescriptionCache,
+) -> None:
+    cached = _cached_description(job, cache)
+    if cached:
+        job.description = cached
+        return
+    if job.description:
+        return
+    get_description = getattr(scraper, "get_description", None)
+    if get_description is None:
+        return
+    description = await asyncio.to_thread(get_description, job)
+    if description:
+        job.description = description[:25_000]
+        cache.set(job, job.description)
+
+
 def _job_to_row(job: Job) -> dict[str, Any]:
     """Flatten a Job to CSV-friendly fields. ``raw`` is JSON-serialized."""
     raw_json = ""
@@ -669,7 +820,7 @@ def _job_to_row(job: Job) -> dict[str, Any]:
         "employment_type": job.employment_type or "",
         "department": job.department or "",
         "team": job.team or "",
-        "description": (job.description or "")[:500].replace("\n", " "),
+        "description": (job.description or "")[:25_000].replace("\n", " "),
         "posted_at": job.posted_at.isoformat() if job.posted_at else "",
         "requisition_id": job.requisition_id or "",
         "apply_url": str(job.apply_url) if job.apply_url else "",
@@ -678,20 +829,29 @@ def _job_to_row(job: Job) -> dict[str, Any]:
     }
 
 
-async def _run_scraper(scraper_cls, slug, kwargs=None, timeout=30) -> tuple[str, list[Job], str | None]:
-    """Run one scraper in a thread (most are sync). Returns (slug, jobs, error_or_None)."""
+async def _run_scraper(
+    scraper_cls,
+    slug,
+    kwargs=None,
+    timeout=30,
+    *,
+    include_descriptions: bool = True,
+) -> tuple[str, BaseScraper | None, list[Job], str | None]:
+    """Run one scraper in a thread (most are sync)."""
     extra = kwargs or {}
 
-    def _run() -> list[Job]:
-        return scraper_cls(slug, timeout=timeout, **extra).fetch()
+    def _run() -> tuple[BaseScraper, list[Job]]:
+        scraper = scraper_cls(slug, timeout=timeout, **extra)
+        scraper.include_descriptions = include_descriptions
+        return scraper, scraper.fetch()
 
     try:
-        jobs = await asyncio.to_thread(_run)
-        return slug, jobs, None
+        scraper, jobs = await asyncio.to_thread(_run)
+        return slug, scraper, jobs, None
     except CompanyNotFoundError:
-        return slug, [], "not_found"
+        return slug, None, [], "not_found"
     except Exception as exc:
-        return slug, [], f"{type(exc).__name__}: {str(exc)[:120]}"
+        return slug, None, [], f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
 async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: float) -> int:
@@ -727,112 +887,127 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
     output_path = DATA_ROOT / cfg["output"]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_output_path = output_path.with_name(f".{output_path.name}.tmp")
+    uses_streaming = bool(cfg.get("singleton") and hasattr(cfg["scraper"], "fetch_stream"))
+    description_cache = _load_description_cache(output_path)
+    if description_cache.count:
+        print(f"[{ats}] Loaded {description_cache.count:,} cached description keys")
     seen_keys: set[tuple[str, str]] = set()  # (company, ats_id) for cross-tenant dedup
 
     t0 = time.time()
-    with tmp_output_path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=JOB_CSV_FIELDS)
-        writer.writeheader()
+    try:
+        with tmp_output_path.open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=JOB_CSV_FIELDS)
+            writer.writeheader()
 
-        # ---- Streaming path: scrapers that would otherwise load >5 GB
-        # of Job objects into RAM expose a ``fetch_stream()`` async
-        # generator. We iterate it directly and write each job to disk
-        # as it arrives, keeping the in-flight footprint flat (~200 MB
-        # for the seen-set + a bounded asyncio.Queue) instead of
-        # accumulating the full corpus. EURES is the only such ATS
-        # today — its ~2.7 M-row pan-EU catalog would peak at ~10 GB
-        # RSS in legacy mode, exceeding the VPS RAM budget.
-        if cfg.get("singleton") and hasattr(cfg["scraper"], "fetch_stream"):
-            scraper = cfg["scraper"](ats, timeout=timeout)
-            try:
-                async for job in scraper.fetch_stream():
-                    writer.writerow(_job_to_row(job))
-                    counts["jobs"] += 1
-                    # Periodic flush so the file is consultable while
-                    # the long-running scrape is still in flight.
-                    if counts["jobs"] % 10_000 == 0:
-                        f.flush()
-                        elapsed = time.time() - t0
-                        print(
-                            f"  [{ats}] streamed {counts['jobs']:,} jobs in "
-                            f"{elapsed:.0f}s",
+            # ---- Streaming path: scrapers that would otherwise load >5 GB
+            # of Job objects into RAM expose a ``fetch_stream()`` async
+            # generator. We iterate it directly and write each job to disk
+            # as it arrives, keeping the in-flight footprint flat (~200 MB
+            # for the seen-set + a bounded asyncio.Queue) instead of
+            # accumulating the full corpus. EURES is the only such ATS
+            # today — its ~2.7 M-row pan-EU catalog would peak at ~10 GB
+            # RSS in legacy mode, exceeding the VPS RAM budget.
+            if uses_streaming:
+                scraper = cfg["scraper"](ats, timeout=timeout)
+                try:
+                    async for job in scraper.fetch_stream():
+                        await _ensure_description(scraper, job, description_cache)
+                        writer.writerow(_job_to_row(job))
+                        counts["jobs"] += 1
+                        # Periodic flush so the file is consultable while
+                        # the long-running scrape is still in flight.
+                        if counts["jobs"] % 10_000 == 0:
+                            f.flush()
+                            elapsed = time.time() - t0
+                            print(
+                                f"  [{ats}] streamed {counts['jobs']:,} jobs in "
+                                f"{elapsed:.0f}s",
+                            )
+                    counts["success"] = 1
+                except CompanyNotFoundError:
+                    counts["not_found"] = 1
+                except Exception as exc:
+                    counts["error"] = 1
+                    print(f"  [{ats}] streaming failed: {type(exc).__name__}: "
+                          f"{str(exc)[:200]}")
+            else:
+                async def task(slug: str, kw: dict[str, Any]) -> None:
+                    async with sem:
+                        _, scraper, jobs, err = await _run_scraper(
+                            cfg["scraper"],
+                            slug,
+                            kw,
+                            timeout,
                         )
-                counts["success"] = 1
-            except CompanyNotFoundError:
-                counts["not_found"] = 1
-            except Exception as exc:
-                counts["error"] = 1
-                print(f"  [{ats}] streaming failed: {type(exc).__name__}: "
-                      f"{str(exc)[:200]}")
-        else:
-            async def task(slug: str, kw: dict[str, Any]) -> None:
-                async with sem:
-                    _, jobs, err = await _run_scraper(cfg["scraper"], slug, kw, timeout)
-                if err == "not_found":
-                    counts["not_found"] += 1
-                    return
-                if err:
-                    counts["error"] += 1
-                    return
-                counts["success"] += 1
-                for job in jobs:
-                    key = (job.company, job.ats_id)
-                    if key in seen_keys:
-                        continue
-                    seen_keys.add(key)
-                    writer.writerow(_job_to_row(job))
-                    counts["jobs"] += 1
+                    if err == "not_found":
+                        counts["not_found"] += 1
+                        return
+                    if err:
+                        counts["error"] += 1
+                        return
+                    counts["success"] += 1
+                    for job in jobs:
+                        key = (job.company, job.ats_id)
+                        if key in seen_keys:
+                            continue
+                        seen_keys.add(key)
+                        if scraper is not None:
+                            await _ensure_description(scraper, job, description_cache)
+                        writer.writerow(_job_to_row(job))
+                        counts["jobs"] += 1
 
-            # Process tasks in batches and flush periodically
-            batch_size = 50
-            for i in range(0, len(targets), batch_size):
-                batch = targets[i:i + batch_size]
-                await asyncio.gather(*(task(s, kw) for s, kw in batch))
-                f.flush()
-                elapsed = time.time() - t0
-                print(
-                    f"  [{ats}] processed {min(i + batch_size, len(targets))}/{len(targets)} "
-                    f"tenants in {elapsed:.0f}s — "
-                    f"{counts['success']} OK, {counts['not_found']} not-found, "
-                    f"{counts['error']} errors, {counts['jobs']:,} jobs"
-                )
+                # Process tasks in batches and flush periodically
+                batch_size = 50
+                for i in range(0, len(targets), batch_size):
+                    batch = targets[i:i + batch_size]
+                    await asyncio.gather(*(task(s, kw) for s, kw in batch))
+                    f.flush()
+                    elapsed = time.time() - t0
+                    print(
+                        f"  [{ats}] processed {min(i + batch_size, len(targets))}/{len(targets)} "
+                        f"tenants in {elapsed:.0f}s — "
+                        f"{counts['success']} OK, {counts['not_found']} not-found, "
+                        f"{counts['error']} errors, {counts['jobs']:,} jobs"
+                    )
 
-    elapsed = time.time() - t0
-    print(
-        f"[{ats}] Done in {elapsed:.0f}s: {counts['jobs']:,} jobs from "
-        f"{counts['success']}/{len(targets)} tenants → {output_path}"
-    )
-
-    failure_threshold = max(1, (len(targets) + 1) // 2)
-    catastrophic_failure = (
-        bool(targets)
-        and counts["jobs"] == 0
-        and counts["error"] >= failure_threshold
-    )
-    if catastrophic_failure:
-        tmp_output_path.unlink(missing_ok=True)
-        if output_path.exists():
-            print(
-                f"[{ats}] ACTION keep_previous: scrape produced 0 jobs with "
-                f"{counts['error']}/{len(targets)} tenant errors; preserved "
-                f"{output_path} for the next publish."
-            )
-        else:
-            print(
-                f"[{ats}] ACTION retry: scrape produced 0 jobs with "
-                f"{counts['error']}/{len(targets)} tenant errors and no "
-                "previous jobs.csv exists."
-            )
-        return 1
-
-    tmp_output_path.replace(output_path)
-    if counts["error"] >= failure_threshold:
+        elapsed = time.time() - t0
         print(
-            f"[{ats}] ACTION investigate: scrape kept partial data but "
-            f"{counts['error']}/{len(targets)} tenants failed."
+            f"[{ats}] Done in {elapsed:.0f}s: {counts['jobs']:,} jobs from "
+            f"{counts['success']}/{len(targets)} tenants → {output_path}"
         )
-        return 1
-    return 0
+
+        failure_threshold = max(1, (len(targets) + 1) // 2)
+        catastrophic_failure = (
+            bool(targets)
+            and counts["jobs"] == 0
+            and counts["error"] >= failure_threshold
+        )
+        if catastrophic_failure:
+            tmp_output_path.unlink(missing_ok=True)
+            if output_path.exists():
+                print(
+                    f"[{ats}] ACTION keep_previous: scrape produced 0 jobs with "
+                    f"{counts['error']}/{len(targets)} tenant errors; preserved "
+                    f"{output_path} for the next publish."
+                )
+            else:
+                print(
+                    f"[{ats}] ACTION retry: scrape produced 0 jobs with "
+                    f"{counts['error']}/{len(targets)} tenant errors and no "
+                    "previous jobs.csv exists."
+                )
+            return 1
+
+        tmp_output_path.replace(output_path)
+        if counts["error"] >= failure_threshold:
+            print(
+                f"[{ats}] ACTION investigate: scrape kept partial data but "
+                f"{counts['error']}/{len(targets)} tenants failed."
+            )
+            return 1
+        return 0
+    finally:
+        description_cache.close()
 
 
 def main() -> int:

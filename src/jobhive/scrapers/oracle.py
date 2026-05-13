@@ -179,7 +179,7 @@ class OracleScraper(BaseScraper):
                         seen.add(job.ats_id)
                         all_jobs.append(job)
 
-            if all_jobs:
+            if self.include_descriptions and all_jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 detail_url = (
                     f"{base}/hcmRestApi/resources/latest/"

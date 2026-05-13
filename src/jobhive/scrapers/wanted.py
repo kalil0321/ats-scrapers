@@ -132,7 +132,7 @@ class WantedScraper(BaseScraper):
                     )
 
             await asyncio.gather(*(per_country(cc) for cc in self.country_codes))
-            if jobs:
+            if self.include_descriptions and jobs:
                 await asyncio.gather(*(self._enrich_description(client, sem, j) for j in jobs))
         return jobs
 

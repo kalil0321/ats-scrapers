@@ -181,9 +181,10 @@ class WorkdayScraper(BaseScraper):
                 applied_facets={}, absorb=absorb, depth=0,
             )
 
-            await self._enrich_details(
-                client, sem, detail_prefix, all_jobs,
-            )
+            if self.include_descriptions:
+                await self._enrich_details(
+                    client, sem, detail_prefix, all_jobs,
+                )
         return all_jobs
 
     async def _enrich_details(

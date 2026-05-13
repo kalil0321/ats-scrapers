@@ -167,7 +167,7 @@ class EightfoldScraper(BaseScraper):
             # higher request volume well; the search calls were ~10
             # pages × 12 concurrency, the detail pass is per-job but
             # still fits inside the same WAF budget.
-            if all_jobs:
+            if self.include_descriptions and all_jobs:
                 detail_sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_position_details(client, detail_sem, j)

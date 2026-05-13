@@ -106,7 +106,7 @@ class MetaScraper(BaseScraper):
             await browser.close()
 
         jobs = list(self._parse_responses(captured))
-        if jobs:
+        if self.include_descriptions and jobs:
             await self._enrich_detail_descriptions(jobs)
         return jobs
 

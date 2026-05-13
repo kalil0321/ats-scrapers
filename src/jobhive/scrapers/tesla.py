@@ -164,14 +164,15 @@ class TeslaScraper(BaseScraper):
             # this step every Tesla row ships with an empty
             # ``description`` (violates the
             # always-include-descriptions invariant).
-            ids = [j.ats_id for j in jobs]
-            details = await self._fetch_details(page, ids)
-            for j in jobs:
-                d = details.get(j.ats_id)
-                if d:
-                    j.description = _format_description(d) or None
-                    if not j.department:
-                        j.department = d.get("department") or None
+            if self.include_descriptions:
+                ids = [j.ats_id for j in jobs]
+                details = await self._fetch_details(page, ids)
+                for j in jobs:
+                    d = details.get(j.ats_id)
+                    if d:
+                        j.description = _format_description(d) or None
+                        if not j.department:
+                            j.department = d.get("department") or None
         finally:
             await browser.close()
 

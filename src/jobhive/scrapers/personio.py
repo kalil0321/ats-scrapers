@@ -94,7 +94,8 @@ class PersonioScraper(BaseScraper):
                     jobs = [self._parse_job(item, base) for item in items]
                     break
             if jobs:
-                self._enrich_descriptions(jobs)
+                if self.include_descriptions:
+                    self._enrich_descriptions(jobs)
                 return jobs
         if last_error:
             raise CompanyNotFoundError(
