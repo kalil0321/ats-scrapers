@@ -58,9 +58,11 @@ RETRY_BASE_DELAY = 2.0
 DETAIL_CONCURRENCY = 4
 
 _TAG_RE = re.compile(r"<[^>]+>")
-_META_DESCRIPTION_RE = re.compile(
-    r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]+content=["\'](?P<content>.*?)["\']',
-    re.IGNORECASE | re.DOTALL,
+_META_TAG_RE = re.compile(r"<meta\b(?P<attrs>[^>]*)>", re.IGNORECASE | re.DOTALL)
+_ATTR_RE = re.compile(
+    r"(?P<name>[a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*"
+    r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
+    re.DOTALL,
 )
 _DETAIL_DESCRIPTION_RE = re.compile(
     r'<(?:div|section|article)[^>]+class=["\'][^"\']*(?:job-description|description|job-detail)[^"\']*["\'][^>]*>(?P<body>.*?)</(?:div|section|article)>',
@@ -362,12 +364,25 @@ def _strip_html(text: str) -> str:
 
 
 def _extract_description(text: str) -> str | None:
-    for pattern in (_DETAIL_DESCRIPTION_RE, _META_DESCRIPTION_RE):
-        match = pattern.search(text)
-        if not match:
+    match = _DETAIL_DESCRIPTION_RE.search(text)
+    if match:
+        cleaned = _strip_html(match.group("body"))
+        if cleaned:
+            return cleaned
+    meta = _extract_meta_description(text)
+    return meta or None
+
+
+def _extract_meta_description(text: str) -> str | None:
+    for tag in _META_TAG_RE.finditer(text):
+        attrs = {
+            m.group("name").lower(): html.unescape(m.group("value"))
+            for m in _ATTR_RE.finditer(tag.group("attrs"))
+        }
+        kind = (attrs.get("name") or attrs.get("property") or "").lower()
+        if kind not in {"description", "og:description"}:
             continue
-        raw = match.groupdict().get("body") or match.groupdict().get("content") or ""
-        cleaned = _strip_html(raw)
+        cleaned = _strip_html(attrs.get("content") or "")
         if cleaned:
             return cleaned
     return None

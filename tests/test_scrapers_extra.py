@@ -408,6 +408,7 @@ def test_workday_resolves_n_locations_rollup(httpx_mock) -> None:
     # Single-location job location stays untouched even though the detail
     # enrichment now also attempts to hydrate descriptions for every row.
     assert by_title["Manager"] == "San Francisco, CA"
+    assert by_desc["Manager"] is None
 
 
 def test_workday_enriches_description_from_detail_endpoint(httpx_mock) -> None:

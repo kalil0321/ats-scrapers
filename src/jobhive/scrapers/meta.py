@@ -18,9 +18,14 @@ present, the scraper carries them into ``Job.description``.
 from __future__ import annotations
 
 import asyncio
+import html
+import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
+
+import httpx
 
 from jobhive.models import ATSType, Job
 from jobhive.scrapers import _cloakbrowser as cb
@@ -35,6 +40,11 @@ _LISTING_URL = "https://www.metacareers.com/jobs"
 # you scroll; we don't bother scrolling, so this just buys time for
 # the first wave to settle.
 _GRAPHQL_SETTLE_MS = 8_000
+_DETAIL_CONCURRENCY = 4
+_JSON_LD_RE = re.compile(
+    r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(?P<body>.*?)</script>',
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 @ScraperRegistry.register(ATSType.META)
@@ -84,7 +94,10 @@ class MetaScraper(BaseScraper):
         finally:
             await browser.close()
 
-        return list(self._parse_responses(captured))
+        jobs = list(self._parse_responses(captured))
+        if jobs:
+            await self._enrich_detail_descriptions(jobs)
+        return jobs
 
     def _parse_responses(
         self, responses: list[dict[str, Any]]
@@ -180,5 +193,78 @@ class MetaScraper(BaseScraper):
         text = "\n\n".join(parts).strip()
         return text[:10_000] or None
 
+    async def _enrich_detail_descriptions(self, jobs: list[Job]) -> None:
+        """Fetch Meta detail pages for descriptions missing from listing GraphQL.
+
+        The listing query currently exposes id/title/location/team only. The
+        public detail page embeds Schema.org ``JobPosting`` JSON-LD with the
+        full body, so this path avoids another browser session per job.
+        """
+        targets = [(i, job) for i, job in enumerate(jobs) if not job.description]
+        if not targets:
+            return
+
+        sem = asyncio.Semaphore(_DETAIL_CONCURRENCY)
+        async with httpx.AsyncClient(
+            timeout=self.timeout, follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0"},
+        ) as client:
+            await asyncio.gather(*(
+                self._enrich_one_detail(client, sem, jobs, i, job)
+                for i, job in targets
+            ))
+
+    async def _enrich_one_detail(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        jobs: list[Job],
+        index: int,
+        job: Job,
+    ) -> None:
+        async with sem:
+            try:
+                response = await client.get(str(job.url))
+            except httpx.HTTPError:
+                return
+        if response.status_code != 200:
+            return
+        description = _description_from_detail_html(response.text)
+        if description:
+            jobs[index] = job.model_copy(update={"description": description[:10_000]})
+
 
 __all__ = ["MetaScraper"]
+
+
+def _description_from_detail_html(text: str) -> str | None:
+    for match in _JSON_LD_RE.finditer(text):
+        raw = html.unescape(match.group("body")).strip()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for item in _iter_json_ld_items(payload):
+            if not isinstance(item, dict) or item.get("@type") != "JobPosting":
+                continue
+            desc = item.get("description")
+            resp = item.get("responsibilities")
+            parts = [
+                value.strip()
+                for value in (desc, resp)
+                if isinstance(value, str) and value.strip()
+            ]
+            if parts:
+                return "\n\n".join(parts)
+    return None
+
+
+def _iter_json_ld_items(value: object):
+    if isinstance(value, list):
+        yield from value
+    elif isinstance(value, dict):
+        graph = value.get("@graph")
+        if isinstance(graph, list):
+            yield from graph
+        else:
+            yield value

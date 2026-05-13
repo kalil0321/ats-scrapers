@@ -165,6 +165,29 @@ def test_parses_full_listing_card(httpx_mock) -> None:
     assert str(j.url) == "https://programathor.com.br/jobs/33458-engenheiro-qa-python"
 
 
+def test_extracts_meta_description_with_reversed_attributes(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://programathor.com.br/jobs?page=1",
+        text=_listing([_card(job_id="7", title="Backend Engineer")]),
+    )
+    httpx_mock.add_response(
+        url=re.compile(r"^https://programathor\.com\.br/jobs\?page=[2-9]$"),
+        text=_empty_listing(),
+        is_reusable=True,
+    )
+    httpx_mock.add_response(
+        url="https://programathor.com.br/jobs/7-backend-engineer",
+        text=(
+            "<html><head><meta content='Build Brazilian APIs.' "
+            "property='og:description'></head></html>"
+        ),
+    )
+
+    jobs = ProgramathorScraper("any").fetch()
+
+    assert jobs[0].description == "Build Brazilian APIs."
+
+
 def test_strips_new_label_from_title(httpx_mock) -> None:
     """Programathor injects a 'NOVA' tag inside the <h3>; strip it
     rather than ship 'Foo BarNOVA' as the title."""

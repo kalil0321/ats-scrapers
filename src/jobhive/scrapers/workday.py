@@ -92,10 +92,9 @@ RETRY_BACKOFF = 1.5
 # When a Workday job spans multiple offices, the search endpoint returns a
 # rollup string in ``locationsText`` like "2 Locations" / "5 Locations"
 # instead of the actual list — the underlying ``locations`` array is not
-# included in the search payload. We detect those and fetch the per-job
-# detail endpoint (which DOES expose ``jobPostingInfo.location`` plus
-# ``additionalLocations``) to recover the real cities. About 9% of typical
-# Workday rows hit this code path on multi-tenant runs.
+# included in the search payload. ``_enrich_details`` detects these and
+# overwrites the placeholder with the real city list from
+# ``jobPostingInfo.location`` + ``additionalLocations``.
 _LOCATION_ROLLUP_RE = re.compile(r"^\s*\d+\s+Locations?\s*$", re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
 

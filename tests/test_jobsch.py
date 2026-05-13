@@ -108,6 +108,30 @@ def test_parses_full_doc(httpx_mock) -> None:
     assert str(j.url) == "https://www.jobs.ch/de/stellenangebote/detail/abc-123/"
 
 
+def test_extracts_meta_description_with_reversed_attributes(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_RE,
+        json=_page([
+            _doc(
+                job_id="meta-1",
+                title="Engineer",
+                detail_de="https://example.com/jobs/meta-1/",
+            )
+        ], total_hits=1),
+    )
+    httpx_mock.add_response(
+        url="https://example.com/jobs/meta-1/",
+        text=(
+            "<html><head><meta content='Build Swiss APIs.' "
+            "name='description'></head></html>"
+        ),
+    )
+
+    jobs = JobsChScraper("any", query_seeds=()).fetch()
+
+    assert jobs[0].description == "Build Swiss APIs."
+
+
 def test_falls_back_to_canonical_url_when_no_links(httpx_mock) -> None:
     """Some rows ship without ``_links``; build a canonical URL from the
     job_id rather than emit a half-broken row."""
