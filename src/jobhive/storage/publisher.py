@@ -164,6 +164,13 @@ class DatasetPublisher:
         """
         started = datetime.now(tz=UTC)
         files_uploaded: list[str] = []
+        manifest_key = f"{self._prefix}/manifest.json"
+        existing_manifest = _load_existing_manifest(self._r2, manifest_key)
+        _guard_suspicious_empty_job_slices(
+            source_dir=source_dir,
+            ats_csv_pattern=ats_csv_pattern,
+            existing_manifest=existing_manifest,
+        )
 
         # ExitStack owns every per-ATS CSV temp: Pass 1 streams each
         # enriched per-ATS slice into one of these, then Pass 3
@@ -1059,6 +1066,71 @@ def _sum_by_ats_companies_rows(manifest: dict[str, object]) -> int:
             if isinstance(rows, int):
                 total += rows
     return total
+
+
+def _guard_suspicious_empty_job_slices(
+    *,
+    source_dir: Path,
+    ats_csv_pattern: str,
+    existing_manifest: dict[str, object],
+) -> None:
+    """Block publishes that would replace known-good provider data with empty.
+
+    A header-only ``<ats>/jobs.csv`` is valid CSV, so the streaming publisher
+    can otherwise upload it and patch the manifest to ``rows: 0``. Treat that
+    as suspicious when the existing manifest proves the provider either had
+    jobs before or still has tenants in ``by_ats_companies``.
+    """
+    if os.getenv("JOBHIVE_ALLOW_EMPTY_PUBLISH"):
+        return
+
+    by_ats = existing_manifest.get("by_ats")
+    if not isinstance(by_ats, dict):
+        by_ats = {}
+    by_ats_companies = existing_manifest.get("by_ats_companies")
+    if not isinstance(by_ats_companies, dict):
+        by_ats_companies = {}
+
+    suspicious: list[str] = []
+    for ats in ATSType:
+        if ats is ATSType.CUSTOM:
+            continue
+        source_path = source_dir / ats_csv_pattern.format(ats=ats.value)
+        if not source_path.exists() or source_path.stat().st_size == 0:
+            continue
+        if _csv_data_row_count(source_path) != 0:
+            continue
+
+        previous_rows = _entry_rows(by_ats.get(ats.value))
+        company_rows = _entry_rows(by_ats_companies.get(ats.value))
+        if previous_rows > 0 or company_rows > 0:
+            suspicious.append(
+                f"{ats.value}: local jobs.csv has 0 rows; "
+                f"manifest previously had {previous_rows} jobs and "
+                f"{company_rows} companies. Suggested action: retry the "
+                "provider scrape or keep the previous published data."
+            )
+
+    if suspicious:
+        raise StorageError(
+            "Refusing to publish suspicious empty provider slices. "
+            "Set JOBHIVE_ALLOW_EMPTY_PUBLISH=1 only for intentional empty "
+            "providers.\n- "
+            + "\n- ".join(suspicious)
+        )
+
+
+def _entry_rows(entry: object) -> int:
+    if not isinstance(entry, dict):
+        return 0
+    rows = entry.get("rows")
+    return rows if isinstance(rows, int) and rows > 0 else 0
+
+
+def _csv_data_row_count(path: Path) -> int:
+    with path.open("rb") as f:
+        lines = sum(1 for _ in f)
+    return max(lines - 1, 0)
 
 
 def _load_existing_manifest(r2_client: R2Client, key: str) -> dict[str, object]:

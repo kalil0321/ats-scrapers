@@ -483,6 +483,22 @@ def test_oracle_extracts_site_number_from_query(httpx_mock) -> None:
     OracleScraper(f"{base}?site_number=CX_45002").fetch()
 
 
+def test_oracle_accepts_candidate_experience_site_url(httpx_mock) -> None:
+    base = "https://eeho.fa.us2.oraclecloud.com"
+    api = f"{base}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
+    httpx_mock.add_response(
+        url=(
+            f"{api}?onlyData=true"
+            f"&finder=findReqs%3BsiteNumber%3DCX_45002%2Climit%3D200%2Coffset%3D0"
+            f"&expand=requisitionList"
+        ),
+        json={"items": [{"TotalJobsCount": 0, "requisitionList": []}]},
+    )
+    OracleScraper(
+        f"{base}/hcmUI/CandidateExperience/en/sites/CX_45002"
+    ).fetch()
+
+
 def test_oracle_requires_full_url() -> None:
     with pytest.raises(ScraperError, match="full URL"):
         OracleScraper("eeho").fetch()

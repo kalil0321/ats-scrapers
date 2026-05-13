@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 
 PAGE_LIMIT = 200
 SITE_RE = re.compile(r"site_number=([^&]+)")
+SITE_PATH_RE = re.compile(r"/sites/([^/?#]+)")
 DEFAULT_SITE = "CX_1"
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
@@ -85,6 +86,25 @@ _EMPLOYMENT_TYPE_PATTERNS = {
 }
 
 
+def _normalize_oracle_target(raw_url: str) -> tuple[str, str]:
+    """Return ``(host_root, site_number)`` for Oracle careers URLs.
+
+    The tenant CSV stores public CandidateExperience URLs such as
+    ``https://host/hcmUI/CandidateExperience/en/sites/CX_1``. Oracle's REST API
+    lives at the host root, while the site number belongs in the finder string.
+    Keep supporting the older ``https://host?site_number=CX_...`` form too.
+    """
+    match = SITE_RE.search(raw_url)
+    site = match.group(1) if match else DEFAULT_SITE
+    parsed = urlparse(raw_url)
+    if parsed.scheme and parsed.netloc:
+        path_site = SITE_PATH_RE.search(parsed.path)
+        if not match and path_site:
+            site = path_site.group(1)
+        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/"), site
+    return raw_url.split("?", 1)[0].rstrip("/"), site
+
+
 @ScraperRegistry.register(ATSType.ORACLE)
 class OracleScraper(BaseScraper):
     """Oracle scraper — `company_slug` is the full careers URL.
@@ -99,10 +119,7 @@ class OracleScraper(BaseScraper):
         return asyncio.run(self._fetch_async())
 
     async def _fetch_async(self) -> list[Job]:
-        url = self.company_slug
-        match = SITE_RE.search(url)
-        site = match.group(1) if match else DEFAULT_SITE
-        base = url.split("?", 1)[0].rstrip("/")
+        base, site = _normalize_oracle_target(self.company_slug)
         if not base.startswith(("http://", "https://")):
             raise ScraperError(
                 f"Oracle slug must be a full URL (https://...oraclecloud.com), got {base!r}"

@@ -390,6 +390,34 @@ def test_publish_raises_when_no_csvs_present(tmp_path, fake_r2) -> None:
         publisher.publish_from_directory(tmp_path)
 
 
+def test_publish_refuses_suspicious_empty_provider_slice(tmp_path, fake_r2) -> None:
+    gh_dir = tmp_path / "greenhouse"
+    gh_dir.mkdir()
+    (gh_dir / "jobs.csv").write_text(
+        "url,title,company,ats_type,ats_id,location,is_remote,salary_min,"
+        "salary_max,salary_currency,salary_period,salary_summary,"
+        "employment_type,department,team,description,posted_at,"
+        "requisition_id,apply_url,commitment,raw\n",
+        encoding="utf-8",
+    )
+    fake_r2.upload_bytes(
+        json.dumps(
+            {
+                "version": "2.0",
+                "by_ats": {"greenhouse": {"rows": 123, "size_bytes": 100}},
+                "by_ats_companies": {"greenhouse": {"rows": 5, "size_bytes": 50}},
+            }
+        ).encode("utf-8"),
+        "jobhive/v1/manifest.json",
+        content_type="application/json",
+    )
+
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    with pytest.raises(StorageError, match="Refusing to publish suspicious empty"):
+        publisher.publish_from_directory(tmp_path)
+    assert "jobhive/v1/greenhouse/jobs.csv" not in fake_r2.uploads
+
+
 def test_publish_without_pyarrow_raises(monkeypatch, fake_r2) -> None:
     """When write_parquet=True but pyarrow is missing, we fail fast."""
     import builtins
