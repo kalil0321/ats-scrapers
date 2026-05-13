@@ -276,6 +276,7 @@ class DatasetPublisher:
                 },
                 all_entry=all_entry,
                 by_ats=per_ats_entries,
+                existing_manifest=existing_manifest,
             )
             files_uploaded.append(manifest_key)
 
@@ -477,11 +478,16 @@ class DatasetPublisher:
         stats_factory,
         all_entry: dict[str, object],
         by_ats: dict[ATSType, dict[str, object]],
+        existing_manifest: dict[str, object] | None = None,
     ) -> str:
         """Read existing manifest, replace jobs-related fields, preserve
         the companies block written by the CI."""
         key = f"{self._prefix}/manifest.json"
-        existing = _load_existing_manifest(self._r2, key)
+        existing = (
+            existing_manifest
+            if existing_manifest is not None
+            else _load_existing_manifest(self._r2, key)
+        )
 
         manifest: dict[str, object] = {**existing}
         manifest["version"] = "2.0"
@@ -1096,14 +1102,25 @@ def _guard_suspicious_empty_job_slices(
         if ats is ATSType.CUSTOM:
             continue
         source_path = source_dir / ats_csv_pattern.format(ats=ats.value)
-        if not source_path.exists() or source_path.stat().st_size == 0:
-            continue
-        if _csv_data_row_count(source_path) != 0:
+        if not source_path.exists():
             continue
 
         previous_rows = _entry_rows(by_ats.get(ats.value))
         company_rows = _entry_rows(by_ats_companies.get(ats.value))
-        if previous_rows > 0 or company_rows > 0:
+        has_prior_data = previous_rows > 0 or company_rows > 0
+        if source_path.stat().st_size == 0:
+            if has_prior_data:
+                suspicious.append(
+                    f"{ats.value}: local jobs.csv is 0 bytes; "
+                    f"manifest previously had {previous_rows} jobs and "
+                    f"{company_rows} companies. Suggested action: retry the "
+                    "provider scrape or keep the previous published data."
+                )
+            continue
+        if _csv_data_row_count(source_path) != 0:
+            continue
+
+        if has_prior_data:
             suspicious.append(
                 f"{ats.value}: local jobs.csv has 0 rows; "
                 f"manifest previously had {previous_rows} jobs and "

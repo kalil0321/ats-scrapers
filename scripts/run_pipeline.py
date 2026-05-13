@@ -708,7 +708,8 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
         if not csv_path.exists():
             print(f"[{ats}] No tenant CSV at {csv_path}; nothing to scrape.")
             return 0
-        rows = list(csv.DictReader(csv_path.open()))
+        with csv_path.open(newline="") as fh:
+            rows = list(csv.DictReader(fh))
         kwargs_factory = cfg.get("kwargs")
         for r in rows:
             slug = cfg["slug"](r)

@@ -418,6 +418,58 @@ def test_publish_refuses_suspicious_empty_provider_slice(tmp_path, fake_r2) -> N
     assert "jobhive/v1/greenhouse/jobs.csv" not in fake_r2.uploads
 
 
+def test_publish_refuses_zero_byte_provider_slice_with_prior_manifest(
+    tmp_path, fake_r2
+) -> None:
+    gh_dir = tmp_path / "greenhouse"
+    gh_dir.mkdir()
+    (gh_dir / "jobs.csv").write_bytes(b"")
+    fake_r2.upload_bytes(
+        json.dumps(
+            {
+                "version": "2.0",
+                "by_ats": {"greenhouse": {"rows": 123, "size_bytes": 100}},
+                "by_ats_companies": {"greenhouse": {"rows": 5, "size_bytes": 50}},
+            }
+        ).encode("utf-8"),
+        "jobhive/v1/manifest.json",
+        content_type="application/json",
+    )
+
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    with pytest.raises(StorageError, match=r"local jobs\.csv is 0 bytes"):
+        publisher.publish_from_directory(tmp_path)
+    assert "jobhive/v1/greenhouse/jobs.csv" not in fake_r2.uploads
+
+
+def test_publish_reuses_manifest_loaded_for_empty_slice_guard(
+    ats_csv_dir, fake_r2
+) -> None:
+    fake_r2.upload_bytes(
+        json.dumps(
+            {
+                "version": "2.0",
+                "by_ats_companies": {"greenhouse": {"rows": 5}},
+            }
+        ).encode("utf-8"),
+        "jobhive/v1/manifest.json",
+        content_type="application/json",
+    )
+    calls = 0
+    real_get_bytes = fake_r2.get_bytes
+
+    def counted_get_bytes(key: str):
+        nonlocal calls
+        calls += 1
+        return real_get_bytes(key)
+
+    fake_r2.get_bytes = counted_get_bytes
+
+    DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(ats_csv_dir)
+
+    assert calls == 1
+
+
 def test_publish_without_pyarrow_raises(monkeypatch, fake_r2) -> None:
     """When write_parquet=True but pyarrow is missing, we fail fast."""
     import builtins
