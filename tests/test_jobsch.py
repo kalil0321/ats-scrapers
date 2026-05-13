@@ -219,6 +219,25 @@ def test_no_fanout_when_total_under_per_page(httpx_mock) -> None:
     assert len(jobs) == 1
 
 
+def test_enriches_after_cross_seed_dedupe(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_RE,
+        json=_page([_doc(job_id="dupe", title="Engineer")], total_hits=1),
+    )
+    httpx_mock.add_response(
+        url=_API_RE,
+        json=_page([_doc(job_id="dupe", title="Engineer")], total_hits=1),
+    )
+
+    jobs = JobsChScraper("any", query_seeds=("engineer",)).fetch()
+
+    assert [j.ats_id for j in jobs] == ["dupe"]
+    detail_requests = httpx_mock.get_requests(
+        url=re.compile(r"^https://www\.jobs\.ch/en/vacancies/detail/dupe/")
+    )
+    assert len(detail_requests) == 1
+
+
 # --- defensive --------------------------------------------------------------
 
 

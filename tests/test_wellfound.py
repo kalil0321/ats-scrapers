@@ -178,6 +178,28 @@ def test_enriches_description_from_job_page_markdown(httpx_mock) -> None:
     )
 
 
+def test_detail_firecrawl_permanent_error_keeps_listing_job(httpx_mock) -> None:
+    listing = _markdown_with_jobs([{"id": "1001", "title": "Founding Engineer"}])
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        url = json.loads(request.content)["url"]
+        if "/jobs/1001-" in url:
+            return httpx.Response(402, text='{"error":"payment_required"}')
+        return httpx.Response(200, json={"data": {"markdown": listing}})
+
+    httpx_mock.add_callback(serve, url=_FIRECRAWL_RE, is_reusable=True)
+
+    jobs = WellfoundScraper(
+        "any",
+        firecrawl_api_key="test-key",
+        role_slugs=(),
+    ).fetch()
+
+    assert len(jobs) == 1
+    assert jobs[0].ats_id == "1001"
+    assert jobs[0].description is None
+
+
 # --- multi-role fan-out + dedup --------------------------------------------
 
 

@@ -193,7 +193,10 @@ class WellfoundScraper(BaseScraper):
         sem: asyncio.Semaphore,
         job: Job,
     ) -> None:
-        markdown = await self._firecrawl_scrape(client, sem, str(job.url))
+        try:
+            markdown = await self._firecrawl_scrape(client, sem, str(job.url))
+        except ScraperError:
+            return
         if not markdown:
             return
         description = _description_from_markdown(markdown, title=job.title)

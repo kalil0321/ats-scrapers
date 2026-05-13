@@ -215,6 +215,8 @@ class JobsChScraper(BaseScraper):
                 seed, len(slice_jobs), new_count, len(all_jobs),
             )
 
+        if all_jobs:
+            await self._enrich_descriptions(all_jobs, proxy_url=proxy_url)
         return all_jobs
 
     async def _run_fetch(
@@ -253,11 +255,6 @@ class JobsChScraper(BaseScraper):
             await absorb(first.get("documents") or [])
 
             if total <= PER_PAGE:
-                if jobs:
-                    detail_sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
-                    await asyncio.gather(*(
-                        self._enrich_description(client, detail_sem, job) for job in jobs
-                    ))
                 return jobs
 
             usable = min(total, MAX_USABLE_OFFSET)
@@ -278,12 +275,23 @@ class JobsChScraper(BaseScraper):
                 await absorb(payload.get("documents") or [])
 
             await asyncio.gather(*(one(o) for o in offsets))
-            if jobs:
-                detail_sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
-                await asyncio.gather(*(
-                    self._enrich_description(client, detail_sem, job) for job in jobs
-                ))
         return jobs
+
+    async def _enrich_descriptions(
+        self, jobs: list[Job], *, proxy_url: str | None
+    ) -> None:
+        client_kwargs: dict[str, Any] = {
+            "timeout": self.timeout,
+            "follow_redirects": True,
+        }
+        if proxy_url is not None:
+            client_kwargs["proxy"] = proxy_url
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            detail_sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+            await asyncio.gather(*(
+                self._enrich_description(client, detail_sem, job) for job in jobs
+            ))
 
     async def _enrich_description(
         self,
