@@ -652,30 +652,39 @@ class DescriptionCache:
     """Disk-backed description cache built from the previous jobs CSV."""
 
     def __init__(self) -> None:
+        self.conn: sqlite3.Connection | None = None
         with tempfile.NamedTemporaryFile(
             prefix="jobhive-description-cache-",
             suffix=".sqlite3",
             delete=False,
         ) as tmp:
             self.path = Path(tmp.name)
-        self.conn = sqlite3.connect(self.path)
-        self.conn.execute("PRAGMA journal_mode=OFF")
-        self.conn.execute("PRAGMA synchronous=OFF")
-        self.conn.execute("PRAGMA temp_store=MEMORY")
-        self.conn.execute(
-            """
-            CREATE TABLE descriptions (
-                kind TEXT NOT NULL,
-                cache_key TEXT NOT NULL,
-                description TEXT NOT NULL,
-                PRIMARY KEY (kind, cache_key)
+        try:
+            self.conn = sqlite3.connect(self.path)
+            self.conn.execute("PRAGMA journal_mode=OFF")
+            self.conn.execute("PRAGMA synchronous=OFF")
+            self.conn.execute("PRAGMA temp_store=MEMORY")
+            self.conn.execute(
+                """
+                CREATE TABLE descriptions (
+                    kind TEXT NOT NULL,
+                    cache_key TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    PRIMARY KEY (kind, cache_key)
+                )
+                """
             )
-            """
-        )
+        except Exception:
+            if self.conn is not None:
+                self.conn.close()
+            self.path.unlink(missing_ok=True)
+            raise
         self.count = 0
 
     def close(self) -> None:
-        self.conn.close()
+        if self.conn is not None:
+            self.conn.close()
+            self.conn = None
         self.path.unlink(missing_ok=True)
 
     def load_csv(self, path: Path) -> None:
@@ -703,8 +712,8 @@ class DescriptionCache:
             "SELECT COUNT(*) FROM descriptions"
         ).fetchone()[0]
 
-    def _insert_many(self, rows: list[tuple[str, str, str]]) -> None:
-        self.conn.executemany(
+    def _insert_many(self, rows: list[tuple[str, str, str]]) -> int:
+        cur = self.conn.executemany(
             """
             INSERT OR IGNORE INTO descriptions (kind, cache_key, description)
             VALUES (?, ?, ?)
@@ -712,6 +721,7 @@ class DescriptionCache:
             rows,
         )
         self.conn.commit()
+        return cur.rowcount
 
     def get(self, job: Job) -> str | None:
         for kind, key in _description_keys(job):
@@ -729,8 +739,7 @@ class DescriptionCache:
     def set(self, job: Job, description: str) -> None:
         rows = [(*key, description) for key in _description_keys(job)]
         if rows:
-            self._insert_many(rows)
-            self.count += len(rows)
+            self.count += self._insert_many(rows)
 
 
 def _description_keys(job: Job) -> list[tuple[str, str]]:
@@ -885,119 +894,120 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
     seen_keys: set[tuple[str, str]] = set()  # (company, ats_id) for cross-tenant dedup
 
     t0 = time.time()
-    with tmp_output_path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=JOB_CSV_FIELDS)
-        writer.writeheader()
+    try:
+        with tmp_output_path.open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=JOB_CSV_FIELDS)
+            writer.writeheader()
 
-        # ---- Streaming path: scrapers that would otherwise load >5 GB
-        # of Job objects into RAM expose a ``fetch_stream()`` async
-        # generator. We iterate it directly and write each job to disk
-        # as it arrives, keeping the in-flight footprint flat (~200 MB
-        # for the seen-set + a bounded asyncio.Queue) instead of
-        # accumulating the full corpus. EURES is the only such ATS
-        # today — its ~2.7 M-row pan-EU catalog would peak at ~10 GB
-        # RSS in legacy mode, exceeding the VPS RAM budget.
-        if uses_streaming:
-            scraper = cfg["scraper"](ats, timeout=timeout)
-            try:
-                async for job in scraper.fetch_stream():
-                    await _ensure_description(scraper, job, description_cache)
-                    writer.writerow(_job_to_row(job))
-                    counts["jobs"] += 1
-                    # Periodic flush so the file is consultable while
-                    # the long-running scrape is still in flight.
-                    if counts["jobs"] % 10_000 == 0:
-                        f.flush()
-                        elapsed = time.time() - t0
-                        print(
-                            f"  [{ats}] streamed {counts['jobs']:,} jobs in "
-                            f"{elapsed:.0f}s",
-                        )
-                counts["success"] = 1
-            except CompanyNotFoundError:
-                counts["not_found"] = 1
-            except Exception as exc:
-                counts["error"] = 1
-                print(f"  [{ats}] streaming failed: {type(exc).__name__}: "
-                      f"{str(exc)[:200]}")
-        else:
-            async def task(slug: str, kw: dict[str, Any]) -> None:
-                async with sem:
-                    _, scraper, jobs, err = await _run_scraper(
-                        cfg["scraper"],
-                        slug,
-                        kw,
-                        timeout,
-                    )
-                if err == "not_found":
-                    counts["not_found"] += 1
-                    return
-                if err:
-                    counts["error"] += 1
-                    return
-                counts["success"] += 1
-                for job in jobs:
-                    key = (job.company, job.ats_id)
-                    if key in seen_keys:
-                        continue
-                    seen_keys.add(key)
-                    if scraper is not None:
+            # ---- Streaming path: scrapers that would otherwise load >5 GB
+            # of Job objects into RAM expose a ``fetch_stream()`` async
+            # generator. We iterate it directly and write each job to disk
+            # as it arrives, keeping the in-flight footprint flat (~200 MB
+            # for the seen-set + a bounded asyncio.Queue) instead of
+            # accumulating the full corpus. EURES is the only such ATS
+            # today — its ~2.7 M-row pan-EU catalog would peak at ~10 GB
+            # RSS in legacy mode, exceeding the VPS RAM budget.
+            if uses_streaming:
+                scraper = cfg["scraper"](ats, timeout=timeout)
+                try:
+                    async for job in scraper.fetch_stream():
                         await _ensure_description(scraper, job, description_cache)
-                    writer.writerow(_job_to_row(job))
-                    counts["jobs"] += 1
+                        writer.writerow(_job_to_row(job))
+                        counts["jobs"] += 1
+                        # Periodic flush so the file is consultable while
+                        # the long-running scrape is still in flight.
+                        if counts["jobs"] % 10_000 == 0:
+                            f.flush()
+                            elapsed = time.time() - t0
+                            print(
+                                f"  [{ats}] streamed {counts['jobs']:,} jobs in "
+                                f"{elapsed:.0f}s",
+                            )
+                    counts["success"] = 1
+                except CompanyNotFoundError:
+                    counts["not_found"] = 1
+                except Exception as exc:
+                    counts["error"] = 1
+                    print(f"  [{ats}] streaming failed: {type(exc).__name__}: "
+                          f"{str(exc)[:200]}")
+            else:
+                async def task(slug: str, kw: dict[str, Any]) -> None:
+                    async with sem:
+                        _, scraper, jobs, err = await _run_scraper(
+                            cfg["scraper"],
+                            slug,
+                            kw,
+                            timeout,
+                        )
+                    if err == "not_found":
+                        counts["not_found"] += 1
+                        return
+                    if err:
+                        counts["error"] += 1
+                        return
+                    counts["success"] += 1
+                    for job in jobs:
+                        key = (job.company, job.ats_id)
+                        if key in seen_keys:
+                            continue
+                        seen_keys.add(key)
+                        if scraper is not None:
+                            await _ensure_description(scraper, job, description_cache)
+                        writer.writerow(_job_to_row(job))
+                        counts["jobs"] += 1
 
-            # Process tasks in batches and flush periodically
-            batch_size = 50
-            for i in range(0, len(targets), batch_size):
-                batch = targets[i:i + batch_size]
-                await asyncio.gather(*(task(s, kw) for s, kw in batch))
-                f.flush()
-                elapsed = time.time() - t0
-                print(
-                    f"  [{ats}] processed {min(i + batch_size, len(targets))}/{len(targets)} "
-                    f"tenants in {elapsed:.0f}s — "
-                    f"{counts['success']} OK, {counts['not_found']} not-found, "
-                    f"{counts['error']} errors, {counts['jobs']:,} jobs"
-                )
+                # Process tasks in batches and flush periodically
+                batch_size = 50
+                for i in range(0, len(targets), batch_size):
+                    batch = targets[i:i + batch_size]
+                    await asyncio.gather(*(task(s, kw) for s, kw in batch))
+                    f.flush()
+                    elapsed = time.time() - t0
+                    print(
+                        f"  [{ats}] processed {min(i + batch_size, len(targets))}/{len(targets)} "
+                        f"tenants in {elapsed:.0f}s — "
+                        f"{counts['success']} OK, {counts['not_found']} not-found, "
+                        f"{counts['error']} errors, {counts['jobs']:,} jobs"
+                    )
 
-    elapsed = time.time() - t0
-    print(
-        f"[{ats}] Done in {elapsed:.0f}s: {counts['jobs']:,} jobs from "
-        f"{counts['success']}/{len(targets)} tenants → {output_path}"
-    )
-
-    failure_threshold = max(1, (len(targets) + 1) // 2)
-    catastrophic_failure = (
-        bool(targets)
-        and counts["jobs"] == 0
-        and counts["error"] >= failure_threshold
-    )
-    if catastrophic_failure:
-        tmp_output_path.unlink(missing_ok=True)
-        description_cache.close()
-        if output_path.exists():
-            print(
-                f"[{ats}] ACTION keep_previous: scrape produced 0 jobs with "
-                f"{counts['error']}/{len(targets)} tenant errors; preserved "
-                f"{output_path} for the next publish."
-            )
-        else:
-            print(
-                f"[{ats}] ACTION retry: scrape produced 0 jobs with "
-                f"{counts['error']}/{len(targets)} tenant errors and no "
-                "previous jobs.csv exists."
-            )
-        return 1
-
-    tmp_output_path.replace(output_path)
-    description_cache.close()
-    if counts["error"] >= failure_threshold:
+        elapsed = time.time() - t0
         print(
-            f"[{ats}] ACTION investigate: scrape kept partial data but "
-            f"{counts['error']}/{len(targets)} tenants failed."
+            f"[{ats}] Done in {elapsed:.0f}s: {counts['jobs']:,} jobs from "
+            f"{counts['success']}/{len(targets)} tenants → {output_path}"
         )
-        return 1
-    return 0
+
+        failure_threshold = max(1, (len(targets) + 1) // 2)
+        catastrophic_failure = (
+            bool(targets)
+            and counts["jobs"] == 0
+            and counts["error"] >= failure_threshold
+        )
+        if catastrophic_failure:
+            tmp_output_path.unlink(missing_ok=True)
+            if output_path.exists():
+                print(
+                    f"[{ats}] ACTION keep_previous: scrape produced 0 jobs with "
+                    f"{counts['error']}/{len(targets)} tenant errors; preserved "
+                    f"{output_path} for the next publish."
+                )
+            else:
+                print(
+                    f"[{ats}] ACTION retry: scrape produced 0 jobs with "
+                    f"{counts['error']}/{len(targets)} tenant errors and no "
+                    "previous jobs.csv exists."
+                )
+            return 1
+
+        tmp_output_path.replace(output_path)
+        if counts["error"] >= failure_threshold:
+            print(
+                f"[{ats}] ACTION investigate: scrape kept partial data but "
+                f"{counts['error']}/{len(targets)} tenants failed."
+            )
+            return 1
+        return 0
+    finally:
+        description_cache.close()
 
 
 def main() -> int:

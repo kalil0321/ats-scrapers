@@ -297,6 +297,120 @@ def test_description_cache_loads_previous_csv_on_disk(tmp_path) -> None:
         cache.close()
 
 
+def test_description_cache_count_ignores_duplicate_keys(tmp_path) -> None:
+    path = tmp_path / "jobs.csv"
+    path.write_text(
+        "url,title,company,ats_type,ats_id,description\n"
+        "https://example.com/jobs/1,Old,Acme,custom,1,cached\n",
+        encoding="utf-8",
+    )
+    cache = runner._load_description_cache(path)
+    try:
+        job = Job(
+            url="https://example.com/jobs/1",
+            title="Engineer",
+            company="Acme",
+            ats_type=ATSType.CUSTOM,
+            ats_id="1",
+        )
+
+        cache.set(job, "cached")
+
+        assert cache.count == 2
+    finally:
+        cache.close()
+
+
+def test_description_cache_unlinks_temp_file_when_init_fails(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_path = tmp_path / "cache.sqlite3"
+
+    class FakeTempFile:
+        name = str(cache_path)
+
+        def __enter__(self):
+            cache_path.touch()
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fail_connect(_path):
+        raise OSError("sqlite unavailable")
+
+    monkeypatch.setattr(runner.tempfile, "NamedTemporaryFile", lambda **_kw: FakeTempFile())
+    monkeypatch.setattr(runner.sqlite3, "connect", fail_connect)
+
+    with pytest.raises(OSError):
+        runner.DescriptionCache()
+
+    assert not cache_path.exists()
+
+
+def test_pipeline_closes_description_cache_on_propagating_error(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "ats-companies").mkdir()
+    (tmp_path / "ats-companies" / "fake.csv").write_text(
+        "name,slug,url\nAcme,acme,https://example.com\n",
+        encoding="utf-8",
+    )
+
+    class FakeCache:
+        count = 0
+        closed = False
+
+        def get(self, _job):
+            return None
+
+        def set(self, _job, _description):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    cache = FakeCache()
+
+    class ExplodingScraper:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.include_descriptions = True
+
+        def fetch(self):
+            return [
+                Job(
+                    url="https://example.com/jobs/1",
+                    title="Engineer",
+                    company="Acme",
+                    ats_type=ATSType.CUSTOM,
+                    ats_id="1",
+                    description="known",
+                )
+            ]
+
+    def explode_row(_job):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(runner, "_load_description_cache", lambda _path: cache)
+    monkeypatch.setattr(runner, "_job_to_row", explode_row)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "fake",
+        {
+            "scraper": ExplodingScraper,
+            "slug": lambda r: r["slug"],
+            "csv": "ats-companies/fake.csv",
+            "output": "fake/jobs.csv",
+        },
+    )
+
+    with pytest.raises(OSError):
+        asyncio.run(runner.run("fake", concurrency=1, max_tenants=None, timeout=1))
+
+    assert cache.closed is True
+
+
 def test_streaming_pipeline_reuses_sqlite_description_cache(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
