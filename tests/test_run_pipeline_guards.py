@@ -534,6 +534,59 @@ def test_streaming_pipeline_reuses_sqlite_description_cache(
     assert rows[0]["description"] == "cached"
 
 
+def test_streaming_pipeline_skips_capped_description_cache(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "stream"
+    out_dir.mkdir()
+    out_path = out_dir / "jobs.csv"
+    out_path.write_text(
+        (
+            "url,title,company,ats_type,ats_id,description\n"
+            f"https://example.com/jobs/1,Old,Acme,custom,1,{'x' * 500}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    class StreamingScraper:
+        calls = 0
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def fetch_stream(self):
+            yield Job(
+                url="https://example.com/jobs/1",
+                title="Engineer",
+                company="Acme",
+                ats_type=ATSType.CUSTOM,
+                ats_id="1",
+            )
+
+        def get_description(self, _job):
+            self.__class__.calls += 1
+            return "full description"
+
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "stream",
+        {
+            "scraper": StreamingScraper,
+            "singleton": True,
+            "output": "stream/jobs.csv",
+            "skip_description_cache_if_max_len_lte": 500,
+        },
+    )
+
+    rc = asyncio.run(runner.run("stream", concurrency=1, max_tenants=None, timeout=1))
+
+    assert rc == 0
+    rows = list(csv.DictReader(out_path.open(newline="")))
+    assert rows[0]["description"] == "full description"
+    assert StreamingScraper.calls == 1
+
+
 def test_streaming_pipeline_fetches_missing_descriptions_concurrently(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

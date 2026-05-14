@@ -529,6 +529,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # country exceeds the 10k pagination cap.
         "scraper": EuresScraper, "singleton": True,
         "output": "eures/jobs.csv",
+        # The pre-detail-fallback EURES CSV truncated descriptions at
+        # 500 chars. Do not reuse that legacy file as a cache, otherwise
+        # a full rerun would just preserve the truncated descriptions.
+        "skip_description_cache_if_max_len_lte": 500,
     },
     # Direct-posting providers from PR #15 — each is a single global
     # endpoint (slug ignored). Pass any value (e.g. ``"any"``) when
@@ -777,6 +781,25 @@ def _load_description_cache(path: Path) -> DescriptionCache:
     return cache
 
 
+def _descriptions_look_capped(path: Path, max_len: int) -> bool:
+    if not path.exists():
+        return False
+
+    found_description = False
+    try:
+        with path.open(newline="") as fh:
+            for row in csv.DictReader(fh):
+                description = (row.get("description") or "").strip()
+                if not description:
+                    continue
+                found_description = True
+                if len(description) > max_len:
+                    return False
+    except (OSError, csv.Error):
+        return False
+    return found_description
+
+
 def _cached_description(job: Job, cache: DescriptionCache) -> str | None:
     return cache.get(job)
 
@@ -897,7 +920,15 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_output_path = output_path.with_name(f".{output_path.name}.tmp")
     uses_streaming = bool(cfg.get("singleton") and hasattr(cfg["scraper"], "fetch_stream"))
-    description_cache = _load_description_cache(output_path)
+    cache_cap = cfg.get("skip_description_cache_if_max_len_lte")
+    if isinstance(cache_cap, int) and _descriptions_look_capped(output_path, cache_cap):
+        print(
+            f"[{ats}] Skipping previous description cache because "
+            f"descriptions look capped at <= {cache_cap} chars"
+        )
+        description_cache = DescriptionCache()
+    else:
+        description_cache = _load_description_cache(output_path)
     if description_cache.count:
         print(f"[{ats}] Loaded {description_cache.count:,} cached description keys")
     seen_keys: set[tuple[str, str]] = set()  # (company, ats_id) for cross-tenant dedup
