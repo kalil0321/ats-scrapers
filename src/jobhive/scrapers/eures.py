@@ -138,7 +138,9 @@ class EuresScraper(BaseScraper):
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
-            return job.description
+            cleaned = _clean_description_text(job.description)
+            if cleaned:
+                return cleaned
         if not job.ats_id:
             return _job_summary_description(job)
         try:
@@ -693,12 +695,16 @@ def _job_summary_description(job: Job) -> str | None:
 
 def _clean_description_text(value: str) -> str | None:
     text = html.unescape(value)
+    text = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", text)
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", " ", text)
     text = html.unescape(text)
     text = re.sub(r"[ \t\r\f\v]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()[:25_000] or None
+    text = text.strip()[:25_000]
+    if len(text) < 4:
+        return None
+    return text
 
 
 async def _gather_tolerant(

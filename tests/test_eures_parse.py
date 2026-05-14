@@ -73,6 +73,13 @@ def test_detail_description_prefers_real_description_over_fallback() -> None:
     assert _extract_detail_description(payload) == "Build European services."
 
 
+def test_zero_width_description_is_ignored() -> None:
+    job = EuresScraper("eures")._parse(_base_item(description="\u200b"))
+
+    assert job is not None
+    assert job.description is None
+
+
 def test_get_description_fetches_detail_api(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://europa.eu/eures/api/jv-searchengine/public/jv/id/abc123?lang=en",
@@ -106,6 +113,24 @@ def test_get_description_falls_back_to_job_summary_on_detail_404(httpx_mock) -> 
     assert job is not None
     assert EuresScraper("eures").get_description(job) == (
         "Software Engineer. Employer: Acme Corp. Location: DE (DE1)"
+    )
+
+
+def test_get_description_falls_back_when_existing_description_is_too_short(
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(
+        url="https://europa.eu/eures/api/jv-searchengine/public/jv/id/tiny?lang=en",
+        status_code=404,
+    )
+    job = EuresScraper("eures")._parse(
+        _base_item(id="tiny", description="OK", locationMap={"LV": ["LV009"]})
+    )
+
+    assert job is not None
+    assert job.description is None
+    assert EuresScraper("eures").get_description(job) == (
+        "Software Engineer. Employer: Acme Corp. Location: LV (LV009)"
     )
 
 
