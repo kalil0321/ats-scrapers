@@ -127,10 +127,12 @@ class DatasetPublisher:
         *,
         prefix: str = DEFAULT_PREFIX,
         write_parquet: bool = True,
+        write_all_csv: bool = True,
     ) -> None:
         self._r2 = r2_client
         self._prefix = prefix.strip("/")
         self._write_parquet = write_parquet
+        self._write_all_csv = write_all_csv
         if write_parquet:
             try:
                 import pyarrow  # noqa: F401
@@ -450,7 +452,7 @@ class DatasetPublisher:
                 all_entry["size_bytes"] = pq_size
                 all_entry["sha256"] = pq_sha
 
-            if "csv" in FORMATS_ALL:
+            if "csv" in FORMATS_ALL and self._write_all_csv:
                 csv_key = f"{self._prefix}/all.csv"
                 with _temp_file(".csv") as all_csv:
                     pl.scan_parquet(all_pq).sink_csv(all_csv)

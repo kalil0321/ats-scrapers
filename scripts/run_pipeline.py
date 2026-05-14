@@ -373,6 +373,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: (r.get("url") or "").strip() or None,
         "csv": "ats-companies/workday.csv",
         "output": "workday/jobs.csv",
+        # Workday descriptions require per-job detail calls. Let the pipeline
+        # consult the disk-backed description cache before issuing those calls;
+        # otherwise Workday hydrates every row inside fetch() and bypasses cache.
+        "defer_descriptions_to_cache": True,
     },
     "bamboohr": {
         "scraper": BambooHRScraper,
@@ -1022,6 +1026,9 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                             slug,
                             kw,
                             timeout,
+                            include_descriptions=not bool(
+                                cfg.get("defer_descriptions_to_cache")
+                            ),
                         )
                     if err == "not_found":
                         counts["not_found"] += 1
