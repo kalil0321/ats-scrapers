@@ -94,6 +94,21 @@ def test_get_description_fetches_detail_api(httpx_mock) -> None:
     )
 
 
+def test_get_description_falls_back_to_job_summary_on_detail_404(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://europa.eu/eures/api/jv-searchengine/public/jv/id/gone?lang=en",
+        status_code=404,
+    )
+    job = EuresScraper("eures")._parse(
+        _base_item(id="gone", description="", locationMap={"DE": ["DE1"]})
+    )
+
+    assert job is not None
+    assert EuresScraper("eures").get_description(job) == (
+        "Software Engineer. Employer: Acme Corp. Location: DE (DE1)"
+    )
+
+
 def test_french_non_renseigne_kept_verbatim() -> None:
     """86% of EURES FR rows. Must NOT be dropped, and must NOT be
     canonicalized — the locale string itself is information about

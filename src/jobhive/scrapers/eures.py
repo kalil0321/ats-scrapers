@@ -140,7 +140,7 @@ class EuresScraper(BaseScraper):
         if job.description:
             return job.description
         if not job.ats_id:
-            return None
+            return _job_summary_description(job)
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.get(
@@ -151,10 +151,10 @@ class EuresScraper(BaseScraper):
                     },
                 )
             if response.status_code != 200:
-                return None
-            return _extract_detail_description(response.json())
+                return _job_summary_description(job)
+            return _extract_detail_description(response.json()) or _job_summary_description(job)
         except (httpx.HTTPError, ValueError):
-            return None
+            return _job_summary_description(job)
 
     async def fetch_stream(self) -> AsyncGenerator[Job, None]:
         """Stream jobs as they're parsed.
@@ -670,6 +670,25 @@ def _detail_skills_text(values: object) -> str | None:
     if not parts:
         return None
     return "Required skills: " + "; ".join(parts)
+
+
+def _job_summary_description(job: Job) -> str | None:
+    """Last-resort searchable text when EURES publishes no description.
+
+    A small number of national feeds return an empty listing description
+    and either an empty/404 detail response. Keep those rows non-empty by
+    composing a factual summary from fields already present in the job.
+    """
+    parts = [job.title.strip()] if job.title and job.title.strip() else []
+    if job.company and job.company.strip():
+        parts.append(f"Employer: {job.company.strip()}")
+    if job.location and job.location.strip():
+        parts.append(f"Location: {job.location.strip()}")
+    if job.employment_type and job.employment_type.strip():
+        parts.append(f"Employment type: {job.employment_type.strip()}")
+    if job.commitment and job.commitment.strip():
+        parts.append(f"Contract type: {job.commitment.strip()}")
+    return ". ".join(parts)[:25_000] or None
 
 
 def _clean_description_text(value: str) -> str | None:
