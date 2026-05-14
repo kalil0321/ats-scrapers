@@ -55,6 +55,9 @@ API_URL = (
 DETAIL_URL_FMT = (
     "https://europa.eu/eures/portal/jv-se/jv-details/{jv_id}?lang=en"
 )
+DETAIL_API_URL_FMT = (
+    "https://europa.eu/eures/api/jv-searchengine/public/jv/id/{jv_id}?lang=en"
+)
 PAGE_SIZE = 50  # API caps `resultsPerPage` at 50 (>50 returns 400).
 PAGE_LIMIT = 200  # `page` caps at 200 (page>200 returns 400).
 PAGINATION_CAP = PAGE_SIZE * PAGE_LIMIT  # 10,000 jobs per query.
@@ -132,6 +135,26 @@ class EuresScraper(BaseScraper):
         VPS, so prefer :meth:`fetch_stream` from cron contexts that
         write straight to disk."""
         return asyncio.run(self._fetch_async())
+
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        if not job.ats_id:
+            return None
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.get(
+                    DETAIL_API_URL_FMT.format(jv_id=job.ats_id),
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": "Mozilla/5.0",
+                    },
+                )
+            if response.status_code != 200:
+                return None
+            return _extract_detail_description(response.json())
+        except (httpx.HTTPError, ValueError):
+            return None
 
     async def fetch_stream(self) -> AsyncGenerator[Job, None]:
         """Stream jobs as they're parsed.
@@ -211,26 +234,27 @@ class EuresScraper(BaseScraper):
         all_jobs: list[Job] = []
         lock = asyncio.Lock()
 
-        async def absorb(items: list[dict[str, Any]]) -> None:
-            # Dedup under the lock, then dispatch to the sink outside
-            # the lock so a slow ``on_job`` callback can't serialise
-            # every absorbing task on the lock.
-            new_jobs: list[Job] = []
-            async with lock:
-                for it in items:
-                    job = self._parse(it)
-                    if job is None or job.ats_id in seen:
-                        continue
-                    seen.add(job.ats_id)
-                    new_jobs.append(job)
-            if on_job is not None:
-                for job in new_jobs:
-                    await on_job(job)
-            else:
-                all_jobs.extend(new_jobs)
-
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
+
+            async def absorb(items: list[dict[str, Any]]) -> None:
+                # Dedup under the lock, then dispatch to the sink outside
+                # the lock so a slow ``on_job`` callback can't serialise
+                # every absorbing task on the lock.
+                new_jobs: list[Job] = []
+                async with lock:
+                    for it in items:
+                        job = self._parse(it)
+                        if job is None or job.ats_id in seen:
+                            continue
+                        seen.add(job.ats_id)
+                        new_jobs.append(job)
+                if on_job is not None:
+                    for job in new_jobs:
+                        await on_job(job)
+                else:
+                    all_jobs.extend(new_jobs)
+
             # Country-level fan-out — even tiny markets get their own
             # query so the 10k cap is split before we have to look at
             # facets at all.
@@ -567,6 +591,88 @@ def _extract_description(item: dict[str, Any]) -> str | None:
                         break
     if not isinstance(value, str) or not value.strip():
         return None
+    return _clean_description_text(value)
+
+
+def _extract_detail_description(payload: dict[str, Any]) -> str | None:
+    """Extract the richest text available from the EURES detail API.
+
+    Some national feeds publish a listing with no ``description`` at all,
+    but the detail API still has application instructions, employer text,
+    or required skills. Use those as a last-resort description so the row
+    remains searchable without hitting the browser-rendered Angular page.
+    """
+    candidates: list[str] = []
+    translation = payload.get("translation")
+    if isinstance(translation, dict):
+        description = translation.get("description")
+        if isinstance(description, str):
+            candidates.append(description)
+
+    profiles = payload.get("jvProfiles") or {}
+    if isinstance(profiles, dict):
+        preferred = payload.get("preferredLanguage")
+        ordered_profiles = []
+        if isinstance(preferred, str) and preferred in profiles:
+            ordered_profiles.append(profiles[preferred])
+        ordered_profiles.extend(
+            profile
+            for lang, profile in profiles.items()
+            if lang != preferred
+        )
+        for profile in ordered_profiles:
+            if not isinstance(profile, dict):
+                continue
+            description = profile.get("description")
+            if isinstance(description, str):
+                candidates.append(description)
+            employer = profile.get("employer") or {}
+            if isinstance(employer, dict):
+                employer_description = employer.get("description")
+                if isinstance(employer_description, str):
+                    candidates.append(employer_description)
+            skills = _detail_skills_text(profile.get("requiredSkills") or [])
+            if skills:
+                candidates.append(skills)
+            instructions = _detail_instructions_text(
+                profile.get("applicationInstructions") or []
+            )
+            if instructions:
+                candidates.append(f"Application instructions: {instructions}")
+
+    for candidate in candidates:
+        cleaned = _clean_description_text(candidate)
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _detail_instructions_text(values: object) -> str | None:
+    if not isinstance(values, list):
+        return None
+    text = " ".join(str(value) for value in values if value)
+    return text.strip() or None
+
+
+def _detail_skills_text(values: object) -> str | None:
+    if not isinstance(values, list):
+        return None
+    parts: list[str] = []
+    for value in values:
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, dict):
+            for key in ("prefLabel", "label", "description", "name"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    parts.append(candidate)
+                    break
+    if not parts:
+        return None
+    return "Required skills: " + "; ".join(parts)
+
+
+def _clean_description_text(value: str) -> str | None:
     text = html.unescape(value)
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", " ", text)

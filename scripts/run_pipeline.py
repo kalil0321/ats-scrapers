@@ -646,6 +646,7 @@ JOB_CSV_FIELDS = [
     "department", "team", "description", "posted_at",
     "requisition_id", "apply_url", "commitment", "raw",
 ]
+STREAM_DESCRIPTION_CONCURRENCY = 8
 
 
 class DescriptionCache:
@@ -917,24 +918,68 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             # RSS in legacy mode, exceeding the VPS RAM budget.
             if uses_streaming:
                 scraper = cfg["scraper"](ats, timeout=timeout)
+                pending_descriptions: set[asyncio.Task[Job]] = set()
+
+                def write_streamed_job(job: Job) -> None:
+                    writer.writerow(_job_to_row(job))
+                    counts["jobs"] += 1
+                    # Periodic flush so the file is consultable while
+                    # the long-running scrape is still in flight.
+                    if counts["jobs"] % 10_000 == 0:
+                        f.flush()
+                        elapsed = time.time() - t0
+                        print(
+                            f"  [{ats}] streamed {counts['jobs']:,} jobs in "
+                            f"{elapsed:.0f}s",
+                        )
+
+                async def enrich_missing_stream_description(job: Job) -> Job:
+                    await _ensure_description(scraper, job, description_cache)
+                    return job
+
+                async def drain_description_tasks(*, all_tasks: bool = False) -> None:
+                    nonlocal pending_descriptions
+                    if not pending_descriptions:
+                        return
+                    done, pending_descriptions = await asyncio.wait(
+                        pending_descriptions,
+                        return_when=(
+                            asyncio.ALL_COMPLETED
+                            if all_tasks
+                            else asyncio.FIRST_COMPLETED
+                        ),
+                    )
+                    for task in done:
+                        write_streamed_job(task.result())
+
                 try:
                     async for job in scraper.fetch_stream():
-                        await _ensure_description(scraper, job, description_cache)
-                        writer.writerow(_job_to_row(job))
-                        counts["jobs"] += 1
-                        # Periodic flush so the file is consultable while
-                        # the long-running scrape is still in flight.
-                        if counts["jobs"] % 10_000 == 0:
-                            f.flush()
-                            elapsed = time.time() - t0
-                            print(
-                                f"  [{ats}] streamed {counts['jobs']:,} jobs in "
-                                f"{elapsed:.0f}s",
+                        cached = _cached_description(job, description_cache)
+                        if cached:
+                            job.description = cached
+                            write_streamed_job(job)
+                        elif job.description:
+                            write_streamed_job(job)
+                        else:
+                            pending_descriptions.add(
+                                asyncio.create_task(
+                                    enrich_missing_stream_description(job)
+                                )
                             )
+                            if (
+                                len(pending_descriptions)
+                                >= STREAM_DESCRIPTION_CONCURRENCY
+                            ):
+                                await drain_description_tasks()
+                    await drain_description_tasks(all_tasks=True)
                     counts["success"] = 1
                 except CompanyNotFoundError:
+                    for task in pending_descriptions:
+                        task.cancel()
                     counts["not_found"] = 1
                 except Exception as exc:
+                    for task in pending_descriptions:
+                        task.cancel()
                     counts["error"] = 1
                     print(f"  [{ats}] streaming failed: {type(exc).__name__}: "
                           f"{str(exc)[:200]}")

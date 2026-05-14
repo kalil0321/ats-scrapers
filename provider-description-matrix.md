@@ -18,7 +18,7 @@ page/rendered page rather than a structured job payload.
 | `bundesagentur` | Yes | Yes | API | API |
 | `cornerstone` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `eightfold` | Yes | Yes | API | API |
-| `eures` | Yes | No | API/feed | API/feed |
+| `eures` | Yes | Yes | API/feed | API/feed + detail API fallback |
 | `gem` | Yes | Yes | API/feed | API/feed |
 | `getonbrd` | Yes | No | API/feed | API/feed |
 | `google` | Yes | Yes | HTML | HTML |
