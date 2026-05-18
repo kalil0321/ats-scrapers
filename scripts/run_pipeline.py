@@ -385,6 +385,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # consult the disk-backed description cache before issuing those calls;
         # otherwise Workday hydrates every row inside fetch() and bypasses cache.
         "defer_descriptions_to_cache": True,
+        # Rehydrating hundreds of thousands of cached descriptions turns the
+        # daily Workday listing refresh into a multi-hour CSV rewrite. Keep the
+        # main run listing-only; description enrichment needs a separate job.
+        "skip_description_enrichment": True,
         # Workday can take longer than the publish window on bad API days. Keep
         # publishing the previous stable jobs.csv while a replacement is built.
         "publish_previous_while_running": True,
@@ -1101,7 +1105,7 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                         if key in seen_keys:
                             continue
                         seen_keys.add(key)
-                        if scraper is not None:
+                        if scraper is not None and not cfg.get("skip_description_enrichment"):
                             desc_status = await _ensure_description(
                                 scraper, job, description_cache
                             )
