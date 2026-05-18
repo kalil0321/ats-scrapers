@@ -13,13 +13,6 @@ serves to bare httpx user-agents (post-Cloudflare hardening, observed
 the ``scrapers`` extra and used by Avature/JazzHR/Eightfold; no extra
 config or paid service involved.
 
-To recover company / location / salary on the per-job detail pages
-(which Built In renders client-side and is therefore invisible to a
-plain HTTP GET) the user can opt into Firecrawl-based enrichment by
-passing ``firecrawl_api_key="…"`` to the constructor or setting the
-``FIRECRAWL_API_KEY`` env variable. Firecrawl is a paid service; the
-scraper never calls it unless the user has explicitly enabled it.
-
 Single-source scraper: ``company_slug`` is informational and ignored.
 """
 
@@ -29,7 +22,6 @@ import asyncio
 import html
 import json
 import logging
-import os
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -48,13 +40,8 @@ if TYPE_CHECKING:
 API_ROOT = "https://builtin.com"
 DEFAULT_MAX_PAGES = 200
 MAX_CONCURRENCY_LISTING = 4
-# Enrichment is opt-in and per-job, so we cap it tighter to avoid
-# hammering Firecrawl's per-minute quota when the user fires up the
-# scraper.
-MAX_CONCURRENCY_ENRICH = 4
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
-FIRECRAWL_BASE = "https://api.firecrawl.dev"
 
 # Built In serves the JSON-LD with `&#x2B;` instead of '+' in the type
 # attribute. Match either; one regex per page payload.
@@ -74,12 +61,6 @@ class BuiltInScraper(BaseScraper):
     Knobs:
     - ``max_pages`` — pagination cap (default 200, ~3,000-6,000 jobs
       depending on the listing density on each page).
-    - ``firecrawl_api_key`` — opt-in detail-page enrichment via the
-      Firecrawl scraping service. Adds company / location / salary
-      to each Job. Costs roughly $0.001 per job — billed to the key
-      holder. Falls back to the ``FIRECRAWL_API_KEY`` env variable
-      when omitted; if neither is set, enrichment is skipped and
-      Jobs ship with title + URL + description only.
     """
 
     ats = ATSType.BUILTIN
@@ -90,15 +71,9 @@ class BuiltInScraper(BaseScraper):
         *,
         timeout: float = 30.0,
         max_pages: int = DEFAULT_MAX_PAGES,
-        firecrawl_api_key: str | None = None,
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
         self.max_pages = max_pages
-        self.firecrawl_api_key = (
-            firecrawl_api_key
-            or os.environ.get("FIRECRAWL_API_KEY")
-            or None
-        )
         # Flipped to True the first time the direct ``httpx`` path
         # returns 403; subsequent requests in this scraper instance
         # then go through ``httpcloak``. Reset by re-instantiating.
@@ -146,9 +121,6 @@ class BuiltInScraper(BaseScraper):
                 await absorb(page_jobs)
                 consecutive_empty = 0 if new else consecutive_empty + 1
                 page += 1
-
-            if self.firecrawl_api_key and jobs:
-                await self._enrich_via_firecrawl(client, jobs)
 
         return jobs
 
@@ -205,7 +177,7 @@ class BuiltInScraper(BaseScraper):
         return Job(
             url=url,
             title=title,
-            company="Unknown",  # filled in by enrichment if enabled
+            company="Unknown",
             ats_type=ATSType.BUILTIN,
             ats_id=ats_id,
             description=description,
@@ -324,87 +296,6 @@ class BuiltInScraper(BaseScraper):
         if isinstance(content, bytes):
             return content.decode("utf-8", errors="replace")
         return content
-
-    # --- optional Firecrawl enrichment --------------------------------------
-
-    async def _enrich_via_firecrawl(
-        self,
-        client: httpx.AsyncClient,
-        jobs: list[Job],
-    ) -> None:
-        """Fetch company / location / salary for each job via Firecrawl
-        with a fixed extraction schema. The original Job is replaced
-        in-place via ``model_copy``; failures fall through silently
-        (the listing-level fields are still good enough on their own).
-        """
-        sem = asyncio.Semaphore(MAX_CONCURRENCY_ENRICH)
-
-        async def enrich(idx: int, job: Job) -> None:
-            data = await self._firecrawl_extract(client, sem, str(job.url))
-            if not data:
-                return
-            updates: dict[str, Any] = {}
-            if (company := data.get("company")) and isinstance(company, str):
-                updates["company"] = company.strip() or job.company
-            if (loc := data.get("location")) and isinstance(loc, str):
-                updates["location"] = loc.strip() or job.location
-            sal_min = data.get("salary_min")
-            sal_max = data.get("salary_max")
-            if isinstance(sal_min, (int, float)) and sal_min > 0:
-                updates["salary_min"] = float(sal_min)
-                updates["salary_currency"] = "USD"
-                updates["salary_period"] = "YEAR"
-            if isinstance(sal_max, (int, float)) and sal_max > 0:
-                updates["salary_max"] = float(sal_max)
-                updates["salary_currency"] = "USD"
-                updates["salary_period"] = "YEAR"
-            if updates:
-                jobs[idx] = job.model_copy(update=updates)
-
-        await asyncio.gather(*(enrich(i, j) for i, j in enumerate(jobs)))
-
-    async def _firecrawl_extract(
-        self,
-        client: httpx.AsyncClient,
-        sem: asyncio.Semaphore,
-        url: str,
-    ) -> dict[str, Any] | None:
-        body = {
-            "url": url,
-            "formats": ["extract"],
-            "extract": {
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "company": {"type": "string"},
-                        "location": {"type": "string"},
-                        "salary_min": {"type": "number"},
-                        "salary_max": {"type": "number"},
-                    },
-                },
-            },
-        }
-        async with sem:
-            try:
-                r = await client.post(
-                    f"{FIRECRAWL_BASE}/v1/scrape",
-                    json=body,
-                    headers={
-                        "Authorization": f"Bearer {self.firecrawl_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    timeout=60,
-                )
-            except httpx.HTTPError:
-                return None
-        if r.status_code != 200:
-            return None
-        try:
-            payload = r.json()
-        except ValueError:
-            return None
-        data = payload.get("data") or {}
-        return data.get("extract") or data.get("json") or None
 
 
 def _strip_html(text: str) -> str:

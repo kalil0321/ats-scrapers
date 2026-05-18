@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import html as html_mod
 import re
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -88,6 +89,7 @@ MAX_SUBDIVISION_DEPTH = 4  # Recursion bound — Accenture needs depth 3 to full
 MAX_CONCURRENCY = 10
 MAX_RETRIES = 3
 RETRY_BACKOFF = 1.5
+MAX_RETRY_DELAY = 30.0
 
 # When a Workday job spans multiple offices, the search endpoint returns a
 # rollup string in ``locationsText`` like "2 Locations" / "5 Locations"
@@ -113,6 +115,17 @@ class WorkdayScraper(BaseScraper):
 
     ats = ATSType.WORKDAY
 
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        timeout: float = 30.0,
+        max_fetch_seconds: float | None = None,
+    ) -> None:
+        super().__init__(company_slug, timeout=timeout)
+        self.max_fetch_seconds = max_fetch_seconds
+        self._deadline: float | None = None
+
     def fetch(self) -> list[Job]:
         match = URL_PATTERN.match(self.company_slug.rstrip("/"))
         if not match:
@@ -129,7 +142,22 @@ class WorkdayScraper(BaseScraper):
         detail_prefix = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}"
         base = self.company_slug.split("/wday/")[0].rstrip("/")
 
-        return asyncio.run(self._fetch_async(api, base, company, detail_prefix))
+        self._deadline = (
+            time.monotonic() + self.max_fetch_seconds
+            if self.max_fetch_seconds
+            else None
+        )
+        try:
+            return asyncio.run(self._fetch_async(api, base, company, detail_prefix))
+        finally:
+            self._deadline = None
+
+    def _check_deadline(self) -> None:
+        if self._deadline is not None and time.monotonic() >= self._deadline:
+            raise ScraperError(
+                f"Workday tenant exceeded max_fetch_seconds="
+                f"{self.max_fetch_seconds:g}: {self.company_slug}"
+            )
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -270,6 +298,7 @@ class WorkdayScraper(BaseScraper):
         - Otherwise (cap reached, no more facets, or max depth) → take
           what we can from this capped query (up to 2000 jobs) and stop.
         """
+        self._check_deadline()
         first = await self._request(client, api, sem, applied_facets=applied_facets, offset=0)
         if first is None:
             return
@@ -310,6 +339,7 @@ class WorkdayScraper(BaseScraper):
         param, values = facet
 
         async def child(value_id: str) -> None:
+            self._check_deadline()
             child_filters = {**applied_facets, param: [value_id]}
             await self._exhaust_query(
                 client, api, sem,
@@ -329,9 +359,11 @@ class WorkdayScraper(BaseScraper):
         absorb,
     ) -> None:
         """Fan out offsets [PAGE_LIMIT, total) under the shared semaphore."""
+        self._check_deadline()
         offsets = list(range(PAGE_LIMIT, total, PAGE_LIMIT))
 
         async def fetch_one(offset: int) -> list[dict[str, Any]]:
+            self._check_deadline()
             payload = await self._request(
                 client, api, sem, applied_facets=applied_facets, offset=offset
             )
@@ -361,6 +393,7 @@ class WorkdayScraper(BaseScraper):
         retryable_statuses = {403, 429, 502, 503, 504}
         last_exc: Exception | None = None
         for attempt in range(MAX_RETRIES):
+            self._check_deadline()
             async with sem:
                 try:
                     response = await client.post(
@@ -368,7 +401,7 @@ class WorkdayScraper(BaseScraper):
                     )
                 except httpx.HTTPError as exc:
                     last_exc = exc
-                    await asyncio.sleep(RETRY_BACKOFF ** attempt)
+                    await asyncio.sleep(min(MAX_RETRY_DELAY, RETRY_BACKOFF ** attempt))
                     continue
             if response.status_code == 404:
                 raise CompanyNotFoundError(
@@ -383,6 +416,7 @@ class WorkdayScraper(BaseScraper):
                     float(retry_after) if retry_after and retry_after.isdigit()
                     else RETRY_BACKOFF ** attempt
                 )
+                delay = min(MAX_RETRY_DELAY, delay)
                 await asyncio.sleep(delay)
                 continue
             raise ScraperError(
