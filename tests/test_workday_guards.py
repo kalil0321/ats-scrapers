@@ -61,6 +61,9 @@ def test_workday_retry_after_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_workday_runner_sets_tenant_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JOBHIVE_WORKDAY_TENANT_TIMEOUT", "123")
-    kwargs = runner.CONFIGS["workday"]["kwargs"]({})
+    kwargs = runner.CONFIGS["workday"]["kwargs"]({"name": "Advocate Health"})
 
-    assert kwargs == {"max_fetch_seconds": 123.0}
+    assert kwargs == {
+        "max_fetch_seconds": 123.0,
+        "company_name": "Advocate Health",
+    }

@@ -352,6 +352,26 @@ def test_workday_short_response_returns_only_first_page(httpx_mock) -> None:
     assert jobs[0].title == "Only"
 
 
+def test_workday_uses_configured_company_name(httpx_mock) -> None:
+    api = "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs"
+    httpx_mock.add_response(
+        url=api,
+        json={
+            "jobPostings": [
+                {"title": "Only", "externalPath": "/job/1", "bulletFields": ["R1"]}
+            ],
+            "total": 1,
+        },
+    )
+
+    jobs = WorkdayScraper(
+        "https://acme.wd1.myworkdayjobs.com/External",
+        company_name="Acme Health",
+    ).fetch()
+
+    assert jobs[0].company == "Acme Health"
+
+
 def test_workday_invalid_url_raises() -> None:
     with pytest.raises(ScraperError, match="Workday URL"):
         WorkdayScraper("https://example.com").fetch()

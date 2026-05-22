@@ -121,9 +121,15 @@ class WorkdayScraper(BaseScraper):
         *,
         timeout: float = 30.0,
         max_fetch_seconds: float | None = None,
+        company_name: str | None = None,
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
         self.max_fetch_seconds = max_fetch_seconds
+        self.company_name = (
+            company_name.strip()
+            if company_name and company_name.strip()
+            else None
+        )
         self._deadline: float | None = None
 
     def fetch(self) -> list[Job]:
@@ -134,6 +140,7 @@ class WorkdayScraper(BaseScraper):
                 f"got {self.company_slug!r}"
             )
         company = match.group("company")
+        display_company = self.company_name or company
         instance = match.group("instance")
         site = match.group("site")
         api = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}/jobs"
@@ -148,7 +155,7 @@ class WorkdayScraper(BaseScraper):
             else None
         )
         try:
-            return asyncio.run(self._fetch_async(api, base, company, detail_prefix))
+            return asyncio.run(self._fetch_async(api, base, display_company, detail_prefix))
         finally:
             self._deadline = None
 

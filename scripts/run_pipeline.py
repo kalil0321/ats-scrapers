@@ -374,10 +374,11 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # company/instance/site components). The CSV stores `url` directly.
         "scraper": WorkdayScraper,
         "slug": lambda r: (r.get("url") or "").strip() or None,
-        "kwargs": lambda _r: {
+        "kwargs": lambda r: {
             "max_fetch_seconds": float(
                 os.environ.get("JOBHIVE_WORKDAY_TENANT_TIMEOUT", "900")
             ),
+            "company_name": (r.get("name") or "").strip() or None,
         },
         "csv": "ats-companies/workday.csv",
         "output": "workday/jobs.csv",
