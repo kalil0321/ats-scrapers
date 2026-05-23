@@ -69,10 +69,16 @@ class CornerstoneScraper(BaseScraper):
         *,
         timeout: float = 30.0,
         site_id: int = 1,
+        company_name: str | None = None,
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
         self.site_id = site_id
         self.career_url, self.slug = _resolve_career_url(company_slug, site_id)
+        self.company_name = (
+            company_name.strip()
+            if company_name and company_name.strip()
+            else self.slug
+        )
 
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
@@ -234,7 +240,7 @@ class CornerstoneScraper(BaseScraper):
         return Job(
             url=url,
             title=title,
-            company=self.slug,
+            company=self.company_name,
             ats_type=ATSType.CORNERSTONE,
             ats_id=ats_id,
             location=_format_locations(item.get("locations")),

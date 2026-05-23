@@ -293,6 +293,9 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # Scraper accepts either a bare slug OR the full career URL.
         # Prefer the slug column post-migration.
         "slug": lambda r: _slug_col(r) or r.get("url") or r.get("name"),
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
         "csv": "ats-companies/cornerstone.csv",
         "output": "cornerstone/jobs.csv",
     },

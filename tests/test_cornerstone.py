@@ -63,6 +63,7 @@ def test_default_career_url_built_from_slug() -> None:
     s = CornerstoneScraper("acme")
     assert s.career_url == "https://acme.csod.com/ux/ats/careersite/1/home?c=acme"
     assert s.slug == "acme"
+    assert s.company_name == "acme"
 
 
 def test_full_url_accepted() -> None:
@@ -129,6 +130,13 @@ def test_parses_basic_requisition(httpx_mock) -> None:
     assert job.company == "acme"
     assert job.ats_type is ATSType.CORNERSTONE
     assert job.posted_at is not None and job.posted_at.year == 2026
+
+
+def test_company_name_override_is_used_for_jobs(httpx_mock) -> None:
+    httpx_mock.add_response(url=CAREER_URL, text=_site_html())
+    httpx_mock.add_response(url=API_URL, json=_search_response([_req()], total=1))
+    jobs = CornerstoneScraper("acme", company_name="Acme Corp").fetch()
+    assert jobs[0].company == "Acme Corp"
 
 
 def test_strips_html_from_description(httpx_mock) -> None:

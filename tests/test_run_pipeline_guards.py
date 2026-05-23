@@ -30,6 +30,15 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
         == "https://eiqg.fa.us2.oraclecloud.com?site_number=CX_1"
     )
 
+    cornerstone_row = {
+        "name": "AAK",
+        "slug": "aak",
+        "url": "https://aak.csod.com/ux/ats/careersite/1/home?c=aak",
+    }
+    assert runner.CONFIGS["cornerstone"]["kwargs"](cornerstone_row) == {
+        "company_name": "AAK"
+    }
+
     eightfold_row = {
         "name": "Amdocs",
         "slug": "amdocs",
