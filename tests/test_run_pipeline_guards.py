@@ -76,6 +76,36 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
     }
     assert runner._avature_slug(avature_subdomain_row) == "bloomberg"
 
+    avature_custom_path_row = {
+        "name": "Premium Retail Services",
+        "slug": "premium",
+        "url": "https://premium.avature.net/en_US/jobs",
+    }
+    assert (
+        runner._avature_slug(avature_custom_path_row)
+        == "https://premium.avature.net/en_US/jobs"
+    )
+
+    avature_locale_path_row = {
+        "name": "Zung Fu",
+        "slug": "zungfu",
+        "url": "https://zungfu.avature.net/en_US/careers/SearchJobs",
+    }
+    assert (
+        runner._avature_slug(avature_locale_path_row)
+        == "https://zungfu.avature.net/en_US/careers/SearchJobs"
+    )
+
+    avature_maps_path_row = {
+        "name": "Premium Retail Services",
+        "slug": "premium",
+        "url": "https://premium.avature.net/en_US/jobs/SearchJobsMaps",
+    }
+    assert (
+        runner._avature_slug(avature_maps_path_row)
+        == "https://premium.avature.net/en_US/jobs/SearchJobsMaps"
+    )
+
 
 def test_catastrophic_failure_preserves_previous_jobs_csv(
     tmp_path, monkeypatch: pytest.MonkeyPatch

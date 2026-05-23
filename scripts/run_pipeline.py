@@ -132,11 +132,15 @@ def _personio_slug(row: dict[str, Any]) -> str | None:
 def _avature_slug(row: dict[str, Any]) -> str | None:
     """Avature tenants live at ``{slug}.avature.net`` (or sometimes the
     full careers URL). Extract the subdomain when a URL is present."""
+    url = (row.get("url") or "").strip()
     if (slug := _slug_col(row)):
         if slug.startswith(("http://", "https://")):
             return slug
+        if url.startswith("http"):
+            base = _avature_base_from_url(url)
+            if base is not None:
+                return base
         return slug.lower()
-    url = (row.get("url") or "").strip()
     if url.startswith("http"):
         m = re.match(r"https?://([a-z0-9][a-z0-9-]+)\.avature\.net",
                      url, re.IGNORECASE)
@@ -144,6 +148,16 @@ def _avature_slug(row: dict[str, Any]) -> str | None:
             return m.group(1).lower()
     name = (row.get("name") or "").strip()
     return name or None
+
+
+def _avature_base_from_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    path = parsed.path.rstrip("/")
+    if path == "/careers/SearchJobs":
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}{path}".rstrip("/")
 
 
 def _successfactors_slug(row: dict[str, Any]) -> str | None:

@@ -248,6 +248,61 @@ def test_full_base_url_is_supported_for_custom_domain_tenants(httpx_mock) -> Non
     assert str(jobs[0].url) == "https://careers.example.com/en_US/careers/JobDetail/Eng/1"
 
 
+def test_full_base_url_with_custom_search_path_is_supported(httpx_mock) -> None:
+    """Some custom-domain tenants use `/jobs/SearchJobs` or other portal
+    prefixes instead of the default `/careers/SearchJobs`."""
+    base = "https://jobs.example.com/jobs"
+    httpx_mock.add_response(
+        url=f"{base}/SearchJobs/?jobOffset=0&jobRecordsPerPage=12",
+        text='<a href="/jobs/ProjectDetail/Eng/1">Eng</a>',
+    )
+
+    jobs = AvatureScraper(base).fetch()
+
+    assert len(jobs) == 1
+    assert str(jobs[0].url) == "https://jobs.example.com/jobs/ProjectDetail/Eng/1"
+
+
+def test_full_searchjobs_url_is_supported(httpx_mock) -> None:
+    base = "https://company.example.com/custom/SearchJobs"
+    httpx_mock.add_response(
+        url=f"{base}/?jobOffset=0&jobRecordsPerPage=12",
+        text='<a href="/custom/JobDetail/Eng/1">Eng</a>',
+    )
+
+    jobs = AvatureScraper(base).fetch()
+
+    assert len(jobs) == 1
+    assert str(jobs[0].url) == "https://company.example.com/custom/JobDetail/Eng/1"
+
+
+def test_searchjobs_maps_pipeline_variant_is_supported(httpx_mock) -> None:
+    base = "https://company.example.com/en_US/jobs/SearchJobsMaps"
+    httpx_mock.add_response(
+        url=f"{base}/?pipelineOffset=0",
+        text=(
+            '<li class="list__item">'
+            '<div class="list__item__text__title">'
+            '<a href="https://company.example.com/en_US/jobs/'
+            'PipelineDetail?pipelineId=123">Retail Specialist</a>'
+            "</div>"
+            '<div class="list__item__text__subtitle">'
+            "<span>Chicago, Illinois, United States</span>"
+            "</div>"
+            "</li>"
+        ),
+    )
+
+    jobs = AvatureScraper(base).fetch()
+
+    assert len(jobs) == 1
+    assert jobs[0].ats_id == "123"
+    assert jobs[0].title == "Retail Specialist"
+    assert str(jobs[0].url) == (
+        "https://company.example.com/en_US/jobs/PipelineDetail?pipelineId=123"
+    )
+
+
 # --- Error handling --------------------------------------------------------
 
 
