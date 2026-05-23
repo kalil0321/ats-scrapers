@@ -105,9 +105,11 @@ def _recruitee_slug(row: dict[str, Any]) -> str | None:
     """Recruitee tenants live at ``{slug}.recruitee.com``. CSVs sometimes
     store the human-readable name in the ``name`` column and the slug in
     the URL — always parse the URL when present."""
-    if (slug := _slug_col(row)):
-        return slug.lower()
     url = (row.get("url") or "").strip()
+    if (slug := _slug_col(row)):
+        if url.startswith("http") and ".recruitee.com" not in urlparse(url).netloc:
+            return url.rstrip("/")
+        return slug.lower()
     if url.startswith("http"):
         m = re.match(r"https?://([a-z0-9][a-z0-9-]+)\.recruitee\.com", url, re.IGNORECASE)
         if m:

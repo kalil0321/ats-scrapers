@@ -76,6 +76,15 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
     }
     assert runner._avature_slug(avature_subdomain_row) == "bloomberg"
 
+    recruitee_custom_domain_row = {
+        "name": "Livestorm",
+        "slug": "livestorm",
+        "url": "https://jobs.livestorm.co",
+    }
+    assert runner._recruitee_slug(recruitee_custom_domain_row) == (
+        "https://jobs.livestorm.co"
+    )
+
 
 def test_catastrophic_failure_preserves_previous_jobs_csv(
     tmp_path, monkeypatch: pytest.MonkeyPatch
