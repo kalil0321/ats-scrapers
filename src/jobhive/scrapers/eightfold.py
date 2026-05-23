@@ -122,6 +122,10 @@ class EightfoldScraper(BaseScraper):
         # httpx or auto: try httpx first
         try:
             await self._fetch_via_httpx(seen, all_jobs)
+        except _SmartApplyRequired:
+            seen.clear()
+            all_jobs.clear()
+            await self._fetch_via_smartapply_httpx(seen, all_jobs)
         except _WAFBlocked as exc:
             if self.client_kind == "httpx":
                 raise ScraperError(
@@ -173,6 +177,35 @@ class EightfoldScraper(BaseScraper):
                     self._enrich_position_details(client, detail_sem, j)
                     for j in all_jobs
                 ))
+
+    async def _fetch_via_smartapply_httpx(
+        self, seen: set[str], all_jobs: list[Job]
+    ) -> None:
+        """Fetch tenants backed by Eightfold's public SmartApply endpoint."""
+        async with httpx.AsyncClient(
+            timeout=self.timeout,
+            follow_redirects=True,
+            limits=httpx.Limits(
+                max_connections=MAX_CONCURRENCY_HTTPX * 2,
+                max_keepalive_connections=MAX_CONCURRENCY_HTTPX,
+            ),
+        ) as client:
+            first = await self._fetch_page_smartapply_httpx(client, start=0)
+            self._collect(first.get("positions") or [], seen, all_jobs)
+            count = int(first.get("count") or 0)
+            if count <= PAGE_SIZE:
+                return
+            offsets = list(range(PAGE_SIZE, count, PAGE_SIZE))
+            sem = asyncio.Semaphore(MAX_CONCURRENCY_HTTPX)
+
+            async def task(offset: int) -> None:
+                async with sem:
+                    page = await self._fetch_page_smartapply_httpx(
+                        client, start=offset
+                    )
+                    self._collect(page.get("positions") or [], seen, all_jobs)
+
+            await asyncio.gather(*(task(o) for o in offsets))
 
     async def _enrich_position_details(
         self,
@@ -262,6 +295,8 @@ class EightfoldScraper(BaseScraper):
             if response.status_code == 200:
                 return response.json().get("data") or {}
             if response.status_code == 403:
+                if _is_pcsx_unavailable(response):
+                    raise _SmartApplyRequired(self.company_name)
                 raise _WAFBlocked(self.company_name, start)
             if response.status_code == 429:  # rate-limited
                 if attempt == MAX_RETRIES:
@@ -290,6 +325,73 @@ class EightfoldScraper(BaseScraper):
         # Defensive — loop should always raise or return.
         raise ScraperError(
             f"Eightfold ({self.company_name}) exhausted retries at start={start}: {last_exc}"
+        )
+
+    async def _fetch_page_smartapply_httpx(
+        self, client: httpx.AsyncClient, *, start: int
+    ) -> dict[str, Any]:
+        last_exc: Exception | None = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = await client.get(
+                    f"{self.base_url}/api/apply/v2/jobs",
+                    params={
+                        "domain": self.domain,
+                        "query": "",
+                        "location": "",
+                        "start": start,
+                        "sort_by": "timestamp",
+                    },
+                    headers={
+                        "User-Agent": "Mozilla/5.0",
+                        "Accept": "application/json, text/plain, */*",
+                    },
+                )
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt == MAX_RETRIES:
+                    raise ScraperError(
+                        f"Eightfold ({self.company_name}) SmartApply fetch "
+                        f"failed at start={start}: {exc}"
+                    ) from exc
+                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
+                continue
+
+            if response.status_code == 200:
+                try:
+                    payload = response.json()
+                except ValueError as exc:
+                    raise ScraperError(
+                        f"Eightfold ({self.company_name}) SmartApply returned "
+                        f"malformed JSON at start={start}: {exc}"
+                    ) from exc
+                return {
+                    "positions": payload.get("positions") or [],
+                    "count": payload.get("count") or 0,
+                }
+            if response.status_code in (429, 500, 502, 503, 504):
+                if attempt == MAX_RETRIES:
+                    raise ScraperError(
+                        f"Eightfold ({self.company_name}) SmartApply returned "
+                        f"{response.status_code} at start={start} after "
+                        f"{MAX_RETRIES} retries"
+                    )
+                retry_after = response.headers.get("Retry-After")
+                delay = (
+                    float(retry_after)
+                    if retry_after and retry_after.isdigit()
+                    else RETRY_BASE_DELAY * (2 ** attempt)
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise ScraperError(
+                f"Eightfold ({self.company_name}) SmartApply returned "
+                f"{response.status_code} at start={start}"
+            )
+
+        raise ScraperError(
+            f"Eightfold ({self.company_name}) SmartApply exhausted retries at "
+            f"start={start}: {last_exc}"
         )
 
     # --- httpcloak path (sync, but parallelized via to_thread) ----------
@@ -363,9 +465,14 @@ class EightfoldScraper(BaseScraper):
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
         ats_id = str(
-            item.get("displayJobId") or item.get("id") or item.get("atsJobId") or ""
+            item.get("displayJobId")
+            or item.get("display_job_id")
+            or item.get("id")
+            or item.get("atsJobId")
+            or item.get("ats_job_id")
+            or ""
         )
-        position = item.get("positionUrl") or ""
+        position = item.get("positionUrl") or item.get("canonicalPositionUrl") or ""
         if position.startswith("/"):
             url = f"{self.job_url_host}{position}"
         elif position:
@@ -377,19 +484,30 @@ class EightfoldScraper(BaseScraper):
         # ``atsJobId`` / ``displayJobId`` is the upstream requisition id and
         # collides with the underlying ATS's bulletFields[0]. That's the
         # signal the cross-ATS dedup pass uses (Pass 3).
-        requisition_id = item.get("atsJobId") or item.get("displayJobId")
+        requisition_id = (
+            item.get("atsJobId")
+            or item.get("ats_job_id")
+            or item.get("displayJobId")
+            or item.get("display_job_id")
+        )
 
         raw: dict[str, Any] = {}
-        for k in ("workLocationOption", "locationFlexibility",
-                  "category", "team", "businessUnit", "skills",
-                  "yearsOfExperience", "employmentType"):
+        for k in ("workLocationOption", "work_location_option",
+                  "locationFlexibility", "location_flexibility",
+                  "category", "team", "businessUnit", "business_unit",
+                  "skills", "yearsOfExperience", "employmentType"):
             v = item.get(k)
             if v:
                 raw[k] = v
 
         return Job(
             url=url,
-            title=item.get("name") or item.get("title") or "Untitled",
+            title=(
+                item.get("name")
+                or item.get("posting_name")
+                or item.get("title")
+                or "Untitled"
+            ),
             company=self.company_name,
             ats_type=self.ats,
             ats_id=ats_id,
@@ -397,7 +515,13 @@ class EightfoldScraper(BaseScraper):
             is_remote=_extract_remote(item),
             department=item.get("department"),
             requisition_id=str(requisition_id) if requisition_id and str(requisition_id) != ats_id else None,
-            posted_at=_parse_ts(item.get("postedTs") or item.get("creationTs")),
+            description=_strip_html(item.get("job_description") or "") or None,
+            posted_at=_parse_ts(
+                item.get("postedTs")
+                or item.get("creationTs")
+                or item.get("t_update")
+                or item.get("t_create")
+            ),
             fetched_at=datetime.now(),
             raw=raw or None,
         )
@@ -413,6 +537,23 @@ class _WAFBlocked(Exception):  # noqa: N818
         )
         self.company_name = company_name
         self.start = start
+
+
+class _SmartApplyRequired(Exception):  # noqa: N818
+    """Internal signal that PCSX is disabled for a SmartApply tenant."""
+
+    def __init__(self, company_name: str) -> None:
+        super().__init__(f"Eightfold ({company_name}) requires SmartApply API")
+        self.company_name = company_name
+
+
+def _is_pcsx_unavailable(response: httpx.Response) -> bool:
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    message = str(payload.get("message") or "").lower()
+    return "pcsx is not enabled" in message or "not authorized for pcsx" in message
 
 
 def _position_id_from_url(url: object) -> str | None:
@@ -460,7 +601,10 @@ def _extract_remote(item: dict[str, Any]) -> bool | None:
     'Onsite', 'Up to 100% work from home'. We map the obvious ones; unknowns
     fall through to None so consumers can still tell "we don't know" from
     "we know it's not remote"."""
-    for key in ("workLocationOption", "locationFlexibility"):
+    for key in (
+        "workLocationOption", "work_location_option",
+        "locationFlexibility", "location_flexibility",
+    ):
         value = item.get(key)
         if not isinstance(value, str):
             continue
