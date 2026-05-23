@@ -39,6 +39,17 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
         "https://amdocs.eightfold.ai"
     )
 
+    eightfold_domain_row = {
+        "name": "John Deere",
+        "slug": "deere",
+        "url": "https://careers.deere.com/careers",
+        "domain": "johndeere.com",
+    }
+    kwargs = runner._eightfold_kwargs(eightfold_domain_row)
+    assert kwargs["base_url"] == "https://careers.deere.com"
+    assert kwargs["domain"] == "johndeere.com"
+    assert kwargs["company_name"] == "John Deere"
+
 
 def test_catastrophic_failure_preserves_previous_jobs_csv(
     tmp_path, monkeypatch: pytest.MonkeyPatch
