@@ -1,6 +1,6 @@
 # Provider Description Matrix
 
-This table covers the 47 providers configured in `scripts/run_pipeline.py`.
+This table covers the 48 providers configured in `scripts/run_pipeline.py`.
 `API/feed` means the data comes from a machine-readable endpoint such as JSON,
 XML, RSS, GraphQL, or a markdown endpoint. `HTML` means the scraper parses a
 page/rendered page rather than a structured job payload.
@@ -46,6 +46,7 @@ page/rendered page rather than a structured job payload.
 | `teamtailor` | Yes | No | API/feed (RSS/XML) | API/feed (RSS/XML) |
 | `tesla` | Yes | Yes | API/feed / browser | API/feed |
 | `thehub` | Yes | No | API/feed | API/feed |
+| `tencent` | Yes | No | API/feed | API/feed |
 | `tiktok` | Yes | No | API/feed | API/feed |
 | `uber` | Yes | No | API/feed | API/feed |
 | `wanted` | Yes | Yes | API/feed | API/feed |
@@ -54,3 +55,12 @@ page/rendered page rather than a structured job payload.
 | `workable` | Yes | Yes | API/feed | API/feed (Markdown) |
 | `workday` | Yes | Yes | API/feed | API/feed |
 | `ycombinator` | Yes | No | API/feed | API/feed |
+
+## Notes
+
+- `tencent` covers Tencent's managed `careers.tencent.com` source
+  (`SourceID=1`). Descriptions come directly from the listing API payload
+  (`Responsibility` + `Requirement`), so no second detail request is needed.
+- Tencent jobs whose `PostURL` points to Workday (`SourceID=4`) are handled
+  by the existing `workday` pipeline, where descriptions require the Workday
+  detail API path.
