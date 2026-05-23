@@ -70,6 +70,7 @@ def test_full_url_accepted() -> None:
     s = CornerstoneScraper("https://thekids.csod.com/ux/ats/careersite/4/home?c=thekids")
     assert s.career_url.startswith("https://thekids.csod.com")
     assert s.slug == "thekids"
+    assert s.site_id == 4
 
 
 def test_custom_site_id() -> None:
