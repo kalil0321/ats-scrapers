@@ -50,6 +50,23 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
     assert kwargs["domain"] == "johndeere.com"
     assert kwargs["company_name"] == "John Deere"
 
+    avature_full_url_row = {
+        "name": "Australia Post",
+        "slug": "https://jobs.auspost.com.au/en_GB",
+        "url": "https://jobs.auspost.com.au/en_GB/careers/SearchJobs",
+    }
+    assert (
+        runner._avature_slug(avature_full_url_row)
+        == "https://jobs.auspost.com.au/en_GB"
+    )
+
+    avature_subdomain_row = {
+        "name": "Bloomberg",
+        "slug": "Bloomberg",
+        "url": "https://bloomberg.avature.net/careers/SearchJobs",
+    }
+    assert runner._avature_slug(avature_subdomain_row) == "bloomberg"
+
 
 def test_catastrophic_failure_preserves_previous_jobs_csv(
     tmp_path, monkeypatch: pytest.MonkeyPatch

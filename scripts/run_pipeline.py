@@ -133,6 +133,8 @@ def _avature_slug(row: dict[str, Any]) -> str | None:
     """Avature tenants live at ``{slug}.avature.net`` (or sometimes the
     full careers URL). Extract the subdomain when a URL is present."""
     if (slug := _slug_col(row)):
+        if slug.startswith(("http://", "https://")):
+            return slug
         return slug.lower()
     url = (row.get("url") or "").strip()
     if url.startswith("http"):
