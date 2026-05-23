@@ -559,6 +559,60 @@ def test_cross_ats_dedup_keeps_higher_priority_ats(
     assert df["url"].str.contains("workday.com").all()
 
 
+def test_cross_ats_dedup_keeps_workday_over_tencent_duplicate(
+    tmp_path, fake_r2
+) -> None:
+    """Tencent's managed API can expose jobs whose canonical apply URL is
+    Workday. The global snapshot should keep the Workday row for that same
+    posting while preserving both raw per-ATS slices."""
+    workday_dir = tmp_path / "workday"
+    tencent_dir = tmp_path / "tencent"
+    workday_dir.mkdir()
+    tencent_dir.mkdir()
+
+    pd.DataFrame([
+        {
+            "url": (
+                "https://tencent.wd1.myworkdayjobs.com/Tencent_Careers/"
+                "job/US-California-Palo-Alto/Talent-Acquisition-Intern_R107505-1"
+            ),
+            "title": "Talent Acquisition Intern 107505",
+            "company": "Tencent",
+            "ats_type": "workday",
+            "ats_id": "R107505",
+            "location": "Palo Alto, USA",
+        }
+    ]).to_csv(workday_dir / "jobs.csv", index=False)
+    pd.DataFrame([
+        {
+            "url": (
+                "https://tencent.wd1.myworkdayjobs.com/Tencent_Careers/"
+                "job/US-California-Palo-Alto/Talent-Acquisition-Intern_R107505-1"
+            ),
+            "title": "Talent Acquisition Intern 107505",
+            "company": "Tencent",
+            "ats_type": "tencent",
+            "ats_id": "2057194706961612800",
+            "location": "Palo Alto, USA",
+        }
+    ]).to_csv(tencent_dir / "jobs.csv", index=False)
+
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    result = publisher.publish_from_directory(tmp_path)
+
+    assert result.total_jobs_raw == 2
+    assert result.total_jobs == 1
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    assert manifest["by_ats"]["workday"]["rows"] == 1
+    assert manifest["by_ats"]["tencent"]["rows"] == 1
+
+    all_parquet = fake_r2.uploads["jobhive/v1/all.parquet"]["data"]
+    df = pd.read_parquet(pd.io.common.BytesIO(all_parquet))
+    assert len(df) == 1
+    assert df.iloc[0]["ats_type"] == "workday"
+    assert "myworkdayjobs.com" in df.iloc[0]["url"]
+
+
 # --- Phase 1 / Phase 2 cross-source fuzzy dedup -----------------------------
 
 

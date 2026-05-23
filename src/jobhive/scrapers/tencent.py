@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -43,12 +44,18 @@ class TencentScraper(BaseScraper):
         max_pages: int = DEFAULT_MAX_PAGES,
         language: str = "zh-cn",
         area: str = "cn",
+        source_ids: Iterable[int] | None = (1,),
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
         self.page_size = page_size
         self.max_pages = max_pages
         self.language = language
         self.area = area
+        self.source_ids = (
+            {str(source_id) for source_id in source_ids}
+            if source_ids is not None
+            else None
+        )
 
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
@@ -160,6 +167,14 @@ class TencentScraper(BaseScraper):
         return [job for post in posts if (job := self._parse_post(post)) is not None]
 
     def _parse_post(self, item: dict[str, Any]) -> Job | None:
+        source_id = item.get("SourceID")
+        if (
+            self.source_ids is not None
+            and source_id is not None
+            and str(source_id) not in self.source_ids
+        ):
+            return None
+
         ats_id = str(item.get("PostId") or item.get("RecruitPostId") or "")
         title = (item.get("RecruitPostName") or "").strip()
         if not ats_id or not title:
@@ -209,7 +224,7 @@ def _join_nonempty(*values: object, sep: str = ", ") -> str | None:
 def _parse_date(value: object) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
-    for fmt in ("%Y年%m月%d日", "%Y-%m-%d"):
+    for fmt in ("%Y年%m月%d日", "%Y-%m-%d", "%b %d,%Y", "%B %d,%Y"):
         try:
             return datetime.strptime(value.strip(), fmt)
         except ValueError:

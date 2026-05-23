@@ -76,6 +76,13 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
     }
     assert runner._avature_slug(avature_subdomain_row) == "bloomberg"
 
+    assert runner.CONFIGS["tencent"]["singleton"] is True
+    assert runner.CONFIGS["tencent"]["kwargs"]({}) == {
+        "language": "zh-cn",
+        "area": "cn",
+        "source_ids": (1,),
+    }
+
 
 def test_catastrophic_failure_preserves_previous_jobs_csv(
     tmp_path, monkeypatch: pytest.MonkeyPatch
@@ -150,6 +157,52 @@ def test_singleton_success_returns_zero_exit_code(
 
     assert rc == 0
     assert (tmp_path / "single" / "jobs.csv").exists()
+
+
+def test_singleton_kwargs_are_passed_to_scraper(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    class SingletonScraper:
+        def __init__(self, slug: str, **kwargs) -> None:
+            captured["slug"] = slug
+            captured.update(kwargs)
+
+        def fetch(self):
+            return [
+                Job(
+                    url="https://example.com/job/1",
+                    title="Engineer",
+                    company="Acme",
+                    ats_type=ATSType.CUSTOM,
+                    ats_id="1",
+                )
+            ]
+
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "single",
+        {
+            "scraper": SingletonScraper,
+            "singleton": True,
+            "kwargs": lambda r: {
+                "language": "zh-cn",
+                "area": "cn",
+                "source_ids": (1,),
+            },
+            "output": "single/jobs.csv",
+        },
+    )
+
+    rc = asyncio.run(runner.run("single", concurrency=1, max_tenants=None, timeout=1))
+
+    assert rc == 0
+    assert captured["slug"] == "single"
+    assert captured["language"] == "zh-cn"
+    assert captured["area"] == "cn"
+    assert captured["source_ids"] == (1,)
 
 
 def test_pipeline_reuses_previous_description_without_refetching(

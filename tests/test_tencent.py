@@ -66,6 +66,102 @@ def test_parses_tencent_job_payload(httpx_mock) -> None:
     assert j.raw["business_group"] == "TEG"
 
 
+def test_parses_real_managed_site_payload(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_RE,
+        json=_payload([
+            {
+                "PostId": "2058113526362451968",
+                "RecruitPostId": 120196,
+                "RecruitPostName": " 腾讯云-医疗交付架构师(公有云迁移方向）",
+                "CountryName": "中国",
+                "LocationName": "深圳",
+                "BGName": "CSIG",
+                "ProductName": "腾讯云",
+                "CategoryName": "产品",
+                "Responsibility": "1.负责医疗行业客户公有云迁移项目的交付技术架构工作",
+                "LastUpdateTime": "2026年05月23日",
+                "PostURL": "http://careers.tencent.com/jobdesc.html?postId=2058113526362451968",
+                "SourceID": 1,
+                "RequireWorkYearsName": "五年以上工作经验",
+            }
+        ]),
+    )
+
+    jobs = TencentScraper("any", language="zh-cn", area="cn").fetch()
+    assert len(jobs) == 1
+    assert str(jobs[0].url) == (
+        "http://careers.tencent.com/jobdesc.html?postId=2058113526362451968"
+    )
+    assert jobs[0].title == "腾讯云-医疗交付架构师(公有云迁移方向）"
+    assert jobs[0].location == "深圳, 中国"
+    assert jobs[0].team == "腾讯云"
+    assert jobs[0].posted_at is not None
+    assert jobs[0].language == "zh"
+
+
+def test_skips_real_workday_backed_payload_by_default(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_RE,
+        json=_payload([
+            {
+                "PostId": "2057194706961612800",
+                "RecruitPostId": 1254692268815900672,
+                "RecruitPostName": "Talent Acquisition Intern 107505",
+                "CountryName": "USA",
+                "LocationName": "Palo Alto",
+                "BGName": "S3",
+                "CategoryName": "Human Resources",
+                "LastUpdateTime": "May 20,2026",
+                "PostURL": (
+                    "https://tencent.wd1.myworkdayjobs.com/Tencent_Careers/"
+                    "job/US-California-Palo-Alto/Talent-Acquisition-Intern_R107505-1"
+                ),
+                "SourceID": 4,
+            }
+        ]),
+    )
+
+    jobs = TencentScraper("any", language="en-us", area="us").fetch()
+    assert jobs == []
+
+
+def test_can_parse_real_workday_backed_payload_when_all_sources_enabled(
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(
+        url=_API_RE,
+        json=_payload([
+            {
+                "PostId": "2057194706961612800",
+                "RecruitPostId": 1254692268815900672,
+                "RecruitPostName": "Talent Acquisition Intern 107505",
+                "CountryName": "USA",
+                "LocationName": "Palo Alto",
+                "BGName": "S3",
+                "CategoryName": "Human Resources",
+                "LastUpdateTime": "May 20,2026",
+                "PostURL": (
+                    "https://tencent.wd1.myworkdayjobs.com/Tencent_Careers/"
+                    "job/US-California-Palo-Alto/Talent-Acquisition-Intern_R107505-1"
+                ),
+                "SourceID": 4,
+            }
+        ]),
+    )
+
+    jobs = TencentScraper(
+        "any", language="en-us", area="us", source_ids=None
+    ).fetch()
+    assert len(jobs) == 1
+    assert str(jobs[0].url) == (
+        "https://tencent.wd1.myworkdayjobs.com/Tencent_Careers/"
+        "job/US-California-Palo-Alto/Talent-Acquisition-Intern_R107505-1"
+    )
+    assert jobs[0].posted_at is not None
+    assert jobs[0].language == "en"
+
+
 def test_paginates_and_dedupes(httpx_mock) -> None:
     httpx_mock.add_response(
         url=_API_RE,

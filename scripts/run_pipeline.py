@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import fcntl
 import csv
-import os
+import fcntl
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -72,6 +72,7 @@ from jobhive.scrapers import (
     SuccessFactorsScraper,
     TaleoScraper,
     TeamtailorScraper,
+    TencentScraper,
     TeslaScraper,
     TheHubScraper,
     TikTokScraper,
@@ -531,6 +532,14 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "scraper": TikTokScraper, "singleton": True,
         "output": "tiktok/jobs.csv",
     },
+    "tencent": {
+        # Tencent has two live sources: its managed careers API and a Workday
+        # board. Keep Workday wired separately and scrape the managed
+        # careers.tencent.com surface here so site-only jobs are not missed.
+        "scraper": TencentScraper, "singleton": True,
+        "kwargs": lambda r: {"language": "zh-cn", "area": "cn", "source_ids": (1,)},
+        "output": "tencent/jobs.csv",
+    },
     "uber": {
         "scraper": UberScraper, "singleton": True,
         "output": "uber/jobs.csv",
@@ -945,11 +954,12 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
     cfg = CONFIGS[ats]
 
     targets: list[tuple[str, dict[str, Any]]] = []
+    kwargs_factory = cfg.get("kwargs")
     if cfg.get("singleton"):
         # Single-tenant scraper (big-tech bespoke careers). No CSV — call
         # the scraper once with the ATS name as a placeholder slug; the
         # scraper itself ignores it (each company has its own private API).
-        targets = [(ats, {})]
+        targets = [(ats, kwargs_factory({}) if kwargs_factory else {})]
     else:
         csv_path = DATA_ROOT / cfg["csv"]
         if not csv_path.exists():
@@ -957,7 +967,6 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             return 0
         with csv_path.open(newline="") as fh:
             rows = list(csv.DictReader(fh))
-        kwargs_factory = cfg.get("kwargs")
         for r in rows:
             slug = cfg["slug"](r)
             if slug:
