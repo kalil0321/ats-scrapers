@@ -1,47 +1,63 @@
-name,slug,url
-Amdocs,amdocs,https://amdocs.eightfold.ai/careers
-Arcadis,arcadis,https://arcadis.eightfold.ai/careers
-Boston Scientific,bostonscientific,https://bostonscientific.eightfold.ai/careers
-Citi,citi,https://citi.eightfold.ai/careers
-Coca-Cola Europacific Partners,ccep,https://ccep.eightfold.ai/careers
-Corteva Agriscience,corteva,https://corteva.eightfold.ai/careers
-dsm-firmenich,dsm,https://dsm.eightfold.ai/careers
-Dexcom,dexcom,https://dexcom.eightfold.ai/careers
-Dolby,dolby,https://dolby.eightfold.ai/careers
-Eaton,eaton,https://eaton.eightfold.ai/careers
-Ericsson,ericsson,https://ericsson.eightfold.ai/careers
-Estée Lauder Companies,elcompanies,https://elcompanies.eightfold.ai/careers
-Ford,ford,https://ford.eightfold.ai/careers
-Fortive,fortive,https://fortive.eightfold.ai/careers
-OATRH,puertoricogov,https://puertoricogov.eightfold.ai/careers
-Bimbo Bakeries USA,grupobimbo,https://grupobimbo.eightfold.ai/careers
-Hasbro,hasbro,https://hasbro.eightfold.ai/careers
-Kraft Heinz,kraftheinz,https://kraftheinz.eightfold.ai/careers
-Lam Research,lamresearch,https://lamresearch.eightfold.ai/careers
-MercadoLibre,mercadolibre,https://mercadolibre.eightfold.ai/careers
-Micron Technology,micron,https://micron.eightfold.ai/careers
-Microsoft,microsoft,https://microsoft.eightfold.ai/careers
-Modern Technology Solutions Inc,mtsi-va,https://mtsi-va.eightfold.ai/careers
-Morgan Stanley,morganstanley,https://morganstanley.eightfold.ai/careers
-NTT DATA,nttdata,https://nttdata.eightfold.ai/careers
-Northrop Grumman,ngc,https://ngc.eightfold.ai/careers
-NVIDIA Corporation,nvidia,https://nvidia.eightfold.ai/careers
-PayPal,paypal,https://paypal.eightfold.ai/careers
-PTC,ptc,https://ptc.eightfold.ai/careers
-Qualcomm,qualcomm,https://qualcomm.eightfold.ai/careers
-Ralliant,ralliant,https://ralliant.eightfold.ai/careers
-Starbucks,starbucks,https://starbucks.eightfold.ai/careers
-Tailored Brands,tailoredbrands,https://tailoredbrands.eightfold.ai/careers
-TriNet,trinet,https://trinet.eightfold.ai/careers
-Trimble,trimble,https://trimble.eightfold.ai/careers
-Twilio,twilio,https://twilio.eightfold.ai/careers
-UKG,ukg,https://ukg.eightfold.ai/careers
-Vialto Partners,vialto,https://vialto.eightfold.ai/careers
-Vodafone,vodafone,https://vodafone.eightfold.ai/careers
-Whirlpool,whirlpool,https://whirlpool.eightfold.ai/careers
-Applied Materials,appliedmaterials,https://appliedmaterials.eightfold.ai/careers
-CACI,caci,https://caci.eightfold.ai/careers
-Kering,kering,https://kering.eightfold.ai/careers
-SLB,slb,https://slb.eightfold.ai/careers
-Softtek,softtek,https://softtek.eightfold.ai/careers
-Deutsche Telekom,telekom-growthhub,https://telekom-growthhub.eightfold.ai/careers
+name,slug,url,domain
+10x Genomics,10xgenomics,https://10xgenomics.eightfold.ai/careers,
+Amdocs,amdocs,https://amdocs.eightfold.ai/careers,
+Applied Materials,appliedmaterials,https://appliedmaterials.eightfold.ai/careers,
+Arcadis,arcadis,https://arcadis.eightfold.ai/careers,
+Bayer,bayer,https://bayer.eightfold.ai/careers,
+Bimbo Bakeries USA,grupobimbo,https://grupobimbo.eightfold.ai/careers,
+Boston Scientific,bostonscientific,https://bostonscientific.eightfold.ai/careers,
+CACI,caci,https://caci.eightfold.ai/careers,
+Citi,citi,https://citi.eightfold.ai/careers,
+Coca-Cola Europacific Partners,ccep,https://ccep.eightfold.ai/careers,
+Corteva Agriscience,corteva,https://corteva.eightfold.ai/careers,
+CoStar Group,costar,https://costar.eightfold.ai/careers,
+Deloitte,deloitte,https://deloitte.eightfold.ai/careers,deloitte.de
+Deutsche Telekom,telekom-growthhub,https://telekom-growthhub.eightfold.ai/careers,
+Dexcom,dexcom,https://dexcom.eightfold.ai/careers,
+Dolby,dolby,https://dolby.eightfold.ai/careers,
+dsm-firmenich,dsm,https://dsm.eightfold.ai/careers,
+Eaton,eaton,https://eaton.eightfold.ai/careers,
+Ericsson,ericsson,https://ericsson.eightfold.ai/careers,
+Estée Lauder Companies,elcompanies,https://elcompanies.eightfold.ai/careers,
+Ford,ford,https://ford.eightfold.ai/careers,
+Fortive,fortive,https://fortive.eightfold.ai/careers,
+Forvia,faurecia,https://faurecia.eightfold.ai/careers,
+Haleon,haleon,https://haleon.eightfold.ai/careers,
+Hasbro,hasbro,https://hasbro.eightfold.ai/careers,
+Houston ISD,houstonisd,https://apply.houstonisd.org/careers,houstonisd.org
+HSBC,hsbc,https://hsbc.eightfold.ai/careers,
+Insight,insight,https://insight.eightfold.ai/careers,
+John Deere,deere,https://careers.deere.com/careers,johndeere.com
+Johns Hopkins University,jhu,https://jhu.eightfold.ai/careers,jhu.edu
+Kering,kering,https://kering.eightfold.ai/careers,
+Kraft Heinz,kraftheinz,https://kraftheinz.eightfold.ai/careers,
+Lam Research,lamresearch,https://lamresearch.eightfold.ai/careers,
+Liberty Mutual Insurance,libertymutual,https://libertymutual.eightfold.ai/careers,
+Match Group,gotinder,https://gotinder.eightfold.ai/careers,
+MercadoLibre,mercadolibre,https://mercadolibre.eightfold.ai/careers,
+Micron Technology,micron,https://micron.eightfold.ai/careers,
+Microsoft,microsoft,https://microsoft.eightfold.ai/careers,
+Modern Technology Solutions Inc,mtsi-va,https://mtsi-va.eightfold.ai/careers,
+Morgan Stanley,morganstanley,https://morganstanley.eightfold.ai/careers,
+New York Life,newyorklife,https://newyorklife.eightfold.ai/careers,
+Northrop Grumman,ngc,https://ngc.eightfold.ai/careers,
+NTT DATA,nttdata,https://nttdata.eightfold.ai/careers,
+NVIDIA Corporation,nvidia,https://nvidia.eightfold.ai/careers,
+OATRH,puertoricogov,https://puertoricogov.eightfold.ai/careers,
+PayPal,paypal,https://paypal.eightfold.ai/careers,
+PTC,ptc,https://ptc.eightfold.ai/careers,
+Qualcomm,qualcomm,https://qualcomm.eightfold.ai/careers,
+Ralliant,ralliant,https://ralliant.eightfold.ai/careers,
+SLB,slb,https://slb.eightfold.ai/careers,
+Softtek,softtek,https://softtek.eightfold.ai/careers,
+Starbucks,starbucks,https://starbucks.eightfold.ai/careers,
+Symetra,symetra,https://symetra.eightfold.ai/careers,
+Tailored Brands,tailoredbrands,https://tailoredbrands.eightfold.ai/careers,
+Trimble,trimble,https://trimble.eightfold.ai/careers,
+TriNet,trinet,https://trinet.eightfold.ai/careers,
+Twilio,twilio,https://twilio.eightfold.ai/careers,
+UKG,ukg,https://ukg.eightfold.ai/careers,
+Vialto Partners,vialto,https://vialto.eightfold.ai/careers,
+Vodafone,vodafone,https://vodafone.eightfold.ai/careers,
+Whirlpool,whirlpool,https://whirlpool.eightfold.ai/careers,
+Worley,worley,https://worley.eightfold.ai/careers,
