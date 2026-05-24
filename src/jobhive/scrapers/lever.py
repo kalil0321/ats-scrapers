@@ -147,14 +147,44 @@ class LeverScraper(BaseScraper):
                     employment_type = mapped
                     break
 
-        # Description: ``descriptionPlain`` is the canonical body. Cap
-        # at 25k chars; the schema field allows up to that.
-        description = item.get("descriptionPlain") or item.get("description")
-        description = (
-            description.strip()[:25_000] or None
-            if isinstance(description, str)
-            else None
-        )
+        # Description assembly. Lever's API exposes the body across multiple
+        # fields: ``description`` (intro HTML) plus a separate ``lists``
+        # array carrying the structured sections (Responsibilities,
+        # Requirements, Compensation Details, etc.) as HTML chunks. The
+        # ``descriptionPlain`` text-only field is shorter than ``description``
+        # AND completely omits ``lists`` content, so previously preferring it
+        # silently dropped 50–80% of each posting's body.
+        #
+        # Now we always concatenate the HTML intro with each lists section
+        # (prefixing the section's heading), and rely on the post-scrape
+        # markdownify step in scripts/normalize_descriptions.py to render
+        # the assembled HTML to clean markdown.
+        intro_html = item.get("description") or ""
+        if not isinstance(intro_html, str):
+            intro_html = ""
+        sections = item.get("lists") or []
+        parts: list[str] = []
+        if intro_html.strip():
+            parts.append(intro_html)
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            heading = (section.get("text") or "").strip()
+            content = (section.get("content") or "").strip()
+            if not content:
+                continue
+            if heading:
+                parts.append(f"<h3>{heading}</h3>\n{content}")
+            else:
+                parts.append(content)
+        description: str | None = None
+        if parts:
+            assembled = "\n\n".join(parts)
+            description = assembled.strip()[:25_000] or None
+        elif isinstance(item.get("descriptionPlain"), str):
+            # Last-ditch fallback: the legacy plain-text field. Rare —
+            # only fires when both ``description`` and ``lists`` are empty.
+            description = item["descriptionPlain"].strip()[:25_000] or None
 
         raw: dict[str, Any] = {}
         if categories:

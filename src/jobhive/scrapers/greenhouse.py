@@ -161,10 +161,13 @@ class GreenhouseScraper(BaseScraper):
 def _clean_description(value: object) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
-    # Greenhouse double-encodes: unescape HTML entities, then strip tags.
-    text = html_mod.unescape(value)
-    text = _TAG_RE.sub(" ", text)
-    text = re.sub(r"\s+", " ", text).strip()
+    # Greenhouse double-encodes ``content``: ``<div>`` shows up as
+    # ``&lt;div&gt;``. Unescape once to recover real HTML; then leave the
+    # tags in place so the post-scrape markdownify step can preserve
+    # paragraph breaks, bullet lists, and headings. The previous brutal
+    # tag-strip collapsed the body into a single space-separated blob,
+    # losing all visual structure.
+    text = html_mod.unescape(value).strip()
     return text[:25_000] or None
 
 

@@ -215,7 +215,7 @@ class RecruiterboxScraper(BaseScraper):
             ),
             team=item.get("team") or None,
             commitment=item.get("position_type") if isinstance(item.get("position_type"), str) else None,
-            description=_html_to_text(item.get("description")),
+            description=_html_unescape_for_desc(item.get("description")),
             posted_at=_parse_iso(item.get("created_on") or item.get("updated_on")),
             fetched_at=datetime.now(),
             raw=raw or None,

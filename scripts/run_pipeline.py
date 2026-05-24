@@ -387,14 +387,15 @@ CONFIGS: dict[str, dict[str, Any]] = {
         },
         "csv": "ats-companies/workday.csv",
         "output": "workday/jobs.csv",
-        # Workday descriptions require per-job detail calls. Let the pipeline
-        # consult the disk-backed description cache before issuing those calls;
-        # otherwise Workday hydrates every row inside fetch() and bypasses cache.
+        # Workday descriptions require per-job detail calls. Defer to the
+        # disk-backed description cache so the scraper's internal enrichment
+        # stays off (it would re-fetch every row, bypassing the cache).
         "defer_descriptions_to_cache": True,
-        # Rehydrating hundreds of thousands of cached descriptions turns the
-        # daily Workday listing refresh into a multi-hour CSV rewrite. Keep the
-        # main run listing-only; description enrichment needs a separate job.
-        "skip_description_enrichment": True,
+        # Persistent zstd-compressed SQLite cache. ~700k entries from the
+        # 2026-05 backfill seed the file; daily runs hit the cache for already
+        # known URLs and only fetch the detail endpoint for new listings.
+        "description_cache_path": "workday/descriptions.sqlite3",
+        "description_cache_compress": True,
         # Workday can take longer than the publish window on bad API days. Keep
         # publishing the previous stable jobs.csv while a replacement is built.
         "publish_previous_while_running": True,
@@ -707,57 +708,111 @@ def _pipeline_lock(ats: str):
 
 
 class DescriptionCache:
-    """Disk-backed description cache built from the previous jobs CSV."""
+    """Disk-backed description cache, optionally persistent and zstd-compressed.
 
-    def __init__(self) -> None:
+    Two modes:
+
+    - **Ephemeral** (default): ``DescriptionCache()`` creates a tempfile that
+      gets removed on :meth:`close`. Behavior matches the legacy single-run
+      cache rebuilt each pipeline invocation via :meth:`load_csv`.
+
+    - **Persistent**: ``DescriptionCache(path=Path("...sqlite3"))`` opens (or
+      creates) the named file and keeps it across runs. Use for ATSes where
+      rebuilding from CSV every day is wasteful — e.g. Workday at ~700k
+      entries. New fetches accumulate in-place via :meth:`set`.
+
+    ``compress=True`` stores the description column as zstd-compressed BLOB.
+    Cuts disk footprint by ~70% on typical HTML/markdown text. Read overhead
+    is single-digit milliseconds per lookup, which is dwarfed by the network
+    fetch cost it replaces.
+    """
+
+    def __init__(self, path: Path | None = None, compress: bool = False) -> None:
         self.conn: sqlite3.Connection | None = None
-        with tempfile.NamedTemporaryFile(
-            prefix="jobhive-description-cache-",
-            suffix=".sqlite3",
-            delete=False,
-        ) as tmp:
-            self.path = Path(tmp.name)
+        self.compress = compress
+        self._compressor = None
+        self._decompressor = None
+        if compress:
+            import zstandard
+            self._compressor = zstandard.ZstdCompressor(level=3)
+            self._decompressor = zstandard.ZstdDecompressor()
+
+        if path is None:
+            with tempfile.NamedTemporaryFile(
+                prefix="jobhive-description-cache-",
+                suffix=".sqlite3",
+                delete=False,
+            ) as tmp:
+                self.path = Path(tmp.name)
+            self._owns_tempfile = True
+        else:
+            self.path = Path(path)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._owns_tempfile = False
+
         try:
             self.conn = sqlite3.connect(self.path)
-            self.conn.execute("PRAGMA journal_mode=OFF")
-            self.conn.execute("PRAGMA synchronous=OFF")
+            if self._owns_tempfile:
+                # Ephemeral tempfile cache — favor raw insert speed over crash
+                # safety (file is discarded on close anyway).
+                self.conn.execute("PRAGMA journal_mode=OFF")
+                self.conn.execute("PRAGMA synchronous=OFF")
+            else:
+                # Persistent cache — WAL gives concurrent reader safety while
+                # writes stay durable. NORMAL sync is sufficient for our
+                # daily-replay-on-loss model.
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                self.conn.execute("PRAGMA synchronous=NORMAL")
             self.conn.execute("PRAGMA temp_store=MEMORY")
             self.conn.execute(
                 """
-                CREATE TABLE descriptions (
+                CREATE TABLE IF NOT EXISTS descriptions (
                     kind TEXT NOT NULL,
                     cache_key TEXT NOT NULL,
-                    description TEXT NOT NULL,
+                    description BLOB NOT NULL,
                     PRIMARY KEY (kind, cache_key)
                 )
                 """
             )
+            self.count = self.conn.execute(
+                "SELECT COUNT(*) FROM descriptions"
+            ).fetchone()[0]
         except Exception:
             if self.conn is not None:
                 self.conn.close()
-            self.path.unlink(missing_ok=True)
+            if self._owns_tempfile:
+                self.path.unlink(missing_ok=True)
             raise
-        self.count = 0
 
     def close(self) -> None:
         if self.conn is not None:
             self.conn.close()
             self.conn = None
-        self.path.unlink(missing_ok=True)
+        if self._owns_tempfile:
+            self.path.unlink(missing_ok=True)
+
+    def _encode(self, description: str) -> bytes:
+        raw = description.encode("utf-8")
+        return self._compressor.compress(raw) if self.compress else raw
+
+    def _decode(self, blob: bytes) -> str:
+        raw = self._decompressor.decompress(blob) if self.compress else blob
+        return raw.decode("utf-8")
 
     def load_csv(self, path: Path) -> None:
         if not path.exists():
             return
 
-        batch: list[tuple[str, str, str]] = []
+        batch: list[tuple[str, str, bytes]] = []
         try:
             with path.open(newline="") as fh:
                 for row in csv.DictReader(fh):
                     description = (row.get("description") or "").strip()
                     if not description:
                         continue
+                    blob = self._encode(description)
                     for key in _row_description_keys(row):
-                        batch.append((*key, description))
+                        batch.append((*key, blob))
                     if len(batch) >= 2_000:
                         self._insert_many(batch)
                         batch.clear()
@@ -770,7 +825,7 @@ class DescriptionCache:
             "SELECT COUNT(*) FROM descriptions"
         ).fetchone()[0]
 
-    def _insert_many(self, rows: list[tuple[str, str, str]]) -> int:
+    def _insert_many(self, rows: list[tuple[str, str, bytes]]) -> int:
         cur = self.conn.executemany(
             """
             INSERT OR IGNORE INTO descriptions (kind, cache_key, description)
@@ -791,11 +846,12 @@ class DescriptionCache:
                 (kind, key),
             ).fetchone()
             if row:
-                return row[0]
+                return self._decode(row[0])
         return None
 
     def set(self, job: Job, description: str) -> None:
-        rows = [(*key, description) for key in _description_keys(job)]
+        blob = self._encode(description)
+        rows = [(*key, blob) for key in _description_keys(job)]
         if rows:
             self.count += self._insert_many(rows)
 
@@ -824,8 +880,33 @@ def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
     return keys
 
 
-def _load_description_cache(path: Path) -> DescriptionCache:
-    cache = DescriptionCache()
+def _load_description_cache(
+    path: Path,
+    *,
+    persistent_path: Path | None = None,
+    compress: bool = False,
+    bootstrap_csv: Path | None = None,
+) -> DescriptionCache:
+    """Open a description cache, ephemeral or persistent.
+
+    - ``persistent_path``: when set, opens the SQLite file at that path and
+      reuses it across runs. Otherwise builds a fresh tempfile cache from
+      ``path``.
+    - ``compress``: forwarded to :class:`DescriptionCache`. Recommended for
+      persistent caches with large descriptions (e.g. Workday).
+    - ``bootstrap_csv``: if the persistent cache is empty on open, seed it
+      from this CSV. Useful for the first run after enabling persistence.
+    """
+    if persistent_path is not None:
+        cache = DescriptionCache(path=persistent_path, compress=compress)
+        if cache.count == 0 and bootstrap_csv is not None:
+            try:
+                cache.load_csv(bootstrap_csv)
+            except Exception:
+                cache.close()
+                raise
+        return cache
+    cache = DescriptionCache(compress=compress)
     try:
         cache.load_csv(path)
     except Exception:
@@ -907,7 +988,7 @@ def _job_to_row(job: Job) -> dict[str, Any]:
         "employment_type": job.employment_type or "",
         "department": job.department or "",
         "team": job.team or "",
-        "description": (job.description or "")[:25_000].replace("\n", " "),
+        "description": (job.description or "")[:25_000],
         "posted_at": job.posted_at.isoformat() if job.posted_at else "",
         "requisition_id": job.requisition_id or "",
         "apply_url": str(job.apply_url) if job.apply_url else "",
@@ -981,16 +1062,32 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
         tmp_output_path = output_path.with_name(f".{output_path.name}.tmp")
     uses_streaming = bool(cfg.get("singleton") and hasattr(cfg["scraper"], "fetch_stream"))
     cache_cap = cfg.get("skip_description_cache_if_max_len_lte")
+    persistent_path_rel = cfg.get("description_cache_path")
+    persistent_path = (DATA_ROOT / persistent_path_rel) if persistent_path_rel else None
+    cache_compress = bool(cfg.get("description_cache_compress"))
     if isinstance(cache_cap, int) and _descriptions_look_capped(output_path, cache_cap):
         print(
             f"[{ats}] Skipping previous description cache because "
             f"descriptions look capped at <= {cache_cap} chars"
         )
-        description_cache = DescriptionCache()
+        description_cache = DescriptionCache(compress=cache_compress)
+    elif persistent_path is not None:
+        # Persistent cache: open the file and reuse it across runs. Seed from
+        # the previous jobs.csv only if the cache is empty (first-run bootstrap).
+        description_cache = _load_description_cache(
+            output_path,
+            persistent_path=persistent_path,
+            compress=cache_compress,
+            bootstrap_csv=output_path,
+        )
     else:
-        description_cache = _load_description_cache(output_path)
+        description_cache = _load_description_cache(output_path, compress=cache_compress)
     if description_cache.count:
-        print(f"[{ats}] Loaded {description_cache.count:,} cached description keys")
+        location = "persistent" if persistent_path else "ephemeral"
+        print(
+            f"[{ats}] Loaded {description_cache.count:,} cached description keys "
+            f"({location} cache at {description_cache.path})"
+        )
     seen_keys: set[tuple[str, str]] = set()  # (company, ats_id) for cross-tenant dedup
 
     t0 = time.time()

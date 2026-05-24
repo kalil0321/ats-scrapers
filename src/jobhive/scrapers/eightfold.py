@@ -215,7 +215,7 @@ class EightfoldScraper(BaseScraper):
         data = payload.get("data") or {}
         desc_html = data.get("jobDescription")
         if isinstance(desc_html, str) and desc_html.strip() and not job.description:
-            job.description = _strip_html(desc_html)[:25_000] or None
+            job.description = _html_unescape_for_desc(desc_html, cap=25_000) or None
 
     async def _fetch_page_httpx(
         self, client: httpx.AsyncClient, *, start: int

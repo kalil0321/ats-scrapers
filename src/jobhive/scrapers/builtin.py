@@ -172,7 +172,7 @@ class BuiltInScraper(BaseScraper):
         ats_id = match.group("id")
         description = item.get("description") or None
         if isinstance(description, str):
-            description = _strip_html(description) or None
+            description = _html_unescape_for_desc(description) or None
 
         return Job(
             url=url,

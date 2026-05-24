@@ -289,7 +289,7 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
     """
     desc_html = detail.get("descriptionHtml")
     if isinstance(desc_html, str) and desc_html.strip():
-        job.description = _strip_html(desc_html)[:25_000] or None
+        job.description = _html_unescape_for_desc(desc_html, cap=25_000) or None
 
     # Posted date — Gem ships ``firstPublishedTsSec`` (epoch seconds) and
     # ``startDateTs`` (epoch seconds, *future* go-live). Prefer the
