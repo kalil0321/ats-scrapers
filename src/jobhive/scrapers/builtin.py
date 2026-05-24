@@ -298,6 +298,20 @@ class BuiltInScraper(BaseScraper):
         return content
 
 
+def _html_unescape_for_desc(value: object, *, cap: int = 25_000) -> str | None:
+    """Unescape HTML entities and trim/cap, but keep tags intact so the
+    post-scrape markdownify pass can preserve paragraph and list structure.
+    Replaces the legacy _strip_html/_html_to_text path for descriptions
+    only — title/company/salary fields still use the strip variant."""
+    import html as _h
+    if not isinstance(value, str):
+        return None
+    out = _h.unescape(value).strip()
+    if not out:
+        return None
+    return out[:cap]
+
+
 def _strip_html(text: str) -> str:
     cleaned = re.sub(r"<[^>]+>", " ", text)
     cleaned = html.unescape(cleaned)

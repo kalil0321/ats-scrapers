@@ -25,6 +25,7 @@ import os
 import json
 import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -707,6 +708,14 @@ def _pipeline_lock(ats: str):
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
+# Schema layout version stored in SQLite's PRAGMA user_version. Bumping
+# this number tells the cache to refuse opening an older file whose row
+# format we no longer know how to decode (e.g. legacy ``description
+# TEXT`` rows that would silently come back as ``str`` through the BLOB
+# read path and crash zstd decompression).
+_CACHE_SCHEMA_VERSION = 2
+
+
 class DescriptionCache:
     """Disk-backed description cache, optionally persistent and zstd-compressed.
 
@@ -764,6 +773,40 @@ class DescriptionCache:
                 self.conn.execute("PRAGMA journal_mode=WAL")
                 self.conn.execute("PRAGMA synchronous=NORMAL")
             self.conn.execute("PRAGMA temp_store=MEMORY")
+            # Schema-version pragma. Bump when the table layout or encoding
+            # changes incompatibly so an older persistent file fails loudly
+            # at open instead of silently mixing schemas. Version 1 is the
+            # original ``description TEXT`` layout; version 2 introduced
+            # ``description BLOB`` to carry optionally-zstd-compressed bytes.
+            current_user_version = self.conn.execute(
+                "PRAGMA user_version"
+            ).fetchone()[0]
+            existing_rows = 0
+            existing_table = self.conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='descriptions'"
+            ).fetchone()
+            if existing_table is not None:
+                existing_rows = self.conn.execute(
+                    "SELECT COUNT(*) FROM descriptions"
+                ).fetchone()[0]
+            if existing_rows > 0 and current_user_version != _CACHE_SCHEMA_VERSION:
+                # Bail loudly rather than try to interpret an unknown layout
+                # — silently returning TEXT bytes through the BLOB path
+                # leaks ``str`` rows that then crash _decode().
+                if self.conn is not None:
+                    self.conn.close()
+                    self.conn = None
+                if self._owns_tempfile:
+                    self.path.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"DescriptionCache schema mismatch at {self.path}: "
+                    f"file user_version={current_user_version}, "
+                    f"code expects {_CACHE_SCHEMA_VERSION}. Delete the "
+                    f"file and let the pipeline reseed it from the "
+                    f"current jobs.csv (or run scripts/build_workday_cache "
+                    f"if a backfill seed is available)."
+                )
             self.conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS descriptions (
@@ -773,6 +816,9 @@ class DescriptionCache:
                     PRIMARY KEY (kind, cache_key)
                 )
                 """
+            )
+            self.conn.execute(
+                f"PRAGMA user_version = {_CACHE_SCHEMA_VERSION}"
             )
             self.count = self.conn.execute(
                 "SELECT COUNT(*) FROM descriptions"
@@ -1270,6 +1316,25 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             return 1
 
         tmp_output_path.replace(output_path)
+
+        # Post-scrape description normalization. Most scrapers now emit
+        # HTML in the description column (lever, ashby, greenhouse, the
+        # batch of 6 that used to strip-and-flatten, apple's assembled
+        # body, etc.) and rely on this step to produce clean markdown
+        # before publish. Skippable per-ATS via ``skip_normalize`` for
+        # paths that handle their own markdown upstream (e.g. workable
+        # which fetches .md natively). Failure is non-fatal — a broken
+        # normalize pass shouldn't lose the day's scrape.
+        if not cfg.get("skip_normalize"):
+            try:
+                _normalize_output(ats, output_path)
+            except Exception as exc:  # pragma: no cover - defensive
+                print(
+                    f"[{ats}] WARN: description normalization failed "
+                    f"({type(exc).__name__}: {str(exc)[:200]}); "
+                    f"leaving raw scraper output in {output_path}"
+                )
+
         if counts["error"] >= failure_threshold:
             print(
                 f"[{ats}] ACTION investigate: scrape kept partial data but "
@@ -1279,6 +1344,37 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
         return 0
     finally:
         description_cache.close()
+
+
+def _normalize_output(ats: str, jobs_csv: Path) -> None:
+    """Invoke scripts/normalize_descriptions.py on the freshly-written
+    jobs.csv. The normalize script is a separate file rather than an
+    in-process import so a crash in the normalizer can't take down the
+    scraper pipeline.
+    """
+    script_path = Path(__file__).resolve().parent / "normalize_descriptions.py"
+    if not script_path.exists():
+        print(f"[{ats}] WARN: {script_path} missing, skipping normalize")
+        return
+    workers = max(1, (os.cpu_count() or 4) - 1)
+    cmd = [
+        sys.executable,
+        str(script_path),
+        str(jobs_csv),
+        "-j", str(workers),
+    ]
+    t0 = time.time()
+    print(f"[{ats}] normalizing descriptions ({workers} workers)...")
+    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(
+            f"[{ats}] WARN: normalize exited {result.returncode}; "
+            f"stderr tail: {result.stderr[-400:]}"
+        )
+        return
+    elapsed = time.time() - t0
+    last_line = (result.stdout or "").strip().splitlines()[-1:] or [""]
+    print(f"[{ats}] normalize done in {elapsed:.1f}s — {last_line[0]}")
 
 
 def main() -> int:

@@ -233,6 +233,20 @@ def _format_location(value: object) -> str | None:
     return ", ".join(parts) or None
 
 
+def _html_unescape_for_desc(value: object, *, cap: int = 25_000) -> str | None:
+    """Unescape HTML entities and trim/cap, but keep tags intact so the
+    post-scrape markdownify pass can preserve paragraph and list structure.
+    Replaces the legacy _strip_html/_html_to_text path for descriptions
+    only — title/company/salary fields still use the strip variant."""
+    import html as _h
+    if not isinstance(value, str):
+        return None
+    out = _h.unescape(value).strip()
+    if not out:
+        return None
+    return out[:cap]
+
+
 def _html_to_text(value: object) -> str | None:
     if not isinstance(value, str) or not value:
         return None

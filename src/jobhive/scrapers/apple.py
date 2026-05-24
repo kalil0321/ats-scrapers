@@ -42,10 +42,12 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.0
 DETAIL_CONCURRENCY = 25
 DETAIL_TIMEOUT_S = 10.0
-# Regex over the raw HTML — the loader payload is a single huge
-# JSON.parse("…escaped JSON…") expression. We pull the inner string
-# and unescape it before json.loads.
-_LOADER_RE = re.compile(r'JSON\.parse\("(.+?)"\)', re.DOTALL)
+# Marker we walk forward from to extract the JS string literal passed
+# to ``JSON.parse``. Regex non-greedy ``"(.+?)"`` would truncate any
+# payload containing the byte sequence ``")`` inside an escaped string
+# (e.g. ``\"OKRs\")`` in job copy), so we instead scan the JS string
+# character-by-character respecting backslash escapes.
+_LOADER_PREFIX = 'JSON.parse("'
 
 _LOG = logging.getLogger(__name__)
 
@@ -386,18 +388,53 @@ async def _enrich_apple_details(jobs: list[Job], timeout_s: float) -> None:
                 j.description = by_position[pid]
 
 
+def _extract_js_string_literal(html: str, marker: str) -> str | None:
+    """Find ``marker`` in ``html`` and return the JS double-quoted string
+    that immediately follows it. Walks character-by-character respecting
+    backslash escapes so payloads containing ``\\")`` survive intact.
+    Returns the inner (still-escaped) string content without the
+    surrounding quotes, or ``None`` if the marker isn't found or the
+    string is unterminated.
+    """
+    start = html.find(marker)
+    if start < 0:
+        return None
+    i = start + len(marker)
+    n = len(html)
+    body_chars: list[str] = []
+    while i < n:
+        ch = html[i]
+        if ch == "\\":
+            # Take the backslash and the following char as a unit.
+            if i + 1 >= n:
+                return None
+            body_chars.append(ch)
+            body_chars.append(html[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            return "".join(body_chars)
+        body_chars.append(ch)
+        i += 1
+    return None
+
+
 def _extract_apple_posting(html: str) -> dict[str, Any] | None:
     """Pull the ``posting`` object out of the React loader-data JSON."""
-    m = _LOADER_RE.search(html)
-    if not m:
+    encoded = _extract_js_string_literal(html, _LOADER_PREFIX)
+    if encoded is None:
         return None
-    encoded = m.group(1)
     try:
-        # The loader payload is JSON encoded as a JS string. Decode the
-        # JS string escapes (\n, \", \uXXXX) into the real JSON text.
-        raw_json = encoded.encode("utf-8").decode("unicode_escape")
+        # The loader payload is JSON encoded as a JS string. The JSON
+        # decoder itself handles all JS-string escape sequences (\n,
+        # \", \uXXXX surrogate pairs, etc.) correctly when fed a quoted
+        # string, so we wrap the captured payload in quotes and let
+        # json.loads do the unescape. This avoids the lone-surrogate
+        # bug that ``codecs.decode(..., "unicode_escape")`` exhibits on
+        # supplementary-plane characters (emoji, math symbols, …).
+        raw_json = json.loads('"' + encoded + '"')
         data = json.loads(raw_json)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError):
         return None
 
     loader = data.get("loaderData") or {}

@@ -342,6 +342,20 @@ def _extract_is_remote(locations: list[dict[str, Any]]) -> bool | None:
     return False if any(isinstance(loc, dict) for loc in locations) else None
 
 
+def _html_unescape_for_desc(value: object, *, cap: int = 25_000) -> str | None:
+    """Unescape HTML entities and trim/cap, but keep tags intact so the
+    post-scrape markdownify pass can preserve paragraph and list structure.
+    Replaces the legacy _strip_html/_html_to_text path for descriptions
+    only — title/company/salary fields still use the strip variant."""
+    import html as _h
+    if not isinstance(value, str):
+        return None
+    out = _h.unescape(value).strip()
+    if not out:
+        return None
+    return out[:cap]
+
+
 def _strip_html(text: str) -> str:
     text = _TAG_RE.sub(" ", text)
     text = html_mod.unescape(text)
