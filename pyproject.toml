@@ -84,6 +84,11 @@ publish = [
     # the raw HTML several scrapers (lever, ashby, greenhouse, the
     # batch of 6 strip-html scrapers, apple's assembled body) now emit.
     "markdownify>=0.13",
+    # linkify-it-py runs as the final pass over each normalized
+    # description: bare URLs and emails left in plain-text postings
+    # get wrapped in CommonMark autolinks (``<https://…>``) so the
+    # viewer renders them as clickable links.
+    "linkify-it-py>=2.0",
     # zstandard backs the optional compress=True path on the persistent
     # DescriptionCache. Workday's cache uses it to keep ~700k entries
     # under 3 GB on disk; without this package the persistent cache

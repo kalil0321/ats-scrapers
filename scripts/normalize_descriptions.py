@@ -29,6 +29,62 @@ def _md_lazy():
         _MD = md
     return _MD
 
+
+_LINKIFY = None
+def _linkify_lazy():
+    """linkify-it-py is the canonical URL/email/IP detector and the same
+    library markdown-it-py uses for its linkify plugin. Lazy-import so the
+    worker subprocess only pays the import cost once per process."""
+    global _LINKIFY
+    if _LINKIFY is None:
+        from linkify_it import LinkifyIt
+        from linkify_it.tlds import TLDS
+        l = LinkifyIt()
+        l.tlds(TLDS)  # full ICANN/IANA TLD set
+        _LINKIFY = l
+    return _LINKIFY
+
+
+def autolink(text: str) -> str:
+    """Wrap bare URLs and emails in CommonMark autolink syntax (``<url>``).
+
+    Markdownify converts real ``<a href=…>`` anchors to ``[text](url)``
+    already; this pass picks up the URLs that were rendered as plain
+    text in the source (typical in plain-text job postings: "apply at
+    https://acme.com/jobs"). We skip URLs that are already part of a
+    markdown link, an existing autolink, or an image — splicing inside
+    those would double-wrap.
+
+    Email addresses get ``<addr@host>`` which most markdown renderers
+    auto-link as ``mailto:`` links.
+    """
+    if not text:
+        return text
+    linkify = _linkify_lazy()
+    matches = linkify.match(text)
+    if not matches:
+        return text
+    # Walk matches in reverse so earlier indices stay valid as we splice.
+    out = text
+    for m in reversed(matches):
+        start, end = m.index, m.last_index
+        # Skip if already inside an existing markdown link or autolink
+        # by checking the chars immediately around the match.
+        before = out[max(0, start - 2):start]
+        after = out[end:end + 2]
+        if before.endswith("](") or before.endswith("<") or after.startswith(">"):
+            continue
+        # Skip the markdown image syntax ``![alt](url)`` too.
+        if before.endswith("!"):
+            continue
+        if "@" in m.url and not m.url.startswith(("http://", "https://", "ftp://")):
+            replacement = f"<{m.url}>"
+        else:
+            replacement = f"<{m.url}>"
+        out = out[:start] + replacement + out[end:]
+    return out
+
+
 HTML_BLOCK_RE = re.compile(
     r"<(?:p|div|ul|ol|li|h[1-6]|br|table|tr|td|a|strong|em|b|i|span|section|article|hr|blockquote)\b",
     re.IGNORECASE,
@@ -40,6 +96,10 @@ WS_RUN_RE = re.compile(r"\s+")
 
 
 def normalize_one(s):
+    """Pipeline: route to markdownify / strip-unescape / fast-path, then
+    apply autolink to whatever ended up in the output. Bare URLs and
+    emails that survived earlier branches become CommonMark autolinks.
+    """
     if s is None:
         return None
     s = s.strip()
@@ -54,14 +114,17 @@ def normalize_one(s):
         except Exception:
             out = re.sub(r"<[^>]+>", "", s)
             out = html.unescape(out)
-        return (BLANK_RUN_RE.sub("\n\n", out).strip() or None)
+        out = BLANK_RUN_RE.sub("\n\n", out).strip()
+        return autolink(out) or None
     if HTML_ANY_TAG_RE.search(s):
         out = re.sub(r"<[^>]+>", "", s)
         out = html.unescape(out)
-        return (WS_RUN_RE.sub(" ", out).strip() or None)
+        out = WS_RUN_RE.sub(" ", out).strip()
+        return autolink(out) or None
     if HTML_ENTITY_RE.search(s):
-        return (html.unescape(s).strip() or None)
-    return s
+        out = html.unescape(s).strip()
+        return autolink(out) or None
+    return autolink(s)
 
 
 def _normalize_descs(descs):
