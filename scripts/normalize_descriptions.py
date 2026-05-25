@@ -69,11 +69,28 @@ def _normalize_descs(descs):
     return [normalize_one(d) for d in descs]
 
 
+def _positive_int(value: str) -> int:
+    """argparse type that rejects 0 and negative values. Used for
+    ``--chunk`` and ``-j`` because both feed into denominators in the
+    progress logger and worker fan-out — a non-positive value would
+    raise ZeroDivisionError or spawn 0 workers."""
+    try:
+        ivalue = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected integer, got {value!r}") from exc
+    if ivalue < 1:
+        raise argparse.ArgumentTypeError(
+            f"must be >= 1 (got {ivalue})"
+        )
+    return ivalue
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("csv_path", type=Path)
-    p.add_argument("-j", "--workers", type=int, default=max(1, multiprocessing.cpu_count() - 1))
-    p.add_argument("--chunk", type=int, default=2000)
+    p.add_argument("-j", "--workers", type=_positive_int,
+                   default=max(1, multiprocessing.cpu_count() - 1))
+    p.add_argument("--chunk", type=_positive_int, default=2000)
     p.add_argument("--column", default="description")
     args = p.parse_args()
 

@@ -339,6 +339,13 @@ async def _enrich_apple_details(jobs: list[Job], timeout_s: float) -> None:
     """
     sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
     seen_positions: set[str] = set()
+    # Position ids whose detail page was successfully parsed and whose
+    # corresponding job row got its description replaced with the
+    # assembled long body. Used in the broadcast pass below to tell the
+    # hydrated long description apart from the short ``jobSummary`` that
+    # sibling rows (same posting, different location) inherited from
+    # the search payload.
+    hydrated_positions: set[str] = set()
 
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(DETAIL_TIMEOUT_S, connect=4.0),
@@ -369,23 +376,33 @@ async def _enrich_apple_details(jobs: list[Job], timeout_s: float) -> None:
             description = _assemble_apple_description(posting)
             if description:
                 job.description = description[:25_000]
+                hydrated_positions.add(position_id)
 
         await asyncio.gather(
             *(hydrate(j) for j in jobs),
             return_exceptions=True,
         )
 
-        # Second pass: broadcast hydrated descriptions to sibling jobs
-        # (same position id, different location).
-        by_position: dict[str, str] = {}
+        # Second pass: broadcast each hydrated long description to every
+        # sibling row of the same position. The initial ``jobSummary``
+        # those siblings inherited from search is shorter (often ~500
+        # chars) than the assembled detail body (~2-5k chars), so we
+        # always overwrite — gated on ``hydrated_positions`` so a
+        # detail fetch that failed doesn't get its sibling's existing
+        # ``jobSummary`` wiped or duplicated.
+        hydrated_desc_by_position: dict[str, str] = {}
         for j in jobs:
             pid = (j.requisition_id or "").split("@")[0]
-            if pid and j.description and pid not in by_position:
-                by_position[pid] = j.description
+            if (
+                pid in hydrated_positions
+                and j.description
+                and pid not in hydrated_desc_by_position
+            ):
+                hydrated_desc_by_position[pid] = j.description
         for j in jobs:
             pid = (j.requisition_id or "").split("@")[0]
-            if pid and not j.description and pid in by_position:
-                j.description = by_position[pid]
+            if pid in hydrated_desc_by_position:
+                j.description = hydrated_desc_by_position[pid]
 
 
 def _extract_js_string_literal(html: str, marker: str) -> str | None:
