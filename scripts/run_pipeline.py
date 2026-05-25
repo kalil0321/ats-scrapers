@@ -990,10 +990,24 @@ async def _ensure_description(
     cache: DescriptionCache,
 ) -> str:
     cached = _cached_description(job, cache)
+    fresh = job.description
     if cached:
-        job.description = cached
-        return "cache"
-    if job.description:
+        # Prefer the longer description. The cache is the previous run's
+        # jobs.csv (or a persistent SQLite). When the scraper has already
+        # populated ``job.description`` from the current API (e.g. lever,
+        # which assembles ``description`` + ``lists[]`` in _parse_job,
+        # or apple which hydrates per-job detail pages), a recent code
+        # update may produce a fuller body than the previously-cached
+        # one. Trust whichever has more content; ties go to fresh.
+        if not fresh or len(cached) > len(fresh):
+            job.description = cached
+            return "cache"
+        # Fresh is at least as long — keep it AND write it back to the
+        # cache so the next run picks up the improvement immediately
+        # instead of recomputing it.
+        cache.set(job, fresh)
+        return "present"
+    if fresh:
         return "present"
     try:
         description = await asyncio.to_thread(scraper.get_description, job)
