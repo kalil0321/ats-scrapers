@@ -33,7 +33,7 @@ def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     import jobhive.scrapers.apple as m
     monkeypatch.setattr(m, "RETRY_BASE_DELAY", 0.0)
 
-    async def _no_enrich(jobs, timeout_s):  # noqa: ARG001
+    async def _no_enrich(jobs, timeout_s):
         return
 
     monkeypatch.setattr(m, "_enrich_apple_details", _no_enrich)

@@ -871,10 +871,18 @@ class DescriptionCache:
             "SELECT COUNT(*) FROM descriptions"
         ).fetchone()[0]
 
-    def _insert_many(self, rows: list[tuple[str, str, bytes]]) -> int:
+    def _insert_many(self, rows: list[tuple[str, str, bytes]], *, replace: bool = False) -> int:
+        """Bulk insert. ``replace=True`` overwrites existing rows
+        (used by :meth:`set` so an updated description from a fresh
+        scrape supersedes the previous-day cached one); the default
+        ``replace=False`` keeps the existing row, which is what
+        :meth:`load_csv` wants when seeding from a CSV that may have
+        the same URL listed multiple times.
+        """
+        verb = "INSERT OR REPLACE" if replace else "INSERT OR IGNORE"
         cur = self.conn.executemany(
-            """
-            INSERT OR IGNORE INTO descriptions (kind, cache_key, description)
+            f"""
+            {verb} INTO descriptions (kind, cache_key, description)
             VALUES (?, ?, ?)
             """,
             rows,
@@ -898,8 +906,24 @@ class DescriptionCache:
     def set(self, job: Job, description: str) -> None:
         blob = self._encode(description)
         rows = [(*key, blob) for key in _description_keys(job)]
-        if rows:
-            self.count += self._insert_many(rows)
+        if not rows:
+            return
+        # Single-row updates from _ensure_description must replace any
+        # existing entry — that's the whole point of writing back when
+        # the freshly-scraped body is longer than the cached one. The
+        # rowcount returned by executemany with INSERT OR REPLACE counts
+        # both new inserts and updates, so we only bump ``count`` by
+        # the genuine new keys (those not already present).
+        new_keys = 0
+        existing = self.conn.execute(
+            "SELECT COUNT(*) FROM descriptions WHERE (kind, cache_key) IN ("
+            + ",".join("(?,?)" for _ in rows)
+            + ")",
+            [v for kind, key, _ in rows for v in (kind, key)],
+        ).fetchone()[0]
+        new_keys = len(rows) - existing
+        self._insert_many(rows, replace=True)
+        self.count += max(0, new_keys)
 
 
 def _description_keys(job: Job) -> list[tuple[str, str]]:
