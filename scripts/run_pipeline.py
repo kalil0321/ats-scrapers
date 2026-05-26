@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import fcntl
 import csv
-import os
+import fcntl
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -1403,7 +1403,27 @@ def _normalize_output(ats: str, jobs_csv: Path) -> None:
     ]
     t0 = time.time()
     print(f"[{ats}] normalizing descriptions ({workers} workers)...")
-    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    # Upper-bound the normalize step so a hung worker can't wedge the
+    # whole daily pipeline. EURES (~2.7M rows) is the largest single
+    # CSV we feed in; even at ~500 rows/sec/worker that's ~30 min, so
+    # 2 h leaves a generous margin. ``JOBHIVE_NORMALIZE_TIMEOUT_S``
+    # tunes it for ATSes that grow past that envelope.
+    timeout_s = int(os.environ.get("JOBHIVE_NORMALIZE_TIMEOUT_S", "7200"))
+    try:
+        result = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        elapsed = time.time() - t0
+        print(
+            f"[{ats}] WARN: normalize exceeded {timeout_s}s budget "
+            f"(elapsed={elapsed:.0f}s); jobs.csv left in its pre-normalize state."
+        )
+        return
     if result.returncode != 0:
         print(
             f"[{ats}] WARN: normalize exited {result.returncode}; "

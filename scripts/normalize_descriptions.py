@@ -39,9 +39,9 @@ def _linkify_lazy():
     if _LINKIFY is None:
         from linkify_it import LinkifyIt
         from linkify_it.tlds import TLDS
-        l = LinkifyIt()
-        l.tlds(TLDS)  # full ICANN/IANA TLD set
-        _LINKIFY = l
+        instance = LinkifyIt()
+        instance.tlds(TLDS)  # full ICANN/IANA TLD set
+        _LINKIFY = instance
     return _LINKIFY
 
 
@@ -77,10 +77,15 @@ def autolink(text: str) -> str:
         # Skip the markdown image syntax ``![alt](url)`` too.
         if before.endswith("!"):
             continue
-        if "@" in m.url and not m.url.startswith(("http://", "https://", "ftp://")):
-            replacement = f"<{m.url}>"
-        else:
-            replacement = f"<{m.url}>"
+        # ``m.url`` is linkify-it's normalized form: emails get a
+        # ``mailto:`` prefix automatically. Using it as the autolink
+        # body would corrupt the visible text (``foo@bar.com`` would
+        # render as ``mailto:foo@bar.com`` in viewers that don't
+        # collapse the scheme). The raw substring in ``out`` is what
+        # the source wrote, so use that and rely on CommonMark/GFM to
+        # apply ``mailto:`` at render time.
+        original = out[start:end]
+        replacement = f"<{original}>"
         out = out[:start] + replacement + out[end:]
     return out
 
@@ -167,14 +172,18 @@ def main():
     counts = {"unchanged": 0, "shrunk": 0, "nulled": 0, "grew": 0, "newly_set": 0}
     total = 0
 
-    tmp = tempfile.NamedTemporaryFile(
+    # The streaming-write design needs the handle to live past the
+    # open() call; we close + atomically rename in the finally below.
+    tmp = tempfile.NamedTemporaryFile(  # noqa: SIM115
         "w", newline="", delete=False,
         dir=args.csv_path.parent,
         prefix=f".{args.csv_path.name}.normalizing.",
     )
+    tmp_path = Path(tmp.name)
 
     pool = multiprocessing.Pool(args.workers)
 
+    success = False
     try:
         with args.csv_path.open(newline="") as f:
             reader = csv.DictReader(f)
@@ -203,12 +212,20 @@ def main():
             if buffer_rows:
                 _process_chunk(buffer_rows, args.column, pool, writer, counts)
                 total += len(buffer_rows)
+            success = True
     finally:
         pool.close()
         pool.join()
         tmp.close()
+        # Always clean up the half-written temp on any non-happy path
+        # (missing column, exception in a worker, ctrl-c). The atomic
+        # rename below only fires on the success path, so leaving the
+        # file behind here would litter the workday/ directory with
+        # ``.jobs.csv.normalizing.*`` orphans across reruns.
+        if not success:
+            tmp_path.unlink(missing_ok=True)
 
-    Path(tmp.name).replace(args.csv_path)
+    tmp_path.replace(args.csv_path)
     elapsed = time.time() - t0
     print(f"DONE total={total:,} in {elapsed:.1f}s · {counts}", flush=True)
     return 0
@@ -225,7 +242,7 @@ def _process_chunk(rows, column, pool, writer, counts):
     results = pool.map(_normalize_descs, sub_batches)
     # Flatten
     normalized = [d for sub in results for d in sub]
-    for row, new_desc in zip(rows, normalized):
+    for row, new_desc in zip(rows, normalized, strict=True):
         old = row.get(column)
         if new_desc == old:
             counts["unchanged"] += 1
