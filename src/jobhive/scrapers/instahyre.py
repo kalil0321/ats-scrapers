@@ -74,12 +74,7 @@ class InstahyreScraper(BaseScraper):
             timeout=self.timeout, follow_redirects=True
         ) as client:
             for page in range(self.max_pages):
-                try:
-                    payload = await self._fetch_page(client, offset=page * self.page_size)
-                except ScraperError:
-                    if page == 0:
-                        raise
-                    break
+                payload = await self._fetch_page(client, offset=page * self.page_size)
                 if not isinstance(payload, dict):
                     raise ScraperError(
                         "Instahyre job_search returned non-object JSON "
@@ -101,10 +96,13 @@ class InstahyreScraper(BaseScraper):
 
             if jobs:
                 sem = asyncio.Semaphore(self.detail_concurrency)
-                await asyncio.gather(*(
-                    self._enrich_from_detail_api(client, sem, job)
-                    for job in jobs
-                ))
+                await asyncio.gather(
+                    *(
+                        self._enrich_from_detail_api(client, sem, job)
+                        for job in jobs
+                    ),
+                    return_exceptions=True,
+                )
         return jobs
 
     async def _fetch_page(
