@@ -30,7 +30,6 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote_plus, urljoin
 
 import httpx
-from bs4 import BeautifulSoup
 
 from jobhive.exceptions import ScraperError
 from jobhive.models import ATSType, Job
@@ -241,6 +240,14 @@ class SaraminScraper(BaseScraper):
     # --- parsing ------------------------------------------------------------
 
     def _parse_page(self, html_text: str) -> list[Job]:
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError as exc:  # pragma: no cover
+            raise ScraperError(
+                "Saramin scraper requires beautifulsoup4. Install with "
+                "`pip install jobhive[scrapers]` or `pip install beautifulsoup4`."
+            ) from exc
+
         soup = BeautifulSoup(html_text, "html.parser")
         cards = soup.select("div.item_recruit")
         out: list[Job] = []
