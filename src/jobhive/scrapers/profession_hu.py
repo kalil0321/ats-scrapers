@@ -82,10 +82,22 @@ DEFAULT_MAX_PAGES = 1500
 # matching the unrelated ``view_item`` push on the detail page. The
 # capture is everything up to the matching ``});`` — the JSON payload
 # nests dicts so a naive ``\}`` match would stop at the first inner
-# brace; we anchor on the closing ``);`` sequence instead and let the
-# JSON parser deal with the contents.
+# brace. A non-greedy ``.*?`` would stop at the *first* ``});`` and
+# silently truncate the payload whenever a string value happens to
+# contain that sequence (dropping the whole page). We instead grab
+# everything *greedily* up to the last ``});`` on the page and let
+# ``json.loads`` validate the contents — listing pages carry a single
+# ``view_item_list`` push so the greedy span is the full block.
 _DATALAYER_RE = re.compile(
-    r"dataLayer\.push\(\s*(\{\s*\"event\"\s*:\s*\"view_item_list\".*?\})\s*\)\s*;",
+    r"dataLayer\.push\(\s*"
+    r"(\{\s*\"event\"\s*:\s*\"view_item_list\""
+    # Tempered-greedy body: consume everything up to the block's own
+    # ``});`` *without* crossing into a subsequent ``dataLayer.push(``.
+    # Plain greedy ``.*`` would over-match to the last ``});`` on the
+    # page (swallowing later pushes); plain non-greedy ``.*?`` would
+    # stop at the first ``});`` even when it sits inside a string value
+    # — both silently break ``json.loads`` and drop the whole page.
+    r"(?:(?!dataLayer\.push\().)*\})\s*\)\s*;",
     re.DOTALL,
 )
 # Listing rows ship a ``data-prof-id`` + ``data-link`` pair on each
@@ -175,21 +187,7 @@ class ProfessionHuScraper(BaseScraper):
         ) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
-            # Probe page 1 to learn the total job count.
-            first_html = await self._fetch_page(client, sem, page=1)
-            first_items, total = self._parse_listing(first_html)
-            await absorb(first_items)
-
-            if total <= PER_PAGE:
-                return jobs
-
-            page_count = min(
-                (total + PER_PAGE - 1) // PER_PAGE, self.max_pages
-            )
-            if page_count <= 1:
-                return jobs
-
-            async def one(page: int) -> None:
+            async def one(page: int) -> list[Job]:
                 try:
                     body = await self._fetch_page(client, sem, page=page)
                 except ScraperError as exc:
@@ -198,13 +196,36 @@ class ProfessionHuScraper(BaseScraper):
                         page,
                         exc,
                     )
-                    return
+                    return []
                 items, _ = self._parse_listing(body)
                 await absorb(items)
+                return items
 
-            await asyncio.gather(
-                *(one(p) for p in range(2, page_count + 1))
-            )
+            # Probe page 1 to learn the total job count.
+            first_html = await self._fetch_page(client, sem, page=1)
+            first_items, total = self._parse_listing(first_html)
+            await absorb(first_items)
+            if not first_items:
+                return jobs
+
+            if total > 0:
+                # Known total → size the pagination plan and fan out.
+                page_count = min(
+                    (total + PER_PAGE - 1) // PER_PAGE, self.max_pages
+                )
+                if page_count <= 1:
+                    return jobs
+                await asyncio.gather(
+                    *(one(p) for p in range(2, page_count + 1))
+                )
+            else:
+                # Unknown total (header counter unparseable) → walk pages
+                # sequentially until one comes back empty, capped at
+                # ``max_pages`` so a missing terminator can't loop forever.
+                for page in range(2, self.max_pages + 1):
+                    items = await one(page)
+                    if not items:
+                        break
         return jobs
 
     async def _fetch_page(
@@ -307,11 +328,12 @@ class ProfessionHuScraper(BaseScraper):
             if job is not None:
                 jobs.append(job)
 
-        # Defensive: when the header's total is unparseable, at least
-        # return the visible row count so single-page scraping still
-        # works.
-        if not total:
-            total = len(jobs)
+        # When the header's total is unparseable we leave ``total`` at 0
+        # rather than falling back to the visible row count: a full page
+        # (20 rows == PER_PAGE) would otherwise look like a single-page
+        # result and stop pagination after page 1, dropping ~18k jobs.
+        # The caller treats total==0 as "unknown" and paginates until an
+        # empty page instead.
         return jobs, total
 
     def _parse_item(
