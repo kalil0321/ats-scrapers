@@ -27,7 +27,7 @@ import asyncio
 import html
 import re
 import unicodedata
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
@@ -422,7 +422,7 @@ def _parse_iso(value: object) -> datetime | None:
     if dt.tzinfo is not None:
         # Convert to UTC then drop tzinfo to keep parity with the other
         # scrapers' naive datetimes.
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        dt = dt.astimezone(UTC).replace(tzinfo=None)
     return dt
 
 
