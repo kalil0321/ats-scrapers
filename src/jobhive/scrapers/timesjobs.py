@@ -58,7 +58,7 @@ API_URL = "https://tjapi.timesjobs.com/search/api/v1/search/jobs/list"
 # HTTP 400 from the API.
 WILDCARD_KEYWORD = " "
 PAGE_SIZE = 100
-MAX_PAGES = 2000  # Safety belt — at 100/page that's 200 k jobs.
+MAX_PAGES = 5000  # Safety belt — live board is ~2 k pages at 100/page.
 MAX_CONCURRENCY = 4
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
@@ -269,7 +269,7 @@ class TimesJobsScraper(BaseScraper):
             # common alternates to the canonical ISO code.
             if salary_currency in {"RS", "RUPEES", "INR."}:
                 salary_currency = "INR"
-            if len(salary_currency) != 3:
+            if not (isinstance(salary_currency, str) and len(salary_currency) == 3):
                 salary_currency = None
 
         description = _clean_description(item.get("description"))
