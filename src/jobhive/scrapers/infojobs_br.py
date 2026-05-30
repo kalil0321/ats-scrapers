@@ -238,8 +238,12 @@ class InfoJobsBrasilScraper(BaseScraper):
                         raise ScraperError(
                             f"InfoJobs Brasil fetch failed for {url}: {exc}"
                         ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
+                    response = None
+            if response is None:
+                # Transport error — back off outside the semaphore so we
+                # don't hold a concurrency slot while sleeping.
+                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
+                continue
             if response.status_code == 200:
                 try:
                     return response.json()
@@ -347,7 +351,7 @@ class InfoJobsBrasilScraper(BaseScraper):
                 commitment_raw = icon_values[k]
                 break
         employment_type = (
-            _EMPLOYMENT_MAP.get(commitment_raw.lower()) if commitment_raw else None
+            _match_employment_type(commitment_raw) if commitment_raw else None
         )
 
         # Description teaser — the last text-medium block in the card.
@@ -413,6 +417,19 @@ def _strip_html(text: str) -> str:
     cleaned = _TAG_RE.sub(" ", text)
     cleaned = html.unescape(cleaned)
     return _WS_RE.sub(" ", cleaned).strip()
+
+
+def _match_employment_type(raw: str) -> str | None:
+    """Map a (possibly composite) Brazilian employment label to a
+    canonical ``EmploymentType``. Labels are frequently composite
+    (e.g. ``"Efetivo CLT"``, ``"Estágio / Trainee"``) so we match the
+    map keys as tokens/substrings rather than requiring an exact hit.
+    The first matching key (in map insertion order) wins."""
+    lowered = raw.lower()
+    for key, value in _EMPLOYMENT_MAP.items():
+        if key in lowered:
+            return value
+    return None
 
 
 def _set_query_param(url: str, key: str, value: str) -> str:
