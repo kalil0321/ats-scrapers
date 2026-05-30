@@ -15,6 +15,7 @@ from jobhive.scrapers.ashby import AshbyScraper
 from jobhive.scrapers.avature import AvatureScraper
 from jobhive.scrapers.bamboohr import BambooHRScraper
 from jobhive.scrapers.base import BaseScraper, ScraperRegistry, get_scraper
+from jobhive.scrapers.bayt import BaytScraper
 from jobhive.scrapers.breezy import BreezyScraper
 from jobhive.scrapers.builtin import BuiltInScraper
 from jobhive.scrapers.bundesagentur import BundesagenturScraper
@@ -67,6 +68,7 @@ __all__ = [
     "AvatureScraper",
     "BambooHRScraper",
     "BaseScraper",
+    "BaytScraper",
     "BreezyScraper",
     "BuiltInScraper",
     "BundesagenturScraper",
