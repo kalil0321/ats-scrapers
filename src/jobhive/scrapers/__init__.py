@@ -37,6 +37,7 @@ from jobhive.scrapers.oracle import OracleScraper
 from jobhive.scrapers.personio import PersonioScraper
 from jobhive.scrapers.phenom import PhenomScraper
 from jobhive.scrapers.pinpoint import PinpointScraper
+from jobhive.scrapers.profession_hu import ProfessionHuScraper
 from jobhive.scrapers.programathor import ProgramathorScraper
 from jobhive.scrapers.recruitee import RecruiteeScraper
 from jobhive.scrapers.recruiterbox import RecruiterboxScraper
@@ -88,6 +89,7 @@ __all__ = [
     "PersonioScraper",
     "PhenomScraper",
     "PinpointScraper",
+    "ProfessionHuScraper",
     "ProgramathorScraper",
     "RecruiteeScraper",
     "RecruiterboxScraper",
