@@ -49,7 +49,12 @@ JOB_ITEM_FULL = {
     "company": {"id": 14021, "name": "Acme Hotel Group"},
     "owner": {"id": 9001, "type": "company"},
     "types": ["full-time"],
-    "pay_range": {"currency": "AED", "min": 18000, "max": 22000},
+    "pay_range": {
+        "currency": "AED",
+        "min": 18000,
+        "max": 22000,
+        "period": "monthly",
+    },
     "posted_date": "2026-05-10",
     "start_date": None,
     "cover_public_path": "/img/cover.png",
@@ -129,7 +134,9 @@ def test_parse_job_full_fields() -> None:
     assert job.salary_currency == "AED"
     assert job.salary_min == 18000
     assert job.salary_max == 22000
-    assert job.salary_period == "YEAR"
+    # Period is inferred from the pay_range cadence key (no longer hardcoded
+    # to YEAR); "monthly" maps to the canonical MONTH.
+    assert job.salary_period == "MONTH"
     assert job.employment_type == "FULL_TIME"
     assert job.language == "en"
     assert job.posted_at is not None
@@ -152,6 +159,8 @@ def test_parse_job_minimal_no_salary_no_owner() -> None:
     assert job.salary_currency is None
     assert job.salary_min is None
     assert job.salary_max is None
+    # No pay_range cadence to infer from — period stays None, not YEAR.
+    assert job.salary_period is None
     assert job.employment_type == "INTERN"
     assert job.location == "London, United Kingdom"
 
