@@ -75,7 +75,7 @@ def test_parses_fixture_into_job() -> None:
     assert job.ats_type is ATSType.BYTEDANCE
     assert job.company == "ByteDance"
     assert job.title.startswith("Machine Learning Engineer Graduate")
-    assert str(job.url) == "https://joinbytedance.com/jobs/7607020417963968773"
+    assert str(job.url) == "https://joinbytedance.com/search/7607020417963968773"
     assert job.global_id == "bytedance:7607020417963968773"
     # ``code`` becomes ``requisition_id``; ``ats_id`` keeps the numeric id.
     assert job.requisition_id == "A72890A"
