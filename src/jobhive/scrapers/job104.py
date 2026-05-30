@@ -259,8 +259,10 @@ class Job104Scraper(BaseScraper):
                             f"104 fetch failed for area={area} "
                             f"jobcat={jobcat} page={page}: {exc}"
                         ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
+                    response = None  # release sem before backing off
+            if response is None:
+                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
+                continue
             if response.status_code == 200:
                 try:
                     return response.json()
@@ -344,6 +346,12 @@ class Job104Scraper(BaseScraper):
 
         salary_min = _to_float(item.get("salaryLow"))
         salary_max = _to_float(item.get("salaryHigh"))
+        # 待遇面議 ("negotiable") ships salaryLow=0/salaryHigh=0 — treat a
+        # zero (or absent) bound as unknown rather than emitting "TWD 0–0".
+        if not salary_min:
+            salary_min = None
+        if not salary_max:
+            salary_max = None
         salary_currency: str | None = None
         salary_summary: str | None = None
         if salary_min is not None or salary_max is not None:
