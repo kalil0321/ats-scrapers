@@ -344,7 +344,7 @@ class TorreScraper(BaseScraper):
         deadline = opp.get("deadline")
         if isinstance(deadline, str) and deadline:
             raw["deadline"] = deadline
-        ac_details = opp.get("additionalCompensationDetails")
+        ac_details = (comp_root or {}).get("additionalCompensationDetails")
         if isinstance(ac_details, dict) and ac_details:
             raw["additional_compensation"] = ac_details
 
