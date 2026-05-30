@@ -261,8 +261,10 @@ class DidiScraper(BaseScraper):
         elif recruit_type is not None:
             raw["recruit_type"] = recruit_type
 
+        surface = "campus" if recruit_type == 3 else "social"
+
         return Job(
-            url=f"https://talent.didiglobal.com/social/p/{ats_id}",
+            url=f"https://talent.didiglobal.com/{surface}/p/{ats_id}",
             title=title,
             company="DiDi",
             ats_type=ATSType.DIDI,
