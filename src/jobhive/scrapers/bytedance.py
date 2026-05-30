@@ -86,7 +86,13 @@ class BytedanceScraper(BaseScraper):
                     raise ScraperError(
                         f"ByteDance returned {response.status_code}: {response.text[:120]}"
                     )
-                payload_data = response.json().get("data") or {}
+                body = response.json()
+                code = body.get("code")
+                if code:
+                    raise ScraperError(
+                        f"ByteDance API error code {code}: {body.get('message') or response.text[:120]}"
+                    )
+                payload_data = body.get("data") or {}
                 jobs = payload_data.get("job_post_list") or []
                 if not jobs:
                     break
@@ -135,7 +141,7 @@ class BytedanceScraper(BaseScraper):
                 raw[k] = v
 
         return Job(
-            url=f"https://joinbytedance.com/jobs/{ats_id}",
+            url=f"https://joinbytedance.com/search/{ats_id}",
             title=item.get("title") or item.get("name") or "Untitled",
             company="ByteDance",
             ats_type=ATSType.BYTEDANCE,
