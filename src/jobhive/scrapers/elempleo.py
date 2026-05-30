@@ -52,8 +52,9 @@ if TYPE_CHECKING:
     from typing import Any
 
 API_ROOT = "https://www.elempleo.com"
-DEFAULT_MAX_PAGES = 600  # 20 jobs/page × 600 = 12,000 max — covers
-                        # the entire live inventory with headroom.
+DEFAULT_MAX_PAGES = 1500  # 20 jobs/page × 1500 = 30,000 max — covers
+                          # the entire live inventory (~21.7k) with headroom.
+                          # Pagination still stops early on the empty-page tail.
 MAX_CONCURRENCY = 4
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2.0
@@ -146,7 +147,7 @@ class ElempleoScraper(BaseScraper):
     (``"any"``, ``""``) — the scraper paginates the entire board.
 
     Knobs:
-    - ``max_pages`` — pagination cap (default 600 → up to 12k jobs).
+    - ``max_pages`` — pagination cap (default 1500 → up to 30k jobs).
       The scraper stops earlier when a page returns zero cards.
     """
 
