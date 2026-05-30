@@ -86,7 +86,7 @@ def test_registry_resolves_worknet() -> None:
 
 def test_ats_type_enum_value() -> None:
     """The enum value travels into the public dataset; pin it."""
-    assert ATSType.WORKNETKR.value == "worknetkr"
+    assert ATSType.WORKNETKR.value == "worknet_kr"
 
 
 # --- env-var gate -----------------------------------------------------------

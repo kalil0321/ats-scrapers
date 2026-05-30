@@ -67,7 +67,7 @@ DETAIL_URL_TEMPLATE = (
     "https://www.work24.go.kr/wk/a/b/1500/empDetailAuthView.do?wantedAuthNo={ats_id}"
 )
 DEFAULT_PAGE_SIZE = 100  # API hard-caps at 100 (display=100).
-DEFAULT_MAX_PAGES = 200  # 20k postings/run safety bound; bump for full crawls.
+DEFAULT_MAX_PAGES = 5000  # 500k postings/run ceiling; board runs 100-400k active.
 MAX_CONCURRENCY = 2  # Korean gov APIs throttle aggressively above this.
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
