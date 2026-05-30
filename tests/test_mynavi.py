@@ -169,8 +169,12 @@ def test_parses_full_cassette_card(httpx_mock) -> None:
     assert j.country_iso == "JP"
     assert j.language == "ja"
     assert j.location is not None and "転勤なし" in j.location
-    assert j.posted_at is not None
-    assert j.posted_at.year == 2026 and j.posted_at.month == 4
+    # 情報更新日 is the last-edit date, not the publication date, so it must
+    # NOT be mapped to posted_at (a refreshed old posting would otherwise
+    # look newly posted). It's preserved verbatim in raw.update_date instead.
+    assert j.posted_at is None
+    assert j.raw is not None
+    assert j.raw.get("update_date") == "2026/04/21"
 
 
 # --- salary parsing ---------------------------------------------------------
