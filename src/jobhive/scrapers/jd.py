@@ -167,12 +167,14 @@ class JDScraper(BaseScraper):
                     )
                 except httpx.HTTPError as exc:
                     last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"JD.com fetch failed at page={page}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
+                    response = None
+            if response is None:
+                if attempt == MAX_RETRIES:
+                    raise ScraperError(
+                        f"JD.com fetch failed at page={page}: {last_exc}"
+                    ) from last_exc
+                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
+                continue
             if response.status_code == 200:
                 try:
                     payload = response.json()
