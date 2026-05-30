@@ -127,13 +127,19 @@ _TITLE_ATTR_RE = re.compile(r'title="(?P<title>[^"]+)"')
 # ``text-link-blue`` which are the two variants observed in the wild
 # (jobberman uses ``text-blue-700`` for company display).
 _COMPANY_RE = re.compile(
-    r'class="[^"]*text-blue-700[^"]*"[^>]*>\s*([^<]+?)\s*</p>',
+    r'class="[^"]*(?:text-blue-700|text-link-700|text-link-blue)[^"]*"'
+    r'[^>]*>\s*([^<]+?)\s*</p>',
     re.DOTALL,
 )
-# The salary chip is the only ``<span>`` containing an ISO-3 currency
-# code followed by digits or "Commission".
+# The salary chip is an ISO-3 currency code followed by the amount
+# ("Commission" / "Confidential" for non-numeric chips). The amount is
+# sometimes wrapped in an inner ``<span>`` (raw card HTML) and sometimes
+# bare (cleaned plain text), so the wrapper is optional and the body
+# stops at the next tag or end of string. This lets the same pattern
+# match both the raw card body and a ``_clean_text``-ed badge.
 _SALARY_RE = re.compile(
-    r'(?P<curr>NGN|KES|UGX|TZS|GHS|USD)\s*<span[^>]*>\s*(?P<body>[^<]+?)\s*</span>',
+    r'(?P<curr>NGN|KES|UGX|TZS|GHS|USD)\s*(?:<span[^>]*>\s*)?'
+    r'(?P<body>[^<]+?)\s*(?:</span>|<|\Z)',
     re.DOTALL,
 )
 # Employment-type chip — match the badge classes used by the template.
