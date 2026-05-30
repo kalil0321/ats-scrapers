@@ -118,6 +118,12 @@ PER_PAGE = 100
 MAX_USABLE_OFFSET = 9500
 DEFAULT_MAX_PAGES = (MAX_USABLE_OFFSET // PER_PAGE) + 1  # 96
 
+# Stop a bucket only after this many *consecutive* pages yield no new
+# rows. A single empty page is not enough: a keyword bucket's early
+# pages can be fully covered by an earlier seed while later pages still
+# hold unique jobs, so we must keep paging past the first overlap.
+MAX_EMPTY_PAGES = 3
+
 # Retry knobs. The API returns 200 reliably from residential IPs;
 # datacenter IPs can see intermittent 403 / 502 — we back off and
 # retry a small number of times then bail with whatever we have.
@@ -359,6 +365,7 @@ class FounditScraper(BaseScraper):
         ~9500 cap. New rows are appended to ``jobs`` and their ids
         added to ``seen``; existing ids are skipped.
         """
+        empty_pages = 0
         for page_no in range(self.max_pages):
             start = page_no * PER_PAGE
             if start > MAX_USABLE_OFFSET:
@@ -380,13 +387,17 @@ class FounditScraper(BaseScraper):
                 jobs.append(job)
                 new_in_page += 1
             if new_in_page == 0:
-                # The deep-pagination cap returns the same window
-                # over and over; stop the moment we get zero new
-                # rows. Cheaper than relying on the documented
-                # MAX_USABLE_OFFSET which has drifted before. Also
-                # the natural stop for keyword buckets where every
-                # row was already seen via an earlier seed.
-                break
+                # A single zero-new page is ambiguous: it can be the
+                # deep-pagination cap wrapping the same window, or just
+                # a bucket page fully covered by an earlier seed while
+                # later pages still hold unique jobs. Only stop after
+                # several *consecutive* empty pages so we don't abandon
+                # a bucket on its first overlap.
+                empty_pages += 1
+                if empty_pages >= MAX_EMPTY_PAGES:
+                    break
+            else:
+                empty_pages = 0
 
     # ----- one page ---------------------------------------------------
 
