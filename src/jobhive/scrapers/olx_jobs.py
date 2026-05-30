@@ -322,7 +322,9 @@ def _parse_job(item: dict[str, Any], *, region: _Region) -> Job | None:
     raw_id = item.get("id")
     if raw_id is None:
         return None
-    ats_id = str(raw_id)
+    # OLX ids are per-country, so prefix with the region code to avoid
+    # cross-country collisions (id 12345 exists on both olx.pl and olx.ua).
+    ats_id = f"{region.code}:{raw_id}"
     title = (item.get("title") or "").strip()
     url = (item.get("url") or "").strip()
     if not ats_id or not title or not url:
