@@ -222,8 +222,8 @@ class WantedlyScraper(BaseScraper):
                 # run fails loudly instead of returning a silent empty slice.
                 if page == 1:
                     raise ScraperError(
-                        f"Wantedly returned 404 at page=1 "
-                        f"(geo-block or API path change?)"
+                        "Wantedly returned 404 at page=1 "
+                        "(geo-block or API path change?)"
                     )
                 # Past the end of the dataset — treat as empty slice.
                 return {"data": [], "_metadata": {}}
