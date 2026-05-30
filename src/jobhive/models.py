@@ -90,7 +90,7 @@ class ATSType(StrEnum):
     TEAMTAILOR = "teamtailor"
     # Moroccan job boards
     REKRUTE = "rekrute"
-    AVITOMA = "avitoma"
+    AVITOMA = "avito_ma"
     CUSTOM = "custom"
 
 

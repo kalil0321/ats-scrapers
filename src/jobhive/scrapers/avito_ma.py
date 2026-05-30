@@ -175,7 +175,15 @@ class AvitoMarocScraper(BaseScraper):
                 html_body = await self._get_listing_page(client, page_no)
             if html_body is None:
                 return []
-            ads = _extract_ads(html_body)
+            try:
+                ads = _extract_ads(html_body)
+            except _AdsParseError as exc:
+                # A broken 200-OK response — do NOT treat as the last
+                # page, or one bad response would truncate pagination.
+                log.warning(
+                    "Avito Maroc page=%d: %s — skipping page", page_no, exc,
+                )
+                return []
             if not ads:
                 if stop_at_page["value"] is None or page_no < stop_at_page["value"]:
                     stop_at_page["value"] = page_no
@@ -259,27 +267,34 @@ class AvitoMarocScraper(BaseScraper):
 # --- module-level helpers ---------------------------------------------
 
 
+class _AdsParseError(Exception):
+    """Raised when a 200-OK page's ``__NEXT_DATA__`` blob is missing or
+    malformed. Distinct from a genuinely empty last page (an empty ads
+    list) so pagination doesn't mistake a broken response for the end."""
+
+
 def _extract_ads(html_body: str) -> list[dict[str, Any]]:
     """Pull the ad list from a page's ``__NEXT_DATA__`` blob.
 
-    Returns ``[]`` when the blob is missing, malformed, or doesn't
-    contain ads — pagination uses ``[]`` as the "stop here" signal.
+    Returns the (possibly empty) list of ad dicts. An empty list means
+    a genuine empty page — pagination uses it as the "stop here"
+    signal. Raises :class:`_AdsParseError` when the blob is missing or
+    malformed, so the caller can distinguish a broken response (retry)
+    from a real last page.
     """
     m = _NEXT_DATA_RE.search(html_body)
     if m is None:
-        return []
+        raise _AdsParseError("__NEXT_DATA__ blob not found")
     try:
         data = json.loads(m.group("json"))
-    except (ValueError, json.JSONDecodeError):
-        log.warning("Avito Maroc: __NEXT_DATA__ JSON parse failed")
-        return []
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise _AdsParseError("__NEXT_DATA__ JSON parse failed") from exc
     try:
         ads = data["props"]["pageProps"]["componentProps"]["ads"]["ads"]
-    except (KeyError, TypeError):
-        log.warning("Avito Maroc: __NEXT_DATA__ shape changed — no ads list")
-        return []
+    except (KeyError, TypeError) as exc:
+        raise _AdsParseError("__NEXT_DATA__ shape changed — no ads list") from exc
     if not isinstance(ads, list):
-        return []
+        raise _AdsParseError("__NEXT_DATA__ ads field is not a list")
     return [a for a in ads if isinstance(a, dict)]
 
 

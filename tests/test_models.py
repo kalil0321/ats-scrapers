@@ -34,7 +34,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "bamboohr", "breezy", "jazzhr", "jobvite",
         "recruitee", "taleo", "teamtailor",
         # Moroccan job boards
-        "rekrute", "avitoma",
+        "rekrute", "avito_ma",
         # Catch-all
         "custom",
     }

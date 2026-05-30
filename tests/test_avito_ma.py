@@ -162,33 +162,34 @@ def test_extract_ads_returns_list() -> None:
     assert len(a_mod._extract_ads(page)) == 2
 
 
-def test_extract_ads_missing_blob_returns_empty() -> None:
-    assert a_mod._extract_ads("<html>no script</html>") == []
+def test_extract_ads_missing_blob_raises() -> None:
+    with pytest.raises(a_mod._AdsParseError):
+        a_mod._extract_ads("<html>no script</html>")
 
 
-def test_extract_ads_malformed_json_returns_empty(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_extract_ads_malformed_json_raises() -> None:
     """A page where Avito ships invalid JSON in the script tag must
-    degrade to ``[]`` not crash the scraper."""
+    raise a parse error — distinct from a genuine empty last page — so
+    pagination retries instead of truncating."""
     bad = (
         '<html><body><script id="__NEXT_DATA__" type="application/json">'
         '{this is not json'
         '</script></body></html>'
     )
-    assert a_mod._extract_ads(bad) == []
+    with pytest.raises(a_mod._AdsParseError):
+        a_mod._extract_ads(bad)
 
 
-def test_extract_ads_shape_changed_returns_empty(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """If Avito rearranges the JSON path, fall back to empty + log."""
+def test_extract_ads_shape_changed_raises() -> None:
+    """If Avito rearranges the JSON path, raise a parse error rather
+    than silently returning ``[]`` and ending pagination."""
     page = (
         '<script id="__NEXT_DATA__" type="application/json">'
         '{"props":{"pageProps":{"shape":"changed"}}}'
         '</script>'
     )
-    assert a_mod._extract_ads(page) == []
+    with pytest.raises(a_mod._AdsParseError):
+        a_mod._extract_ads(page)
 
 
 # --- Single-ad parsing -------------------------------------------------
