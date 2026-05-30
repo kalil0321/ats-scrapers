@@ -93,6 +93,30 @@ _EMPLOYMENT_TYPE_MAP: dict[str, str] = {
     "trainee": "INTERN",
 }
 
+# Hosco pay-range cadence labels → canonical ``SalaryPeriod`` enum.
+# Hospitality pay is frequently quoted monthly or hourly, so we never
+# assume annual — unknown/absent cadences leave the period ``None``.
+_SALARY_PERIOD_MAP: dict[str, str] = {
+    "hour": "HOUR",
+    "hourly": "HOUR",
+    "per-hour": "HOUR",
+    "day": "DAY",
+    "daily": "DAY",
+    "per-day": "DAY",
+    "week": "WEEK",
+    "weekly": "WEEK",
+    "per-week": "WEEK",
+    "month": "MONTH",
+    "monthly": "MONTH",
+    "per-month": "MONTH",
+    "year": "YEAR",
+    "yearly": "YEAR",
+    "annual": "YEAR",
+    "annually": "YEAR",
+    "per-year": "YEAR",
+    "per-annum": "YEAR",
+}
+
 
 @ScraperRegistry.register(ATSType.HOSCO)
 class HoscoScraper(BaseScraper):
@@ -124,9 +148,14 @@ class HoscoScraper(BaseScraper):
         ) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             build_id = await self._discover_build_id(client)
+            build_id_holder = [build_id]
             # Page 1 also tells us the total count — fetch sequentially
-            # so we can size the concurrent fan-out correctly.
-            first = await self._fetch_page(client, sem, build_id, page=1)
+            # so we can size the concurrent fan-out correctly. Route it
+            # through the refresh path too, so a stale buildId is
+            # re-discovered here rather than silently yielding 0 jobs.
+            first = await self._fetch_page_with_refresh(
+                client, sem, build_id_holder, page=1
+            )
             results = _extract_results(first)
             count = _extract_count(first)
 
@@ -149,7 +178,6 @@ class HoscoScraper(BaseScraper):
                 total_pages = self.max_pages
 
             if total_pages > 1:
-                build_id_holder = [build_id]
                 tasks = [
                     self._fetch_page_with_refresh(
                         client, sem, build_id_holder, page=p
@@ -338,12 +366,16 @@ class HoscoScraper(BaseScraper):
         salary_min = _to_float(_first_present(pay_range, ("min", "minimum")))
         salary_max = _to_float(_first_present(pay_range, ("max", "maximum")))
         salary_currency = _normalize_currency(pay_range.get("currency"))
+        salary_period = _map_salary_period(
+            _first_present(pay_range, ("period", "frequency", "interval", "unit"))
+        )
         if salary_currency is None and (salary_min is not None or salary_max is not None):
             # We have a numeric range but no currency — drop the range
             # rather than guessing; the canonical schema treats currency
             # as required context for salary numbers.
             salary_min = None
             salary_max = None
+            salary_period = None
 
         employment_type = _map_employment_type(item.get("types"))
 
@@ -369,7 +401,7 @@ class HoscoScraper(BaseScraper):
             ats_id=ats_id,
             location=location,
             salary_currency=salary_currency,
-            salary_period="YEAR" if salary_currency else None,
+            salary_period=salary_period,
             salary_min=salary_min,
             salary_max=salary_max,
             employment_type=employment_type,  # type: ignore[arg-type]
@@ -445,6 +477,13 @@ def _map_employment_type(value: Any) -> str | None:
         return None
     key = candidate.strip().lower().replace(" ", "-")
     return _EMPLOYMENT_TYPE_MAP.get(key)
+
+
+def _map_salary_period(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    key = value.strip().lower().replace("_", "-").replace(" ", "-")
+    return _SALARY_PERIOD_MAP.get(key)
 
 
 def _parse_date(value: Any) -> datetime | None:
