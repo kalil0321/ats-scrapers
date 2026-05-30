@@ -70,11 +70,14 @@ _CJK_RE = re.compile(
 # ISO-3166 alpha-2 / alpha-3 codes and common English country / city
 # names that show up on Wantedly's growing global postings.
 _NON_JP_HINTS = frozenset({
-    # Country codes
-    "US", "USA", "UK", "GB", "FR", "DE", "ES", "IT", "PT", "NL", "BE",
-    "CH", "AT", "SE", "NO", "DK", "FI", "PL", "CZ", "GR", "IE",
-    "CA", "MX", "BR", "AR", "CL", "CO", "PE",
-    "CN", "HK", "TW", "KR", "SG", "MY", "TH", "VN", "PH", "ID", "IN",
+    # Country codes. Ambiguous 2-letter ISO codes that collide with common
+    # English words (AT, IN, IT, NO, CO, ID, PE) are intentionally omitted —
+    # they would wrongly null the country on valid JP postings; their full
+    # country names below still cover the unambiguous cases.
+    "US", "USA", "UK", "GB", "FR", "DE", "ES", "PT", "NL", "BE",
+    "CH", "SE", "DK", "FI", "PL", "CZ", "GR", "IE",
+    "CA", "MX", "BR", "AR", "CL",
+    "CN", "HK", "TW", "KR", "SG", "MY", "TH", "VN", "PH",
     "AU", "NZ", "ZA", "AE", "SA", "IL", "TR",
     # Common country names (English).
     "SINGAPORE", "TAIWAN", "KOREA", "CHINA", "HONG", "KONG", "VIETNAM",
@@ -214,6 +217,14 @@ class WantedlyScraper(BaseScraper):
                         f"Wantedly returned non-JSON at page={page}: {exc}"
                     ) from exc
             if response.status_code == 404:
+                # A 404 on the very first page is not "past the end" — it
+                # signals a geo-block or a changed API path. Raise so the
+                # run fails loudly instead of returning a silent empty slice.
+                if page == 1:
+                    raise ScraperError(
+                        f"Wantedly returned 404 at page=1 "
+                        f"(geo-block or API path change?)"
+                    )
                 # Past the end of the dataset — treat as empty slice.
                 return {"data": [], "_metadata": {}}
             if response.status_code == 429 or 500 <= response.status_code < 600:
