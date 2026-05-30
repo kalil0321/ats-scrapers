@@ -225,17 +225,23 @@ def test_keyword_strategy_stops_bucket_on_repeat_window(
 ) -> None:
     """When a bucket returns the same rows on consecutive pages (the
     9500-cap wrap-around), the walker bails — and moves on to the
-    next seed."""
+    next seed.
+
+    A single zero-new page is no longer enough to abandon a bucket: an
+    early page can be fully covered by an earlier seed while later pages
+    still hold unique jobs, so the walker only stops after
+    ``MAX_EMPTY_PAGES`` *consecutive* zero-new pages.
+    """
     repeat_row = _make_row("r1")
 
-    # Bucket 1: same row twice → second page yields zero NEW rows → stop.
-    httpx_mock.add_response(
-        url=_INDIA_RE, json=_make_page([repeat_row]),
-    )
-    httpx_mock.add_response(
-        url=_INDIA_RE, json=_make_page([repeat_row]),
-    )
-    # Bucket 2: one new row, then empty page → stop.
+    # Bucket 1: the same row served on the first page then on every
+    # subsequent page → after the first page each page yields zero NEW
+    # rows; stop once MAX_EMPTY_PAGES consecutive zero-new pages hit.
+    for _ in range(1 + f_mod.MAX_EMPTY_PAGES):
+        httpx_mock.add_response(
+            url=_INDIA_RE, json=_make_page([repeat_row]),
+        )
+    # Bucket 2: one new row, then a truly empty page → immediate stop.
     httpx_mock.add_response(
         url=_INDIA_RE, json=_make_page([_make_row("b2")]),
     )
@@ -248,9 +254,11 @@ def test_keyword_strategy_stops_bucket_on_repeat_window(
     ).fetch()
     assert [j.ats_id for j in jobs] == ["r1", "b2"]
     queries = [r.url.params["query"] for r in httpx_mock.get_requests()]
-    # 2 requests on "foo" (page 0 ok, page 1 yields zero-new → stop),
-    # then 2 on "bar" (page 0 with row, page 1 empty → stop).
-    assert queries == ["foo", "foo", "bar", "bar"]
+    # "foo": page 0 yields the row, then MAX_EMPTY_PAGES consecutive
+    # zero-new pages → stop. "bar": page 0 with a row, page 1 empty → stop.
+    assert queries == (
+        ["foo"] * (1 + f_mod.MAX_EMPTY_PAGES) + ["bar", "bar"]
+    )
 
 
 def test_keyword_strategy_continues_past_bucket_error(
