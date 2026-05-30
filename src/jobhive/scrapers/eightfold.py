@@ -164,7 +164,11 @@ class EightfoldScraper(BaseScraper):
                     page = await self._fetch_page_httpx(client, start=offset)
                     self._collect(page.get("positions") or [], seen, all_jobs)
 
-            await asyncio.gather(*(task(o) for o in offsets))
+            # ``asyncio.gather`` leaves sibling tasks running when one raises
+            # (e.g. a late ``_SmartApplyRequired`` 403 on a fanned-out page).
+            # Cancel and drain them before propagating so nothing writes to
+            # ``all_jobs`` after the caller clears it for the SmartApply retry.
+            await _gather_cancel_on_error(*(task(o) for o in offsets))
 
             # Detail enrichment — pull jobDescription from the public
             # `position_details` XHR endpoint per job. PCSX handles the
@@ -205,7 +209,7 @@ class EightfoldScraper(BaseScraper):
                     )
                     self._collect(page.get("positions") or [], seen, all_jobs)
 
-            await asyncio.gather(*(task(o) for o in offsets))
+            await _gather_cancel_on_error(*(task(o) for o in offsets))
 
     async def _enrich_position_details(
         self,
@@ -472,7 +476,13 @@ class EightfoldScraper(BaseScraper):
             or item.get("ats_job_id")
             or ""
         )
-        position = item.get("positionUrl") or item.get("canonicalPositionUrl") or ""
+        position = (
+            item.get("canonicalPositionUrl")
+            or item.get("canonical_position_url")
+            or item.get("positionUrl")
+            or item.get("position_url")
+            or ""
+        )
         if position.startswith("/"):
             url = f"{self.job_url_host}{position}"
         elif position:
@@ -519,12 +529,26 @@ class EightfoldScraper(BaseScraper):
             posted_at=_parse_ts(
                 item.get("postedTs")
                 or item.get("creationTs")
-                or item.get("t_update")
                 or item.get("t_create")
+                or item.get("t_update")
             ),
             fetched_at=datetime.now(),
             raw=raw or None,
         )
+
+
+async def _gather_cancel_on_error(*coros: Any) -> None:
+    """Like ``asyncio.gather`` but cancels and drains siblings when one task
+    raises, so no in-flight task keeps mutating shared state after the first
+    error propagates."""
+    tasks = [asyncio.ensure_future(c) for c in coros]
+    try:
+        await asyncio.gather(*tasks)
+    except BaseException:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 class _WAFBlocked(Exception):  # noqa: N818

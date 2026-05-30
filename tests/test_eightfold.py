@@ -429,6 +429,49 @@ def test_parse_job_absolute_position_url_used_as_is(httpx_mock) -> None:
     assert str(jobs[0].url) == "https://elsewhere.example.com/job/X"
 
 
+def test_parse_job_prefers_canonical_position_url(httpx_mock) -> None:
+    """When both are present, the canonical URL wins over the raw
+    ``positionUrl`` to avoid non-canonical job links."""
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page(
+            [
+                {
+                    "displayJobId": "X",
+                    "name": "X",
+                    "positionUrl": "/careers/job/X?utm=noise",
+                    "canonicalPositionUrl": "/careers/job/X",
+                }
+            ],
+            count=1,
+        ),
+    )
+    jobs = EightfoldScraper("dolby").fetch()
+    assert str(jobs[0].url) == "https://dolby.eightfold.ai/careers/job/X"
+
+
+def test_parse_job_posted_at_prefers_creation_over_update(httpx_mock) -> None:
+    """For SmartApply jobs carrying both, ``posted_at`` must reflect the
+    creation time (``t_create``), not the last-edit time (``t_update``)."""
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page(
+            [
+                {
+                    "displayJobId": "X",
+                    "name": "X",
+                    "positionUrl": "/job/x",
+                    "t_create": "2024-01-01T00:00:00Z",
+                    "t_update": "2025-12-31T00:00:00Z",
+                }
+            ],
+            count=1,
+        ),
+    )
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].posted_at == _parse_ts("2024-01-01T00:00:00Z")
+
+
 def test_parse_job_missing_position_url_falls_back_to_synthetic(httpx_mock) -> None:
     httpx_mock.add_response(
         url=_mock_url(0),
