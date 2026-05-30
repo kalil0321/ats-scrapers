@@ -236,8 +236,8 @@ class ZhaopinScraper(BaseScraper):
             ats_id=ats_id,
             location=location_text,
             country_iso="CN",
-            salary_currency="CNY" if salary_summary else None,
-            salary_period="MONTH" if salary_summary else None,
+            salary_currency="CNY" if salary_min is not None else None,
+            salary_period="MONTH" if salary_min is not None else None,
             salary_summary=salary_summary,
             salary_min=salary_min,
             salary_max=salary_max,
@@ -264,7 +264,7 @@ def _clean(value: object) -> str | None:
 def _location_from_card(value: object) -> str | None:
     if not isinstance(value, str):
         return None
-    match = re.search(r'"address"\s*:\s*"([^"]+)"', value)
+    match = re.search(r'"address"\s*:\s*"((?:[^"\\]|\\.)*)"', value)
     return match.group(1) if match else None
 
 
