@@ -150,18 +150,20 @@ class ShineScraper(BaseScraper):
                 return jobs
 
             consecutive_empty = 0
+            stop = False
 
             async def one(page: int) -> None:
-                nonlocal consecutive_empty
+                nonlocal consecutive_empty, stop
                 try:
                     text = await self._fetch_listing_text(client, sem, page=page)
                 except ScraperError as exc:
-                    # Deep pagination can hit transient blocks; keep what
-                    # we've already gathered rather than blow up.
+                    # Deep pagination can hit a hard block; stop paginating
+                    # rather than burn retries against a blocking server.
                     log.warning(
                         "Shine: stopping at page %d (%s); keeping %d jobs",
                         page, exc, len(jobs),
                     )
+                    stop = True
                     return
                 payload = self._extract_next_data(text)
                 data = self._search_data(payload)
@@ -172,7 +174,7 @@ class ShineScraper(BaseScraper):
                     consecutive_empty = 0
 
             for page in range(2, last_page + 1):
-                if consecutive_empty >= 3:
+                if stop or consecutive_empty >= 3:
                     break
                 await one(page)
         return jobs
@@ -369,7 +371,9 @@ def _format_location(value: object) -> tuple[str | None, str | None]:
     when the location is ambiguous so LLM enrichment fills it in).
     """
     if not isinstance(value, list):
-        return None, "IN" if isinstance(value, str) and value.strip() else None
+        if isinstance(value, str) and value.strip():
+            return value.strip(), "IN"
+        return None, None
     parts = [p.strip() for p in value if isinstance(p, str) and p.strip()]
     if not parts:
         return None, None
