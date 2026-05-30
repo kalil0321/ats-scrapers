@@ -150,7 +150,7 @@ class JobsCzScraper(BaseScraper):
     async def _fetch_async(self) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
-        seeds = self.location_seeds or ("praha",)
+        seeds = self.location_seeds
 
         async with httpx.AsyncClient(
             timeout=self.timeout, follow_redirects=True
