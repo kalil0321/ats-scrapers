@@ -175,8 +175,8 @@ def test_parses_full_offer_payload(httpx_mock) -> None:
     assert len(jobs) == 1
     j = jobs[0]
     assert j.ats_type is ATSType.OLX_JOBS
-    assert j.ats_id == "12345"
-    assert j.global_id == "olx_jobs:12345"
+    assert j.ats_id == "pl:12345"
+    assert j.global_id == "olx_jobs:pl:12345"
     assert j.title == "Doradca Klienta"
     # ``company_name`` beats ``user.name`` when both are set.
     assert j.company == "Acme Sp. z o.o."
@@ -227,23 +227,28 @@ def test_paginates_via_links_next_href(httpx_mock) -> None:
 
     jobs = OlxJobsScraper("pl").fetch()
     assert len(jobs) == 60
-    assert {j.ats_id for j in jobs} == {str(i) for i in range(60)}
+    assert {j.ats_id for j in jobs} == {f"pl:{i}" for i in range(60)}
 
 
-def test_dedupes_across_regions(httpx_mock) -> None:
-    """A single offer id can legitimately differ across two OLX
-    properties — but if we re-list the same id within one scrape, dedup
-    must collapse it."""
+def test_same_raw_id_across_regions_is_kept_distinct(httpx_mock) -> None:
+    """A single offer id is a *different* listing on two OLX properties
+    (id 1 on olx.pl is unrelated to id 1 on olx.ua). The region prefix
+    keeps them distinct so cross-region collisions don't silently drop
+    real jobs. Within one region, a re-listed id must still collapse."""
     httpx_mock.add_response(
         url=_PL_RE,
-        json=_page([_offer(offer_id=1, url="https://www.olx.pl/o/1")]),
+        json=_page([
+            _offer(offer_id=1, url="https://www.olx.pl/o/1"),
+            # same id re-listed within the PL walk → must dedupe away.
+            _offer(offer_id=1, url="https://www.olx.pl/o/1"),
+        ]),
     )
     httpx_mock.add_response(
         url=_UA_RE,
         json=_page([_offer(offer_id=1, url="https://www.olx.ua/o/1")]),
     )
     jobs = OlxJobsScraper("pl,ua").fetch()
-    assert len({j.ats_id for j in jobs}) == 1
+    assert {j.ats_id for j in jobs} == {"pl:1", "ua:1"}
 
 
 # --- field handling ---------------------------------------------------------
@@ -360,7 +365,7 @@ def test_skips_offers_missing_id_or_title_or_url(httpx_mock) -> None:
         ]),
     )
     jobs = OlxJobsScraper("pl").fetch()
-    assert [j.ats_id for j in jobs] == ["1"]
+    assert [j.ats_id for j in jobs] == ["pl:1"]
 
 
 # --- error handling ---------------------------------------------------------
