@@ -483,10 +483,16 @@ def test_dedupes_repeated_rows_across_pages(httpx_mock: Any) -> None:
         url=_INDIA_RE,
         json=_make_page([_make_row(job_id="1"), _make_row(job_id="2")]),
     )
-    # Page 2 returns the SAME rows — zero new == stop.
+    # Page 2 returns the SAME rows — zero new. A single zero-new page
+    # no longer stops a bucket (MAX_EMPTY_PAGES), so the walk advances.
     httpx_mock.add_response(
         url=_INDIA_RE,
         json=_make_page([_make_row(job_id="1"), _make_row(job_id="2")]),
+    )
+    # Page 3 is empty — an empty result set terminates the walk cleanly.
+    httpx_mock.add_response(
+        url=_INDIA_RE,
+        json=_make_page([]),
     )
 
     jobs = FounditScraper("in", max_pages=10).fetch()
