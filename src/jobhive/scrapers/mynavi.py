@@ -336,10 +336,12 @@ class MyNaviScraper(BaseScraper):
             employment_label = html.unescape(emp_match.group("label").strip())
             employment_type = _EMPLOYMENT_TYPE_MAP.get(employment_label)
 
-        posted_at: datetime | None = None
+        # ``情報更新日`` is the last-edit date, not the publication date:
+        # a refreshed old posting reports a recent update date, so mapping
+        # it to ``posted_at`` would make stale jobs look newly posted.
+        # Leave ``posted_at`` None and preserve the raw update date instead.
         upd_match = _UPDATE_DATE_RE.search(body)
-        if upd_match:
-            posted_at = _parse_jp_date(upd_match.group("date"))
+        update_date = upd_match.group("date") if upd_match else None
 
         feature_tags = [
             html.unescape(t.group("tag").strip())
@@ -348,6 +350,8 @@ class MyNaviScraper(BaseScraper):
         feature_tags = [t for t in feature_tags if t]
 
         raw: dict[str, object] = {"jobinfo_slug": slug}
+        if update_date:
+            raw["update_date"] = update_date
         if feature_tags:
             raw["feature_tags"] = feature_tags
         if employment_label and employment_label not in _EMPLOYMENT_TYPE_MAP:
@@ -378,7 +382,7 @@ class MyNaviScraper(BaseScraper):
             salary_summary=salary_summary,
             salary_min=salary_min,
             salary_max=salary_max,
-            posted_at=posted_at,
+            posted_at=None,
             fetched_at=datetime.now(),
             raw=raw or None,
         )
@@ -409,15 +413,3 @@ def _parse_salary_yen(text: str | None) -> tuple[float | None, float | None]:
     if lo > hi:
         return None, None
     return lo, hi
-
-
-def _parse_jp_date(s: str) -> datetime | None:
-    """Parse ``YYYY/MM/DD`` (the MyNavi 情報更新日 format) into a
-    midnight-UTC ``datetime``. Returns ``None`` when the input doesn't
-    match — never raises so a malformed date on one card doesn't kill
-    the whole scrape.
-    """
-    try:
-        return datetime.strptime(s, "%Y/%m/%d")
-    except ValueError:
-        return None
