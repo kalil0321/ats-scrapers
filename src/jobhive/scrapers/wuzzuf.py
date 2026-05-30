@@ -237,22 +237,25 @@ class WuzzufScraper(BaseScraper):
         ) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
-            async def absorb(parsed: list[Job]) -> int:
-                """Returns the count of *new* jobs added (post-dedup)."""
-                added = 0
+            async def absorb(parsed: list[Job]) -> None:
                 async with lock:
                     for job in parsed:
                         if job.ats_id is None or job.ats_id in seen:
                             continue
                         seen.add(job.ats_id)
                         jobs.append(job)
-                        added += 1
-                return added
 
             async def per_country(country_key: str) -> None:
                 url_prefix, filter_value, country_iso = COUNTRY_SEGMENTS[
                     country_key
                 ]
+                # Per-country wrap-around detector. The shared ``seen``
+                # set is for output dedup only — using it for the stop
+                # check would let a cross-listed ats_id (same posting on
+                # two country mirrors) make this country stop early and
+                # drop its remaining pages. Track ids this country has
+                # already seen separately so each mirror paginates fully.
+                country_seen: set[str] = set()
                 # Wuzzuf paginates by ``start`` not ``page``: the offset
                 # is the page index * PER_PAGE. Iterate sequentially —
                 # we stop as soon as a page returns zero links, so
@@ -272,11 +275,19 @@ class WuzzufScraper(BaseScraper):
                     )
                     if not parsed:
                         return
-                    new = await absorb(parsed)
-                    # If a page returned only duplicates we've already
-                    # hit the wrap-around. Stop instead of spinning.
-                    if new == 0:
+                    # If this country has already seen every id on the
+                    # page we've hit its wrap-around. Stop instead of
+                    # spinning.
+                    new_ids = [
+                        job.ats_id
+                        for job in parsed
+                        if job.ats_id is not None
+                        and job.ats_id not in country_seen
+                    ]
+                    if not new_ids:
                         return
+                    country_seen.update(new_ids)
+                    await absorb(parsed)
 
             await asyncio.gather(*(per_country(c) for c in countries))
         return jobs
