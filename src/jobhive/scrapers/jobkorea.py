@@ -33,7 +33,6 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote_plus
 
 import httpx
-from bs4 import BeautifulSoup
 
 from jobhive.exceptions import ScraperError
 from jobhive.models import ATSType, Job
@@ -215,6 +214,14 @@ class JobKoreaScraper(BaseScraper):
     # --- parsing ------------------------------------------------------------
 
     def _parse_page(self, html_text: str) -> list[Job]:
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError as exc:  # pragma: no cover
+            raise ScraperError(
+                "JobKorea scraper requires beautifulsoup4. Install with "
+                "`pip install jobhive[scrapers]` or `pip install beautifulsoup4`."
+            ) from exc
+
         soup = BeautifulSoup(html_text, "html.parser")
         # Cards are rendered by the ``CardJob`` Next.js component. The
         # outer ``<div data-sentry-component="CardJob">`` wraps every
