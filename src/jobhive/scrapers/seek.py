@@ -92,7 +92,10 @@ _REGION_CURRENCY: dict[str, str] = {
 }
 
 PAGE_SIZE = 100  # API caps pageSize at 100 (>100 returns HTML).
-PAGE_SAFETY_CAP = 1000  # Stop after this many pages regardless of total.
+PAGE_SAFETY_CAP = 5000  # Stop after this many pages regardless of total.
+# AU alone is ~159k postings (~1590 pages); a 1000-page cap would silently
+# drop ~59k rows. 5000 pages (~500k postings) covers the largest region
+# with headroom while still bounding a runaway/looping response.
 MAX_CONCURRENCY = 4
 MAX_RETRIES = 5
 RETRY_BASE_DELAY = 1.5
@@ -333,6 +336,7 @@ class SeekScraper(BaseScraper):
 
         salary_label = (item.get("salaryLabel") or "").strip() or None
         salary_currency = _REGION_CURRENCY.get(country) if salary_label else None
+        salary_period = _infer_salary_period(salary_label) if salary_currency else None
 
         posted_at = _parse_iso8601(item.get("listingDate"))
 
@@ -377,7 +381,7 @@ class SeekScraper(BaseScraper):
             country_iso=country,
             region="Oceania" if country in ("AU", "NZ") else "Asia",
             salary_currency=salary_currency,
-            salary_period="YEAR" if salary_currency else None,
+            salary_period=salary_period,
             salary_summary=salary_label,
             department=department,
             description=description,
@@ -386,6 +390,28 @@ class SeekScraper(BaseScraper):
             language="en",
             raw=raw or None,
         )
+
+
+def _infer_salary_period(label: str | None) -> str | None:
+    """Map a SEEK ``salaryLabel`` to a ``SalaryPeriod``.
+
+    SEEK labels embed the cadence in free text, e.g.
+    ``"$120,000 – $140,000 per year"``, ``"$45 per hour"``,
+    ``"$8,000 per month"``. We scan for the period keyword and default to
+    ``"YEAR"`` when none is present (the dominant case for annual ranges).
+    """
+    if not label:
+        return None
+    low = label.lower()
+    if "per hour" in low or "/hour" in low or "hourly" in low:
+        return "HOUR"
+    if "per day" in low or "/day" in low or "daily" in low:
+        return "DAY"
+    if "per week" in low or "/week" in low or "weekly" in low:
+        return "WEEK"
+    if "per month" in low or "/month" in low or "monthly" in low:
+        return "MONTH"
+    return "YEAR"
 
 
 def _parse_iso8601(value: object) -> datetime | None:
