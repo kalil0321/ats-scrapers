@@ -662,7 +662,7 @@ def _parse_iso(value: object) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
     try:
-        return datetime.fromisoformat(value)
+        return datetime.fromisoformat(value).astimezone(UTC)
     except ValueError:
         return None
 

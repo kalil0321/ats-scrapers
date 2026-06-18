@@ -12,6 +12,7 @@ Pin the contract for:
 from __future__ import annotations
 
 import re
+from datetime import UTC
 from typing import Any
 
 import pytest
@@ -209,6 +210,8 @@ def test_parses_full_offer_payload(httpx_mock) -> None:
     assert j.is_remote is None  # workplace=on_site → leave None (not False)
     assert j.posted_at is not None
     assert j.posted_at.year == 2026
+    assert j.posted_at.tzinfo is UTC
+    assert j.posted_at.hour == 16
     assert j.fetched_at.tzinfo is not None
     assert j.raw is not None
     assert j.raw["region"] == "pl"
