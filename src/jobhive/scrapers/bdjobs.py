@@ -195,11 +195,45 @@ class BdjobsScraper(BaseScraper):
         *,
         params: dict[str, str] | None,
     ) -> list[dict[str, Any]]:
-        """Fetch one ``GetJobSearch`` call and return the union of its
-        ``data`` and ``premiumData`` arrays. The endpoint splits its
-        response into a "premium" spotlight and a regular ``data``
-        list; we treat them as one stream since both shapes share the
-        same field names."""
+        """Fetch all ``GetJobSearch`` pages for one query seed.
+
+        The endpoint reports pagination under ``common.totalpages`` and
+        uses ``pg`` as the page parameter. Each page splits rows between
+        ``premiumData`` and ``data`` arrays; both shapes share fields.
+        """
+        items: list[dict[str, Any]] = []
+        page = 1
+        total_pages = 1
+        while page <= total_pages:
+            page_params = dict(params or {})
+            if page > 1:
+                page_params["pg"] = str(page)
+            payload = await self._fetch_payload(
+                client, sem, params=page_params or None,
+            )
+            premium = payload.get("premiumData") or []
+            data = payload.get("data") or []
+            if not isinstance(premium, list) or not isinstance(data, list):
+                raise ScraperError(
+                    f"bdjobs returned malformed job arrays for params={page_params}"
+                )
+            items.extend([*premium, *data])
+            common = payload.get("common") or {}
+            if isinstance(common, dict):
+                reported_pages = _to_int(common.get("totalpages"))
+                if reported_pages is not None and reported_pages > total_pages:
+                    total_pages = reported_pages
+            page += 1
+        return items
+
+    async def _fetch_payload(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        *,
+        params: dict[str, str] | None,
+    ) -> dict[str, Any]:
+        """Fetch one ``GetJobSearch`` page and return its JSON object."""
         last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
@@ -230,13 +264,7 @@ class BdjobsScraper(BaseScraper):
                     raise ScraperError(
                         f"bdjobs returned malformed JSON for params={params}"
                     )
-                premium = payload.get("premiumData") or []
-                data = payload.get("data") or []
-                if not isinstance(premium, list) or not isinstance(data, list):
-                    raise ScraperError(
-                        f"bdjobs returned malformed job arrays for params={params}"
-                    )
-                return [*premium, *data]
+                return payload
             if response.status_code in (429,) or 500 <= response.status_code < 600:
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
@@ -311,6 +339,16 @@ class BdjobsScraper(BaseScraper):
             raw=raw or None,
         )
 
+
+
+def _to_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value)
+    return None
 
 def _concat_description(item: dict[str, Any]) -> str | None:
     """Bdjobs splits posting prose across ``jobContext`` (about the

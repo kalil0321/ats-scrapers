@@ -207,6 +207,21 @@ def test_seed_segmentation_dedupes_across_queries(httpx_mock) -> None:
     assert {j.ats_id for j in jobs} == {"shared-1", "base-only", "kw-only"}
 
 
+def test_fetch_query_walks_all_reported_pages(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=re.compile(rf"^{re.escape(_API)}$"),
+        json=_payload(premium=[_job(job_id="page-1")], total=2, total_pages=2),
+    )
+    httpx_mock.add_response(
+        url=re.compile(rf"^{re.escape(_API)}\?pg=2$"),
+        json=_payload(premium=[_job(job_id="page-2")], total=2, total_pages=2),
+    )
+
+    jobs = BdjobsScraper("any", keyword_seeds=(), category_ids=()).fetch()
+
+    assert [j.ats_id for j in jobs] == ["page-1", "page-2"]
+
+
 def test_keyword_and_category_params_are_sent(httpx_mock) -> None:
     """Verify the scraper passes ``Keyword`` and ``Category`` query
     params (case matters — bdjobs is case-sensitive on these)."""
