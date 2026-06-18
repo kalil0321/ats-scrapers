@@ -542,7 +542,7 @@ def _extract_posted_at(row_html: str) -> datetime | None:
     if len(year) == 2:
         year = "20" + year
     try:
-        return datetime(int(year), int(month), int(day))
+        return datetime(int(year), int(month), int(day), tzinfo=UTC)
     except (ValueError, TypeError):
         return None
 

@@ -152,9 +152,9 @@ def _wrap_page(rows: list[str]) -> str:
 class _ScriptedTransport(httpx.MockTransport):
     """Replays canned responses keyed by request URL.
 
-    Each entry is ``(url_predicate, response_factory)``; the first
-    matching predicate fires. URLs are matched by substring so tests
-    don't have to spell out the full query string.
+    ``p=N`` / ``o=N`` fragments match exact query-parameter values so
+    pagination tests cannot accidentally match page 1 against page 10.
+    Other fragments still fall back to substring matching.
     """
 
     def __init__(
@@ -168,11 +168,18 @@ class _ScriptedTransport(httpx.MockTransport):
         def handler(request: httpx.Request) -> httpx.Response:
             self._record.append(str(request.url))
             for url_fragment, response in self._scripts:
-                if url_fragment in str(request.url):
+                if self._matches(url_fragment, request):
                     return response
             raise AssertionError(f"unexpected URL {request.url}")
 
         super().__init__(handler)
+
+    @staticmethod
+    def _matches(url_fragment: str, request: httpx.Request) -> bool:
+        key, sep, expected = url_fragment.partition("=")
+        if sep and key in request.url.params:
+            return request.url.params.get(key) == expected
+        return url_fragment in str(request.url)
 
 
 def _patch_client(
@@ -258,7 +265,7 @@ def test_parse_row_minimal_realistic() -> None:
     # "Hybride" is treated as remote-true (partial-remote roles still
     # qualify as "is_remote" in our schema).
     assert job.is_remote is True
-    assert job.posted_at == datetime(2026, 5, 12)
+    assert job.posted_at == datetime(2026, 5, 12, tzinfo=r_mod.UTC)
     assert job.fetched_at == fetched
     assert job.description is not None
     assert "Bel recherche" in job.description

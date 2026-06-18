@@ -104,7 +104,7 @@ def _wrap_next_data(ads: list[dict[str, Any]], total: int | None = None) -> str:
 
 
 class _ScriptedTransport(httpx.MockTransport):
-    """URL-substring keyed response replay."""
+    """Query-aware response replay for pagination tests."""
 
     def __init__(
         self,
@@ -117,11 +117,18 @@ class _ScriptedTransport(httpx.MockTransport):
         def handler(request: httpx.Request) -> httpx.Response:
             self._record.append(str(request.url))
             for url_fragment, response in self._scripts:
-                if url_fragment in str(request.url):
+                if self._matches(url_fragment, request):
                     return response
             raise AssertionError(f"unexpected URL {request.url}")
 
         super().__init__(handler)
+
+    @staticmethod
+    def _matches(url_fragment: str, request: httpx.Request) -> bool:
+        key, sep, expected = url_fragment.partition("=")
+        if sep and key in request.url.params:
+            return request.url.params.get(key) == expected
+        return url_fragment in str(request.url)
 
 
 def _patch_client(
