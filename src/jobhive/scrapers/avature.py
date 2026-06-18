@@ -36,7 +36,7 @@ import os
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
@@ -345,8 +345,9 @@ class AvatureScraper(BaseScraper):
         async with httpx.AsyncClient(
             timeout=self.timeout, follow_redirects=True
         ) as client:
+            page_size = _page_size(base)
             for page_num in range(MAX_PAGES):
-                offset = page_num * PAGE_SIZE
+                offset = page_num * page_size
                 html_text = await self._fetch_page(client, base, offset)
                 page_jobs = self._parse_page(html_text, base, company)
                 new = [j for j in page_jobs if j.ats_id not in seen]
@@ -356,7 +357,7 @@ class AvatureScraper(BaseScraper):
                     seen.add(j.ats_id)
                 all_jobs.extend(new)
                 # Termination: short page = last page.
-                if len(page_jobs) < PAGE_SIZE:
+                if len(page_jobs) < page_size:
                     break
 
             # Per-job detail fetch — Avature's search-results page has
@@ -440,8 +441,8 @@ class AvatureScraper(BaseScraper):
                 for page_num in range(MAX_PAGES):
                     offset = page_num * page_size
                     list_url = (
-                        f"{_search_url(base)}"
-                        f"?jobOffset={offset}&jobRecordsPerPage={PAGE_SIZE}"
+                        f"{_search_url(base)}?"
+                        f"{urlencode(_pagination_params(base, offset))}"
                     )
                     try:
                         await page.goto(
@@ -721,7 +722,8 @@ def _join_avature_url(base: str, href: str) -> str:
 
 def _link_base(base: str) -> str:
     base = base.rstrip("/")
-    if base.lower().endswith("/searchjobs"):
+    lowered = base.lower()
+    if lowered.endswith("/searchjobs") or lowered.endswith("/searchjobsmaps"):
         return base.rsplit("/", 1)[0]
     return base
 

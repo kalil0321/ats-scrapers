@@ -303,6 +303,32 @@ def test_searchjobs_maps_pipeline_variant_is_supported(httpx_mock) -> None:
     )
 
 
+def test_searchjobs_maps_direct_pagination_uses_pipeline_offsets(httpx_mock) -> None:
+    base = "https://company.example.com/en_US/jobs/SearchJobsMaps"
+
+    def mkpage(start: int, count: int) -> str:
+        return "".join(
+            "<li class='list__item'>"
+            "<div class='list__item__text__title'>"
+            f"<a href='/en_US/jobs/PipelineDetail?pipelineId={i}'>Job {i}</a>"
+            "</div>"
+            "<div class='list__item__text__subtitle'><span>Remote</span></div>"
+            "</li>"
+            for i in range(start, start + count)
+        )
+
+    httpx_mock.add_response(url=f"{base}/?pipelineOffset=0", text=mkpage(0, 30))
+    httpx_mock.add_response(url=f"{base}/?pipelineOffset=30", text=mkpage(30, 1))
+
+    jobs = AvatureScraper(base).fetch()
+
+    assert len(jobs) == 31
+    assert jobs[-1].ats_id == "30"
+    assert str(jobs[0].url) == (
+        "https://company.example.com/en_US/jobs/PipelineDetail?pipelineId=0"
+    )
+
+
 # --- Error handling --------------------------------------------------------
 
 
