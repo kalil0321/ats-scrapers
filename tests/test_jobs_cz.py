@@ -104,6 +104,10 @@ def test_ats_type_value_is_jobs_cz() -> None:
     assert ATSType.JOBSCZ.value == "jobs_cz"
 
 
+def test_empty_location_seeds_disables_fetching() -> None:
+    assert JobsCzScraper("any", location_seeds=()).fetch() == []
+
+
 # --- happy path -------------------------------------------------------------
 
 

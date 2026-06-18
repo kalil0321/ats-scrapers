@@ -139,7 +139,7 @@ class JobsCzScraper(BaseScraper):
         super().__init__(company_slug, timeout=timeout)
         self.max_pages = max_pages
         # ``None`` keeps the production default (full seed list); pass
-        # ``()`` to scrape a single seed for tests.
+        # ``()`` to disable seeding entirely for tests.
         self.location_seeds: tuple[str, ...] = (
             _LOCATION_SEEDS if location_seeds is None else tuple(location_seeds)
         )
@@ -224,8 +224,8 @@ class JobsCzScraper(BaseScraper):
     ) -> str:
         last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
+            try:
+                async with sem:
                     response = await client.get(
                         url,
                         params=params,
@@ -235,15 +235,15 @@ class JobsCzScraper(BaseScraper):
                             "Accept": "text/html,application/xhtml+xml",
                         },
                     )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"jobs.cz fetch failed for {url} "
-                            f"params={params}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt == MAX_RETRIES:
+                    raise ScraperError(
+                        f"jobs.cz fetch failed for {url} "
+                        f"params={params}: {exc}"
+                    ) from exc
+                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
+                continue
             if response.status_code == 200:
                 return response.text
             if response.status_code == 404:
