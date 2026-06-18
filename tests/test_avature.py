@@ -23,6 +23,7 @@ import pytest
 from jobhive.exceptions import CompanyNotFoundError, ScraperError
 from jobhive.models import ATSType
 from jobhive.scrapers import AvatureScraper, ScraperRegistry, get_scraper
+from jobhive.scrapers.avature import _paginated_search_url
 
 
 @pytest.fixture(autouse=True)
@@ -326,6 +327,42 @@ def test_searchjobs_maps_direct_pagination_uses_pipeline_offsets(httpx_mock) -> 
     assert jobs[-1].ats_id == "30"
     assert str(jobs[0].url) == (
         "https://company.example.com/en_US/jobs/PipelineDetail?pipelineId=0"
+    )
+
+
+def test_searchjobs_maps_query_params_are_preserved(httpx_mock) -> None:
+    base = "https://company.example.com/en_US/jobs/SearchJobsMaps?folderId=abc&lang=en"
+    expected_url = (
+        "https://company.example.com/en_US/jobs/SearchJobsMaps/"
+        "?folderId=abc&lang=en&pipelineOffset=0"
+    )
+    httpx_mock.add_response(
+        url=expected_url,
+        text=(
+            "<li class='list__item'>"
+            "<div class='list__item__text__title'>"
+            "<a href='/en_US/jobs/PipelineDetail?pipelineId=123'>Retail Specialist</a>"
+            "</div>"
+            "</li>"
+        ),
+    )
+
+    jobs = AvatureScraper(base).fetch()
+
+    assert len(jobs) == 1
+    assert str(jobs[0].url) == (
+        "https://company.example.com/en_US/jobs/PipelineDetail?pipelineId=123"
+    )
+
+
+def test_browserbase_pagination_url_preserves_searchjobs_maps_query_params() -> None:
+    base = "https://company.example.com/en_US/jobs/SearchJobsMaps?folderId=abc&lang=en"
+
+    url = _paginated_search_url(base, 30)
+
+    assert url == (
+        "https://company.example.com/en_US/jobs/SearchJobsMaps/"
+        "?folderId=abc&lang=en&pipelineOffset=30"
     )
 
 

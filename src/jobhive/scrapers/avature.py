@@ -36,7 +36,7 @@ import os
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
@@ -440,10 +440,7 @@ class AvatureScraper(BaseScraper):
                 page_size = _page_size(base)
                 for page_num in range(MAX_PAGES):
                     offset = page_num * page_size
-                    list_url = (
-                        f"{_search_url(base)}?"
-                        f"{urlencode(_pagination_params(base, offset))}"
-                    )
+                    list_url = _paginated_search_url(base, offset)
                     try:
                         await page.goto(
                             list_url, wait_until="domcontentloaded", timeout=30_000
@@ -496,12 +493,10 @@ class AvatureScraper(BaseScraper):
     async def _fetch_page(
         self, client: httpx.AsyncClient, base: str, offset: int
     ) -> str:
-        params = _pagination_params(base, offset)
+        list_url = _paginated_search_url(base, offset)
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                response = await client.get(
-                    _search_url(base), params=params, headers=_BROWSER_HEADERS
-                )
+                response = await client.get(list_url, headers=_BROWSER_HEADERS)
             except httpx.HTTPError as exc:
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
@@ -673,13 +668,39 @@ def _search_url(base: str) -> str:
     """Return the SearchJobs URL for default and custom-path portals."""
     parsed = urlparse(base)
     path = parsed.path.rstrip("/")
-    if path.lower().endswith("/searchjobs"):
-        return f"{base.rstrip('/')}/"
-    if path.lower().endswith("/searchjobsmaps"):
-        return f"{base.rstrip('/')}/"
-    if not path or path.lstrip("/") in _LOCALE_PREFIXES:
-        return f"{base.rstrip('/')}/careers/SearchJobs/"
-    return f"{base.rstrip('/')}/SearchJobs/"
+    lowered = path.lower()
+    if lowered.endswith("/searchjobs") or lowered.endswith("/searchjobsmaps"):
+        search_path = f"{path}/"
+    elif not path or path.lstrip("/") in _LOCALE_PREFIXES:
+        search_path = f"{path}/careers/SearchJobs/"
+    else:
+        search_path = f"{path}/SearchJobs/"
+    return urlunparse(
+        (parsed.scheme, parsed.netloc, search_path, "", parsed.query, parsed.fragment)
+    )
+
+
+def _paginated_search_url(base: str, offset: int) -> str:
+    """Build a listing URL while preserving tenant-specific query params."""
+    parsed = urlparse(_search_url(base))
+    page_params = _pagination_params(base, offset)
+    page_keys = set(page_params)
+    query_items = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key not in page_keys
+    ]
+    query_items.extend((key, str(value)) for key, value in page_params.items())
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            urlencode(query_items),
+            parsed.fragment,
+        )
+    )
 
 
 def _page_size(base: str) -> int:
@@ -693,7 +714,8 @@ def _pagination_params(base: str, offset: int) -> dict[str, int]:
 
 
 def _is_map_search(base: str) -> bool:
-    return _search_url(base).rstrip("/").lower().endswith("/searchjobsmaps")
+    path = urlparse(_search_url(base)).path.rstrip("/").lower()
+    return path.endswith("/searchjobsmaps")
 
 
 def _is_detail_href(href: str) -> bool:
@@ -721,11 +743,12 @@ def _join_avature_url(base: str, href: str) -> str:
 
 
 def _link_base(base: str) -> str:
-    base = base.rstrip("/")
-    lowered = base.lower()
+    parsed = urlparse(base.rstrip("/"))
+    path = parsed.path.rstrip("/")
+    lowered = path.lower()
     if lowered.endswith("/searchjobs") or lowered.endswith("/searchjobsmaps"):
-        return base.rsplit("/", 1)[0]
-    return base
+        path = path.rsplit("/", 1)[0]
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", parsed.fragment))
 
 
 def _parse_detail(html: str) -> tuple[dict[str, str], str | None]:
