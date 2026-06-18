@@ -194,7 +194,21 @@ class OlxJobsScraper(BaseScraper):
                         return
                     url = next_url
 
-            await asyncio.gather(*(per_region(r) for r in self.regions))
+            results = await asyncio.gather(
+                *(per_region(r) for r in self.regions),
+                return_exceptions=True,
+            )
+            failures = [
+                result for result in results if isinstance(result, Exception)
+            ]
+            if failures and len(failures) == len(results):
+                if len(results) == 1:
+                    raise failures[0]
+                details = "; ".join(str(failure) for failure in failures)
+                raise ScraperError(
+                    "OLX fetch failed for every requested region: "
+                    f"{details}"
+                ) from failures[0]
         return jobs
 
     # --- HTTP layer ---------------------------------------------------------

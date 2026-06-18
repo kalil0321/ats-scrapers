@@ -413,6 +413,26 @@ def test_400_before_offset_cap_raises(httpx_mock) -> None:
         OlxJobsScraper("pl").fetch()
 
 
+def test_multi_region_keeps_partial_results_when_one_region_fails(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_PL_RE,
+        json=_page([_offer(offer_id=1, url="https://www.olx.pl/o/1")]),
+    )
+    httpx_mock.add_response(url=_UA_RE, status_code=500)
+
+    jobs = OlxJobsScraper("pl,ua").fetch()
+
+    assert [j.ats_id for j in jobs] == ["pl:1"]
+
+
+def test_multi_region_raises_when_every_region_fails(httpx_mock) -> None:
+    httpx_mock.add_response(url=_PL_RE, status_code=500)
+    httpx_mock.add_response(url=_UA_RE, status_code=500)
+
+    with pytest.raises(ScraperError, match="every requested region"):
+        OlxJobsScraper("pl,ua").fetch()
+
+
 def test_persistent_500_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=_API_RE, status_code=500, is_reusable=True)
     with pytest.raises(ScraperError):
