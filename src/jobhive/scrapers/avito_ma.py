@@ -190,11 +190,19 @@ class AvitoMarocScraper(BaseScraper):
                 if stop_at_page is None or page_no < stop_at_page:
                     stop_at_page = page_no
                 return []
-            return [
-                job
-                for ad in ads
-                if (job := _parse_ad(ad, fetched_at=fetched_at)) is not None
-            ]
+            page_jobs: list[Job] = []
+            for idx, ad in enumerate(ads):
+                try:
+                    job = _parse_ad(ad, fetched_at=fetched_at)
+                except (AttributeError, TypeError, ValueError) as exc:
+                    log.warning(
+                        "Avito Maroc page=%d ad=%d parse error — skipping ad: %s",
+                        page_no, idx, exc,
+                    )
+                    continue
+                if job is not None:
+                    page_jobs.append(job)
+            return page_jobs
 
         page_no = 1
         while page_no <= self.max_pages:

@@ -528,3 +528,23 @@ def test_fetch_skips_malformed_page_without_stopping(
     _patch_client(monkeypatch, transport)
     jobs = AvitoMarocScraper("any", max_pages=4, concurrency=1).fetch()
     assert [j.ats_id for j in jobs] == ["1", "3"]
+
+
+def test_fetch_skips_single_malformed_ad_without_stopping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed row should not poison the whole page."""
+    malformed_ad = _make_ad(ad_id="bad", list_id="bad")
+    malformed_ad["seller"] = "not-a-dict"
+    good_ad = _make_ad(ad_id="2", list_id="22")
+    page1 = _wrap_next_data([malformed_ad, good_ad])
+    empty = _wrap_next_data([])
+    transport = _ScriptedTransport(
+        [
+            ("o=1", httpx.Response(200, text=page1)),
+            ("o=2", httpx.Response(200, text=empty)),
+        ],
+    )
+    _patch_client(monkeypatch, transport)
+    jobs = AvitoMarocScraper("any", max_pages=2, concurrency=1).fetch()
+    assert [j.ats_id for j in jobs] == ["2"]
