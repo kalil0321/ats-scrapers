@@ -110,6 +110,11 @@ def test_proxy_url_quad_colon_format_converted() -> None:
     assert out == "http://alice:secret@proxy.example.com:1000"
 
 
+def test_proxy_url_quad_colon_format_without_scheme_converted() -> None:
+    out = _resolve_proxy_url("proxy.example.com:1000:alice:secret")
+    assert out == "http://alice:secret@proxy.example.com:1000"
+
+
 def test_proxy_url_already_canonical_passes_through() -> None:
     out = _resolve_proxy_url("http://user:pw@host.example:8080")
     assert out == "http://user:pw@host.example:8080"

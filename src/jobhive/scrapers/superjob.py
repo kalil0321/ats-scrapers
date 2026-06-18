@@ -162,7 +162,7 @@ def _resolve_proxy_url(raw: str | None) -> str | None:
     if not raw:
         return None
     raw = raw.strip()
-    m = re.match(r"^http://([^:/@]+):(\d+):([^:]+):(.+)$", raw)
+    m = re.match(r"^(?:https?://)?([^:/@]+):(\d+):([^:]+):(.+)$", raw)
     if m:
         host, port, user, pw = m.groups()
         return f"http://{user}:{pw}@{host}:{port}"
