@@ -48,6 +48,7 @@ import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -165,7 +166,9 @@ def _resolve_proxy_url(raw: str | None) -> str | None:
     m = re.match(r"^(?:https?://)?([^:/@]+):(\d+):([^:]+):(.+)$", raw)
     if m:
         host, port, user, pw = m.groups()
-        return f"http://{user}:{pw}@{host}:{port}"
+        safe_user = quote(user, safe="")
+        safe_pw = quote(pw, safe="")
+        return f"http://{safe_user}:{safe_pw}@{host}:{port}"
     return raw
 
 
