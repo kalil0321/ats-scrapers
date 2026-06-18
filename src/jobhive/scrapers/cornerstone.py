@@ -72,6 +72,7 @@ class CornerstoneScraper(BaseScraper):
         company_name: str | None = None,
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
+        # Full URLs containing a career-site ID take precedence over site_id.
         self.career_url, self.slug, resolved_site_id = _resolve_career_url(
             company_slug, site_id
         )
