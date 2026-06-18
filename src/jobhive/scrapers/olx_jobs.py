@@ -318,6 +318,7 @@ def _resolve_regions(company_slug: str) -> tuple[_Region, ...]:
         return tuple(_REGIONS.values())
     parts = [p.strip() for p in slug.split(",") if p.strip()]
     out: list[_Region] = []
+    seen_codes: set[str] = set()
     for code in parts:
         region = _REGIONS.get(code)
         if region is None:
@@ -325,6 +326,9 @@ def _resolve_regions(company_slug: str) -> tuple[_Region, ...]:
                 f"OlxJobsScraper: unknown region {code!r}. "
                 f"Known: {sorted(_REGIONS)} (or 'all')."
             )
+        if code in seen_codes:
+            continue
+        seen_codes.add(code)
         out.append(region)
     return tuple(out)
 

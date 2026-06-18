@@ -123,6 +123,11 @@ def test_comma_separated_picks_subset() -> None:
     assert [r.code for r in scraper.regions] == ["pl", "ua"]
 
 
+def test_comma_separated_regions_are_deduplicated() -> None:
+    scraper = OlxJobsScraper("pl,ua,pl")
+    assert [r.code for r in scraper.regions] == ["pl", "ua"]
+
+
 # --- happy path -------------------------------------------------------------
 
 
