@@ -197,7 +197,10 @@ def _compose_description(offer: dict[str, Any]) -> str | None:
 
 def _fallback_url(slug: str, offer: dict[str, Any]) -> str:
     offer_slug = offer.get("slug") or offer.get("id", "")
-    return f"https://{slug}.recruitee.com/o/{offer_slug}"
+    base = slug.strip().rstrip("/")
+    if base.startswith(("http://", "https://")):
+        return f"{base}/o/{offer_slug}"
+    return f"https://{base}.recruitee.com/o/{offer_slug}"
 
 
 def _to_float(value: object) -> float | None:

@@ -61,6 +61,20 @@ def test_full_url_slug(httpx_mock) -> None:
     assert len(jobs) == 1
 
 
+def test_full_url_slug_fallback_url_uses_custom_domain(httpx_mock) -> None:
+    offer = _offer()
+    offer.pop("careers_url")
+    offer["slug"] = "senior-engineer"
+    httpx_mock.add_response(
+        url="https://careers.example.com/api/offers",
+        json={"offers": [offer]},
+    )
+
+    jobs = RecruiteeScraper("https://careers.example.com").fetch()
+
+    assert str(jobs[0].url) == "https://careers.example.com/o/senior-engineer"
+
+
 def test_non_json_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=API, text="<html>nope</html>")
     with pytest.raises(ScraperError):

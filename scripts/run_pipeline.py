@@ -19,10 +19,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import fcntl
 import csv
-import os
+import fcntl
 import json
+import os
 import re
 import sqlite3
 import sys
