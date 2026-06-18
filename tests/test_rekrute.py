@@ -225,6 +225,15 @@ def test_iter_rows_extracts_each_post() -> None:
     assert [rid for rid, _ in rows] == ["1", "2"]
 
 
+def test_iter_rows_accepts_reordered_li_attributes() -> None:
+    row = _make_row(job_id="7").replace(
+        '<li class="post-id" id="7">',
+        '<li data-x="1" id="7" class="featured post-id">',
+    )
+    rows = list(r_mod._iter_rows(_wrap_page([row])))
+    assert [rid for rid, _ in rows] == ["7"]
+
+
 def test_iter_rows_empty_page() -> None:
     assert list(r_mod._iter_rows(_wrap_page([]))) == []
 
@@ -495,6 +504,28 @@ def test_fetch_skips_5xx_page_without_stopping(
     _patch_client(monkeypatch, transport)
     jobs = RekruteScraper("any", max_pages=4, concurrency=1).fetch()
     assert [j.ats_id for j in jobs] == ["1", "3"]
+
+
+def test_fetch_stops_after_repeated_5xx_pages(
+    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch_sleep: None,
+) -> None:
+    """One failed page is skipped; repeated empty failure waves stop the walk."""
+    page1 = _wrap_page([_make_row(job_id="1")])
+    record: list[str] = []
+    transport = _ScriptedTransport(
+        [
+            ("p=0", httpx.Response(200, text=page1)),
+            ("p=1", httpx.Response(503)),
+            ("p=2", httpx.Response(503)),
+        ],
+        record=record,
+    )
+    _patch_client(monkeypatch, transport)
+    jobs = RekruteScraper("any", max_pages=5, concurrency=1).fetch()
+    assert [j.ats_id for j in jobs] == ["1"]
+    assert any("p=2" in u for u in record)
+    assert not any("p=3" in u for u in record)
 
 
 def test_fetch_skips_malformed_page_without_stopping(

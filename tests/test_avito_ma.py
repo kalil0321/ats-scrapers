@@ -487,6 +487,28 @@ def test_fetch_skips_5xx_page_without_stopping(
     assert [j.ats_id for j in jobs] == ["1", "3"]
 
 
+def test_fetch_stops_after_repeated_5xx_pages(
+    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch_sleep: None,
+) -> None:
+    """One failed page is skipped; repeated empty failure waves stop the walk."""
+    page1 = _wrap_next_data([_make_ad(ad_id="1", list_id="11")])
+    record: list[str] = []
+    transport = _ScriptedTransport(
+        [
+            ("o=1", httpx.Response(200, text=page1)),
+            ("o=2", httpx.Response(503)),
+            ("o=3", httpx.Response(503)),
+        ],
+        record=record,
+    )
+    _patch_client(monkeypatch, transport)
+    jobs = AvitoMarocScraper("any", max_pages=5, concurrency=1).fetch()
+    assert [j.ats_id for j in jobs] == ["1"]
+    assert any("o=3" in u for u in record)
+    assert not any("o=4" in u for u in record)
+
+
 def test_fetch_skips_malformed_page_without_stopping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

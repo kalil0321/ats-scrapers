@@ -112,7 +112,8 @@ _HEADERS: dict[str, str] = {
 # CSS-select the rows directly works too, but a regex slice halves
 # the parse time on a 200KB page and keeps the per-row scopes small.
 _ROW_BOUNDARY_RE = re.compile(
-    r'<li\s+class="post-id"\s+id="(?P<id>\d+)"\s*>',
+    r"<li\b(?=[^>]*\bclass=['\"][^'\"]*\bpost-id\b)"
+    r"(?=[^>]*\bid=['\"](?P<id>\d+)['\"])[^>]*>",
     re.IGNORECASE,
 )
 _RESULTS_LIST_RE = re.compile(
@@ -235,6 +236,7 @@ class RekruteScraper(BaseScraper):
         stop_at_page: int | None = None
         skipped_fetch_pages: set[int] = set()
         skipped_parse_pages: set[int] = set()
+        consecutive_empty_skip_waves = 0
 
         async def fetch_page(page_no: int) -> list[Job]:
             nonlocal stop_at_page
@@ -288,9 +290,15 @@ class RekruteScraper(BaseScraper):
                 p in skipped_fetch_pages or p in skipped_parse_pages
                 for p in wave_pages
             )
-            if stop_at_page is not None or (
-                not wave_had_rows and not wave_had_skip
-            ):
+            if stop_at_page is not None:
+                break
+            if wave_had_rows:
+                consecutive_empty_skip_waves = 0
+            elif wave_had_skip:
+                consecutive_empty_skip_waves += 1
+                if consecutive_empty_skip_waves > 1:
+                    break
+            else:
                 break
             page_no = wave_end
         log.info("Rekrute: fetched %d unique jobs", len(jobs))
