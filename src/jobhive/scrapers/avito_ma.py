@@ -436,9 +436,9 @@ def _parse_relative_date(
     value: object, *, now: datetime,
 ) -> datetime | None:
     """Convert ``"il y a 7 minutes"`` / ``"il y a 2 jours"`` into a
-    UTC-naive datetime relative to ``now``. Returns ``None`` for
-    unrecognised phrases — better to leave the field empty than
-    fabricate a wrong timestamp.
+    datetime relative to now. The result preserves now's timezone
+    awareness. Returns None for unrecognised phrases -- better to leave
+    the field empty than fabricate a wrong timestamp.
 
     Approximations:
       - 1 ``mois`` = 30 days
