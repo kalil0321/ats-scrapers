@@ -54,7 +54,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import httpx
@@ -151,7 +151,7 @@ class AvitoMarocScraper(BaseScraper):
         return asyncio.run(self._fetch_async())
 
     async def _fetch_async(self) -> list[Job]:
-        fetched_at = datetime.now()
+        fetched_at = datetime.now(tz=UTC)
         async with httpx.AsyncClient(
             timeout=self.timeout, follow_redirects=True,
         ) as client:
@@ -163,14 +163,13 @@ class AvitoMarocScraper(BaseScraper):
         seen: set[str] = set()
         jobs: list[Job] = []
         sem = asyncio.Semaphore(self.concurrency)
-        stop_at_page: dict[str, int | None] = {"value": None}
+        stop_at_page: int | None = None
+        skipped_parse_pages: set[int] = set()
 
         async def fetch_page(page_no: int) -> list[Job]:
+            nonlocal stop_at_page
             async with sem:
-                if (
-                    stop_at_page["value"] is not None
-                    and page_no >= stop_at_page["value"]
-                ):
+                if stop_at_page is not None and page_no >= stop_at_page:
                     return []
                 html_body = await self._get_listing_page(client, page_no)
             if html_body is None:
@@ -178,15 +177,15 @@ class AvitoMarocScraper(BaseScraper):
             try:
                 ads = _extract_ads(html_body)
             except _AdsParseError as exc:
-                # A broken 200-OK response — do NOT treat as the last
-                # page, or one bad response would truncate pagination.
+                # A broken 200-OK response must not look like the last page.
                 log.warning(
                     "Avito Maroc page=%d: %s — skipping page", page_no, exc,
                 )
+                skipped_parse_pages.add(page_no)
                 return []
             if not ads:
-                if stop_at_page["value"] is None or page_no < stop_at_page["value"]:
-                    stop_at_page["value"] = page_no
+                if stop_at_page is None or page_no < stop_at_page:
+                    stop_at_page = page_no
                 return []
             return [
                 job
@@ -209,7 +208,11 @@ class AvitoMarocScraper(BaseScraper):
                         continue
                     seen.add(job.ats_id)
                     jobs.append(job)
-            if not wave_had_rows or stop_at_page["value"] is not None:
+            wave_pages = range(page_no, wave_end)
+            wave_had_parse_skip = any(p in skipped_parse_pages for p in wave_pages)
+            if stop_at_page is not None or (
+                not wave_had_rows and not wave_had_parse_skip
+            ):
                 break
             page_no = wave_end
         log.info("Avito Maroc: fetched %d unique jobs", len(jobs))
@@ -221,12 +224,10 @@ class AvitoMarocScraper(BaseScraper):
         """Fetch one ``/fr/maroc/emploi?o=N`` listing page. Returns the
         HTML body or ``None`` to halt the walk."""
         url = LISTING_URL_TEMPLATE.format(page=page_no)
-        last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 response = await client.get(url, headers=_HEADERS)
             except httpx.HTTPError as exc:
-                last_exc = exc
                 if attempt == MAX_RETRIES:
                     log.warning(
                         "Avito Maroc page=%d transport error after %d retries: %s",
@@ -257,11 +258,6 @@ class AvitoMarocScraper(BaseScraper):
                 page_no, status,
             )
             return None
-        log.warning(
-            "Avito Maroc page=%d exhausted retries: %s",
-            page_no, last_exc,
-        )
-        return None
 
 
 # --- module-level helpers ---------------------------------------------

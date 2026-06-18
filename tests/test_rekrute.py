@@ -332,14 +332,13 @@ def test_country_iso_recognises_non_morocco_suffix() -> None:
     assert job.location == "Tunis"
 
 
-def test_country_iso_unknown_country_falls_back_to_morocco() -> None:
-    """Unknown country suffix (a new market Rekrute hasn't taught us
-    about) shouldn't crash — fall back to MA, the dominant geography.
-    """
+def test_country_iso_unknown_country_suffix_stays_unknown() -> None:
+    """An explicit but unrecognized suffix is not safe to relabel as MA."""
     row = _make_row(city="Atlantis", country="Atlantide")
     job = r_mod._parse_row("1", row, fetched_at=datetime.now())
     assert job is not None
-    assert job.country_iso == "MA"
+    assert job.country_iso is None
+    assert job.region is None
 
 
 def test_parse_row_skips_when_title_anchor_missing() -> None:
@@ -359,6 +358,18 @@ def test_parse_row_placeholder_company_logo_becomes_unknown() -> None:
     job = r_mod._parse_row("1", row, fetched_at=datetime.now())
     assert job is not None
     assert job.company == "Unknown"
+
+
+def test_parse_row_uses_non_logo_company_text_fallback() -> None:
+    """Rows without a logo image can still expose recruiter text."""
+    row = _make_row(company="Logo").replace(
+        '<img src="/logo/182716" width="115" alt="Logo"\n'
+        '             title="Logo" class="photo">',
+        'Société Sans Logo',
+    )
+    job = r_mod._parse_row("1", row, fetched_at=datetime.now())
+    assert job is not None
+    assert job.company == "Société Sans Logo"
 
 
 def test_invalid_pub_date_falls_back_to_none() -> None:
@@ -464,6 +475,27 @@ def test_fetch_handles_5xx_then_stops(
     _patch_client(monkeypatch, transport)
     jobs = RekruteScraper("any", max_pages=5, concurrency=1).fetch()
     assert [j.ats_id for j in jobs] == ["1"]
+
+
+def test_fetch_skips_malformed_page_without_stopping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken 200 page should not be treated as the empty tail page."""
+    page1 = _wrap_page([_make_row(job_id="1")])
+    malformed = "<html><body>maintenance</body></html>"
+    page3 = _wrap_page([_make_row(job_id="3")])
+    empty = _wrap_page([])
+    transport = _ScriptedTransport(
+        [
+            ("p=0", httpx.Response(200, text=page1)),
+            ("p=1", httpx.Response(200, text=malformed)),
+            ("p=2", httpx.Response(200, text=page3)),
+            ("p=3", httpx.Response(200, text=empty)),
+        ],
+    )
+    _patch_client(monkeypatch, transport)
+    jobs = RekruteScraper("any", max_pages=4, concurrency=1).fetch()
+    assert [j.ats_id for j in jobs] == ["1", "3"]
 
 
 @pytest.fixture

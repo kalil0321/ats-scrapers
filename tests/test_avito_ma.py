@@ -474,3 +474,24 @@ def test_fetch_handles_5xx_and_stops(
     _patch_client(monkeypatch, transport)
     jobs = AvitoMarocScraper("any", max_pages=5, concurrency=1).fetch()
     assert [j.ats_id for j in jobs] == ["1"]
+
+
+def test_fetch_skips_malformed_page_without_stopping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken 200 page should not be treated as the empty tail page."""
+    page1 = _wrap_next_data([_make_ad(ad_id="1", list_id="11")])
+    malformed = "<html><body>maintenance</body></html>"
+    page3 = _wrap_next_data([_make_ad(ad_id="3", list_id="33")])
+    empty = _wrap_next_data([])
+    transport = _ScriptedTransport(
+        [
+            ("o=1", httpx.Response(200, text=page1)),
+            ("o=2", httpx.Response(200, text=malformed)),
+            ("o=3", httpx.Response(200, text=page3)),
+            ("o=4", httpx.Response(200, text=empty)),
+        ],
+    )
+    _patch_client(monkeypatch, transport)
+    jobs = AvitoMarocScraper("any", max_pages=4, concurrency=1).fetch()
+    assert [j.ats_id for j in jobs] == ["1", "3"]

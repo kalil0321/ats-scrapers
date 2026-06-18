@@ -58,7 +58,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
@@ -205,7 +205,7 @@ class RekruteScraper(BaseScraper):
         return asyncio.run(self._fetch_async())
 
     async def _fetch_async(self) -> list[Job]:
-        fetched_at = datetime.now()
+        fetched_at = datetime.now(tz=UTC)
         async with httpx.AsyncClient(
             timeout=self.timeout, follow_redirects=True,
         ) as client:
@@ -222,24 +222,30 @@ class RekruteScraper(BaseScraper):
         seen: set[str] = set()
         jobs: list[Job] = []
         sem = asyncio.Semaphore(self.concurrency)
-        stop_at_page: dict[str, int | None] = {"value": None}
+        stop_at_page: int | None = None
+        skipped_parse_pages: set[int] = set()
 
         async def fetch_page(page_no: int) -> list[Job]:
+            nonlocal stop_at_page
             async with sem:
-                if (
-                    stop_at_page["value"] is not None
-                    and page_no >= stop_at_page["value"]
-                ):
+                if stop_at_page is not None and page_no >= stop_at_page:
                     return []
                 html_body = await self._get_listing_page(client, page_no)
             if html_body is None:
                 return []
-            rows = list(_iter_rows(html_body))
+            try:
+                rows = list(_iter_rows(html_body))
+            except _RowsParseError as exc:
+                log.warning(
+                    "Rekrute page=%d: %s — skipping page", page_no, exc,
+                )
+                skipped_parse_pages.add(page_no)
+                return []
             if not rows:
                 # First fully-empty page — mark it as the upper bound
                 # so concurrent tasks at later pages bail out.
-                if stop_at_page["value"] is None or page_no < stop_at_page["value"]:
-                    stop_at_page["value"] = page_no
+                if stop_at_page is None or page_no < stop_at_page:
+                    stop_at_page = page_no
                 return []
             page_jobs: list[Job] = []
             for row_id, row_html in rows:
@@ -265,7 +271,11 @@ class RekruteScraper(BaseScraper):
                         continue
                     seen.add(job.ats_id)
                     jobs.append(job)
-            if not wave_had_rows or stop_at_page["value"] is not None:
+            wave_pages = range(page_no, wave_end)
+            wave_had_parse_skip = any(p in skipped_parse_pages for p in wave_pages)
+            if stop_at_page is not None or (
+                not wave_had_rows and not wave_had_parse_skip
+            ):
                 break
             page_no = wave_end
         log.info("Rekrute: fetched %d unique jobs", len(jobs))
@@ -282,12 +292,10 @@ class RekruteScraper(BaseScraper):
         translate at the URL boundary.
         """
         url = LISTING_URL_TEMPLATE.format(page=page_no - 1)
-        last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 response = await client.get(url, headers=_HEADERS)
             except httpx.HTTPError as exc:
-                last_exc = exc
                 if attempt == MAX_RETRIES:
                     log.warning(
                         "Rekrute page=%d transport error after %d retries: %s",
@@ -318,13 +326,13 @@ class RekruteScraper(BaseScraper):
                 page_no, status,
             )
             return None
-        log.warning(
-            "Rekrute page=%d exhausted retries: %s", page_no, last_exc,
-        )
-        return None
 
 
 # --- module-level helpers ---------------------------------------------
+
+
+class _RowsParseError(Exception):
+    """Raised when a 200-OK page does not contain Rekrute's job list shell."""
 
 
 def _iter_rows(html_body: str) -> Iterable[tuple[str, str]]:
@@ -336,6 +344,8 @@ def _iter_rows(html_body: str) -> Iterable[tuple[str, str]]:
     in practice.
     """
     matches = list(_ROW_BOUNDARY_RE.finditer(html_body))
+    if not matches and "post-list" not in html_body:
+        raise _RowsParseError("job list shell not found")
     for idx, m in enumerate(matches):
         start = m.start()
         end = (
@@ -429,22 +439,30 @@ def _split_title(title_full: str) -> tuple[str, str | None, str | None]:
         return title_full.strip(), None, "MA"
     city = m.group(1).strip()
     country_name = m.group(2).strip().lower()
-    iso = _TITLE_COUNTRY_TO_ISO.get(country_name, "MA")
+    iso = _TITLE_COUNTRY_TO_ISO.get(country_name)
     title = title_full[: m.start()].strip()
     return title, city or None, iso
 
 
 def _extract_company(soup: Any) -> str | None:
-    """Recruiter name comes from the ``alt`` / ``title`` of the logo
-    image. The site sometimes serves a placeholder logo for new
-    recruiters — in that case ``alt`` is empty and we fall back to
-    ``None`` (downstream resolves to "Unknown" at Job construction).
+    """Recruiter name comes from logo metadata or the logo link text.
+
+    Some rows omit a real logo image but keep the recruiter name as text
+    in the same left-column anchor. Use that before falling back to
+    ``Unknown`` at Job construction.
     """
     img = soup.find("img", class_="photo")
     if img is not None:
         alt = (img.get("alt") or img.get("title") or "").strip()
         if alt and not _is_placeholder_alt(alt):
             return alt
+    for anchor in soup.select(".col-sm-2 a"):
+        text = anchor.get_text(" ", strip=True)
+        if text and not _is_placeholder_alt(text):
+            return text
+        label = (anchor.get("title") or "").strip()
+        if label and not _is_placeholder_alt(label):
+            return label
     return None
 
 
