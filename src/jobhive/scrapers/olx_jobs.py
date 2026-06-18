@@ -317,6 +317,10 @@ def _resolve_regions(company_slug: str) -> tuple[_Region, ...]:
     if not slug or slug in {"all", "any", "*"}:
         return tuple(_REGIONS.values())
     parts = [p.strip() for p in slug.split(",") if p.strip()]
+    if not parts:
+        raise ScraperError(
+            "OlxJobsScraper: company_slug did not contain any region codes"
+        )
     out: list[_Region] = []
     seen_codes: set[str] = set()
     for code in parts:

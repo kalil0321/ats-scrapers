@@ -112,6 +112,11 @@ def test_rejects_unknown_region() -> None:
         OlxJobsScraper("zz")
 
 
+def test_rejects_comma_only_region_slug() -> None:
+    with pytest.raises(ScraperError):
+        OlxJobsScraper(",,")
+
+
 def test_all_keyword_enumerates_every_region() -> None:
     scraper = OlxJobsScraper("all")
     codes = {r.code for r in scraper.regions}
