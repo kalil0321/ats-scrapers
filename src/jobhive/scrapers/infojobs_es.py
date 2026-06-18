@@ -347,11 +347,14 @@ def _extract_initial_props(html_text: str) -> dict[str, Any]:
         )
     # Walk forward to the opening quote of the string literal.
     j = start + len(_JSON_PARSE_OPEN)
-    if j >= len(rest) or rest[j] != '"':
+    while j < len(rest) and rest[j].isspace():
+        j += 1
+    if j >= len(rest) or rest[j] not in {'"', "'"}:
         raise ScraperError(
             "InfoJobs Spain: JSON.parse argument is not a string "
             "literal — site shape changed."
         )
+    quote = rest[j]
     # Walk to the matching closing quote, honoring backslash escapes.
     i = j + 1
     while i < len(rest):
@@ -359,7 +362,7 @@ def _extract_initial_props(html_text: str) -> dict[str, Any]:
         if c == "\\":
             i += 2
             continue
-        if c == '"':
+        if c == quote:
             break
         i += 1
     if i >= len(rest):
@@ -368,7 +371,7 @@ def _extract_initial_props(html_text: str) -> dict[str, Any]:
         )
     quoted = rest[j:i + 1]
     try:
-        inner = json.loads(quoted)
+        inner = _decode_js_string_literal(quoted)
         data = json.loads(inner)
     except json.JSONDecodeError as exc:
         raise ScraperError(
@@ -380,6 +383,48 @@ def _extract_initial_props(html_text: str) -> dict[str, Any]:
         )
     return data
 
+
+
+def _decode_js_string_literal(literal: str) -> str:
+    quote = literal[0]
+    if len(literal) < 2 or literal[-1] != quote or quote not in {"'", '"'}:
+        raise json.JSONDecodeError("not a quoted string", literal, 0)
+    out: list[str] = []
+    i = 1
+    end = len(literal) - 1
+    escapes = {
+        '"': '"',
+        "'": "'",
+        "\\": "\\",
+        "/": "/",
+        "b": "\\b",
+        "f": "\\f",
+        "n": "\\n",
+        "r": "\\r",
+        "t": "\\t",
+    }
+    while i < end:
+        c = literal[i]
+        if c != "\\":
+            out.append(c)
+            i += 1
+            continue
+        i += 1
+        if i >= end:
+            raise json.JSONDecodeError("unterminated escape", literal, i)
+        esc = literal[i]
+        if esc == "u":
+            hex_digits = literal[i + 1:i + 5]
+            if len(hex_digits) != 4 or not all(
+                ch in "0123456789abcdefABCDEF" for ch in hex_digits
+            ):
+                raise json.JSONDecodeError("invalid unicode escape", literal, i)
+            out.append(chr(int(hex_digits, 16)))
+            i += 5
+            continue
+        out.append(escapes.get(esc, esc))
+        i += 1
+    return "".join(out)
 
 def _page_url(listing_url: str, page: int) -> str:
     parts = urlsplit(listing_url)
@@ -505,6 +550,10 @@ def _parse_salary(
         parts.append("/ año")
     elif period == "HOUR":
         parts.append("/ hora")
+    elif period == "WEEK":
+        parts.append("/ semana")
+    elif period == "DAY":
+        parts.append("/ día")
     summary = " ".join(parts) if parts else None
     return smin, smax, currency, period, summary
 

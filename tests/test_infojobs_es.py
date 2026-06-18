@@ -213,6 +213,29 @@ def test_extract_initial_props_handles_escaped_quotes() -> None:
     assert data["offers"][0]["description"].endswith("aquí.")
 
 
+def test_extract_initial_props_allows_spaced_json_parse_argument() -> None:
+    inner = json.dumps({"offers": [_offer()], "search": {}}, ensure_ascii=False)
+    quoted = json.dumps(inner, ensure_ascii=False)
+    html_text = (
+        "<script>window.__INITIAL_PROPS__ = "
+        f"JSON.parse(  {quoted}  );</script>"
+    )
+
+    data = _extract_initial_props(html_text)
+
+    assert data["offers"][0]["title"] == "Ingeniero de Software"
+
+
+def test_extract_initial_props_allows_single_quoted_json_parse_argument() -> None:
+    inner = json.dumps({"offers": [_offer()], "search": {}}, ensure_ascii=False)
+    quoted = "'" + inner.replace("\\", "\\\\").replace("'", "\\'") + "'"
+    html_text = f"<script>window.__INITIAL_PROPS__ = JSON.parse({quoted});</script>"
+
+    data = _extract_initial_props(html_text)
+
+    assert data["offers"][0]["title"] == "Ingeniero de Software"
+
+
 # --- happy path --------------------------------------------------------------
 
 
@@ -393,6 +416,21 @@ def test_parse_salary_unknown_period_is_dropped() -> None:
     assert smin == 100.0 and smax == 200.0
     assert cur == "EUR"
     assert per is None
+
+
+@pytest.mark.parametrize(
+    ("period", "label"), [("WEEK", "/ semana"), ("DAY", "/ día")],
+)
+def test_parse_salary_summary_includes_week_and_day_periods(
+    period: str, label: str,
+) -> None:
+    _smin, _smax, _cur, parsed_period, summary = _parse_salary({
+        "range": {"min": 100, "max": 200},
+        "period": period,
+        "currency": "EUR",
+    })
+    assert parsed_period == period
+    assert summary is not None and label in summary
 
 
 def test_fmt_amount_uses_spanish_thousands_separator() -> None:
