@@ -115,6 +115,16 @@ _ROW_BOUNDARY_RE = re.compile(
     r'<li\s+class="post-id"\s+id="(?P<id>\d+)"\s*>',
     re.IGNORECASE,
 )
+_RESULTS_LIST_RE = re.compile(
+    r"<ul\b[^>]*\bid=['\"]post-data['\"][^>]*>",
+    re.IGNORECASE,
+)
+_RESULTS_RANGE_RE = re.compile(
+    r"<span\s+class=['\"]pages['\"]>\s*<span>\s*"
+    r"(?P<start>[\d\s]+)\s*-\s*(?P<end>[\d\s]+)\s*</span>\s*"
+    r"sur\s*(?P<total>[\d\s]+)",
+    re.IGNORECASE,
+)
 
 # ``Publication : du <span>DD/MM/YYYY</span>`` — the first span in the
 # ``<em class="date">`` block is always the publication date.
@@ -344,7 +354,7 @@ def _iter_rows(html_body: str) -> Iterable[tuple[str, str]]:
     in practice.
     """
     matches = list(_ROW_BOUNDARY_RE.finditer(html_body))
-    if not matches and "post-list" not in html_body:
+    if not matches and not _is_empty_results_page(html_body):
         raise _RowsParseError("job list shell not found")
     for idx, m in enumerate(matches):
         start = m.start()
@@ -353,6 +363,29 @@ def _iter_rows(html_body: str) -> Iterable[tuple[str, str]]:
             else min(start + 50_000, len(html_body))
         )
         yield m.group("id"), html_body[start:end]
+
+
+def _is_empty_results_page(html_body: str) -> bool:
+    """Return true only for Rekrute's real empty results page.
+
+    A shell-only 200 page with no ``post-id`` rows should be treated as
+    malformed unless Rekrute's pagination says the requested range starts
+    past the total result count. That keeps transient empty shells from
+    looking like the end of pagination.
+    """
+    if _RESULTS_LIST_RE.search(html_body) is None:
+        return False
+    m = _RESULTS_RANGE_RE.search(html_body)
+    if m is None:
+        return False
+    start = _parse_compact_int(m.group("start"))
+    total = _parse_compact_int(m.group("total"))
+    return total == 0 or start > total
+
+
+def _parse_compact_int(value: str) -> int:
+    digits = re.sub(r"\D+", "", value)
+    return int(digits) if digits else 0
 
 
 def _parse_row(
@@ -428,9 +461,9 @@ def _split_title(title_full: str) -> tuple[str, str | None, str | None]:
     """Split ``"Job title | Casablanca (Maroc)"`` into
     ``("Job title", "Casablanca", "MA")``.
 
-    Falls back to ``(title_full, None, "MA")`` when the suffix isn't
-    present — Rekrute *is* a Morocco board so we default to MA when
-    the city/country tag is missing.
+    Falls back to MA when the suffix is missing or unrecognized —
+    Rekrute is a Morocco board, and known non-Morocco suffixes are
+    mapped explicitly above.
     """
     m = _LOCATION_FROM_TITLE_RE.search(title_full)
     if m is None:
@@ -439,7 +472,7 @@ def _split_title(title_full: str) -> tuple[str, str | None, str | None]:
         return title_full.strip(), None, "MA"
     city = m.group(1).strip()
     country_name = m.group(2).strip().lower()
-    iso = _TITLE_COUNTRY_TO_ISO.get(country_name)
+    iso = _TITLE_COUNTRY_TO_ISO.get(country_name, "MA")
     title = title_full[: m.start()].strip()
     return title, city or None, iso
 

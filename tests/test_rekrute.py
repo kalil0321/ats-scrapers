@@ -123,14 +123,23 @@ def _make_row(
 
 
 def _wrap_page(rows: list[str]) -> str:
-    """Wrap a list of ``<li class="post-id">`` rows in just enough
-    surrounding HTML to mirror Rekrute's page shell."""
+    """Wrap rows in the live Rekrute result shell.
+
+    Empty fixtures include an out-of-range pagination span, matching the
+    site's real empty tail pages. Rowless shells without that marker are
+    parse failures, not a legitimate stop signal.
+    """
     rows_html = "\n".join(rows)
+    result_count = len(rows)
+    range_start = 1 if rows else 11
+    range_end = result_count if rows else 10
+    total = result_count if rows else 10
     return f"""<!DOCTYPE html>
 <html lang="fr"><head><title>Offres d'emploi Maroc</title></head>
 <body>
 <div class="container">
-  <ul class="post-list">
+  <span class="pages"><span>{range_start} - {range_end}</span> sur {total}</span>
+  <ul class="job-list job-list2" id="post-data">
     {rows_html}
   </ul>
 </div>
@@ -332,13 +341,13 @@ def test_country_iso_recognises_non_morocco_suffix() -> None:
     assert job.location == "Tunis"
 
 
-def test_country_iso_unknown_country_suffix_stays_unknown() -> None:
-    """An explicit but unrecognized suffix is not safe to relabel as MA."""
+def test_country_iso_unknown_country_suffix_defaults_to_morocco() -> None:
+    """Unknown country suffixes fall back to Rekrute's Morocco-board default."""
     row = _make_row(city="Atlantis", country="Atlantide")
     job = r_mod._parse_row("1", row, fetched_at=datetime.now())
     assert job is not None
-    assert job.country_iso is None
-    assert job.region is None
+    assert job.country_iso == "MA"
+    assert job.region == "Africa"
 
 
 def test_parse_row_skips_when_title_anchor_missing() -> None:
@@ -489,6 +498,32 @@ def test_fetch_skips_malformed_page_without_stopping(
         [
             ("p=0", httpx.Response(200, text=page1)),
             ("p=1", httpx.Response(200, text=malformed)),
+            ("p=2", httpx.Response(200, text=page3)),
+            ("p=3", httpx.Response(200, text=empty)),
+        ],
+    )
+    _patch_client(monkeypatch, transport)
+    jobs = RekruteScraper("any", max_pages=4, concurrency=1).fetch()
+    assert [j.ats_id for j in jobs] == ["1", "3"]
+
+
+def test_fetch_skips_rowless_in_range_shell_without_stopping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shell-only page within the reported result range is malformed,
+    not the empty tail page."""
+    page1 = _wrap_page([_make_row(job_id="1")])
+    malformed_shell = """<!DOCTYPE html>
+<html><body>
+  <span class="pages"><span>11 - 20</span> sur 30</span>
+  <ul class="job-list job-list2" id="post-data"></ul>
+</body></html>"""
+    page3 = _wrap_page([_make_row(job_id="3")])
+    empty = _wrap_page([])
+    transport = _ScriptedTransport(
+        [
+            ("p=0", httpx.Response(200, text=page1)),
+            ("p=1", httpx.Response(200, text=malformed_shell)),
             ("p=2", httpx.Response(200, text=page3)),
             ("p=3", httpx.Response(200, text=empty)),
         ],
