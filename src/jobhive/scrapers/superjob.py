@@ -479,7 +479,7 @@ class SuperJobScraper(BaseScraper):
             commitment=commitment,
             description=description,
             posted_at=posted_at,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             language=LANGUAGE,
             raw=raw or None,
         )

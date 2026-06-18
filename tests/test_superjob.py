@@ -206,6 +206,8 @@ def test_parses_full_item(httpx_mock) -> None:
     assert "backend" in j.description
     assert j.posted_at is not None
     assert j.posted_at.year == 2025
+    assert j.fetched_at.tzinfo is not None
+    assert j.fetched_at.utcoffset() is not None
     assert j.raw is not None
     assert j.raw["town_id"] == 4
     assert j.raw["experience"]["id"] == 2
