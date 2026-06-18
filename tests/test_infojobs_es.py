@@ -257,6 +257,7 @@ def test_parses_full_offer(fake_httpcloak) -> None:
     assert "1.500" in (j.salary_summary or "")
     assert j.posted_at is not None
     assert j.posted_at.year == 2026 and j.posted_at.month == 5
+    assert j.fetched_at.tzinfo is not None
     assert str(j.url).startswith("https://www.infojobs.net/son-servera/")
     assert j.raw is not None
     assert j.raw["workday"] == "Jornada completa"

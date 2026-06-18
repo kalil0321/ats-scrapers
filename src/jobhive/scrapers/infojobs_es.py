@@ -47,7 +47,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from jobhive.exceptions import ScraperError
@@ -293,7 +293,7 @@ class InfoJobsSpainScraper(BaseScraper):
             commitment=contract_type_raw if isinstance(contract_type_raw, str) else None,
             description=description,
             posted_at=posted_at,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(tz=UTC),
             language="es",
             raw=raw or None,
         )
