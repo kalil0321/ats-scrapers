@@ -108,6 +108,11 @@ def test_empty_location_seeds_disables_fetching() -> None:
     assert JobsCzScraper("any", location_seeds=()).fetch() == []
 
 
+def test_max_pages_is_lower_bounded() -> None:
+    assert JobsCzScraper("any", max_pages=0).max_pages == 1
+    assert JobsCzScraper("any", max_pages=-10).max_pages == 1
+
+
 # --- happy path -------------------------------------------------------------
 
 
@@ -151,6 +156,8 @@ def test_parses_full_card_with_salary_range(httpx_mock) -> None:
     assert j.salary_max == 60_000
     assert j.salary_summary is not None
     assert "55 000" in j.salary_summary and "Kč" in j.salary_summary
+    assert j.fetched_at.tzinfo is not None
+    assert j.fetched_at.utcoffset() is not None
     # Modality tags come through verbatim in ``raw``.
     assert j.raw is not None
     assert "modality" in j.raw

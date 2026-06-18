@@ -40,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
@@ -137,7 +137,7 @@ class JobsCzScraper(BaseScraper):
         location_seeds: tuple[str, ...] | None = None,
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
-        self.max_pages = max_pages
+        self.max_pages = max(1, max_pages)
         # ``None`` keeps the production default (full seed list); pass
         # ``()`` to disable seeding entirely for tests.
         self.location_seeds: tuple[str, ...] = (
@@ -289,7 +289,7 @@ def _parse_listing(html: str) -> list[Job]:
         ) from exc
 
     soup = BeautifulSoup(html, "html.parser")
-    fetched_at = datetime.now()
+    fetched_at = datetime.now(UTC)
     jobs: list[Job] = []
     for card in soup.select("article.SearchResultCard"):
         job = _parse_card(card, fetched_at=fetched_at)
