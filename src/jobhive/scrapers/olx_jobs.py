@@ -39,6 +39,7 @@ import html
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -231,11 +232,9 @@ class OlxJobsScraper(BaseScraper):
                         f"OLX returned non-JSON for {url}: {exc}"
                     ) from exc
             if response.status_code == 400:
-                # Either the country has no praca category at this ID,
-                # or we walked past the offset cap. Treat as "no more
-                # data" rather than raising — the scraper is meant to
-                # be resilient against per-country drift.
-                return {"data": [], "links": {}}
+                if _is_offset_cap_url(url):
+                    return {"data": [], "links": {}}
+                raise ScraperError(f"OLX returned 400 for {url}")
             if response.status_code in (429,) or 500 <= response.status_code < 600:
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
@@ -292,6 +291,18 @@ _SALARY_PERIOD_MAP: dict[str, str] = {
     "yearly": "YEAR",
     "annually": "YEAR",
 }
+
+
+def _is_offset_cap_url(url: str) -> bool:
+    """OLX returns 400 after the documented offset cap; only that
+    pagination sentinel should be treated as end-of-data."""
+    values = parse_qs(urlparse(url).query).get("offset") or []
+    if not values:
+        return False
+    try:
+        return int(values[0]) > OFFSET_CAP
+    except ValueError:
+        return False
 
 
 def _resolve_regions(company_slug: str) -> tuple[_Region, ...]:

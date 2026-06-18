@@ -393,6 +393,16 @@ def test_400_mid_walk_terminates_cleanly(httpx_mock) -> None:
     assert len(jobs) == 1
 
 
+def test_400_before_offset_cap_raises(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_PL_RE,
+        status_code=400,
+        json={"error": {"status": 400, "detail": "bad category"}},
+    )
+    with pytest.raises(ScraperError, match="400"):
+        OlxJobsScraper("pl").fetch()
+
+
 def test_persistent_500_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=_API_RE, status_code=500, is_reusable=True)
     with pytest.raises(ScraperError):
