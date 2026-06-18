@@ -309,8 +309,8 @@ class RekruteScraper(BaseScraper):
     ) -> str | None:
         """Fetch one listing page with retry on transient errors.
 
-        Returns the HTML body on success, ``None`` to stop walking
-        when terminal. The ``p`` index Rekrute uses is 0-based on the
+        Returns the HTML body on success, ``None`` when this page
+        should be skipped. The ``p`` index Rekrute uses is 0-based on the
         wire (``?p=0`` is page 1) — we keep callers 1-based here and
         translate at the URL boundary.
         """
@@ -321,7 +321,7 @@ class RekruteScraper(BaseScraper):
             except httpx.HTTPError as exc:
                 if attempt == MAX_RETRIES:
                     log.warning(
-                        "Rekrute page=%d transport error after %d retries: %s",
+                        "Rekrute page=%d transport error after %d retries — skipping page: %s",
                         page_no, MAX_RETRIES, exc,
                     )
                     return None
@@ -333,7 +333,7 @@ class RekruteScraper(BaseScraper):
             if status in (429,) or 500 <= status < 600:
                 if attempt == MAX_RETRIES:
                     log.warning(
-                        "Rekrute page=%d returned %d after %d retries — stopping",
+                        "Rekrute page=%d returned %d after %d retries — skipping page",
                         page_no, status, MAX_RETRIES,
                     )
                     return None
@@ -345,7 +345,7 @@ class RekruteScraper(BaseScraper):
                 await asyncio.sleep(delay)
                 continue
             log.warning(
-                "Rekrute page=%d returned %d — stopping pagination",
+                "Rekrute page=%d returned %d — skipping page",
                 page_no, status,
             )
             return None

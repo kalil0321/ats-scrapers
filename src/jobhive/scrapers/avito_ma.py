@@ -234,7 +234,7 @@ class AvitoMarocScraper(BaseScraper):
         self, client: httpx.AsyncClient, page_no: int,
     ) -> str | None:
         """Fetch one ``/fr/maroc/emploi?o=N`` listing page. Returns the
-        HTML body or ``None`` to halt the walk."""
+        HTML body or ``None`` when this page should be skipped."""
         url = LISTING_URL_TEMPLATE.format(page=page_no)
         for attempt in range(1, MAX_RETRIES + 1):
             try:
@@ -242,7 +242,7 @@ class AvitoMarocScraper(BaseScraper):
             except httpx.HTTPError as exc:
                 if attempt == MAX_RETRIES:
                     log.warning(
-                        "Avito Maroc page=%d transport error after %d retries: %s",
+                        "Avito Maroc page=%d transport error after %d retries — skipping page: %s",
                         page_no, MAX_RETRIES, exc,
                     )
                     return None
@@ -254,7 +254,7 @@ class AvitoMarocScraper(BaseScraper):
             if status in (429,) or 500 <= status < 600:
                 if attempt == MAX_RETRIES:
                     log.warning(
-                        "Avito Maroc page=%d returned %d after %d retries — stopping",
+                        "Avito Maroc page=%d returned %d after %d retries — skipping page",
                         page_no, status, MAX_RETRIES,
                     )
                     return None
@@ -266,7 +266,7 @@ class AvitoMarocScraper(BaseScraper):
                 await asyncio.sleep(delay)
                 continue
             log.warning(
-                "Avito Maroc page=%d returned %d — stopping pagination",
+                "Avito Maroc page=%d returned %d — skipping page",
                 page_no, status,
             )
             return None
