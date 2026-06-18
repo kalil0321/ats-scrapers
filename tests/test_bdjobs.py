@@ -141,6 +141,7 @@ def test_parses_full_premium_job(httpx_mock) -> None:
     # Posted_at parsed from ISO Z string.
     assert j.posted_at is not None
     assert j.posted_at.year == 2026 and j.posted_at.month == 5
+    assert j.fetched_at.tzinfo is not None
     # ``raw`` captures the rich fields the canonical schema can't hold.
     assert j.raw is not None
     assert j.raw["experience"] == "At least 1 years"
@@ -202,6 +203,7 @@ def test_seed_segmentation_dedupes_across_queries(httpx_mock) -> None:
         category_ids=(2, 3),
     ).fetch()
     # All seeds hit the same mock → dedup down to 3 unique rows.
+    assert len(jobs) == 3
     assert {j.ats_id for j in jobs} == {"shared-1", "base-only", "kw-only"}
 
 
@@ -290,4 +292,14 @@ def test_base_failure_after_retries_raises(httpx_mock) -> None:
         status_code=500,
     )
     with pytest.raises(ScraperError, match="bdjobs"):
+        BdjobsScraper("any", keyword_seeds=(), category_ids=()).fetch()
+
+
+def test_malformed_json_payload_raises_scraper_error(httpx_mock) -> None:
+    """A 200 response must still have the expected object shape."""
+    httpx_mock.add_response(
+        url=re.compile(rf"^{re.escape(_API)}$"),
+        json=[{"not": "a payload object"}],
+    )
+    with pytest.raises(ScraperError, match="malformed JSON"):
         BdjobsScraper("any", keyword_seeds=(), category_ids=()).fetch()

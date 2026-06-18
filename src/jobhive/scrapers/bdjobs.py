@@ -35,7 +35,7 @@ import asyncio
 import html
 import logging
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
@@ -202,8 +202,8 @@ class BdjobsScraper(BaseScraper):
         same field names."""
         last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
+            try:
+                async with sem:
                     response = await client.get(
                         API_URL, params=params or {}, headers={
                             "User-Agent": "Mozilla/5.0",
@@ -211,14 +211,14 @@ class BdjobsScraper(BaseScraper):
                             "Origin": "https://jobs.bdjobs.com",
                         },
                     )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"bdjobs fetch failed for params={params}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt == MAX_RETRIES:
+                    raise ScraperError(
+                        f"bdjobs fetch failed for params={params}: {exc}"
+                    ) from exc
+                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
+                continue
             if response.status_code == 200:
                 try:
                     payload = response.json()
@@ -226,8 +226,16 @@ class BdjobsScraper(BaseScraper):
                     raise ScraperError(
                         f"bdjobs returned non-JSON for params={params}: {exc}"
                     ) from exc
+                if not isinstance(payload, dict):
+                    raise ScraperError(
+                        f"bdjobs returned malformed JSON for params={params}"
+                    )
                 premium = payload.get("premiumData") or []
                 data = payload.get("data") or []
+                if not isinstance(premium, list) or not isinstance(data, list):
+                    raise ScraperError(
+                        f"bdjobs returned malformed job arrays for params={params}"
+                    )
                 return [*premium, *data]
             if response.status_code in (429,) or 500 <= response.status_code < 600:
                 if attempt == MAX_RETRIES:
@@ -299,7 +307,7 @@ class BdjobsScraper(BaseScraper):
             language=language,
             description=description,
             posted_at=posted_at,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(tz=UTC),
             raw=raw or None,
         )
 
