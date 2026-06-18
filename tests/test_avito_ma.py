@@ -169,6 +169,13 @@ def test_extract_ads_returns_list() -> None:
     assert len(a_mod._extract_ads(page)) == 2
 
 
+def test_extract_ads_non_object_entry_raises() -> None:
+    page = _wrap_next_data([_make_ad()])
+    page = page.replace('"ads": [{', '"ads": [null, {', 1)
+    with pytest.raises(a_mod._AdsParseError):
+        a_mod._extract_ads(page)
+
+
 def test_extract_ads_missing_blob_raises() -> None:
     with pytest.raises(a_mod._AdsParseError):
         a_mod._extract_ads("<html>no script</html>")
@@ -289,15 +296,15 @@ def test_parse_ad_missing_seller_name_becomes_unknown() -> None:
 
 
 def test_parse_ad_long_description_truncated() -> None:
-    """Avito occasionally serves a 10kB description block. The Job
-    schema documents ``~10kB`` as the cap; we trim at 5k and append
-    an ellipsis so the row stays compact in the dataset."""
-    long_desc = "x" * 8000
+    """Avito occasionally serves a large description block. The Job
+    schema documents ``~10kB`` as the cap; trim there and append an
+    ellipsis so the row stays compact in the dataset."""
+    long_desc = "x" * 12_000
     ad = _make_ad(description=long_desc)
     job = a_mod._parse_ad(ad, fetched_at=datetime.now())
     assert job is not None
     assert job.description is not None
-    assert len(job.description) <= 5001
+    assert len(job.description) <= 10_001
     assert job.description.endswith("…")
 
 

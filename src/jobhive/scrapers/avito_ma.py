@@ -311,7 +311,9 @@ def _extract_ads(html_body: str) -> list[dict[str, Any]]:
         raise _AdsParseError("__NEXT_DATA__ shape changed — no ads list") from exc
     if not isinstance(ads, list):
         raise _AdsParseError("__NEXT_DATA__ ads field is not a list")
-    return [a for a in ads if isinstance(a, dict)]
+    if any(not isinstance(a, dict) for a in ads):
+        raise _AdsParseError("__NEXT_DATA__ ads list contains non-object entries")
+    return ads
 
 
 def _parse_ad(ad: dict[str, Any], *, fetched_at: datetime) -> Job | None:
@@ -344,8 +346,8 @@ def _parse_ad(ad: dict[str, Any], *, fetched_at: datetime) -> Job | None:
     company = (seller.get("name") or "").strip() or "Unknown"
 
     description = (ad.get("description") or "").strip() or None
-    if description and len(description) > 5000:
-        description = description[:5000].rstrip() + "…"
+    if description and len(description) > 10_000:
+        description = description[:10_000].rstrip() + "…"
 
     location = (ad.get("location") or "").strip() or None
 
