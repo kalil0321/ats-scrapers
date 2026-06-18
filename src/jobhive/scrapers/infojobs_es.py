@@ -49,6 +49,7 @@ import logging
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from jobhive.exceptions import ScraperError
 from jobhive.models import ATSType, Job
@@ -131,7 +132,7 @@ class InfoJobsSpainScraper(BaseScraper):
         listing_url: str = LISTING_URL,
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
-        self.max_pages = max_pages
+        self.max_pages = max(1, max_pages)
         self.listing_url = listing_url
 
     def fetch(self) -> list[Job]:
@@ -199,7 +200,7 @@ class InfoJobsSpainScraper(BaseScraper):
         return jobs
 
     async def _fetch_page(self, page: int) -> dict[str, Any]:
-        url = f"{self.listing_url}?page={page}"
+        url = _page_url(self.listing_url, page)
         text = await self._request_via_httpcloak(url)
         return _extract_initial_props(text)
 
@@ -380,6 +381,19 @@ def _extract_initial_props(html_text: str) -> dict[str, Any]:
     return data
 
 
+def _page_url(listing_url: str, page: int) -> str:
+    parts = urlsplit(listing_url)
+    query = [
+        (k, v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if k != "page"
+    ]
+    query.append(("page", str(page)))
+    return urlunsplit((
+        parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment,
+    ))
+
+
 def _absolutize_link(link: str) -> str:
     """InfoJobs Spain offer links ship in three shapes:
 
@@ -424,7 +438,7 @@ def _parse_published_at(raw: object) -> datetime | None:
     if cleaned.endswith("Z"):
         cleaned = cleaned[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(cleaned)
+        return datetime.fromisoformat(cleaned).astimezone(UTC)
     except ValueError:
         return None
 

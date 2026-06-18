@@ -21,6 +21,7 @@ These tests exercise:
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from typing import Any
 
 import pytest
@@ -33,6 +34,7 @@ from jobhive.scrapers.infojobs_es import (
     _extract_initial_props,
     _fmt_amount,
     _infer_remote,
+    _page_url,
     _parse_published_at,
     _parse_salary,
 )
@@ -257,6 +259,7 @@ def test_parses_full_offer(fake_httpcloak) -> None:
     assert "1.500" in (j.salary_summary or "")
     assert j.posted_at is not None
     assert j.posted_at.year == 2026 and j.posted_at.month == 5
+    assert j.posted_at.tzinfo is UTC
     assert j.fetched_at.tzinfo is not None
     assert str(j.url).startswith("https://www.infojobs.net/son-servera/")
     assert j.raw is not None
@@ -405,6 +408,14 @@ def test_parse_published_at_iso_with_z() -> None:
     dt = _parse_published_at("2026-05-12T10:41:35Z")
     assert dt is not None
     assert (dt.year, dt.month, dt.day) == (2026, 5, 12)
+    assert dt.tzinfo is UTC
+
+
+def test_parse_published_at_normalizes_offsets_to_utc() -> None:
+    dt = _parse_published_at("2026-05-12T12:41:35+02:00")
+    assert dt is not None
+    assert dt.tzinfo is UTC
+    assert dt.hour == 10
 
 
 def test_parse_published_at_invalid_returns_none() -> None:
@@ -469,6 +480,22 @@ def test_max_pages_caps_the_loop(fake_httpcloak) -> None:
     jobs = InfoJobsSpainScraper("any", max_pages=2).fetch()
     assert len(jobs) == 2
     assert len(fake_httpcloak.calls) == 2
+
+
+def test_max_pages_is_lower_bounded(fake_httpcloak) -> None:
+    fake_httpcloak.queue(html=_hydration_html([_offer(code="x1")], total_elements=1))
+
+    jobs = InfoJobsSpainScraper("any", max_pages=0).fetch()
+
+    assert [j.ats_id for j in jobs] == ["x1"]
+    assert len(fake_httpcloak.calls) == 1
+
+
+def test_listing_url_preserves_existing_query_params() -> None:
+    assert _page_url(
+        "https://www.infojobs.net/ofertas-trabajo?province=9&page=7&q=python",
+        2,
+    ) == "https://www.infojobs.net/ofertas-trabajo?province=9&q=python&page=2"
 
 
 def test_duplicate_codes_across_pages_are_deduped(fake_httpcloak) -> None:
