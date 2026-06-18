@@ -10,7 +10,7 @@ delta is the numeric ``category_id`` rooting the praca / rabota tree
 
 The API caps each query at ``offset ≤ 1000`` and returns a cursor via
 ``links.next`` that goes null once exhausted — we walk that cursor per
-country, dedupe by id across countries, and stop. To scrape beyond the
+country, dedupe by region-scoped id, and stop. To scrape beyond the
 1000-cap one would need to slice by region/city; out of scope for the
 initial scraper (each top-level cap already returns the freshest 1000
 roles per country, which is the useful slice for an ATS dataset).
@@ -37,7 +37,7 @@ from __future__ import annotations
 import asyncio
 import html
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 import httpx
@@ -206,8 +206,8 @@ class OlxJobsScraper(BaseScraper):
     ) -> dict[str, Any]:
         last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
+            try:
+                async with sem:
                     response = await client.get(
                         url,
                         headers={
@@ -215,14 +215,14 @@ class OlxJobsScraper(BaseScraper):
                             "Accept": "application/json",
                         },
                     )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"OLX fetch failed for {url}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt == MAX_RETRIES:
+                    raise ScraperError(
+                        f"OLX fetch failed for {url}: {exc}"
+                    ) from exc
+                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
+                continue
             if response.status_code == 200:
                 try:
                     return response.json()
@@ -411,7 +411,7 @@ def _parse_job(item: dict[str, Any], *, region: _Region) -> Job | None:
         commitment=commitment,
         description=cleaned_desc,
         posted_at=posted_at,
-        fetched_at=datetime.now(),
+        fetched_at=datetime.now(tz=UTC),
         language=region.language,
         raw=raw,
     )

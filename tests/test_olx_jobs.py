@@ -199,6 +199,7 @@ def test_parses_full_offer_payload(httpx_mock) -> None:
     assert j.is_remote is None  # workplace=on_site → leave None (not False)
     assert j.posted_at is not None
     assert j.posted_at.year == 2026
+    assert j.fetched_at.tzinfo is not None
     assert j.raw is not None
     assert j.raw["region"] == "pl"
     assert j.raw["category_id"] == 2509
@@ -248,6 +249,7 @@ def test_same_raw_id_across_regions_is_kept_distinct(httpx_mock) -> None:
         json=_page([_offer(offer_id=1, url="https://www.olx.ua/o/1")]),
     )
     jobs = OlxJobsScraper("pl,ua").fetch()
+    assert len(jobs) == 2
     assert {j.ats_id for j in jobs} == {"pl:1", "ua:1"}
 
 
