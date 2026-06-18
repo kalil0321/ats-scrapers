@@ -468,22 +468,26 @@ def test_fetch_respects_max_pages_cap(
     assert len(jobs) == 3
 
 
-def test_fetch_handles_5xx_then_stops(
+def test_fetch_skips_5xx_page_without_stopping(
     monkeypatch: pytest.MonkeyPatch,
     monkeypatch_sleep: None,
 ) -> None:
-    """A 5xx after exhausted retries breaks the pagination loop but
-    leaves already-collected jobs intact."""
+    """A 5xx after exhausted retries skips that page but does not
+    masquerade as the empty tail page."""
     page1 = _wrap_page([_make_row(job_id="1")])
+    page3 = _wrap_page([_make_row(job_id="3")])
+    empty = _wrap_page([])
     transport = _ScriptedTransport(
         [
             ("p=0", httpx.Response(200, text=page1)),
             ("p=1", httpx.Response(503)),
+            ("p=2", httpx.Response(200, text=page3)),
+            ("p=3", httpx.Response(200, text=empty)),
         ],
     )
     _patch_client(monkeypatch, transport)
-    jobs = RekruteScraper("any", max_pages=5, concurrency=1).fetch()
-    assert [j.ats_id for j in jobs] == ["1"]
+    jobs = RekruteScraper("any", max_pages=4, concurrency=1).fetch()
+    assert [j.ats_id for j in jobs] == ["1", "3"]
 
 
 def test_fetch_skips_malformed_page_without_stopping(

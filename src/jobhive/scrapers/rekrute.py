@@ -233,6 +233,7 @@ class RekruteScraper(BaseScraper):
         jobs: list[Job] = []
         sem = asyncio.Semaphore(self.concurrency)
         stop_at_page: int | None = None
+        skipped_fetch_pages: set[int] = set()
         skipped_parse_pages: set[int] = set()
 
         async def fetch_page(page_no: int) -> list[Job]:
@@ -242,6 +243,7 @@ class RekruteScraper(BaseScraper):
                     return []
                 html_body = await self._get_listing_page(client, page_no)
             if html_body is None:
+                skipped_fetch_pages.add(page_no)
                 return []
             try:
                 rows = list(_iter_rows(html_body))
@@ -282,9 +284,12 @@ class RekruteScraper(BaseScraper):
                     seen.add(job.ats_id)
                     jobs.append(job)
             wave_pages = range(page_no, wave_end)
-            wave_had_parse_skip = any(p in skipped_parse_pages for p in wave_pages)
+            wave_had_skip = any(
+                p in skipped_fetch_pages or p in skipped_parse_pages
+                for p in wave_pages
+            )
             if stop_at_page is not None or (
-                not wave_had_rows and not wave_had_parse_skip
+                not wave_had_rows and not wave_had_skip
             ):
                 break
             page_no = wave_end
