@@ -222,7 +222,9 @@ class SuperJobScraper(BaseScraper):
             )
         self.slice_by = slice_by
         self.towns = towns if towns is not None else TOWNS
-        self.max_pages_per_slice = min(max_pages_per_slice, MAX_PAGES_PER_SLICE)
+        self.max_pages_per_slice = max(
+            1, min(max_pages_per_slice, MAX_PAGES_PER_SLICE)
+        )
 
     # --- public entry ------------------------------------------------------
 
@@ -249,10 +251,6 @@ class SuperJobScraper(BaseScraper):
         }
         if self.proxy_url:
             client_kwargs["proxy"] = self.proxy_url
-            # Residential proxies occasionally MITM TLS with a CA chain
-            # that isn't in the system trust store; the requests carry
-            # no PII so the cost of disabling verify is low.
-            client_kwargs["verify"] = False
 
         async with httpx.AsyncClient(**client_kwargs) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
@@ -281,7 +279,7 @@ class SuperJobScraper(BaseScraper):
         ``"keyword"`` modes can slot in without changing iteration
         code.
         """
-        if self.slice_by == "none" or not self.towns:
+        if self.slice_by == "none":
             return [{}]
         return [{"town": code} for code in self.towns]
 
@@ -328,18 +326,18 @@ class SuperJobScraper(BaseScraper):
         }
         last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
+            try:
+                async with sem:
                     response = await client.get(url, params=params, headers=headers)
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"superjob fetch failed for {url} "
-                            f"params={params}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt == MAX_RETRIES:
+                    raise ScraperError(
+                        f"superjob fetch failed for {url} "
+                        f"params={params}: {exc}"
+                    ) from exc
+                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
+                continue
             if response.status_code == 200:
                 try:
                     payload: dict[str, Any] = response.json()

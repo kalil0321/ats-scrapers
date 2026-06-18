@@ -139,9 +139,11 @@ def test_unknown_slice_by_raises() -> None:
 
 def test_max_pages_per_slice_is_clamped() -> None:
     """API hard cap is 5 (500 results) — even when the operator passes
-    a higher value, the scraper clamps."""
+    a value outside the valid range, the scraper clamps."""
     scraper = SuperJobScraper("superjob", max_pages_per_slice=500)
     assert scraper.max_pages_per_slice == 5
+    scraper = SuperJobScraper("superjob", max_pages_per_slice=0)
+    assert scraper.max_pages_per_slice == 1
 
 
 def test_picks_up_proxy_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -451,6 +453,7 @@ def test_deduplicates_across_slices(httpx_mock) -> None:
     jobs = SuperJobScraper(
         "superjob", slice_by="town", towns=[4, 14]
     ).fetch()
+    assert len(jobs) == 2
     assert {j.ats_id for j in jobs} == {"42", "43"}
 
 
@@ -470,6 +473,12 @@ def test_slice_by_town_fans_out_per_code(httpx_mock) -> None:
         "superjob", slice_by="town", towns=[4, 14]
     ).fetch()
     assert {j.ats_id for j in jobs} == {"100", "200"}
+
+
+def test_slice_by_town_with_empty_towns_fetches_no_slices(httpx_mock) -> None:
+    jobs = SuperJobScraper("superjob", slice_by="town", towns=[]).fetch()
+    assert jobs == []
+    assert httpx_mock.get_requests() == []
 
 
 # --- error handling --------------------------------------------------------
