@@ -113,12 +113,16 @@ def test_parses_listing_with_plain_plus_type_attr(httpx_mock) -> None:
     assert len(BuiltInScraper("any").fetch()) == 1
 
 
-def test_strips_html_from_description(httpx_mock) -> None:
+def test_preserves_html_in_description(httpx_mock) -> None:
+    """Description now keeps HTML tags intact — the post-scrape
+    markdownify pass (scripts/normalize_descriptions.py) converts them
+    to markdown later. Entities are unescaped at scrape time.
+    """
     httpx_mock.add_response(
         url="https://builtin.com/jobs?page=1",
         text=_listing_html([_item(
             position=1, job_id=1, name="Engineer",
-            description="<p>Build <b>things</b>.</p>",
+            description="<p>Build <b>things</b>&nbsp;today.</p>",
         )]),
     )
     httpx_mock.add_response(
@@ -126,7 +130,9 @@ def test_strips_html_from_description(httpx_mock) -> None:
         text=_empty_page(), is_reusable=True,
     )
     j = BuiltInScraper("any").fetch()[0]
-    assert j.description == "Build things ."
+    assert "<b>things</b>" in j.description  # tags survive
+    assert "&nbsp;" not in j.description     # entities decoded
+    assert "&amp;" not in j.description
 
 
 def test_skips_items_with_missing_required_fields(httpx_mock) -> None:

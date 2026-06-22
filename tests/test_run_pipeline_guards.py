@@ -85,6 +85,36 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
         "https://jobs.livestorm.co"
     )
 
+    avature_custom_path_row = {
+        "name": "Premium Retail Services",
+        "slug": "premium",
+        "url": "https://premium.avature.net/en_US/jobs",
+    }
+    assert (
+        runner._avature_slug(avature_custom_path_row)
+        == "https://premium.avature.net/en_US/jobs"
+    )
+
+    avature_locale_path_row = {
+        "name": "Zung Fu",
+        "slug": "zungfu",
+        "url": "https://zungfu.avature.net/en_US/careers/SearchJobs",
+    }
+    assert (
+        runner._avature_slug(avature_locale_path_row)
+        == "https://zungfu.avature.net/en_US/careers/SearchJobs"
+    )
+
+    avature_maps_path_row = {
+        "name": "Premium Retail Services",
+        "slug": "premium",
+        "url": "https://premium.avature.net/en_US/jobs/SearchJobsMaps",
+    }
+    assert (
+        runner._avature_slug(avature_maps_path_row)
+        == "https://premium.avature.net/en_US/jobs/SearchJobsMaps"
+    )
+
 
 def test_catastrophic_failure_preserves_previous_jobs_csv(
     tmp_path, monkeypatch: pytest.MonkeyPatch
@@ -486,7 +516,11 @@ def test_load_description_cache_closes_when_load_csv_fails(
     created = []
 
     class FakeCache:
-        def __init__(self) -> None:
+        def __init__(self, *_args, **_kwargs) -> None:
+            # Accept the new ``path=`` and ``compress=`` kwargs the real
+            # DescriptionCache takes — the test doesn't care what they
+            # contain, only that the surrounding open/close protocol
+            # holds when load_csv raises.
             self.closed = False
             created.append(self)
 
@@ -575,7 +609,9 @@ def test_pipeline_closes_description_cache_on_propagating_error(
         raise OSError("disk full")
 
     monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
-    monkeypatch.setattr(runner, "_load_description_cache", lambda _path: cache)
+    # _load_description_cache now accepts persistent_path / compress /
+    # bootstrap_csv kwargs from the call site; the stub must absorb them.
+    monkeypatch.setattr(runner, "_load_description_cache", lambda _path, **_kw: cache)
     monkeypatch.setattr(runner, "_job_to_row", explode_row)
     monkeypatch.setitem(
         runner.CONFIGS,

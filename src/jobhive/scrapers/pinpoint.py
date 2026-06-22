@@ -204,7 +204,7 @@ class PinpointScraper(BaseScraper):
             department=department,
             commitment=item.get("schedule") if isinstance(item.get("schedule"), str) else None,
             requisition_id=item.get("reference") if isinstance(item.get("reference"), str) else None,
-            description=_html_to_text(item.get("description")),
+            description=_html_unescape_for_desc(item.get("description")),
             salary_currency=comp_currency,
             salary_min=comp_min,
             salary_max=comp_max,
@@ -267,6 +267,20 @@ def _extract_is_remote(workplace_type: object) -> bool | None:
     if wt in ("onsite", "on_site", "office"):
         return False
     return None
+
+
+def _html_unescape_for_desc(value: object, *, cap: int = 25_000) -> str | None:
+    """Unescape HTML entities and trim/cap, but keep tags intact so the
+    post-scrape markdownify pass can preserve paragraph and list structure.
+    Replaces the legacy _strip_html/_html_to_text path for descriptions
+    only — title/company/salary fields still use the strip variant."""
+    import html as _h
+    if not isinstance(value, str):
+        return None
+    out = _h.unescape(value).strip()
+    if not out:
+        return None
+    return out[:cap]
 
 
 def _html_to_text(value: object) -> str | None:

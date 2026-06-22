@@ -289,7 +289,7 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
     """
     desc_html = detail.get("descriptionHtml")
     if isinstance(desc_html, str) and desc_html.strip():
-        job.description = _strip_html(desc_html)[:25_000] or None
+        job.description = _html_unescape_for_desc(desc_html, cap=25_000) or None
 
     # Posted date — Gem ships ``firstPublishedTsSec`` (epoch seconds) and
     # ``startDateTs`` (epoch seconds, *future* go-live). Prefer the
@@ -340,6 +340,20 @@ def _extract_is_remote(locations: list[dict[str, Any]]) -> bool | None:
         if isinstance(loc, dict) and loc.get("isRemote") is True:
             return True
     return False if any(isinstance(loc, dict) for loc in locations) else None
+
+
+def _html_unescape_for_desc(value: object, *, cap: int = 25_000) -> str | None:
+    """Unescape HTML entities and trim/cap, but keep tags intact so the
+    post-scrape markdownify pass can preserve paragraph and list structure.
+    Replaces the legacy _strip_html/_html_to_text path for descriptions
+    only — title/company/salary fields still use the strip variant."""
+    import html as _h
+    if not isinstance(value, str):
+        return None
+    out = _h.unescape(value).strip()
+    if not out:
+        return None
+    return out[:cap]
 
 
 def _strip_html(text: str) -> str:

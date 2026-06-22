@@ -240,12 +240,28 @@ def _apply_detail_to_job(job: Job, html: str) -> None:
             job.team = value
 
 
-def _extract_full_description(html: str) -> str | None:
-    """Pull the full job-detail body when the page exposes it.
+_GOOGLE_SECTION_HEADINGS = (
+    "About the job",
+    "Minimum qualifications",
+    "Preferred qualifications",
+    "Responsibilities",
+    "Benefits",
+)
 
-    Tries the ``DkhPwc`` container that wraps the focused job's title +
-    icon chips + description sections. Falls back to the page's meta
-    description on parse failure.
+
+def _extract_full_description(html: str) -> str | None:
+    """Pull the full job-detail body, section by section.
+
+    Google's career page splits the description into separate sibling
+    containers (``KwJkGe``-class divs etc.) rather than a single parent
+    that wraps everything. The previous "find one container with all
+    markers" heuristic could match a partial container — typically one
+    holding *About the job* + *Responsibilities* but not the
+    *Minimum/Preferred qualifications* sections — and we were silently
+    publishing incomplete descriptions.
+
+    We now scan for each known h3 heading independently and stitch them
+    together in the order listed in ``_GOOGLE_SECTION_HEADINGS``.
     """
     try:
         from bs4 import BeautifulSoup
@@ -254,34 +270,78 @@ def _extract_full_description(html: str) -> str | None:
 
     soup = BeautifulSoup(html, "html.parser")
 
-    about = soup.find("h3", string=lambda s: s and s.strip() == "About the job")
-    container = None
-    if about is not None:
-        node = about
-        for _ in range(8):
-            node = node.find_parent()
-            if node is None:
-                break
-            text = node.get_text()
-            if (
-                "About the job" in text
-                and "Minimum qualifications" in text
-                and "Responsibilities" in text
-            ):
-                container = node
-                break
+    sections: list[tuple[str, str]] = []
+    for heading_label in _GOOGLE_SECTION_HEADINGS:
+        h = soup.find(
+            "h3",
+            string=lambda s, lbl=heading_label: bool(
+                s and s.strip().rstrip(":").lower() == lbl.lower()
+            ),
+        )
+        if h is None:
+            continue
+        # The section body lives in the h3's nearest enclosing div that
+        # also contains the answer (a sibling ``ul``/``p``/``div``).
+        # Climb up at most 4 ancestors to find a container that contains
+        # both the heading and the body text; otherwise fall back to
+        # collecting all following siblings until the next h3.
+        body_text = _collect_section_body(h)
+        if body_text:
+            sections.append((heading_label, body_text))
 
-    if container is None:
+    if not sections:
         return _meta_description(html)
 
-    # Drop the chips/share-button boilerplate that precedes
-    # "About the job" — slice from the first occurrence of that header.
-    text = container.get_text(separator="\n", strip=True)
-    idx = text.find("About the job")
-    if idx > 0:
-        text = text[idx:]
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return text or None
+    parts: list[str] = []
+    for label, body in sections:
+        if label == "About the job":
+            parts.append(body)
+        else:
+            parts.append(f"{label}\n{body}")
+    text = "\n\n".join(parts)
+    return re.sub(r"\n{3,}", "\n\n", text).strip() or None
+
+
+def _collect_section_body(heading_node) -> str:
+    """Return the human-readable body text under a section h3.
+
+    Climbs up to find a container that holds both the heading and its
+    answer (lists/paragraphs are usually a sibling div, not a direct
+    child of the h3). Falls back to walking the following siblings of
+    the heading until the next h3 — handles flat layouts where
+    headings + bodies are siblings rather than nested.
+    """
+    # Strategy 1: ancestor that includes a list or paragraph after the h3
+    node = heading_node
+    for _ in range(4):
+        node = node.find_parent()
+        if node is None:
+            break
+        # If this ancestor contains a ul/ol/p after the heading and is
+        # otherwise focused on this one section, use it.
+        lists = node.find_all(["ul", "ol", "p"], recursive=True)
+        if lists:
+            # Only accept ancestors that don't contain another h3 (that
+            # would mean we picked up multiple sections in one ancestor).
+            other_h3 = [h for h in node.find_all("h3", recursive=True) if h is not heading_node]
+            if not other_h3:
+                text = node.get_text(separator="\n", strip=True)
+                # Strip the heading itself from the start
+                heading_text = heading_node.get_text(strip=True)
+                if text.startswith(heading_text):
+                    text = text[len(heading_text):].lstrip(":\n ")
+                return text
+
+    # Strategy 2: walk following-siblings of the heading
+    parts: list[str] = []
+    for sib in heading_node.next_siblings:
+        if getattr(sib, "name", None) == "h3":
+            break
+        if hasattr(sib, "get_text"):
+            t = sib.get_text(separator="\n", strip=True)
+            if t:
+                parts.append(t)
+    return "\n".join(parts).strip()
 
 
 def _meta_description(html: str) -> str | None:

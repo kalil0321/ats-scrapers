@@ -36,7 +36,7 @@ import os
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     pass
 
 PAGE_SIZE = 12  # Avature's default page size.
+MAP_PAGE_SIZE = 30  # SearchJobsMaps pages use a different offset scheme.
 MAX_PAGES = 200  # Defensive upper bound — caps a runaway loop at ~2400 jobs.
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
@@ -254,8 +255,9 @@ class AvatureScraper(BaseScraper):
 
         seen: set[str] = set()
         all_jobs: list[Job] = []
+        page_size = _page_size(base)
         for page_num in range(MAX_PAGES):
-            offset = page_num * PAGE_SIZE
+            offset = page_num * page_size
             try:
                 html_text = await asyncio.to_thread(
                     self._fetch_page_via_httpcloak_sync, base, offset
@@ -271,7 +273,7 @@ class AvatureScraper(BaseScraper):
             for j in new:
                 seen.add(j.ats_id)
             all_jobs.extend(new)
-            if len(page_jobs) < PAGE_SIZE:
+            if len(page_jobs) < page_size:
                 break
 
         # Same TLS fingerprint for detail enrichment so we don't lose
@@ -288,11 +290,10 @@ class AvatureScraper(BaseScraper):
     def _fetch_page_via_httpcloak_sync(self, base: str, offset: int) -> str:
         import httpcloak
 
-        url = f"{base}/careers/SearchJobs/"
         try:
             response = httpcloak.get(
-                url,
-                params={"jobOffset": offset, "jobRecordsPerPage": PAGE_SIZE},
+                _search_url(base),
+                params=_pagination_params(base, offset),
                 headers=_BROWSER_HEADERS,
                 timeout=self.timeout,
             )
@@ -344,8 +345,9 @@ class AvatureScraper(BaseScraper):
         async with httpx.AsyncClient(
             timeout=self.timeout, follow_redirects=True
         ) as client:
+            page_size = _page_size(base)
             for page_num in range(MAX_PAGES):
-                offset = page_num * PAGE_SIZE
+                offset = page_num * page_size
                 html_text = await self._fetch_page(client, base, offset)
                 page_jobs = self._parse_page(html_text, base, company)
                 new = [j for j in page_jobs if j.ats_id not in seen]
@@ -355,7 +357,7 @@ class AvatureScraper(BaseScraper):
                     seen.add(j.ats_id)
                 all_jobs.extend(new)
                 # Termination: short page = last page.
-                if len(page_jobs) < PAGE_SIZE:
+                if len(page_jobs) < page_size:
                     break
 
             # Per-job detail fetch — Avature's search-results page has
@@ -435,12 +437,10 @@ class AvatureScraper(BaseScraper):
                 page = ctx.pages[0] if ctx.pages else await ctx.new_page()
 
                 # Listing pages — sequential on one tab.
+                page_size = _page_size(base)
                 for page_num in range(MAX_PAGES):
-                    offset = page_num * PAGE_SIZE
-                    list_url = (
-                        f"{base}/careers/SearchJobs/"
-                        f"?jobOffset={offset}&jobRecordsPerPage={PAGE_SIZE}"
-                    )
+                    offset = page_num * page_size
+                    list_url = _paginated_search_url(base, offset)
                     try:
                         await page.goto(
                             list_url, wait_until="domcontentloaded", timeout=30_000
@@ -455,7 +455,7 @@ class AvatureScraper(BaseScraper):
                     for j in new:
                         seen.add(j.ats_id)
                     all_jobs.extend(new)
-                    if len(page_jobs) < PAGE_SIZE:
+                    if len(page_jobs) < page_size:
                         break
 
                 if self.include_descriptions:
@@ -493,13 +493,10 @@ class AvatureScraper(BaseScraper):
     async def _fetch_page(
         self, client: httpx.AsyncClient, base: str, offset: int
     ) -> str:
-        url = f"{base}/careers/SearchJobs/"
-        params = {"jobOffset": offset, "jobRecordsPerPage": PAGE_SIZE}
+        list_url = _paginated_search_url(base, offset)
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                response = await client.get(
-                    url, params=params, headers=_BROWSER_HEADERS
-                )
+                response = await client.get(list_url, headers=_BROWSER_HEADERS)
             except httpx.HTTPError as exc:
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
@@ -559,14 +556,14 @@ class AvatureScraper(BaseScraper):
             ) from exc
 
         soup = BeautifulSoup(html_text, "html.parser")
-        # Strategy: find all `/JobDetail/` anchors (the canonical job URL
-        # form), then for each walk up to the nearest wrapping container
+        # Strategy: find all job-detail anchors, then for each walk up to
+        # the nearest wrapping container
         # (article / div / li / tr). The wrapper is where title/location/
         # department live as sibling elements. This handles all tenant
         # markups (Bloomberg `article--result`, IBM `div.job-item`, etc.)
         # without maintaining a per-tenant selector list.
         anchors = soup.find_all(
-            "a", href=lambda h: bool(h) and "/JobDetail/" in h
+            "a", href=lambda h: bool(h) and _is_detail_href(str(h))
         )
         seen_ids: set[str] = set()
         jobs: list[Job] = []
@@ -591,17 +588,23 @@ def _parse_job_element(
     element: object, anchor: object, base: str, company: str
 ) -> Job | None:
     href = (anchor.get("href") or "").strip()  # type: ignore[union-attr]
-    if not href or "/JobDetail/" not in href:
+    if not href or not _is_detail_href(href):
         return None
 
     # Build absolute URL.
-    if href.startswith(("http://", "https://")):
-        url = href
-    else:
-        url = f"{base}{href if href.startswith('/') else '/' + href}"
+    url = (
+        href
+        if href.startswith(("http://", "https://"))
+        else _join_avature_url(base, href)
+    )
 
-    # Job ID = last non-empty path segment (strip query string).
-    ats_id = href.rsplit("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    # Job ID = path tail for JobDetail/ProjectDetail pages, or pipelineId
+    # for the SearchJobsMaps/PipelineDetail variant.
+    parsed_href = urlparse(href)
+    query = parse_qs(parsed_href.query)
+    ats_id = (query.get("pipelineId") or [""])[0]
+    if not ats_id:
+        ats_id = href.rsplit("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
     if not ats_id:
         return None
 
@@ -659,6 +662,93 @@ def _parse_job_element(
         posted_at=None,
         fetched_at=datetime.now(),
     )
+
+
+def _search_url(base: str) -> str:
+    """Return the SearchJobs URL for default and custom-path portals."""
+    parsed = urlparse(base)
+    path = parsed.path.rstrip("/")
+    lowered = path.lower()
+    if lowered.endswith("/searchjobs") or lowered.endswith("/searchjobsmaps"):
+        search_path = f"{path}/"
+    elif not path or path.lstrip("/") in _LOCALE_PREFIXES:
+        search_path = f"{path}/careers/SearchJobs/"
+    else:
+        search_path = f"{path}/SearchJobs/"
+    return urlunparse(
+        (parsed.scheme, parsed.netloc, search_path, "", parsed.query, parsed.fragment)
+    )
+
+
+def _paginated_search_url(base: str, offset: int) -> str:
+    """Build a listing URL while preserving tenant-specific query params."""
+    parsed = urlparse(_search_url(base))
+    page_params = _pagination_params(base, offset)
+    page_keys = set(page_params)
+    query_items = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key not in page_keys
+    ]
+    query_items.extend((key, str(value)) for key, value in page_params.items())
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            urlencode(query_items),
+            parsed.fragment,
+        )
+    )
+
+
+def _page_size(base: str) -> int:
+    return MAP_PAGE_SIZE if _is_map_search(base) else PAGE_SIZE
+
+
+def _pagination_params(base: str, offset: int) -> dict[str, int]:
+    if _is_map_search(base):
+        return {"pipelineOffset": offset}
+    return {"jobOffset": offset, "jobRecordsPerPage": PAGE_SIZE}
+
+
+def _is_map_search(base: str) -> bool:
+    path = urlparse(_search_url(base)).path.rstrip("/").lower()
+    return path.endswith("/searchjobsmaps")
+
+
+def _is_detail_href(href: str) -> bool:
+    return (
+        "/JobDetail/" in href
+        or "/ProjectDetail/" in href
+        or "/PipelineDetail" in href
+    )
+
+
+def _join_avature_url(base: str, href: str) -> str:
+    """Resolve Avature detail links without duplicating custom base paths."""
+    if href.startswith(("http://", "https://")):
+        return href
+    base = _link_base(base)
+    if not href.startswith("/"):
+        return f"{base.rstrip('/')}/{href}"
+
+    parsed = urlparse(base)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    base_path = parsed.path.rstrip("/")
+    if base_path and (href == base_path or href.startswith(f"{base_path}/")):
+        return f"{origin}{href}"
+    return f"{base.rstrip('/')}{href}"
+
+
+def _link_base(base: str) -> str:
+    parsed = urlparse(base.rstrip("/"))
+    path = parsed.path.rstrip("/")
+    lowered = path.lower()
+    if lowered.endswith("/searchjobs") or lowered.endswith("/searchjobsmaps"):
+        path = path.rsplit("/", 1)[0]
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", parsed.fragment))
 
 
 def _parse_detail(html: str) -> tuple[dict[str, str], str | None]:

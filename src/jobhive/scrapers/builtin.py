@@ -172,7 +172,7 @@ class BuiltInScraper(BaseScraper):
         ats_id = match.group("id")
         description = item.get("description") or None
         if isinstance(description, str):
-            description = _strip_html(description) or None
+            description = _html_unescape_for_desc(description) or None
 
         return Job(
             url=url,
@@ -296,6 +296,20 @@ class BuiltInScraper(BaseScraper):
         if isinstance(content, bytes):
             return content.decode("utf-8", errors="replace")
         return content
+
+
+def _html_unescape_for_desc(value: object, *, cap: int = 25_000) -> str | None:
+    """Unescape HTML entities and trim/cap, but keep tags intact so the
+    post-scrape markdownify pass can preserve paragraph and list structure.
+    Replaces the legacy _strip_html/_html_to_text path for descriptions
+    only — title/company/salary fields still use the strip variant."""
+    import html as _h
+    if not isinstance(value, str):
+        return None
+    out = _h.unescape(value).strip()
+    if not out:
+        return None
+    return out[:cap]
 
 
 def _strip_html(text: str) -> str:

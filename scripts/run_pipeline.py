@@ -25,6 +25,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -134,11 +135,15 @@ def _personio_slug(row: dict[str, Any]) -> str | None:
 def _avature_slug(row: dict[str, Any]) -> str | None:
     """Avature tenants live at ``{slug}.avature.net`` (or sometimes the
     full careers URL). Extract the subdomain when a URL is present."""
+    url = (row.get("url") or "").strip()
     if (slug := _slug_col(row)):
         if slug.startswith(("http://", "https://")):
             return slug
+        if url.startswith("http"):
+            base = _avature_base_from_url(url)
+            if base is not None:
+                return base
         return slug.lower()
-    url = (row.get("url") or "").strip()
     if url.startswith("http"):
         m = re.match(r"https?://([a-z0-9][a-z0-9-]+)\.avature\.net",
                      url, re.IGNORECASE)
@@ -146,6 +151,16 @@ def _avature_slug(row: dict[str, Any]) -> str | None:
             return m.group(1).lower()
     name = (row.get("name") or "").strip()
     return name or None
+
+
+def _avature_base_from_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    path = parsed.path.rstrip("/")
+    if path == "/careers/SearchJobs":
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}{path}".rstrip("/")
 
 
 def _successfactors_slug(row: dict[str, Any]) -> str | None:
@@ -389,14 +404,15 @@ CONFIGS: dict[str, dict[str, Any]] = {
         },
         "csv": "ats-companies/workday.csv",
         "output": "workday/jobs.csv",
-        # Workday descriptions require per-job detail calls. Let the pipeline
-        # consult the disk-backed description cache before issuing those calls;
-        # otherwise Workday hydrates every row inside fetch() and bypasses cache.
+        # Workday descriptions require per-job detail calls. Defer to the
+        # disk-backed description cache so the scraper's internal enrichment
+        # stays off (it would re-fetch every row, bypassing the cache).
         "defer_descriptions_to_cache": True,
-        # Rehydrating hundreds of thousands of cached descriptions turns the
-        # daily Workday listing refresh into a multi-hour CSV rewrite. Keep the
-        # main run listing-only; description enrichment needs a separate job.
-        "skip_description_enrichment": True,
+        # Persistent zstd-compressed SQLite cache. ~700k entries from the
+        # 2026-05 backfill seed the file; daily runs hit the cache for already
+        # known URLs and only fetch the detail endpoint for new listings.
+        "description_cache_path": "workday/descriptions.sqlite3",
+        "description_cache_compress": True,
         # Workday can take longer than the publish window on bad API days. Keep
         # publishing the previous stable jobs.csv while a replacement is built.
         "publish_previous_while_running": True,
@@ -708,58 +724,157 @@ def _pipeline_lock(ats: str):
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
-class DescriptionCache:
-    """Disk-backed description cache built from the previous jobs CSV."""
+# Schema layout version stored in SQLite's PRAGMA user_version. Bumping
+# this number tells the cache to refuse opening an older file whose row
+# format we no longer know how to decode (e.g. legacy ``description
+# TEXT`` rows that would silently come back as ``str`` through the BLOB
+# read path and crash zstd decompression).
+_CACHE_SCHEMA_VERSION = 2
 
-    def __init__(self) -> None:
+
+class DescriptionCache:
+    """Disk-backed description cache, optionally persistent and zstd-compressed.
+
+    Two modes:
+
+    - **Ephemeral** (default): ``DescriptionCache()`` creates a tempfile that
+      gets removed on :meth:`close`. Behavior matches the legacy single-run
+      cache rebuilt each pipeline invocation via :meth:`load_csv`.
+
+    - **Persistent**: ``DescriptionCache(path=Path("...sqlite3"))`` opens (or
+      creates) the named file and keeps it across runs. Use for ATSes where
+      rebuilding from CSV every day is wasteful — e.g. Workday at ~700k
+      entries. New fetches accumulate in-place via :meth:`set`.
+
+    ``compress=True`` stores the description column as zstd-compressed BLOB.
+    Cuts disk footprint by ~70% on typical HTML/markdown text. Read overhead
+    is single-digit milliseconds per lookup, which is dwarfed by the network
+    fetch cost it replaces.
+    """
+
+    def __init__(self, path: Path | None = None, compress: bool = False) -> None:
         self.conn: sqlite3.Connection | None = None
-        with tempfile.NamedTemporaryFile(
-            prefix="jobhive-description-cache-",
-            suffix=".sqlite3",
-            delete=False,
-        ) as tmp:
-            self.path = Path(tmp.name)
+        self.compress = compress
+        self._compressor = None
+        self._decompressor = None
+        if compress:
+            import zstandard
+            self._compressor = zstandard.ZstdCompressor(level=3)
+            self._decompressor = zstandard.ZstdDecompressor()
+
+        if path is None:
+            with tempfile.NamedTemporaryFile(
+                prefix="jobhive-description-cache-",
+                suffix=".sqlite3",
+                delete=False,
+            ) as tmp:
+                self.path = Path(tmp.name)
+            self._owns_tempfile = True
+        else:
+            self.path = Path(path)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._owns_tempfile = False
+
         try:
             self.conn = sqlite3.connect(self.path)
-            self.conn.execute("PRAGMA journal_mode=OFF")
-            self.conn.execute("PRAGMA synchronous=OFF")
+            if self._owns_tempfile:
+                # Ephemeral tempfile cache — favor raw insert speed over crash
+                # safety (file is discarded on close anyway).
+                self.conn.execute("PRAGMA journal_mode=OFF")
+                self.conn.execute("PRAGMA synchronous=OFF")
+            else:
+                # Persistent cache — WAL gives concurrent reader safety while
+                # writes stay durable. NORMAL sync is sufficient for our
+                # daily-replay-on-loss model.
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                self.conn.execute("PRAGMA synchronous=NORMAL")
             self.conn.execute("PRAGMA temp_store=MEMORY")
+            # Schema-version pragma. Bump when the table layout or encoding
+            # changes incompatibly so an older persistent file fails loudly
+            # at open instead of silently mixing schemas. Version 1 is the
+            # original ``description TEXT`` layout; version 2 introduced
+            # ``description BLOB`` to carry optionally-zstd-compressed bytes.
+            current_user_version = self.conn.execute(
+                "PRAGMA user_version"
+            ).fetchone()[0]
+            existing_rows = 0
+            existing_table = self.conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='descriptions'"
+            ).fetchone()
+            if existing_table is not None:
+                existing_rows = self.conn.execute(
+                    "SELECT COUNT(*) FROM descriptions"
+                ).fetchone()[0]
+            if existing_rows > 0 and current_user_version != _CACHE_SCHEMA_VERSION:
+                # Bail loudly rather than try to interpret an unknown layout
+                # — silently returning TEXT bytes through the BLOB path
+                # leaks ``str`` rows that then crash _decode().
+                if self.conn is not None:
+                    self.conn.close()
+                    self.conn = None
+                if self._owns_tempfile:
+                    self.path.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"DescriptionCache schema mismatch at {self.path}: "
+                    f"file user_version={current_user_version}, "
+                    f"code expects {_CACHE_SCHEMA_VERSION}. Delete the "
+                    f"file and let the pipeline reseed it from the "
+                    f"current jobs.csv (or run scripts/build_workday_cache "
+                    f"if a backfill seed is available)."
+                )
             self.conn.execute(
                 """
-                CREATE TABLE descriptions (
+                CREATE TABLE IF NOT EXISTS descriptions (
                     kind TEXT NOT NULL,
                     cache_key TEXT NOT NULL,
-                    description TEXT NOT NULL,
+                    description BLOB NOT NULL,
                     PRIMARY KEY (kind, cache_key)
                 )
                 """
             )
+            self.conn.execute(
+                f"PRAGMA user_version = {_CACHE_SCHEMA_VERSION}"
+            )
+            self.count = self.conn.execute(
+                "SELECT COUNT(*) FROM descriptions"
+            ).fetchone()[0]
         except Exception:
             if self.conn is not None:
                 self.conn.close()
-            self.path.unlink(missing_ok=True)
+            if self._owns_tempfile:
+                self.path.unlink(missing_ok=True)
             raise
-        self.count = 0
 
     def close(self) -> None:
         if self.conn is not None:
             self.conn.close()
             self.conn = None
-        self.path.unlink(missing_ok=True)
+        if self._owns_tempfile:
+            self.path.unlink(missing_ok=True)
+
+    def _encode(self, description: str) -> bytes:
+        raw = description.encode("utf-8")
+        return self._compressor.compress(raw) if self.compress else raw
+
+    def _decode(self, blob: bytes) -> str:
+        raw = self._decompressor.decompress(blob) if self.compress else blob
+        return raw.decode("utf-8")
 
     def load_csv(self, path: Path) -> None:
         if not path.exists():
             return
 
-        batch: list[tuple[str, str, str]] = []
+        batch: list[tuple[str, str, bytes]] = []
         try:
             with path.open(newline="") as fh:
                 for row in csv.DictReader(fh):
                     description = (row.get("description") or "").strip()
                     if not description:
                         continue
+                    blob = self._encode(description)
                     for key in _row_description_keys(row):
-                        batch.append((*key, description))
+                        batch.append((*key, blob))
                     if len(batch) >= 2_000:
                         self._insert_many(batch)
                         batch.clear()
@@ -772,10 +887,18 @@ class DescriptionCache:
             "SELECT COUNT(*) FROM descriptions"
         ).fetchone()[0]
 
-    def _insert_many(self, rows: list[tuple[str, str, str]]) -> int:
+    def _insert_many(self, rows: list[tuple[str, str, bytes]], *, replace: bool = False) -> int:
+        """Bulk insert. ``replace=True`` overwrites existing rows
+        (used by :meth:`set` so an updated description from a fresh
+        scrape supersedes the previous-day cached one); the default
+        ``replace=False`` keeps the existing row, which is what
+        :meth:`load_csv` wants when seeding from a CSV that may have
+        the same URL listed multiple times.
+        """
+        verb = "INSERT OR REPLACE" if replace else "INSERT OR IGNORE"
         cur = self.conn.executemany(
-            """
-            INSERT OR IGNORE INTO descriptions (kind, cache_key, description)
+            f"""
+            {verb} INTO descriptions (kind, cache_key, description)
             VALUES (?, ?, ?)
             """,
             rows,
@@ -793,13 +916,30 @@ class DescriptionCache:
                 (kind, key),
             ).fetchone()
             if row:
-                return row[0]
+                return self._decode(row[0])
         return None
 
     def set(self, job: Job, description: str) -> None:
-        rows = [(*key, description) for key in _description_keys(job)]
-        if rows:
-            self.count += self._insert_many(rows)
+        blob = self._encode(description)
+        rows = [(*key, blob) for key in _description_keys(job)]
+        if not rows:
+            return
+        # Single-row updates from _ensure_description must replace any
+        # existing entry — that's the whole point of writing back when
+        # the freshly-scraped body is longer than the cached one. The
+        # rowcount returned by executemany with INSERT OR REPLACE counts
+        # both new inserts and updates, so we only bump ``count`` by
+        # the genuine new keys (those not already present).
+        new_keys = 0
+        existing = self.conn.execute(
+            "SELECT COUNT(*) FROM descriptions WHERE (kind, cache_key) IN ("
+            + ",".join("(?,?)" for _ in rows)
+            + ")",
+            [v for kind, key, _ in rows for v in (kind, key)],
+        ).fetchone()[0]
+        new_keys = len(rows) - existing
+        self._insert_many(rows, replace=True)
+        self.count += max(0, new_keys)
 
 
 def _description_keys(job: Job) -> list[tuple[str, str]]:
@@ -826,8 +966,33 @@ def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
     return keys
 
 
-def _load_description_cache(path: Path) -> DescriptionCache:
-    cache = DescriptionCache()
+def _load_description_cache(
+    path: Path,
+    *,
+    persistent_path: Path | None = None,
+    compress: bool = False,
+    bootstrap_csv: Path | None = None,
+) -> DescriptionCache:
+    """Open a description cache, ephemeral or persistent.
+
+    - ``persistent_path``: when set, opens the SQLite file at that path and
+      reuses it across runs. Otherwise builds a fresh tempfile cache from
+      ``path``.
+    - ``compress``: forwarded to :class:`DescriptionCache`. Recommended for
+      persistent caches with large descriptions (e.g. Workday).
+    - ``bootstrap_csv``: if the persistent cache is empty on open, seed it
+      from this CSV. Useful for the first run after enabling persistence.
+    """
+    if persistent_path is not None:
+        cache = DescriptionCache(path=persistent_path, compress=compress)
+        if cache.count == 0 and bootstrap_csv is not None:
+            try:
+                cache.load_csv(bootstrap_csv)
+            except Exception:
+                cache.close()
+                raise
+        return cache
+    cache = DescriptionCache(compress=compress)
     try:
         cache.load_csv(path)
     except Exception:
@@ -865,10 +1030,24 @@ async def _ensure_description(
     cache: DescriptionCache,
 ) -> str:
     cached = _cached_description(job, cache)
+    fresh = job.description
     if cached:
-        job.description = cached
-        return "cache"
-    if job.description:
+        # Prefer the longer description. The cache is the previous run's
+        # jobs.csv (or a persistent SQLite). When the scraper has already
+        # populated ``job.description`` from the current API (e.g. lever,
+        # which assembles ``description`` + ``lists[]`` in _parse_job,
+        # or apple which hydrates per-job detail pages), a recent code
+        # update may produce a fuller body than the previously-cached
+        # one. Trust whichever has more content; ties go to fresh.
+        if not fresh or len(cached) > len(fresh):
+            job.description = cached
+            return "cache"
+        # Fresh is at least as long — keep it AND write it back to the
+        # cache so the next run picks up the improvement immediately
+        # instead of recomputing it.
+        cache.set(job, fresh)
+        return "present"
+    if fresh:
         return "present"
     try:
         description = await asyncio.to_thread(scraper.get_description, job)
@@ -909,7 +1088,7 @@ def _job_to_row(job: Job) -> dict[str, Any]:
         "employment_type": job.employment_type or "",
         "department": job.department or "",
         "team": job.team or "",
-        "description": (job.description or "")[:25_000].replace("\n", " "),
+        "description": (job.description or "")[:25_000],
         "posted_at": job.posted_at.isoformat() if job.posted_at else "",
         "requisition_id": job.requisition_id or "",
         "apply_url": str(job.apply_url) if job.apply_url else "",
@@ -983,16 +1162,32 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
         tmp_output_path = output_path.with_name(f".{output_path.name}.tmp")
     uses_streaming = bool(cfg.get("singleton") and hasattr(cfg["scraper"], "fetch_stream"))
     cache_cap = cfg.get("skip_description_cache_if_max_len_lte")
+    persistent_path_rel = cfg.get("description_cache_path")
+    persistent_path = (DATA_ROOT / persistent_path_rel) if persistent_path_rel else None
+    cache_compress = bool(cfg.get("description_cache_compress"))
     if isinstance(cache_cap, int) and _descriptions_look_capped(output_path, cache_cap):
         print(
             f"[{ats}] Skipping previous description cache because "
             f"descriptions look capped at <= {cache_cap} chars"
         )
-        description_cache = DescriptionCache()
+        description_cache = DescriptionCache(compress=cache_compress)
+    elif persistent_path is not None:
+        # Persistent cache: open the file and reuse it across runs. Seed from
+        # the previous jobs.csv only if the cache is empty (first-run bootstrap).
+        description_cache = _load_description_cache(
+            output_path,
+            persistent_path=persistent_path,
+            compress=cache_compress,
+            bootstrap_csv=output_path,
+        )
     else:
-        description_cache = _load_description_cache(output_path)
+        description_cache = _load_description_cache(output_path, compress=cache_compress)
     if description_cache.count:
-        print(f"[{ats}] Loaded {description_cache.count:,} cached description keys")
+        location = "persistent" if persistent_path else "ephemeral"
+        print(
+            f"[{ats}] Loaded {description_cache.count:,} cached description keys "
+            f"({location} cache at {description_cache.path})"
+        )
     seen_keys: set[tuple[str, str]] = set()  # (company, ats_id) for cross-tenant dedup
 
     t0 = time.time()
@@ -1175,6 +1370,25 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             return 1
 
         tmp_output_path.replace(output_path)
+
+        # Post-scrape description normalization. Most scrapers now emit
+        # HTML in the description column (lever, ashby, greenhouse, the
+        # batch of 6 that used to strip-and-flatten, apple's assembled
+        # body, etc.) and rely on this step to produce clean markdown
+        # before publish. Skippable per-ATS via ``skip_normalize`` for
+        # paths that handle their own markdown upstream (e.g. workable
+        # which fetches .md natively). Failure is non-fatal — a broken
+        # normalize pass shouldn't lose the day's scrape.
+        if not cfg.get("skip_normalize"):
+            try:
+                _normalize_output(ats, output_path)
+            except Exception as exc:  # pragma: no cover - defensive
+                print(
+                    f"[{ats}] WARN: description normalization failed "
+                    f"({type(exc).__name__}: {str(exc)[:200]}); "
+                    f"leaving raw scraper output in {output_path}"
+                )
+
         if counts["error"] >= failure_threshold:
             print(
                 f"[{ats}] ACTION investigate: scrape kept partial data but "
@@ -1184,6 +1398,57 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
         return 0
     finally:
         description_cache.close()
+
+
+def _normalize_output(ats: str, jobs_csv: Path) -> None:
+    """Invoke scripts/normalize_descriptions.py on the freshly-written
+    jobs.csv. The normalize script is a separate file rather than an
+    in-process import so a crash in the normalizer can't take down the
+    scraper pipeline.
+    """
+    script_path = Path(__file__).resolve().parent / "normalize_descriptions.py"
+    if not script_path.exists():
+        print(f"[{ats}] WARN: {script_path} missing, skipping normalize")
+        return
+    workers = max(1, (os.cpu_count() or 4) - 1)
+    cmd = [
+        sys.executable,
+        str(script_path),
+        str(jobs_csv),
+        "-j", str(workers),
+    ]
+    t0 = time.time()
+    print(f"[{ats}] normalizing descriptions ({workers} workers)...")
+    # Upper-bound the normalize step so a hung worker can't wedge the
+    # whole daily pipeline. EURES (~2.7M rows) is the largest single
+    # CSV we feed in; even at ~500 rows/sec/worker that's ~30 min, so
+    # 2 h leaves a generous margin. ``JOBHIVE_NORMALIZE_TIMEOUT_S``
+    # tunes it for ATSes that grow past that envelope.
+    timeout_s = int(os.environ.get("JOBHIVE_NORMALIZE_TIMEOUT_S", "7200"))
+    try:
+        result = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        elapsed = time.time() - t0
+        print(
+            f"[{ats}] WARN: normalize exceeded {timeout_s}s budget "
+            f"(elapsed={elapsed:.0f}s); jobs.csv left in its pre-normalize state."
+        )
+        return
+    if result.returncode != 0:
+        print(
+            f"[{ats}] WARN: normalize exited {result.returncode}; "
+            f"stderr tail: {result.stderr[-400:]}"
+        )
+        return
+    elapsed = time.time() - t0
+    last_line = (result.stdout or "").strip().splitlines()[-1:] or [""]
+    print(f"[{ats}] normalize done in {elapsed:.1f}s — {last_line[0]}")
 
 
 def main() -> int:

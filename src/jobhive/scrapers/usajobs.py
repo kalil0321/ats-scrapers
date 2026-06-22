@@ -254,7 +254,7 @@ class USAJobsScraper(BaseScraper):
             commitment=emp_name if isinstance(emp_name, str) else None,
             apply_url=apply_uri if apply_uri and apply_uri != url else None,
             requisition_id=ats_id if ats_id else None,
-            description=_html_to_text(description_html),
+            description=_html_unescape_for_desc(description_html),
             salary_min=salary_min,
             salary_max=salary_max,
             salary_currency=salary_currency if salary_min or salary_max else None,
@@ -263,6 +263,20 @@ class USAJobsScraper(BaseScraper):
             fetched_at=datetime.now(),
             raw=raw or None,
         )
+
+
+def _html_unescape_for_desc(value: object, *, cap: int = 25_000) -> str | None:
+    """Unescape HTML entities and trim/cap, but keep tags intact so the
+    post-scrape markdownify pass can preserve paragraph and list structure.
+    Replaces the legacy _strip_html/_html_to_text path for descriptions
+    only — title/company/salary fields still use the strip variant."""
+    import html as _h
+    if not isinstance(value, str):
+        return None
+    out = _h.unescape(value).strip()
+    if not out:
+        return None
+    return out[:cap]
 
 
 def _html_to_text(value: object) -> str | None:

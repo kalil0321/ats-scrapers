@@ -8,6 +8,7 @@ pin token extraction, region detection, pagination, and field parsing.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -70,6 +71,23 @@ def test_full_url_accepted() -> None:
     s = CornerstoneScraper("https://thekids.csod.com/ux/ats/careersite/4/home?c=thekids")
     assert s.career_url.startswith("https://thekids.csod.com")
     assert s.slug == "thekids"
+    assert s.site_id == 4
+
+
+def test_full_url_site_id_used_in_api_request(httpx_mock) -> None:
+    career_url = "https://thekids.csod.com/ux/ats/careersite/4/home?c=thekids"
+    httpx_mock.add_response(url=career_url, text=_site_html())
+    httpx_mock.add_response(url=API_URL, json=_search_response([_req()], total=1))
+
+    jobs = CornerstoneScraper(career_url).fetch()
+
+    request = httpx_mock.get_requests(url=API_URL)[0]
+    body = json.loads(request.content)
+    assert body["careerSiteId"] == 4
+    assert body["careerSitePageId"] == 4
+    assert str(jobs[0].url) == (
+        "https://thekids.csod.com/ux/ats/careersite/4/job/100?c=thekids"
+    )
 
 
 def test_custom_site_id() -> None:

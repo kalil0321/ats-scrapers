@@ -215,7 +215,7 @@ class RecruiterboxScraper(BaseScraper):
             ),
             team=item.get("team") or None,
             commitment=item.get("position_type") if isinstance(item.get("position_type"), str) else None,
-            description=_html_to_text(item.get("description")),
+            description=_html_unescape_for_desc(item.get("description")),
             posted_at=_parse_iso(item.get("created_on") or item.get("updated_on")),
             fetched_at=datetime.now(),
             raw=raw or None,
@@ -231,6 +231,20 @@ def _format_location(value: object) -> str | None:
         if isinstance(value.get(k), str) and value.get(k).strip()
     ]
     return ", ".join(parts) or None
+
+
+def _html_unescape_for_desc(value: object, *, cap: int = 25_000) -> str | None:
+    """Unescape HTML entities and trim/cap, but keep tags intact so the
+    post-scrape markdownify pass can preserve paragraph and list structure.
+    Replaces the legacy _strip_html/_html_to_text path for descriptions
+    only — title/company/salary fields still use the strip variant."""
+    import html as _h
+    if not isinstance(value, str):
+        return None
+    out = _h.unescape(value).strip()
+    if not out:
+        return None
+    return out[:cap]
 
 
 def _html_to_text(value: object) -> str | None:
