@@ -10,9 +10,8 @@ Three layers of progressive disclosure:
    >>> from jobhive.scrapers import GreenhouseScraper
    >>> jobs = GreenhouseScraper("openai").fetch()
 
-3. Full pipeline (discover + scrape + enrich + publish):
-   >>> from jobhive import Pipeline
-   >>> Pipeline().discover(ats="lever").scrape().to_csv("out.csv")
+3. Publishing and orchestration helpers:
+   >>> from jobhive.storage import DatasetPublisher
 """
 
 from jobhive._version import __version__

@@ -12,7 +12,7 @@ import logging
 
 import pytest
 
-from jobhive.scrapers.meta import MetaScraper
+from jobhive.scrapers.meta import MetaScraper, _description_from_detail_html
 
 
 def test_returns_empty_with_warning_when_cloakbrowser_missing(
@@ -108,3 +108,22 @@ def test_ignores_responses_without_data() -> None:
     assert MetaScraper("meta")._parse_responses(
         [{}, {"errors": [{"message": "rate limited"}]}]
     ) == []
+
+
+def test_extracts_description_from_detail_json_ld() -> None:
+    html = """
+    <html><head>
+      <script type="application/ld+json">
+      {
+        "\\u0040context": "http://schema.org/",
+        "\\u0040type": "JobPosting",
+        "description": "Build Meta systems.",
+        "responsibilities": "Operate global products."
+      }
+      </script>
+    </head></html>
+    """
+
+    assert _description_from_detail_html(html) == (
+        "Build Meta systems.\n\nOperate global products."
+    )

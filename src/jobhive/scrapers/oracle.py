@@ -16,10 +16,8 @@ The unauthenticated REST endpoint:
 The companion detail endpoint
 ``/recruitingCEJobRequisitionDetails?finder=ById;Id={id}`` exposes the
 full job description (``ExternalDescriptionStr``) plus the qualifications
-and responsibilities sections. Detail enrichment is opt-in via
-``JOBHIVE_ORACLE_FETCH_DESCRIPTIONS=1`` because Oracle's tenant universe
-runs into hundreds of thousands of jobs — a per-job fan-out makes a
-default scrape impractically slow.
+and responsibilities sections. Detail enrichment is best-effort so
+published rows carry descriptions when Oracle exposes them.
 
 Pass the full base URL (and optionally a site number) as the slug.
 """
@@ -27,7 +25,6 @@ Pass the full base URL (and optionally a site number) as the slug.
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -44,6 +41,7 @@ if TYPE_CHECKING:
 
 PAGE_LIMIT = 200
 SITE_RE = re.compile(r"site_number=([^&]+)")
+SITE_PATH_RE = re.compile(r"/sites/([^/?#]+)")
 DEFAULT_SITE = "CX_1"
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
@@ -85,6 +83,25 @@ _EMPLOYMENT_TYPE_PATTERNS = {
 }
 
 
+def _normalize_oracle_target(raw_url: str) -> tuple[str, str]:
+    """Return ``(host_root, site_number)`` for Oracle careers URLs.
+
+    The tenant CSV stores public CandidateExperience URLs such as
+    ``https://host/hcmUI/CandidateExperience/en/sites/CX_1``. Oracle's REST API
+    lives at the host root, while the site number belongs in the finder string.
+    Keep supporting the older ``https://host?site_number=CX_...`` form too.
+    """
+    match = SITE_RE.search(raw_url)
+    site = match.group(1) if match else DEFAULT_SITE
+    parsed = urlparse(raw_url)
+    if parsed.scheme and parsed.netloc:
+        path_site = SITE_PATH_RE.search(parsed.path)
+        if not match and path_site:
+            site = path_site.group(1)
+        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/"), site
+    return raw_url.split("?", 1)[0].rstrip("/"), site
+
+
 @ScraperRegistry.register(ATSType.ORACLE)
 class OracleScraper(BaseScraper):
     """Oracle scraper — `company_slug` is the full careers URL.
@@ -98,11 +115,30 @@ class OracleScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+        base, _site = _normalize_oracle_target(self.company_slug)
+        if not base.startswith(("http://", "https://")):
+            return None
+        detail_url = (
+            f"{base}/hcmRestApi/resources/latest/"
+            "recruitingCEJobRequisitionDetails"
+        )
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_detail(client, sem, detail_url, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
-        url = self.company_slug
-        match = SITE_RE.search(url)
-        site = match.group(1) if match else DEFAULT_SITE
-        base = url.split("?", 1)[0].rstrip("/")
+        base, site = _normalize_oracle_target(self.company_slug)
         if not base.startswith(("http://", "https://")):
             raise ScraperError(
                 f"Oracle slug must be a full URL (https://...oraclecloud.com), got {base!r}"
@@ -143,13 +179,7 @@ class OracleScraper(BaseScraper):
                         seen.add(job.ats_id)
                         all_jobs.append(job)
 
-            # Optional per-job detail enrichment. Disabled by default
-            # because Oracle's tenant universe (a few hundred enterprise
-            # tenants × hundreds-to-thousands of reqs each) makes a fan-out
-            # scrape take hours. Toggle with
-            # ``JOBHIVE_ORACLE_FETCH_DESCRIPTIONS=1`` when description
-            # coverage is wanted.
-            if all_jobs and os.getenv("JOBHIVE_ORACLE_FETCH_DESCRIPTIONS"):
+            if self.include_descriptions and all_jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 detail_url = (
                     f"{base}/hcmRestApi/resources/latest/"
@@ -192,7 +222,7 @@ class OracleScraper(BaseScraper):
 
         # Concatenate the three external sections — description /
         # qualifications / responsibilities — into a single plain-text
-        # body, capped at 10kB.
+        # body, capped at 25k chars.
         parts: list[str] = []
         for key in (
             "ExternalDescriptionStr",
@@ -203,7 +233,7 @@ class OracleScraper(BaseScraper):
             if isinstance(v, str) and v.strip():
                 parts.append(_strip_html(v))
         if parts:
-            job.description = "\n\n".join(parts)[:10_000]
+            job.description = "\n\n".join(parts)[:25_000]
 
     async def _fetch_with_retry(
         self,
@@ -267,7 +297,7 @@ class OracleScraper(BaseScraper):
         # ``ExternalDescriptionStr`` when enabled.
         short_desc = item.get("ShortDescriptionStr")
         description = (
-            _strip_html(short_desc)[:10_000]
+            _strip_html(short_desc)[:25_000]
             if isinstance(short_desc, str) and short_desc.strip()
             else None
         )

@@ -15,12 +15,14 @@ the tests focus on:
 
 from __future__ import annotations
 
+import json
 import re
 
+import httpx
 import pytest
 
 from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
+from jobhive.models import ATSType, Job
 from jobhive.scrapers import ScraperRegistry, WellfoundScraper
 from jobhive.scrapers.wellfound import (
     DEFAULT_ROLE_SLUGS,
@@ -96,6 +98,21 @@ def test_raises_without_firecrawl_key(monkeypatch: pytest.MonkeyPatch) -> None:
         WellfoundScraper("any").fetch()
 
 
+def test_get_description_without_firecrawl_key_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+    job = Job(
+        url="https://wellfound.com/jobs/1",
+        title="Engineer",
+        company="Acme",
+        ats_type=ATSType.WELLFOUND,
+        ats_id="1",
+    )
+
+    assert WellfoundScraper("any").get_description(job) is None
+
+
 def test_uses_env_var_when_no_constructor_arg(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FIRECRAWL_API_KEY", "env-key")
     s = WellfoundScraper("any", role_slugs=())
@@ -145,6 +162,57 @@ def test_parses_jobs_from_firecrawl_markdown(httpx_mock) -> None:
     assert j.salary_max == 370000
     assert j.posted_at is not None
     assert str(j.url) == "https://wellfound.com/jobs/4173486-staff-software-engineer"
+
+
+def test_enriches_description_from_job_page_markdown(httpx_mock) -> None:
+    listing = _markdown_with_jobs([{"id": "1001", "title": "Founding Engineer"}])
+    detail = "\n".join([
+        "# Founding Engineer",
+        "",
+        "Build the core product for startup customers.",
+        "",
+        "You will own backend systems.",
+    ])
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        url = json.loads(request.content)["url"]
+        markdown = detail if "/jobs/1001-" in url else listing
+        return httpx.Response(200, json={"data": {"markdown": markdown}})
+
+    httpx_mock.add_callback(serve, url=_FIRECRAWL_RE, is_reusable=True)
+
+    jobs = WellfoundScraper(
+        "any",
+        firecrawl_api_key="test-key",
+        role_slugs=(),
+    ).fetch()
+
+    assert jobs[0].description == (
+        "Build the core product for startup customers.\n\n"
+        "You will own backend systems."
+    )
+
+
+def test_detail_firecrawl_permanent_error_keeps_listing_job(httpx_mock) -> None:
+    listing = _markdown_with_jobs([{"id": "1001", "title": "Founding Engineer"}])
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        url = json.loads(request.content)["url"]
+        if "/jobs/1001-" in url:
+            return httpx.Response(402, text='{"error":"payment_required"}')
+        return httpx.Response(200, json={"data": {"markdown": listing}})
+
+    httpx_mock.add_callback(serve, url=_FIRECRAWL_RE, is_reusable=True)
+
+    jobs = WellfoundScraper(
+        "any",
+        firecrawl_api_key="test-key",
+        role_slugs=(),
+    ).fetch()
+
+    assert len(jobs) == 1
+    assert jobs[0].ats_id == "1001"
+    assert jobs[0].description is None
 
 
 # --- multi-role fan-out + dedup --------------------------------------------

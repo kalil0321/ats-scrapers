@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from jobhive.exceptions import CompanyNotFoundError, ScraperError
@@ -10,10 +12,16 @@ from jobhive.scrapers import BreezyScraper, ScraperRegistry
 
 
 @pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+def _fast_retries(monkeypatch: pytest.MonkeyPatch, httpx_mock) -> None:
     import jobhive.scrapers.breezy as br
     monkeypatch.setattr(br, "MAX_RETRIES", 1)
     monkeypatch.setattr(br, "RETRY_BASE_DELAY", 0.0)
+    httpx_mock.add_response(
+        url=re.compile(r"^https://acme\.breezy\.hr/p/"),
+        text="<html><body><div class='description'>Build useful products.</div></body></html>",
+        is_reusable=True,
+        is_optional=True,
+    )
 
 
 URL = "https://acme.breezy.hr/json"
@@ -72,6 +80,7 @@ def test_parses_basic_position(httpx_mock) -> None:
     assert job.department == "Engineering"
     assert job.salary_summary == "$100k - $150k"
     assert job.employment_type == "FULL_TIME"
+    assert job.description == "Build useful products."
     assert job.posted_at is not None and job.posted_at.year == 2026
 
 

@@ -37,11 +37,15 @@ def test_search_command_invokes_search_with_filters(
 ) -> None:
     captured: dict[str, Any] = {}
 
-    def fake_search(query=None, **kwargs):
-        captured.update({"query": query, **kwargs})
-        return pd.DataFrame([{"title": "X", "company": "Y"}])
+    class FakeClient:
+        def __init__(self, *, prefer_parquet=None):
+            captured["prefer_parquet"] = prefer_parquet
 
-    monkeypatch.setattr("jobhive.search", fake_search)
+        def search(self, query=None, **kwargs):
+            captured.update({"query": query, **kwargs})
+            return pd.DataFrame([{"title": "X", "company": "Y"}])
+
+    monkeypatch.setattr("jobhive.client.Client", FakeClient)
     rc = cli_module.main(
         [
             "search",
@@ -61,16 +65,38 @@ def test_search_command_invokes_search_with_filters(
     assert captured["remote"] is True
     assert captured["salary_min"] == 120000.0
     assert captured["limit"] == 5
+    assert captured["prefer_parquet"] is None
     assert "X" in capsys.readouterr().out
+
+
+def test_search_command_can_prefer_csv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeClient:
+        def __init__(self, *, prefer_parquet=None):
+            captured["prefer_parquet"] = prefer_parquet
+
+        def search(self, query=None, **_kwargs):
+            return pd.DataFrame()
+
+    monkeypatch.setattr("jobhive.client.Client", FakeClient)
+    assert cli_module.main(["search", "--csv"]) == 0
+    assert captured["prefer_parquet"] is False
 
 
 def test_search_format_csv(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(
-        "jobhive.search",
-        lambda **kwargs: pd.DataFrame([{"title": "X", "company": "Y"}]),
-    )
+    class FakeClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def search(self, query=None, **_kwargs):
+            return pd.DataFrame([{"title": "X", "company": "Y"}])
+
+    monkeypatch.setattr("jobhive.client.Client", FakeClient)
     cli_module.main(["search", "--format", "csv"])
     out = capsys.readouterr().out
     assert "title,company" in out
@@ -80,10 +106,14 @@ def test_search_format_csv(
 def test_search_format_json(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(
-        "jobhive.search",
-        lambda **kwargs: pd.DataFrame([{"title": "X", "company": "Y"}]),
-    )
+    class FakeClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def search(self, query=None, **_kwargs):
+            return pd.DataFrame([{"title": "X", "company": "Y"}])
+
+    monkeypatch.setattr("jobhive.client.Client", FakeClient)
     cli_module.main(["search", "--format", "json"])
     out = capsys.readouterr().out
     assert '"title"' in out
@@ -250,6 +280,24 @@ def test_unknown_command_returns_nonzero(
     with pytest.raises(SystemExit) as exc:
         cli_module.main(["nonexistent"])
     assert exc.value.code != 0
+
+
+def test_jobhive_errors_are_clean_one_line(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from jobhive.exceptions import ScraperError
+
+    class FakeScraper:
+        def fetch(self):
+            raise ScraperError("browser required")
+
+    monkeypatch.setattr("jobhive.scrapers.get_scraper", lambda *_args: FakeScraper())
+    rc = cli_module.main(["scrape", "meta", "ignored"])
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert captured.err.strip() == "jobhive: error: browser required"
+    assert "Traceback" not in captured.err
 
 
 def test_emit_table_format(capsys: pytest.CaptureFixture[str]) -> None:

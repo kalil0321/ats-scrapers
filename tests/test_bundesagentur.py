@@ -34,6 +34,7 @@ def _job(refnr: str, titel: str, ort: str | None = None) -> dict:
     return {
         "refnr": refnr,
         "titel": titel,
+        "stellenangebotsBeschreibung": "Build public services.",
         "arbeitsort": {"ort": ort or "Berlin", "land": "Deutschland"},
         "arbeitgeber": "ACME",
         "aktuelleVeroeffentlichungsdatum": "2026-05-01",
@@ -52,6 +53,7 @@ def test_simple_run_under_pagination_cap(httpx_mock) -> None:
     )
     jobs = BundesagenturScraper("any").fetch()
     assert {j.ats_id for j in jobs} == {"1"}
+    assert jobs[0].description == "Build public services."
 
 
 # --- Probe failure: must NOT silently look like maxErgebnisse=0 -------------

@@ -96,6 +96,13 @@ class Manifest(BaseModel):
         """Return the best download URL for the full snapshot."""
         return _pick_url(self.all, prefer_parquet=prefer_parquet)
 
+    def url_for_date(self, date: str, *, prefer_parquet: bool = True) -> str:
+        """Return the best download URL for a dated snapshot."""
+        entry = self.by_date.get(date)
+        if entry is None:
+            raise ManifestError(f"No snapshot for date {date}")
+        return _pick_url(entry, prefer_parquet=prefer_parquet)
+
 
 def _pick_url(entry: FileEntry, *, prefer_parquet: bool) -> str:
     if prefer_parquet and entry.parquet is not None:

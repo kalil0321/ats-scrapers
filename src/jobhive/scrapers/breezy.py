@@ -25,7 +25,6 @@ This scraper uses only the public unauthenticated endpoint.
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -68,6 +67,21 @@ class BreezyScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=False,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_description(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         # ``follow_redirects=False`` on the client default — the JSON
         # listing endpoint must NOT follow redirects so we can detect
@@ -92,14 +106,10 @@ class BreezyScraper(BaseScraper):
                 seen.add(job.ats_id)
                 jobs.append(job)
 
-            # Detail-page enrichment is opt-in. Breezy's edge blocks
-            # bursty traffic with 403s; pulling descriptions for the full
-            # tenant universe needs a slower path (Browserbase or
-            # tightly-rate-limited httpx). Disabled by default so the
-            # listing pass still recovers the full job set.
-            #
-            # Set ``JOBHIVE_BREEZY_FETCH_DESCRIPTIONS=1`` to enable.
-            if jobs and os.getenv("JOBHIVE_BREEZY_FETCH_DESCRIPTIONS"):
+            # Detail-page enrichment is best-effort. Breezy's edge blocks
+            # bursty traffic with 403s, so per-job failures keep the
+            # listing-derived row instead of failing the tenant.
+            if self.include_descriptions and jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_description(client, sem, j) for j in jobs
@@ -125,7 +135,7 @@ class BreezyScraper(BaseScraper):
             return
         description = _extract_description(response.text)
         if description:
-            job.description = description[:12_000]
+            job.description = description[:25_000]
 
     async def _fetch_with_retry(
         self, client: httpx.AsyncClient

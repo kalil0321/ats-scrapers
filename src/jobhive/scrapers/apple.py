@@ -6,10 +6,19 @@ Apple's job board requires a CSRF token before search calls succeed:
     2. POST https://jobs.apple.com/api/v1/jobsTeam     # search payload
 
 The CSRF flow is held in a single httpx.Client session.
+
+Description completeness: the search API only exposes ``jobSummary``
+(the intro paragraph, ~500–1000 chars). The full posting body —
+``description``, ``minimumQualifications``, ``preferredQualifications``
+— lives in the React loader state embedded on each job's detail page
+(``window.__loaderData__`` JSON). After collecting search results, we
+fetch each detail page concurrently and assemble the full description.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import time
 from datetime import datetime
@@ -30,6 +39,14 @@ SEARCH_URL = f"{BASE_URL}/api/v1/search"
 PAGE_SIZE = 20
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.0
+DETAIL_CONCURRENCY = 25
+DETAIL_TIMEOUT_S = 10.0
+# Marker we walk forward from to extract the JS string literal passed
+# to ``JSON.parse``. Regex non-greedy ``"(.+?)"`` would truncate any
+# payload containing the byte sequence ``")`` inside an escaped string
+# (e.g. ``\"OKRs\")`` in job copy), so we instead scan the JS string
+# character-by-character respecting backslash escapes.
+_LOADER_PREFIX = 'JSON.parse("'
 
 _LOG = logging.getLogger(__name__)
 
@@ -138,6 +155,17 @@ class AppleScraper(BaseScraper):
                 if page * PAGE_SIZE >= total or len(postings) < PAGE_SIZE:
                     break
                 page += 1
+
+        # Detail-page enrichment: pull the full body (description +
+        # min/preferred qualifications) from each job's React loader
+        # state. Best-effort — a failed detail fetch keeps the job's
+        # listing-level ``jobSummary`` instead.
+        if self.include_descriptions and all_jobs:
+            try:
+                asyncio.run(_enrich_apple_details(all_jobs, self.timeout))
+            except Exception as exc:  # pragma: no cover - defensive
+                _LOG.warning("Apple detail enrichment failed: %s", exc)
+
         return all_jobs
 
     def _parse_job(self, item: dict[str, Any]) -> list[Job]:
@@ -287,3 +315,185 @@ def _parse_iso(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Detail-page enrichment
+# ---------------------------------------------------------------------------
+
+
+async def _enrich_apple_details(jobs: list[Job], timeout_s: float) -> None:
+    """Concurrent fetch of each job's detail page, replacing ``description``
+    with the full body assembled from the React loader state.
+
+    The detail HTML embeds:
+
+        window.__loaderData__ = JSON.parse("…escaped JSON…");
+
+    which contains ``loaderData.jobDetails.jobsData.localizations.en_US.posting``
+    with fields ``jobSummary`` / ``description`` / ``minimumQualifications``
+    / ``preferredQualifications``. We concatenate them under markdown
+    headings so the post-scrape markdownify pass produces a clean,
+    section-headered description (~3-5× longer than the search summary).
+    """
+    sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+    seen_positions: set[str] = set()
+    # Position ids whose detail page was successfully parsed and whose
+    # corresponding job row got its description replaced with the
+    # assembled long body. Used in the broadcast pass below to tell the
+    # hydrated long description apart from the short ``jobSummary`` that
+    # sibling rows (same posting, different location) inherited from
+    # the search payload.
+    hydrated_positions: set[str] = set()
+
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(DETAIL_TIMEOUT_S, connect=4.0),
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html"},
+    ) as client:
+
+        async def hydrate(job: Job) -> None:
+            # Multi-location jobs share one detail page — fetch each
+            # position once and broadcast the result to all of its
+            # location-specific Job rows further below.
+            position_id = (job.requisition_id or "").split("@")[0]
+            if not position_id:
+                return
+            if position_id in seen_positions:
+                return
+            seen_positions.add(position_id)
+            async with sem:
+                try:
+                    r = await client.get(str(job.url))
+                except (httpx.HTTPError, OSError):
+                    return
+            if r.status_code != 200:
+                return
+            posting = _extract_apple_posting(r.text)
+            if not posting:
+                return
+            description = _assemble_apple_description(posting)
+            if description:
+                job.description = description[:25_000]
+                hydrated_positions.add(position_id)
+
+        await asyncio.gather(
+            *(hydrate(j) for j in jobs),
+            return_exceptions=True,
+        )
+
+        # Second pass: broadcast each hydrated long description to every
+        # sibling row of the same position. The initial ``jobSummary``
+        # those siblings inherited from search is shorter (often ~500
+        # chars) than the assembled detail body (~2-5k chars), so we
+        # always overwrite — gated on ``hydrated_positions`` so a
+        # detail fetch that failed doesn't get its sibling's existing
+        # ``jobSummary`` wiped or duplicated.
+        hydrated_desc_by_position: dict[str, str] = {}
+        for j in jobs:
+            pid = (j.requisition_id or "").split("@")[0]
+            if (
+                pid in hydrated_positions
+                and j.description
+                and pid not in hydrated_desc_by_position
+            ):
+                hydrated_desc_by_position[pid] = j.description
+        for j in jobs:
+            pid = (j.requisition_id or "").split("@")[0]
+            if pid in hydrated_desc_by_position:
+                j.description = hydrated_desc_by_position[pid]
+
+
+def _extract_js_string_literal(html: str, marker: str) -> str | None:
+    """Find ``marker`` in ``html`` and return the JS double-quoted string
+    that immediately follows it. Walks character-by-character respecting
+    backslash escapes so payloads containing ``\\")`` survive intact.
+    Returns the inner (still-escaped) string content without the
+    surrounding quotes, or ``None`` if the marker isn't found or the
+    string is unterminated.
+    """
+    start = html.find(marker)
+    if start < 0:
+        return None
+    i = start + len(marker)
+    n = len(html)
+    body_chars: list[str] = []
+    while i < n:
+        ch = html[i]
+        if ch == "\\":
+            # Take the backslash and the following char as a unit.
+            if i + 1 >= n:
+                return None
+            body_chars.append(ch)
+            body_chars.append(html[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            return "".join(body_chars)
+        body_chars.append(ch)
+        i += 1
+    return None
+
+
+def _extract_apple_posting(html: str) -> dict[str, Any] | None:
+    """Pull the ``posting`` object out of the React loader-data JSON."""
+    encoded = _extract_js_string_literal(html, _LOADER_PREFIX)
+    if encoded is None:
+        return None
+    try:
+        # The loader payload is JSON encoded as a JS string. The JSON
+        # decoder itself handles all JS-string escape sequences (\n,
+        # \", \uXXXX surrogate pairs, etc.) correctly when fed a quoted
+        # string, so we wrap the captured payload in quotes and let
+        # json.loads do the unescape. This avoids the lone-surrogate
+        # bug that ``codecs.decode(..., "unicode_escape")`` exhibits on
+        # supplementary-plane characters (emoji, math symbols, …).
+        raw_json = json.loads('"' + encoded + '"')
+        data = json.loads(raw_json)
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+    loader = data.get("loaderData") or {}
+    job_details = loader.get("jobDetails") or {}
+    jobs_data = job_details.get("jobsData") or {}
+    localizations = jobs_data.get("localizations") or {}
+    # Prefer en_US, then en_UK, then anything; fall back to top-level
+    # jobsData fields if the localizations bundle is missing.
+    for key in ("en_US", "en_UK"):
+        loc = localizations.get(key)
+        if isinstance(loc, dict):
+            posting = loc.get("posting") or {}
+            if posting:
+                return posting
+    for loc in localizations.values():
+        if isinstance(loc, dict):
+            posting = loc.get("posting") or {}
+            if posting:
+                return posting
+    # Last resort — top-level fields
+    top = {
+        k: jobs_data[k]
+        for k in ("jobSummary", "description", "minimumQualifications", "preferredQualifications")
+        if k in jobs_data
+    }
+    return top or None
+
+
+def _assemble_apple_description(posting: dict[str, Any]) -> str | None:
+    """Assemble the markdown-ready description from Apple posting fields."""
+    parts: list[str] = []
+    summary = (posting.get("jobSummary") or "").strip()
+    if summary:
+        parts.append(summary)
+    body = (posting.get("description") or "").strip()
+    if body:
+        parts.append("## Description\n\n" + body)
+    min_q = (posting.get("minimumQualifications") or "").strip()
+    if min_q:
+        parts.append("## Minimum qualifications\n\n" + min_q)
+    pref_q = (posting.get("preferredQualifications") or "").strip()
+    if pref_q:
+        parts.append("## Preferred qualifications\n\n" + pref_q)
+    if not parts:
+        return None
+    return "\n\n".join(parts)

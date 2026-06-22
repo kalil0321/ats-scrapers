@@ -92,6 +92,17 @@ def _mock_url(start: int, *, base: str = URL, domain: str = "dolby.com") -> str:
     )
 
 
+def _smartapply_url(
+    start: int,
+    *,
+    base: str = "https://frontier.eightfold.ai/api/apply/v2/jobs",
+    domain: str = "frontier.com",
+) -> str:
+    return (
+        f"{base}?domain={domain}&query=&location=&start={start}&sort_by=timestamp"
+    )
+
+
 # --- Construction & defaults -------------------------------------------------
 
 
@@ -240,6 +251,79 @@ def test_fetch_fans_out_using_count(httpx_mock) -> None:
     assert {j.ats_id for j in jobs} == {f"P{i}" for i in range(25)}
 
 
+def test_fetch_falls_back_to_smartapply_when_pcsx_is_disabled(httpx_mock) -> None:
+    """Some Eightfold tenants expose jobs through SmartApply instead of PCSX."""
+    api = "https://frontier.eightfold.ai/api/pcsx/search"
+    httpx_mock.add_response(
+        url=_mock_url(0, base=api, domain="frontier.com"),
+        status_code=403,
+        json={"message": "PCSX is not enabled for this user."},
+    )
+    httpx_mock.add_response(
+        url=_smartapply_url(0),
+        json={
+            "positions": [
+                {
+                    "id": 42030927,
+                    "name": "Sales Advisor",
+                    "location": "Dallas,TX,United States",
+                    "locations": ["Dallas,TX,United States"],
+                    "department": "Sales",
+                    "business_unit": "Sales",
+                    "t_update": 1779491393,
+                    "ats_job_id": "ats-1",
+                    "display_job_id": "REQ-1",
+                    "job_description": "<p>Sell things</p>",
+                    "work_location_option": "hybrid",
+                    "canonicalPositionUrl": (
+                        "https://careers.frontier.com/careers/job/42030927"
+                    ),
+                }
+            ],
+            "count": 11,
+        },
+    )
+    httpx_mock.add_response(
+        url=_smartapply_url(10),
+        json={
+            "positions": [
+                {
+                    "id": 42030928,
+                    "posting_name": "Network Engineer",
+                    "locations": ["Remote,United States"],
+                    "t_create": 1779491394,
+                    "display_job_id": "REQ-2",
+                    "canonicalPositionUrl": (
+                        "https://careers.frontier.com/careers/job/42030928"
+                    ),
+                }
+            ],
+            "count": 11,
+        },
+    )
+
+    jobs = EightfoldScraper(
+        "frontier",
+        base_url="https://frontier.eightfold.ai",
+        domain="frontier.com",
+        company_name="Frontier",
+    ).fetch()
+
+    assert [j.title for j in jobs] == ["Sales Advisor", "Network Engineer"]
+    assert str(jobs[0].url) == "https://careers.frontier.com/careers/job/42030927"
+    assert jobs[0].ats_id == "REQ-1"
+    assert jobs[0].requisition_id == "ats-1"
+    assert jobs[0].company == "Frontier"
+    assert jobs[0].department == "Sales"
+    assert jobs[0].description == "Sell things"
+    assert jobs[0].is_remote is None
+    assert jobs[0].raw == {
+        "work_location_option": "hybrid",
+        "business_unit": "Sales",
+    }
+    assert jobs[1].location == "Remote,United States"
+
+
 def test_fetch_returns_empty_when_first_page_empty(httpx_mock) -> None:
     httpx_mock.add_response(url=_mock_url(0), json=_page([], count=0))
     assert EightfoldScraper("dolby").fetch() == []
@@ -343,6 +427,49 @@ def test_parse_job_absolute_position_url_used_as_is(httpx_mock) -> None:
     )
     jobs = EightfoldScraper("dolby").fetch()
     assert str(jobs[0].url) == "https://elsewhere.example.com/job/X"
+
+
+def test_parse_job_prefers_canonical_position_url(httpx_mock) -> None:
+    """When both are present, the canonical URL wins over the raw
+    ``positionUrl`` to avoid non-canonical job links."""
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page(
+            [
+                {
+                    "displayJobId": "X",
+                    "name": "X",
+                    "positionUrl": "/careers/job/X?utm=noise",
+                    "canonicalPositionUrl": "/careers/job/X",
+                }
+            ],
+            count=1,
+        ),
+    )
+    jobs = EightfoldScraper("dolby").fetch()
+    assert str(jobs[0].url) == "https://dolby.eightfold.ai/careers/job/X"
+
+
+def test_parse_job_posted_at_prefers_creation_over_update(httpx_mock) -> None:
+    """For SmartApply jobs carrying both, ``posted_at`` must reflect the
+    creation time (``t_create``), not the last-edit time (``t_update``)."""
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page(
+            [
+                {
+                    "displayJobId": "X",
+                    "name": "X",
+                    "positionUrl": "/job/x",
+                    "t_create": "2024-01-01T00:00:00Z",
+                    "t_update": "2025-12-31T00:00:00Z",
+                }
+            ],
+            count=1,
+        ),
+    )
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].posted_at == _parse_ts("2024-01-01T00:00:00Z")
 
 
 def test_parse_job_missing_position_url_falls_back_to_synthetic(httpx_mock) -> None:
@@ -708,6 +835,8 @@ def test_parses_department_field(httpx_mock) -> None:
         ("workLocationOption", "On-site", False),
         ("locationFlexibility", "Fully remote", True),
         ("locationFlexibility", "In office", False),
+        ("work_location_option", "Remote", True),
+        ("location_flexibility", "In office", False),
         ("workLocationOption", "", None),
         ("workLocationOption", "Flexible", None),  # unknown value
     ],

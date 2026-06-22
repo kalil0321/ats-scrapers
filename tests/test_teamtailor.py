@@ -187,7 +187,7 @@ def test_description_truncated_to_10kb(httpx_mock) -> None:
     httpx_mock.add_response(url=RSS_URL, text=_rss([_item(description=huge_escaped)]))
     jobs = TeamtailorScraper("acme").fetch()
     assert jobs[0].description is not None
-    assert len(jobs[0].description) <= 10_000
+    assert len(jobs[0].description) <= 25_000
 
 
 def test_description_none_when_empty(httpx_mock) -> None:

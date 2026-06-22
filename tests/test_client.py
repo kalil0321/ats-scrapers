@@ -14,7 +14,7 @@ import pytest
 
 from jobhive import client as client_module
 from jobhive.client import Client, list_ats, search
-from jobhive.exceptions import StorageError
+from jobhive.exceptions import ManifestError, StorageError
 from jobhive.models import ATSType
 
 
@@ -137,7 +137,7 @@ def test_load_with_ats_does_not_pollute_full_cache(stub_client: Client) -> None:
 
 
 def test_load_with_unknown_date_raises(stub_client: Client) -> None:
-    with pytest.raises(StorageError):
+    with pytest.raises(ManifestError):
         stub_client.load(date="2099-12-31")
 
 
@@ -150,6 +150,38 @@ def test_load_accepts_ats_as_string_or_enum(stub_client: Client) -> None:
     df1 = stub_client.load(ats="greenhouse")
     df2 = stub_client.load(ats=ATSType.GREENHOUSE)
     pd.testing.assert_frame_equal(df1, df2)
+
+
+def test_client_defaults_to_csv_without_parquet_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(client_module, "_has_parquet_engine", lambda: False)
+    assert Client()._prefer_parquet is False
+
+
+def test_load_date_reuses_manifest_url_picker(
+    monkeypatch: pytest.MonkeyPatch,
+    sample_manifest_dict: dict[str, Any],
+    jobs_dataframe: pd.DataFrame,
+) -> None:
+    from jobhive.manifest import Manifest
+
+    sample_manifest_dict["by_date"]["2026-05-04"] = {
+        "parquet": "https://example.com/2026-05-04.parquet",
+        "rows": 50,
+        "size_bytes": 60,
+    }
+    instance = Client(prefer_parquet=False)
+    instance._manifest = Manifest.model_validate(sample_manifest_dict)
+    seen: dict[str, str] = {}
+
+    def fake_download(self: Client, url: str) -> pd.DataFrame:
+        seen["url"] = url
+        return jobs_dataframe.copy()
+
+    monkeypatch.setattr(Client, "_download", fake_download)
+    instance.load(date="2026-05-04")
+    assert seen["url"] == "https://example.com/2026-05-04.parquet"
 
 
 # --- _download (real httpx_mock path) ----------------------------------------
@@ -174,6 +206,23 @@ def test_download_parquet_via_httpx_mock(httpx_mock) -> None:
     instance = Client()
     df = instance._download("https://example.com/data.parquet")
     assert len(df) == 1
+
+
+def test_download_parquet_without_engine_raises_storage_error(
+    httpx_mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    httpx_mock.add_response(
+        url="https://example.com/data.parquet",
+        content=b"not important",
+    )
+
+    def fail_read_parquet(*_args, **_kwargs):
+        raise ImportError("missing parquet engine")
+
+    monkeypatch.setattr(pd, "read_parquet", fail_read_parquet)
+    instance = Client()
+    with pytest.raises(StorageError, match="jobhive-py\\[parquet\\]"):
+        instance._download("https://example.com/data.parquet")
 
 
 def test_download_raises_on_http_error(httpx_mock) -> None:

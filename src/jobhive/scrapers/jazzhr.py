@@ -134,6 +134,21 @@ class JazzHRScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_detail(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         if self.client_kind == "httpcloak":
             html_text = await asyncio.to_thread(self._fetch_via_httpcloak_sync)
@@ -158,7 +173,7 @@ class JazzHRScraper(BaseScraper):
 
         # Detail enrichment via JSON-LD on each job's detail page.
         # Best-effort: errors fall through silently.
-        if jobs:
+        if self.include_descriptions and jobs:
             async with httpx.AsyncClient(
                 timeout=self.timeout, follow_redirects=True,
             ) as client:
@@ -347,13 +362,13 @@ def _apply_jsonld_to_job(job: Job, html_text: str) -> None:
         if not job.description:
             fallback = _description_from_html(html_text)
             if fallback:
-                job.description = fallback[:10_000]
+                job.description = fallback[:25_000]
         return
 
     if not job.description:
         desc_html = posting.get("description")
         if isinstance(desc_html, str) and desc_html.strip():
-            job.description = _strip_tags(desc_html)[:10_000] or None
+            job.description = _strip_tags(desc_html)[:25_000] or None
 
     emp_raw = posting.get("employmentType")
     if isinstance(emp_raw, str):

@@ -14,7 +14,9 @@ each run.
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 
 import pandas as pd
@@ -128,6 +130,25 @@ def test_manifest_includes_schema_version_and_columns(ats_csv_dir, fake_r2) -> N
     manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
     assert manifest["stats"]["schema_version"] == "2.0"
     assert "schema_columns" in manifest["stats"]
+
+
+def test_publisher_derives_country_iso_column(ats_csv_dir, fake_r2) -> None:
+    gh_csv = ats_csv_dir / "greenhouse" / "jobs.csv"
+    df = pd.read_csv(gh_csv)
+    df.loc[df["location"] == "Paris", "location"] = "Paris, France"
+    df.to_csv(gh_csv, index=False)
+
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    assert "country_iso" in manifest["stats"]["schema_columns"]
+
+    csv_text = fake_r2.uploads["jobhive/v1/greenhouse/jobs.csv"]["data"].decode()
+    rows = list(csv.DictReader(io.StringIO(csv_text)))
+    france_rows = [row for row in rows if row["location"] == "Paris, France"]
+    assert france_rows
+    assert {row["country_iso"] for row in france_rows} == {"FR"}
 
 
 # --- Manifest patch (read-modify-write) -------------------------------------
@@ -388,6 +409,86 @@ def test_publish_raises_when_no_csvs_present(tmp_path, fake_r2) -> None:
     publisher = DatasetPublisher(fake_r2, write_parquet=True)
     with pytest.raises(StorageError):
         publisher.publish_from_directory(tmp_path)
+
+
+def test_publish_refuses_suspicious_empty_provider_slice(tmp_path, fake_r2) -> None:
+    gh_dir = tmp_path / "greenhouse"
+    gh_dir.mkdir()
+    (gh_dir / "jobs.csv").write_text(
+        "url,title,company,ats_type,ats_id,location,is_remote,salary_min,"
+        "salary_max,salary_currency,salary_period,salary_summary,"
+        "employment_type,department,team,description,posted_at,"
+        "requisition_id,apply_url,commitment,raw\n",
+        encoding="utf-8",
+    )
+    fake_r2.upload_bytes(
+        json.dumps(
+            {
+                "version": "2.0",
+                "by_ats": {"greenhouse": {"rows": 123, "size_bytes": 100}},
+                "by_ats_companies": {"greenhouse": {"rows": 5, "size_bytes": 50}},
+            }
+        ).encode("utf-8"),
+        "jobhive/v1/manifest.json",
+        content_type="application/json",
+    )
+
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    with pytest.raises(StorageError, match="Refusing to publish suspicious empty"):
+        publisher.publish_from_directory(tmp_path)
+    assert "jobhive/v1/greenhouse/jobs.csv" not in fake_r2.uploads
+
+
+def test_publish_refuses_zero_byte_provider_slice_with_prior_manifest(
+    tmp_path, fake_r2
+) -> None:
+    gh_dir = tmp_path / "greenhouse"
+    gh_dir.mkdir()
+    (gh_dir / "jobs.csv").write_bytes(b"")
+    fake_r2.upload_bytes(
+        json.dumps(
+            {
+                "version": "2.0",
+                "by_ats": {"greenhouse": {"rows": 123, "size_bytes": 100}},
+                "by_ats_companies": {"greenhouse": {"rows": 5, "size_bytes": 50}},
+            }
+        ).encode("utf-8"),
+        "jobhive/v1/manifest.json",
+        content_type="application/json",
+    )
+
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    with pytest.raises(StorageError, match=r"local jobs\.csv is 0 bytes"):
+        publisher.publish_from_directory(tmp_path)
+    assert "jobhive/v1/greenhouse/jobs.csv" not in fake_r2.uploads
+
+
+def test_publish_reuses_manifest_loaded_for_empty_slice_guard(
+    ats_csv_dir, fake_r2
+) -> None:
+    fake_r2.upload_bytes(
+        json.dumps(
+            {
+                "version": "2.0",
+                "by_ats_companies": {"greenhouse": {"rows": 5}},
+            }
+        ).encode("utf-8"),
+        "jobhive/v1/manifest.json",
+        content_type="application/json",
+    )
+    calls = 0
+    real_get_bytes = fake_r2.get_bytes
+
+    def counted_get_bytes(key: str):
+        nonlocal calls
+        calls += 1
+        return real_get_bytes(key)
+
+    fake_r2.get_bytes = counted_get_bytes
+
+    DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(ats_csv_dir)
+
+    assert calls == 1
 
 
 def test_publish_without_pyarrow_raises(monkeypatch, fake_r2) -> None:
@@ -719,6 +820,9 @@ def test_country_iso_extracts_common_eu_patterns():
     assert f("Paris, France") == "FR"
     assert f("Wien, Österreich") == "AT"
     assert f("Brussels, Belgium") == "BE"
+    # API-style alpha-2 suffixes (SmartRecruiters/Recruitee style)
+    assert f("Berlin, DE") == "DE"
+    assert f("Paris, FR") == "FR"
 
 
 def test_country_iso_uses_word_boundaries():
@@ -757,6 +861,7 @@ def test_country_iso_uses_word_boundaries():
     assert f("") == ""
     assert f(None) == ""
     assert f("Remote") == ""
+    assert f("Remote, XX") == ""
 
 
 def test_title_core_strips_trailing_parenthesised_tag():

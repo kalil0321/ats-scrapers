@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from jobhive._version import __version__
+from jobhive.exceptions import JobHiveError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,6 +30,13 @@ def main(argv: list[str] | None = None) -> int:
     p_search.add_argument("--location", help="Location substring")
     p_search.add_argument("--company", help="Company substring")
     p_search.add_argument("--ats", help="Restrict to one ATS slice")
+    p_search.add_argument(
+        "--csv",
+        "--prefer-csv",
+        action="store_true",
+        dest="prefer_csv",
+        help="Prefer CSV artifacts instead of Parquet.",
+    )
     p_search.add_argument("--remote", action="store_true", help="Remote jobs only")
     p_search.add_argument("--salary-min", type=float, dest="salary_min")
     p_search.add_argument("--limit", type=int, default=20)
@@ -63,25 +71,30 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    if args.command == "search":
-        return _cmd_search(args)
-    if args.command == "scrape":
-        return _cmd_scrape(args)
-    if args.command == "publish":
-        return _cmd_publish(args)
-    if args.command == "list-ats":
-        return _cmd_list_ats()
+    try:
+        if args.command == "search":
+            return _cmd_search(args)
+        if args.command == "scrape":
+            return _cmd_scrape(args)
+        if args.command == "publish":
+            return _cmd_publish(args)
+        if args.command == "list-ats":
+            return _cmd_list_ats()
+    except JobHiveError as exc:
+        print(f"jobhive: error: {exc}", file=sys.stderr)
+        return 1
     return 1
 
 
 def _cmd_search(args: argparse.Namespace) -> int:
-    from jobhive import search
+    from jobhive.client import Client
 
-    df = search(
+    client = Client(prefer_parquet=False if args.prefer_csv else None)
+    df = client.search(
         query=args.query,
         location=args.location,
         company=args.company,

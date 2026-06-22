@@ -38,8 +38,10 @@ def _offer(
     equity_inf: int = 0,
     equity_sup: int = 0,
     internal_code: str = "AC-001",
+    offer_id: int = 8355,
 ) -> dict[str, Any]:
     return {
+        "id": offer_id,
         "slug": slug,
         "position": position,
         "status": status,
@@ -66,6 +68,18 @@ def _api_url(lang: str = "EN") -> str:
     return f"https://www.getmanfred.com/api/v2/public/offers?lang={lang}"
 
 
+def _detail_url(offer_id: int = 8355, lang: str = "EN") -> str:
+    return f"https://www.getmanfred.com/api/v2/public/offers/{offer_id}?lang={lang}"
+
+
+def _detail() -> dict[str, Any]:
+    return {
+        "introduction": "Build **products**.",
+        "responsibilities": ["Own APIs", "Improve reliability"],
+        "whatOffering": "Remote setup.",
+    }
+
+
 # --- registry / wiring ------------------------------------------------------
 
 
@@ -78,6 +92,7 @@ def test_registry_resolves_manfred() -> None:
 
 def test_parses_full_offer(httpx_mock) -> None:
     httpx_mock.add_response(url=_api_url(), json=[_offer()])
+    httpx_mock.add_response(url=_detail_url(), json=_detail())
     j = ManfredScraper("any").fetch()[0]
     assert j.ats_type is ATSType.MANFRED
     assert j.ats_id == "acme-data-scientist"
@@ -89,6 +104,7 @@ def test_parses_full_offer(httpx_mock) -> None:
     assert j.salary_min == 50000
     assert j.salary_max == 75000
     assert j.requisition_id == "AC-001"
+    assert j.description == "Build products.\n\n- Own APIs\n- Improve reliability\n\nRemote setup."
     assert j.posted_at is not None
     assert str(j.url) == "https://www.getmanfred.com/job-offers/acme-data-scientist"
 
@@ -104,6 +120,7 @@ def test_drops_non_active_offers(httpx_mock) -> None:
         _offer(slug="closed", status="CLOSED"),
         _offer(slug="draft", status="DRAFT"),
     ])
+    httpx_mock.add_response(url=_detail_url(), json=_detail())
     jobs = ManfredScraper("any").fetch()
     assert [j.ats_id for j in jobs] == ["active"]
 
@@ -122,6 +139,7 @@ def test_remote_percentage_threshold(pct: int, expected: bool, httpx_mock) -> No
     """Manfred's ``remotePercentage`` is a 0..100 weekly-remote share.
     ``>= 50`` is the line for is_remote=True."""
     httpx_mock.add_response(url=_api_url(), json=[_offer(slug=f"p{pct}", remote_pct=pct)])
+    httpx_mock.add_response(url=_detail_url(), json=_detail())
     assert ManfredScraper("any").fetch()[0].is_remote is expected
 
 
@@ -135,6 +153,7 @@ def test_remote_percentage_threshold(pct: int, expected: bool, httpx_mock) -> No
 ])
 def test_currency_symbol_to_iso(symbol: str, expected: str, httpx_mock) -> None:
     httpx_mock.add_response(url=_api_url(), json=[_offer(slug=f"c-{symbol}", currency=symbol)])
+    httpx_mock.add_response(url=_detail_url(), json=_detail())
     assert ManfredScraper("any").fetch()[0].salary_currency == expected
 
 
@@ -144,6 +163,7 @@ def test_no_salary_currency_when_amounts_zero(httpx_mock) -> None:
     httpx_mock.add_response(url=_api_url(), json=[
         _offer(slug="no-sal", salary_from=0, salary_to=0)
     ])
+    httpx_mock.add_response(url=_detail_url(), json=_detail())
     j = ManfredScraper("any").fetch()[0]
     assert j.salary_currency is None
     assert j.salary_min is None
@@ -157,11 +177,13 @@ def test_multiple_locations_pipe_joined(httpx_mock) -> None:
     httpx_mock.add_response(url=_api_url(), json=[_offer(
         slug="multi", locations=["Madrid, Spain", "Barcelona, Spain"],
     )])
+    httpx_mock.add_response(url=_detail_url(), json=_detail())
     assert ManfredScraper("any").fetch()[0].location == "Madrid, Spain | Barcelona, Spain"
 
 
 def test_empty_locations_yields_none(httpx_mock) -> None:
     httpx_mock.add_response(url=_api_url(), json=[_offer(slug="x", locations=[])])
+    httpx_mock.add_response(url=_detail_url(), json=_detail())
     assert ManfredScraper("any").fetch()[0].location is None
 
 
@@ -172,6 +194,7 @@ def test_equity_and_bonus_stashed_in_raw(httpx_mock) -> None:
     httpx_mock.add_response(url=_api_url(), json=[_offer(
         slug="eq", equity_inf=1000, equity_sup=5000, bonus=3000,
     )])
+    httpx_mock.add_response(url=_detail_url(), json=_detail())
     j = ManfredScraper("any").fetch()[0]
     assert j.raw is not None
     assert j.raw["equity_min"] == 1000
@@ -190,6 +213,7 @@ def test_lang_validated_at_construction() -> None:
 def test_es_lang_passes_through(httpx_mock) -> None:
     """``lang='ES'`` should hit the Spanish endpoint."""
     httpx_mock.add_response(url=_api_url("ES"), json=[_offer()])
+    httpx_mock.add_response(url=_detail_url(lang="ES"), json=_detail())
     jobs = ManfredScraper("any", lang="ES").fetch()
     assert len(jobs) == 1
 
@@ -200,6 +224,7 @@ def test_skips_offer_missing_slug_or_position(httpx_mock) -> None:
         {"slug": "no-pos", "status": "ACTIVE", "company": {"name": "X"}},
         {"position": "no-slug", "status": "ACTIVE", "company": {"name": "X"}},
     ])
+    httpx_mock.add_response(url=_detail_url(), json=_detail())
     jobs = ManfredScraper("any").fetch()
     assert [j.ats_id for j in jobs] == ["ok"]
 

@@ -372,7 +372,10 @@ class PhenomScraper(BaseScraper):
             employment_type=employment_type,
             commitment=commitment,
             requisition_id=str(item.get("jobSeqNo")) if item.get("jobSeqNo") else None,
-            description=_clean_description(item.get("descriptionTeaser") or item.get("description")),
+            # Prefer the full ``description`` field. ``descriptionTeaser`` is
+            # a short marketing summary (typically 1-2 sentences) and was
+            # silently truncating each posting to a fraction of its real body.
+            description=_clean_description(item.get("description") or item.get("descriptionTeaser")),
             posted_at=_parse_iso(item.get("postedDate") or item.get("dateCreated") or item.get("createdAt")),
             fetched_at=datetime.now(),
             raw=raw or None,
@@ -401,7 +404,7 @@ def _clean_description(value: object) -> str | None:
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if not cleaned:
         return None
-    return cleaned[:10_000]
+    return cleaned[:25_000]
 
 
 def _parse_iso(value: object) -> datetime | None:

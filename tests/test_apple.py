@@ -24,9 +24,19 @@ _SEARCH_URL = "https://jobs.apple.com/api/v1/search"
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Drop sleep delay so retry tests run in <1 s instead of seconds."""
+    """Drop sleep delay so retry tests run in <1 s instead of seconds,
+    and stub out the per-job detail-page enrichment so retry tests
+    that mock only the search API don't have to also mock every
+    job's detail URL. Tests that specifically exercise the detail
+    enrichment can override this with their own _enrich_apple_details.
+    """
     import jobhive.scrapers.apple as m
     monkeypatch.setattr(m, "RETRY_BASE_DELAY", 0.0)
+
+    async def _no_enrich(jobs, timeout_s):
+        return
+
+    monkeypatch.setattr(m, "_enrich_apple_details", _no_enrich)
 
 
 def _csrf_mock(httpx_mock) -> None:

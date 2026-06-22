@@ -147,6 +147,21 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_detail(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
@@ -166,7 +181,7 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
             # Detail enrichment: pull schema.org JSON-LD from each job's
             # iframe page. Best-effort — failures keep the listing-derived
             # row.
-            if all_jobs:
+            if self.include_descriptions and all_jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_detail(client, sem, j) for j in all_jobs
@@ -315,7 +330,7 @@ def _apply_jsonld_to_job(job: Job, html_text: str) -> None:
     if not job.description:
         desc_html = posting.get("description")
         if isinstance(desc_html, str) and desc_html.strip():
-            job.description = _strip(desc_html)[:10_000] or None
+            job.description = _strip(desc_html)[:25_000] or None
 
     emp_raw = posting.get("employmentType")
     if isinstance(emp_raw, str):

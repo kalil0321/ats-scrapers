@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 
-from jobhive.scrapers.eures import EuresScraper
+from jobhive.scrapers.eures import EuresScraper, _extract_detail_description
 
 
 def _base_item(**overrides):
@@ -24,6 +24,7 @@ def _base_item(**overrides):
     base = {
         "id": "abc123",
         "title": "Software Engineer",
+        "description": "<p>Build European services.</p>",
         "employerName": "Acme Corp",
         "locationMap": {},
         "creationDate": 1715000000000,
@@ -37,6 +38,100 @@ def test_real_employer_passes_through_verbatim() -> None:
     job = EuresScraper("eures")._parse(item)
     assert job is not None
     assert job.company == "Acme Corp"
+    assert job.description == "Build European services."
+
+
+def test_detail_description_falls_back_to_application_instructions() -> None:
+    payload = {
+        "preferredLanguage": "bg",
+        "jvProfiles": {
+            "bg": {
+                "description": "",
+                "applicationInstructions": [
+                    'Contact <a href="mailto:jobs@example.com">jobs@example.com</a>'
+                ],
+            }
+        },
+    }
+
+    assert _extract_detail_description(payload) == (
+        "Application instructions: Contact jobs@example.com"
+    )
+
+
+def test_detail_description_prefers_real_description_over_fallback() -> None:
+    payload = {
+        "preferredLanguage": "en",
+        "jvProfiles": {
+            "en": {
+                "description": "<p>Build European services.</p>",
+                "applicationInstructions": ["Call the employer"],
+            }
+        },
+    }
+
+    assert _extract_detail_description(payload) == "Build European services."
+
+
+def test_zero_width_description_is_ignored() -> None:
+    job = EuresScraper("eures")._parse(_base_item(description="\u200b"))
+
+    assert job is not None
+    assert job.description is None
+
+
+def test_get_description_fetches_detail_api(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://europa.eu/eures/api/jv-searchengine/public/jv/id/abc123?lang=en",
+        json={
+            "preferredLanguage": "en",
+            "jvProfiles": {
+                "en": {
+                    "description": "",
+                    "applicationInstructions": ["Apply through EURES."],
+                }
+            },
+        },
+    )
+    job = EuresScraper("eures")._parse(_base_item(id="abc123", description=""))
+
+    assert job is not None
+    assert EuresScraper("eures").get_description(job) == (
+        "Application instructions: Apply through EURES."
+    )
+
+
+def test_get_description_falls_back_to_job_summary_on_detail_404(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://europa.eu/eures/api/jv-searchengine/public/jv/id/gone?lang=en",
+        status_code=404,
+    )
+    job = EuresScraper("eures")._parse(
+        _base_item(id="gone", description="", locationMap={"DE": ["DE1"]})
+    )
+
+    assert job is not None
+    assert EuresScraper("eures").get_description(job) == (
+        "Software Engineer. Employer: Acme Corp. Location: DE (DE1)"
+    )
+
+
+def test_get_description_falls_back_when_existing_description_is_too_short(
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(
+        url="https://europa.eu/eures/api/jv-searchengine/public/jv/id/tiny?lang=en",
+        status_code=404,
+    )
+    job = EuresScraper("eures")._parse(
+        _base_item(id="tiny", description="OK", locationMap={"LV": ["LV009"]})
+    )
+
+    assert job is not None
+    assert job.description is None
+    assert EuresScraper("eures").get_description(job) == (
+        "Software Engineer. Employer: Acme Corp. Location: LV (LV009)"
+    )
 
 
 def test_french_non_renseigne_kept_verbatim() -> None:

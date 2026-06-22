@@ -96,9 +96,16 @@ class JoinComScraper(BaseScraper):
                     break
                 page += 1
 
-            if all_jobs:
+            if self.include_descriptions and all_jobs:
                 self._enrich_with_details(client, all_jobs)
         return all_jobs
+
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+        self._enrich_with_detail(copy)
+        return copy.description
 
     def _enrich_with_details(
         self, client: httpx.Client, jobs: list[Job],
@@ -128,6 +135,21 @@ class JoinComScraper(BaseScraper):
 
         with ThreadPoolExecutor(max_workers=DETAIL_CONCURRENCY) as pool:
             list(pool.map(fetch_one, jobs))
+
+    def _enrich_with_detail(self, job: Job) -> None:
+        try:
+            with httpx.Client(
+                timeout=self.timeout, follow_redirects=True,
+            ) as detail_client:
+                response = detail_client.get(
+                    str(job.url),
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+        except httpx.HTTPError:
+            return
+        if response.status_code != 200:
+            return
+        _apply_jsonld_to_job(job, response.text)
 
     def _resolve_company_id(self, client: httpx.Client) -> str:
         try:
@@ -237,7 +259,7 @@ def _apply_jsonld_to_job(job: Job, html_text: str) -> None:
     if not job.description:
         desc = posting.get("description")
         if isinstance(desc, str) and desc.strip():
-            job.description = _strip_double_encoded(desc)[:10_000] or None
+            job.description = _strip_double_encoded(desc)[:25_000] or None
 
     emp = posting.get("employmentType")
     if isinstance(emp, str) and not job.employment_type:

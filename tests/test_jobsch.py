@@ -21,10 +21,16 @@ _API_RE = re.compile(r"^https://www\.jobs\.ch/api/v1/public/search")
 
 
 @pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+def _fast_retries(monkeypatch: pytest.MonkeyPatch, httpx_mock) -> None:
     import jobhive.scrapers.jobsch as j
     monkeypatch.setattr(j, "MAX_RETRIES", 1)
     monkeypatch.setattr(j, "RETRY_BASE_DELAY", 0.0)
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.jobs\.ch/(?:de/stellenangebote|en/vacancies)/detail/"),
+        text="<html><body><div class='vacancy-description'>Build Swiss products.</div></body></html>",
+        is_reusable=True,
+        is_optional=True,
+    )
 
 
 def _doc(
@@ -97,8 +103,33 @@ def test_parses_full_doc(httpx_mock) -> None:
     assert j.raw is not None
     assert j.raw["languages"] == ["de", "en"]
     assert j.raw["employment_grades"] == [100]
+    assert j.description == "Build Swiss products."
     # _links.detail_de is preferred over the constructed fallback URL.
     assert str(j.url) == "https://www.jobs.ch/de/stellenangebote/detail/abc-123/"
+
+
+def test_extracts_meta_description_with_reversed_attributes(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_RE,
+        json=_page([
+            _doc(
+                job_id="meta-1",
+                title="Engineer",
+                detail_de="https://example.com/jobs/meta-1/",
+            )
+        ], total_hits=1),
+    )
+    httpx_mock.add_response(
+        url="https://example.com/jobs/meta-1/",
+        text=(
+            "<html><head><meta content='Build Swiss APIs.' "
+            "name='description'></head></html>"
+        ),
+    )
+
+    jobs = JobsChScraper("any", query_seeds=()).fetch()
+
+    assert jobs[0].description == "Build Swiss APIs."
 
 
 def test_falls_back_to_canonical_url_when_no_links(httpx_mock) -> None:
@@ -186,6 +217,25 @@ def test_no_fanout_when_total_under_per_page(httpx_mock) -> None:
     )
     jobs = JobsChScraper("any", query_seeds=()).fetch()
     assert len(jobs) == 1
+
+
+def test_enriches_after_cross_seed_dedupe(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_RE,
+        json=_page([_doc(job_id="dupe", title="Engineer")], total_hits=1),
+    )
+    httpx_mock.add_response(
+        url=_API_RE,
+        json=_page([_doc(job_id="dupe", title="Engineer")], total_hits=1),
+    )
+
+    jobs = JobsChScraper("any", query_seeds=("engineer",)).fetch()
+
+    assert [j.ats_id for j in jobs] == ["dupe"]
+    detail_requests = httpx_mock.get_requests(
+        url=re.compile(r"^https://www\.jobs\.ch/en/vacancies/detail/dupe/")
+    )
+    assert len(detail_requests) == 1
 
 
 # --- defensive --------------------------------------------------------------

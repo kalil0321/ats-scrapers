@@ -83,6 +83,10 @@ def _listing(cards: list[str]) -> str:
     return f"<html><body><div class='wrapper-jobs-list'>{''.join(cards)}</div></body></html>"
 
 
+def _detail(description: str = "<p>Build great systems.</p>") -> str:
+    return f"<html><body><div class='job-description'>{description}</div></body></html>"
+
+
 # --- proxy URL helper -------------------------------------------------------
 
 
@@ -134,6 +138,10 @@ def test_parses_full_listing_card(httpx_mock) -> None:
         text=_empty_listing(),
         is_reusable=True,
     )
+    httpx_mock.add_response(
+        url="https://programathor.com.br/jobs/33458-engenheiro-qa-python",
+        text=_detail("<p>Build <strong>Brazilian</strong> platforms.</p>"),
+    )
 
     jobs = ProgramathorScraper("any").fetch()
     assert len(jobs) == 1
@@ -150,10 +158,34 @@ def test_parses_full_listing_card(httpx_mock) -> None:
     assert j.salary_max == 5000.0
     assert j.employment_type == "CONTRACT"  # PJ → CONTRACT
     assert j.commitment == "PJ"
+    assert j.description == "Build Brazilian platforms."
     assert j.raw is not None
     assert j.raw["skills"] == ["Python", "API", "SQL"]
     assert j.raw["company_type"] == "Startup"
     assert str(j.url) == "https://programathor.com.br/jobs/33458-engenheiro-qa-python"
+
+
+def test_extracts_meta_description_with_reversed_attributes(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://programathor.com.br/jobs?page=1",
+        text=_listing([_card(job_id="7", title="Backend Engineer")]),
+    )
+    httpx_mock.add_response(
+        url=re.compile(r"^https://programathor\.com\.br/jobs\?page=[2-9]$"),
+        text=_empty_listing(),
+        is_reusable=True,
+    )
+    httpx_mock.add_response(
+        url="https://programathor.com.br/jobs/7-backend-engineer",
+        text=(
+            "<html><head><meta content='Build Brazilian APIs.' "
+            "property='og:description'></head></html>"
+        ),
+    )
+
+    jobs = ProgramathorScraper("any").fetch()
+
+    assert jobs[0].description == "Build Brazilian APIs."
 
 
 def test_strips_new_label_from_title(httpx_mock) -> None:
@@ -169,6 +201,10 @@ def test_strips_new_label_from_title(httpx_mock) -> None:
         text=_empty_listing(),
         is_reusable=True,
     )
+    httpx_mock.add_response(
+        url="https://programathor.com.br/jobs/1-backend-engineer",
+        text=_detail(),
+    )
     jobs = ProgramathorScraper("any").fetch()
     assert jobs[0].title == "Backend Engineer"
 
@@ -183,6 +219,10 @@ def test_location_with_city_appends_brazil(httpx_mock) -> None:
         url=re.compile(r"^https://programathor\.com\.br/jobs\?page=[2-9]$"),
         text=_empty_listing(),
         is_reusable=True,
+    )
+    httpx_mock.add_response(
+        url="https://programathor.com.br/jobs/1-x",
+        text=_detail(),
     )
     jobs = ProgramathorScraper("any").fetch()
     assert jobs[0].location == "São Paulo, Brazil"
@@ -225,6 +265,8 @@ def test_stops_after_three_consecutive_duplicate_pages(httpx_mock) -> None:
         httpx_mock.add_response(
             url=f"https://programathor.com.br/jobs?page={p}", text=page1,
         )
+    httpx_mock.add_response(url="https://programathor.com.br/jobs/100-a", text=_detail())
+    httpx_mock.add_response(url="https://programathor.com.br/jobs/101-b", text=_detail())
     # Page 5 should NEVER be requested — if it is, httpx_mock will
     # error on the un-stubbed call.
     jobs = ProgramathorScraper("any", max_pages=20).fetch()
@@ -240,6 +282,10 @@ def test_max_pages_caps_pagination(httpx_mock) -> None:
         httpx_mock.add_response(
             url=f"https://programathor.com.br/jobs?page={p}",
             text=_listing([_card(job_id=str(p * 100), title=f"Job {p}")]),
+        )
+        httpx_mock.add_response(
+            url=f"https://programathor.com.br/jobs/{p * 100}-job-{p}",
+            text=_detail(),
         )
     jobs = ProgramathorScraper("any", max_pages=5).fetch()
     assert len(jobs) == 5

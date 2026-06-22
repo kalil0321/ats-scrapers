@@ -55,8 +55,19 @@ DEFAULT_MAX_PAGES = 200
 MAX_CONCURRENCY = 4
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2.0
+DETAIL_CONCURRENCY = 4
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_META_TAG_RE = re.compile(r"<meta\b(?P<attrs>[^>]*)>", re.IGNORECASE | re.DOTALL)
+_ATTR_RE = re.compile(
+    r"(?P<name>[a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*"
+    r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
+    re.DOTALL,
+)
+_DETAIL_DESCRIPTION_RE = re.compile(
+    r'<(?:div|section|article)[^>]+class=["\'][^"\']*(?:job-description|description|job-detail)[^"\']*["\'][^>]*>(?P<body>.*?)</(?:div|section|article)>',
+    re.IGNORECASE | re.DOTALL,
+)
 _JOB_LINK_RE = re.compile(r'href="(/jobs/(?P<id>\d+)-[a-z0-9-]+)"')
 # Each card is wrapped in `<div class="cell-list ">…</div>` containing
 # one anchor with the job link. We anchor the regex on the cell start
@@ -137,6 +148,26 @@ class ProgramathorScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            client_kwargs: dict[str, Any] = {
+                "timeout": self.timeout,
+                "follow_redirects": True,
+            }
+            if self.proxy_url:
+                client_kwargs["proxy"] = self.proxy_url
+                client_kwargs["verify"] = False
+            async with httpx.AsyncClient(**client_kwargs) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_description(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         seen_ids: set[str] = set()
         jobs: list[Job] = []
@@ -180,7 +211,26 @@ class ProgramathorScraper(BaseScraper):
                 else:
                     consecutive_empty = 0
                 page += 1
+            if self.include_descriptions and jobs:
+                detail_sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+                await asyncio.gather(*(
+                    self._enrich_description(client, detail_sem, job) for job in jobs
+                ))
         return jobs
+
+    async def _enrich_description(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        try:
+            text = await self._request_html(client, sem, str(job.url))
+        except ScraperError:
+            return
+        description = _extract_description(text)
+        if description and not job.description:
+            job.description = description[:25_000]
 
     async def _fetch_page(
         self,
@@ -331,6 +381,31 @@ def _strip_html(text: str) -> str:
     cleaned = _TAG_RE.sub(" ", text)
     cleaned = html.unescape(cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _extract_description(text: str) -> str | None:
+    match = _DETAIL_DESCRIPTION_RE.search(text)
+    if match:
+        cleaned = _strip_html(match.group("body"))
+        if cleaned:
+            return cleaned
+    meta = _extract_meta_description(text)
+    return meta or None
+
+
+def _extract_meta_description(text: str) -> str | None:
+    for tag in _META_TAG_RE.finditer(text):
+        attrs = {
+            m.group("name").lower(): html.unescape(m.group("value"))
+            for m in _ATTR_RE.finditer(tag.group("attrs"))
+        }
+        kind = (attrs.get("name") or attrs.get("property") or "").lower()
+        if kind not in {"description", "og:description"}:
+            continue
+        cleaned = _strip_html(attrs.get("content") or "")
+        if cleaned:
+            return cleaned
+    return None
 
 
 def _normalize_location(raw: str) -> str | None:

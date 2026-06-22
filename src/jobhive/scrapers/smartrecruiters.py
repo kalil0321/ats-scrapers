@@ -4,7 +4,7 @@ Listing API (no auth, paginated):
     GET https://api.smartrecruiters.com/v1/companies/{slug}/postings
         ?limit=100&offset={n}
 
-Detail API (per-job, opt-in via env var):
+Detail API (per-job, best-effort):
     GET https://api.smartrecruiters.com/v1/companies/{slug}/postings/{id}
 
 The listing returns title/location/department/typeOfEmployment but
@@ -12,16 +12,14 @@ not the description body. The detail endpoint adds ``jobAd.sections``
 (companyDescription / jobDescription / qualifications /
 additionalInformation), ``applyUrl``, and ``postingUrl``.
 
-Detail enrichment is opt-in via ``JOBHIVE_SMARTRECRUITERS_FETCH_DESCRIPTIONS=1``
-because SmartRecruiters' tenant universe (~25k discovered slugs ×
-hundreds of postings) makes a default fan-out impractically slow.
+Detail enrichment is enabled by default so published rows carry descriptions
+when the public detail endpoint exposes them.
 """
 
 from __future__ import annotations
 
 import asyncio
 import html as html_mod
-import os
 import re
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -76,6 +74,21 @@ class SmartRecruitersScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_detail(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         url = API_TEMPLATE.format(slug=self.company_slug)
         all_jobs: list[Job] = []
@@ -108,13 +121,7 @@ class SmartRecruitersScraper(BaseScraper):
                     break
                 offset += PAGE_LIMIT
 
-            # Optional per-job detail enrichment. Disabled by default
-            # because SmartRecruiters' tenant universe is huge — toggle
-            # with ``JOBHIVE_SMARTRECRUITERS_FETCH_DESCRIPTIONS=1`` when
-            # description coverage is wanted.
-            if all_jobs and os.getenv(
-                "JOBHIVE_SMARTRECRUITERS_FETCH_DESCRIPTIONS",
-            ):
+            if self.include_descriptions and all_jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_detail(client, sem, j) for j in all_jobs
@@ -222,7 +229,7 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
     ``companyDescription`` / ``jobDescription`` / ``qualifications`` /
     ``additionalInformation`` — each carrying ``title`` + HTML
     ``text``). We concatenate the four sections' plain text into a
-    single body, capped at 10kB, with the actual job description
+    single body, capped at 25k chars, with the actual job description
     first so consumers see the most relevant content if truncated.
     """
     if not job.description:
@@ -241,7 +248,7 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
                     if isinstance(text, str) and text.strip():
                         parts.append(_strip_html(text))
             if parts:
-                job.description = "\n\n".join(parts)[:10_000]
+                job.description = "\n\n".join(parts)[:25_000]
 
     if not job.apply_url:
         apply_url = detail.get("applyUrl")

@@ -31,7 +31,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "weworkremotely", "programathor", "builtin", "jobsch",
         "jobs_cz", "manfred", "thehub", "ycombinator", "wellfound",
         # Additional multi-tenant ATSes
-        "bamboohr", "breezy", "jazzhr", "jobvite",
+        "bamboohr", "breezy", "jazzhr",
         "recruitee", "taleo", "teamtailor",
         # Catch-all
         "custom",

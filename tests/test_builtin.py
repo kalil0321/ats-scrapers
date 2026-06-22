@@ -2,7 +2,8 @@
 
 Pin the JSON-LD ItemList parsing (incl. the ``&#x2B;`` HTML-entity
 trick Built In uses in the ``type`` attribute), the listing-only
-default behaviour, and the opt-in Firecrawl enrichment shape.
+default behaviour, and the guarantee that paid Firecrawl enrichment is
+not part of this scraper.
 """
 
 from __future__ import annotations
@@ -112,12 +113,16 @@ def test_parses_listing_with_plain_plus_type_attr(httpx_mock) -> None:
     assert len(BuiltInScraper("any").fetch()) == 1
 
 
-def test_strips_html_from_description(httpx_mock) -> None:
+def test_preserves_html_in_description(httpx_mock) -> None:
+    """Description now keeps HTML tags intact — the post-scrape
+    markdownify pass (scripts/normalize_descriptions.py) converts them
+    to markdown later. Entities are unescaped at scrape time.
+    """
     httpx_mock.add_response(
         url="https://builtin.com/jobs?page=1",
         text=_listing_html([_item(
             position=1, job_id=1, name="Engineer",
-            description="<p>Build <b>things</b>.</p>",
+            description="<p>Build <b>things</b>&nbsp;today.</p>",
         )]),
     )
     httpx_mock.add_response(
@@ -125,7 +130,9 @@ def test_strips_html_from_description(httpx_mock) -> None:
         text=_empty_page(), is_reusable=True,
     )
     j = BuiltInScraper("any").fetch()[0]
-    assert j.description == "Build things ."
+    assert "<b>things</b>" in j.description  # tags survive
+    assert "&nbsp;" not in j.description     # entities decoded
+    assert "&amp;" not in j.description
 
 
 def test_skips_items_with_missing_required_fields(httpx_mock) -> None:
@@ -181,15 +188,15 @@ def test_max_pages_caps_pagination(httpx_mock) -> None:
     assert len(jobs) == 5
 
 
-# --- Firecrawl enrichment (opt-in) ------------------------------------------
+# --- no paid enrichment -----------------------------------------------------
 
 
-def test_no_firecrawl_call_when_no_api_key(httpx_mock, monkeypatch) -> None:
-    """The library default is direct fetch only — Firecrawl must not
-    be hit unless the user explicitly opts in. (Test passes because
-    httpx_mock errors on un-stubbed Firecrawl URLs.)"""
-    # Make sure no env-var bleed-through enables enrichment.
-    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+def test_never_calls_firecrawl_even_when_env_key_exists(
+    httpx_mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Built In must remain listing-only. A leaked FIRECRAWL_API_KEY in
+    cron/env must not turn on per-job paid enrichment."""
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-leaked-key")
     httpx_mock.add_response(
         url="https://builtin.com/jobs?page=1",
         text=_listing_html([_item(position=1, job_id=1, name="X")]),
@@ -198,65 +205,7 @@ def test_no_firecrawl_call_when_no_api_key(httpx_mock, monkeypatch) -> None:
         url=re.compile(r"^https://builtin\.com/jobs\?page=[2-9]$"),
         text=_empty_page(), is_reusable=True,
     )
-    # If the scraper called Firecrawl, httpx_mock would fail the test
-    # with 'no response' for the firecrawl.dev URL.
     jobs = BuiltInScraper("any").fetch()
-    assert jobs[0].company == "Unknown"
-
-
-def test_firecrawl_enrichment_fills_company_location_salary(httpx_mock) -> None:
-    """When the user passes a Firecrawl API key, each job's URL is
-    POSTed to Firecrawl's /v1/scrape with an extraction schema and the
-    returned fields fill in company/location/salary."""
-    httpx_mock.add_response(
-        url="https://builtin.com/jobs?page=1",
-        text=_listing_html([
-            _item(position=1, job_id=1, name="Backend Engineer"),
-            _item(position=2, job_id=2, name="Designer"),
-        ]),
-    )
-    httpx_mock.add_response(
-        url=re.compile(r"^https://builtin\.com/jobs\?page=[2-9]$"),
-        text=_empty_page(), is_reusable=True,
-    )
-    httpx_mock.add_response(
-        url="https://api.firecrawl.dev/v1/scrape",
-        json={"data": {"extract": {
-            "company": "Acme",
-            "location": "New York, NY",
-            "salary_min": 120000,
-            "salary_max": 180000,
-        }}},
-        is_reusable=True,
-    )
-
-    jobs = BuiltInScraper("any", firecrawl_api_key="fc-test").fetch()
-    j = jobs[0]
-    assert j.company == "Acme"
-    assert j.location == "New York, NY"
-    assert j.salary_min == 120000
-    assert j.salary_max == 180000
-    assert j.salary_currency == "USD"
-
-
-def test_firecrawl_failure_falls_back_to_listing_data(httpx_mock) -> None:
-    """If Firecrawl itself errors (rate-limited, bad key, network), the
-    job keeps its listing-level fields rather than disappearing."""
-    httpx_mock.add_response(
-        url="https://builtin.com/jobs?page=1",
-        text=_listing_html([_item(position=1, job_id=1, name="X")]),
-    )
-    httpx_mock.add_response(
-        url=re.compile(r"^https://builtin\.com/jobs\?page=[2-9]$"),
-        text=_empty_page(), is_reusable=True,
-    )
-    httpx_mock.add_response(
-        url="https://api.firecrawl.dev/v1/scrape",
-        status_code=500,
-        is_reusable=True,
-    )
-    jobs = BuiltInScraper("any", firecrawl_api_key="fc-test").fetch()
-    # Listing-level data preserved — only enrichment was lost.
     assert jobs[0].company == "Unknown"
     assert jobs[0].title == "X"
 
