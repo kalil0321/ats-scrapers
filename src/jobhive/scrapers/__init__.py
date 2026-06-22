@@ -44,6 +44,7 @@ from jobhive.scrapers.remoteok import RemoteOKScraper
 from jobhive.scrapers.rippling import RipplingScraper
 from jobhive.scrapers.smartrecruiters import SmartRecruitersScraper
 from jobhive.scrapers.successfactors import SuccessFactorsScraper
+from jobhive.scrapers.superjob import SuperJobScraper
 from jobhive.scrapers.taleo import TaleoScraper
 from jobhive.scrapers.teamtailor import TeamtailorScraper
 from jobhive.scrapers.tesla import TeslaScraper
@@ -96,6 +97,7 @@ __all__ = [
     "ScraperRegistry",
     "SmartRecruitersScraper",
     "SuccessFactorsScraper",
+    "SuperJobScraper",
     "TaleoScraper",
     "TeamtailorScraper",
     "TeslaScraper",
