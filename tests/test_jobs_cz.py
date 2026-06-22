@@ -15,6 +15,7 @@ Pin:
 
 from __future__ import annotations
 
+import os
 import re
 
 import pytest
@@ -451,6 +452,35 @@ def test_salary_unparseable_keeps_summary_only(httpx_mock) -> None:
     # Summary still surfaced so downstream enrichment can use it.
     assert j.salary_summary == "Konkurenční plat"
     assert j.salary_currency == "CZK"
+
+
+# --- live e2e ---------------------------------------------------------------
+
+
+def test_live_e2e_fetches_real_jobs_cz_page() -> None:
+    """Opt-in smoke test against the real jobs.cz listing page.
+
+    Normal CI keeps this skipped because it depends on the public site.
+    Run with ``JOBHIVE_LIVE_E2E=1`` when reviewing the scraper PR.
+    """
+    if os.environ.get("JOBHIVE_LIVE_E2E") != "1":
+        pytest.skip("set JOBHIVE_LIVE_E2E=1 to hit the real jobs.cz site")
+
+    jobs = JobsCzScraper(
+        "jobs_cz",
+        location_seeds=("praha",),
+        max_pages=1,
+        timeout=20,
+    ).fetch()
+
+    assert jobs
+    for job in jobs[:5]:
+        assert job.ats_type is ATSType.JOBSCZ
+        assert job.ats_id
+        assert job.title
+        assert job.company
+        assert str(job.url).startswith("https://www.jobs.cz/")
+        print(f"{job.title} | {job.company} | {job.location} | {job.url}")
 
 
 # --- module-level helpers ---------------------------------------------------
