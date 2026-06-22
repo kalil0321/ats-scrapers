@@ -40,11 +40,15 @@ def test_registry_contains_known_scrapers() -> None:
 
 
 def test_registry_keys_are_valid_ats_types() -> None:
-    """Every registered scraper must map to a real `ATSType`. Some `ATSType`s
-    may not yet have a scraper (planned but not implemented) — that's fine."""
+    """Every registered scraper must map to a real `ATSType`."""
     registered = ScraperRegistry.all()
     for ats in registered:
         assert isinstance(ats, ATSType)
+
+
+def test_public_ats_types_are_registered() -> None:
+    registered = set(ScraperRegistry.all())
+    assert set(ATSType) - {ATSType.CUSTOM} == registered
 
 
 def test_registry_covers_core_atses() -> None:

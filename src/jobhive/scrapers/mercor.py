@@ -173,7 +173,7 @@ def _parse_listing(item: dict[str, Any]) -> Job | None:
     salary_summary = _build_salary_summary(rate_min, rate_max, pay_freq)
 
     raw_desc = item.get("description")
-    description = raw_desc.strip()[:10_000] or None if isinstance(raw_desc, str) else None
+    description = raw_desc.strip()[:25_000] or None if isinstance(raw_desc, str) else None
 
     raw: dict[str, Any] = {}
     for k in ("commitment", "category", "skills", "tags",

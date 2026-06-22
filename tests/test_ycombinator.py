@@ -81,6 +81,7 @@ def _job(
     min_experience: str = "3+ years",
     created_at: str = "16 days",
     apply_url: str = "https://account.ycombinator.com/authenticate?continue=https%3A%2F%2Fwww.workatastartup.com%2Fapplication%3Fsignup_job_id%3D93354",
+    description: str = "Build the core product.",
 ) -> dict[str, Any]:
     return {
         "id": job_id,
@@ -98,6 +99,7 @@ def _job(
         "salaryRange": salary,
         "minExperience": min_experience,
         "createdAt": created_at,
+        "description": description,
         "skills": [],
     }
 
@@ -199,6 +201,7 @@ def test_walks_companies_then_extracts_postings(httpx_mock) -> None:
     assert j.employment_type == "FULL_TIME"
     assert j.commitment == "Full-time"
     assert j.department == "Engineering"
+    assert j.description == "Build the core product.\n\nBuild things."
     assert j.posted_at is not None  # parsed from "16 days"
     assert str(j.url).endswith("/companies/acme/jobs/AbC123-founding-engineer")
     assert "signup_job_id" in str(j.apply_url)

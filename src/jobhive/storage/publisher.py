@@ -127,17 +127,19 @@ class DatasetPublisher:
         *,
         prefix: str = DEFAULT_PREFIX,
         write_parquet: bool = True,
+        write_all_csv: bool = True,
     ) -> None:
         self._r2 = r2_client
         self._prefix = prefix.strip("/")
         self._write_parquet = write_parquet
+        self._write_all_csv = write_all_csv
         if write_parquet:
             try:
                 import pyarrow  # noqa: F401
             except ImportError as exc:
                 raise StorageError(
                     "pyarrow is required when write_parquet=True. "
-                    "Install with `pip install jobhive[publish]`."
+                    "Install with `pip install jobhive-py[publish]`."
                 ) from exc
 
     def publish_from_directory(
@@ -164,6 +166,13 @@ class DatasetPublisher:
         """
         started = datetime.now(tz=UTC)
         files_uploaded: list[str] = []
+        manifest_key = f"{self._prefix}/manifest.json"
+        existing_manifest = _load_existing_manifest(self._r2, manifest_key)
+        _guard_suspicious_empty_job_slices(
+            source_dir=source_dir,
+            ats_csv_pattern=ats_csv_pattern,
+            existing_manifest=existing_manifest,
+        )
 
         # ExitStack owns every per-ATS CSV temp: Pass 1 streams each
         # enriched per-ATS slice into one of these, then Pass 3
@@ -269,6 +278,7 @@ class DatasetPublisher:
                 },
                 all_entry=all_entry,
                 by_ats=per_ats_entries,
+                existing_manifest=existing_manifest,
             )
             files_uploaded.append(manifest_key)
 
@@ -442,7 +452,7 @@ class DatasetPublisher:
                 all_entry["size_bytes"] = pq_size
                 all_entry["sha256"] = pq_sha
 
-            if "csv" in FORMATS_ALL:
+            if "csv" in FORMATS_ALL and self._write_all_csv:
                 csv_key = f"{self._prefix}/all.csv"
                 with _temp_file(".csv") as all_csv:
                     pl.scan_parquet(all_pq).sink_csv(all_csv)
@@ -470,11 +480,16 @@ class DatasetPublisher:
         stats_factory,
         all_entry: dict[str, object],
         by_ats: dict[ATSType, dict[str, object]],
+        existing_manifest: dict[str, object] | None = None,
     ) -> str:
         """Read existing manifest, replace jobs-related fields, preserve
         the companies block written by the CI."""
         key = f"{self._prefix}/manifest.json"
-        existing = _load_existing_manifest(self._r2, key)
+        existing = (
+            existing_manifest
+            if existing_manifest is not None
+            else _load_existing_manifest(self._r2, key)
+        )
 
         manifest: dict[str, object] = {**existing}
         manifest["version"] = "2.0"
@@ -529,7 +544,7 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "amazon": 1, "apple": 1, "google": 1, "meta": 1, "tesla": 1,
     "tiktok": 1, "uber": 1,
     # Hybrid jobboards
-    "welcometothejungle": 3, "mercor": 3, "gem": 3, "jobvite": 3,
+    "welcometothejungle": 3, "mercor": 3, "gem": 3,
     # Sourcing/matching layer that mirrors others
     "eightfold": 5,
     # National public-sector aggregators — government-curated but the
@@ -588,6 +603,7 @@ _COUNTRY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
 # require the parens too. Case-insensitive: the pipeline lowercases
 # ``location`` during harvest.
 _NUTS_PREFIX_RE = re.compile(r"^\s*([a-z]{2})\s*\(", re.IGNORECASE)
+_TRAILING_ISO_RE = re.compile(r"(?:^|[,\s(/])([a-z]{2})(?:[\s).]*)$", re.IGNORECASE)
 
 # Word-boundary-anchored country needle patterns. Substring matching
 # false-positived on common European place names — e.g. ``"usa"``
@@ -606,6 +622,7 @@ _COUNTRY_PATTERNS_RE: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     )
     for code, needles in _COUNTRY_PATTERNS
 )
+_COUNTRY_CODES = {country_code for country_code, _ in _COUNTRY_PATTERNS}
 
 
 def _country_iso_from_location(loc: object) -> str:
@@ -620,13 +637,19 @@ def _country_iso_from_location(loc: object) -> str:
     """
     if not isinstance(loc, str) or not loc.strip():
         return ""
-    lowered = loc.strip().lower()
+    stripped = loc.strip()
+    lowered = stripped.lower()
     for code, pat in _COUNTRY_PATTERNS_RE:
         if pat.search(lowered):
             return code
-    m = _NUTS_PREFIX_RE.match(loc.strip())
+    m = _NUTS_PREFIX_RE.match(stripped)
     if m:
         return m.group(1).upper()
+    m = _TRAILING_ISO_RE.search(stripped)
+    if m:
+        code = m.group(1).upper()
+        if code in _COUNTRY_CODES:
+            return code
     return ""
 
 
@@ -958,8 +981,8 @@ def _phase2_fuzzy_drops(
 
 
 def _enrich_lazy(lf: pl.LazyFrame) -> pl.LazyFrame:
-    """Add ``is_remote`` / ``salary_min`` / ``salary_max`` columns when
-    they aren't already present on the input.
+    """Add ``is_remote`` / ``salary_min`` / ``salary_max`` / ``country_iso``
+    columns when they aren't already present on the input.
 
     Implemented as polars expressions whenever possible so the lazy
     chain stays streamable through ``sink_csv``. ``is_remote`` reads
@@ -968,11 +991,14 @@ def _enrich_lazy(lf: pl.LazyFrame) -> pl.LazyFrame:
     optional, so a deploy that has narrowed the heuristic to title-only
     (no ``ONSITE_KEYWORDS`` exported) still gets a usable column.
 
-    ``salary_summary`` parsing is the only path that has to go through
-    a Python callback (``map_elements``); polars' streaming engine
+    ``salary_summary`` and ``country_iso`` parsing both go through a
+    Python callback (``map_elements``); polars' streaming engine
     doesn't run user functions, so the lazy chain falls back to the
-    eager engine for that ATS slice (rare — most scrapers populate
-    ``salary_min`` / ``salary_max`` upstream and skip this branch).
+    eager engine for an ATS slice that needs either. The country
+    extractor was already used internally for Pass 1 dedup
+    (``_country_iso_from_location``); exposing it as a public column
+    means downstream consumers (D1 sync, R2 parquet readers) can
+    filter / facet by ISO code without re-parsing the location string.
     """
     schema_names = lf.collect_schema().names()
 
@@ -992,6 +1018,13 @@ def _enrich_lazy(lf: pl.LazyFrame) -> pl.LazyFrame:
                 pl.col("_salary_parsed").struct.field("max").alias("salary_max"),
             )
             .drop("_salary_parsed")
+        )
+
+    if "location" in schema_names and "country_iso" not in schema_names:
+        lf = lf.with_columns(
+            pl.col("location")
+            .map_elements(_country_iso_from_location, return_dtype=pl.String)
+            .alias("country_iso")
         )
 
     return lf
@@ -1059,6 +1092,82 @@ def _sum_by_ats_companies_rows(manifest: dict[str, object]) -> int:
             if isinstance(rows, int):
                 total += rows
     return total
+
+
+def _guard_suspicious_empty_job_slices(
+    *,
+    source_dir: Path,
+    ats_csv_pattern: str,
+    existing_manifest: dict[str, object],
+) -> None:
+    """Block publishes that would replace known-good provider data with empty.
+
+    A header-only ``<ats>/jobs.csv`` is valid CSV, so the streaming publisher
+    can otherwise upload it and patch the manifest to ``rows: 0``. Treat that
+    as suspicious when the existing manifest proves the provider either had
+    jobs before or still has tenants in ``by_ats_companies``.
+    """
+    if os.getenv("JOBHIVE_ALLOW_EMPTY_PUBLISH"):
+        return
+
+    by_ats = existing_manifest.get("by_ats")
+    if not isinstance(by_ats, dict):
+        by_ats = {}
+    by_ats_companies = existing_manifest.get("by_ats_companies")
+    if not isinstance(by_ats_companies, dict):
+        by_ats_companies = {}
+
+    suspicious: list[str] = []
+    for ats in ATSType:
+        if ats is ATSType.CUSTOM:
+            continue
+        source_path = source_dir / ats_csv_pattern.format(ats=ats.value)
+        if not source_path.exists():
+            continue
+
+        previous_rows = _entry_rows(by_ats.get(ats.value))
+        company_rows = _entry_rows(by_ats_companies.get(ats.value))
+        has_prior_data = previous_rows > 0 or company_rows > 0
+        if source_path.stat().st_size == 0:
+            if has_prior_data:
+                suspicious.append(
+                    f"{ats.value}: local jobs.csv is 0 bytes; "
+                    f"manifest previously had {previous_rows} jobs and "
+                    f"{company_rows} companies. Suggested action: retry the "
+                    "provider scrape or keep the previous published data."
+                )
+            continue
+        if _csv_data_row_count(source_path) != 0:
+            continue
+
+        if has_prior_data:
+            suspicious.append(
+                f"{ats.value}: local jobs.csv has 0 rows; "
+                f"manifest previously had {previous_rows} jobs and "
+                f"{company_rows} companies. Suggested action: retry the "
+                "provider scrape or keep the previous published data."
+            )
+
+    if suspicious:
+        raise StorageError(
+            "Refusing to publish suspicious empty provider slices. "
+            "Set JOBHIVE_ALLOW_EMPTY_PUBLISH=1 only for intentional empty "
+            "providers.\n- "
+            + "\n- ".join(suspicious)
+        )
+
+
+def _entry_rows(entry: object) -> int:
+    if not isinstance(entry, dict):
+        return 0
+    rows = entry.get("rows")
+    return rows if isinstance(rows, int) and rows > 0 else 0
+
+
+def _csv_data_row_count(path: Path) -> int:
+    with path.open("rb") as f:
+        lines = sum(1 for _ in f)
+    return max(lines - 1, 0)
 
 
 def _load_existing_manifest(r2_client: R2Client, key: str) -> dict[str, object]:

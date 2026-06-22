@@ -65,7 +65,7 @@ def require_cloakbrowser() -> None:
     except ImportError as exc:
         raise ScraperError(
             "cloakbrowser is required for Tesla / Meta scrapers. "
-            "Install with `pip install jobhive[scrapers]`."
+            "Install with `pip install jobhive-py[scrapers]`."
         ) from exc
 
 
@@ -74,7 +74,7 @@ def warn_disabled(scraper_name: str) -> None:
     log when a scraper is skipped because cloakbrowser is missing."""
     log.warning(
         "%s: browser required — install cloakbrowser "
-        "(`pip install jobhive[scrapers]`) to enable. Skipping.",
+        "(`pip install jobhive-py[scrapers]`) to enable. Skipping.",
         scraper_name,
     )
 

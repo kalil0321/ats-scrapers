@@ -97,7 +97,7 @@ class R2Client:
             import boto3
         except ImportError as exc:
             raise StorageError(
-                "boto3 is required for R2 uploads. Install with `pip install jobhive[publish]`."
+                "boto3 is required for R2 uploads. Install with `pip install jobhive-py[publish]`."
             ) from exc
 
         self._client: Any = boto3.client(

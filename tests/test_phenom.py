@@ -299,7 +299,7 @@ def test_description_strips_html_and_truncates(httpx_mock) -> None:
     jobs = PhenomScraper(BASE).fetch()
     assert jobs[0].description is not None
     assert "<p>" not in jobs[0].description
-    assert len(jobs[0].description) <= 10_000
+    assert len(jobs[0].description) <= 25_000
 
 
 def test_url_is_full_when_relative(httpx_mock) -> None:

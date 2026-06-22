@@ -5,7 +5,7 @@
 # jobhive
 
 > **The open dataset and toolkit for global job market data.**
-> 3.3M+ live jobs from 400 000+ companies, scraped directly from the ATS platforms where companies actually post. No LinkedIn, no reposts, no recruiters.
+> 3.2M+ live jobs from 86 000+ companies, scraped directly from the ATS platforms where companies actually post. No LinkedIn, no reposts, no recruiters.
 
 [![PyPI](https://img.shields.io/pypi/v/jobhive-py.svg?color=brightgreen)](https://pypi.org/project/jobhive-py/)
 [![Python](https://img.shields.io/pypi/pyversions/jobhive-py.svg?color=brightgreen)](https://pypi.org/project/jobhive-py/)
@@ -14,10 +14,11 @@
 ```python
 from jobhive import search
 
-df = search(query="ml engineer", location="Paris", remote=True)
+df = search(query="ml engineer", ats="greenhouse", location="Paris")
 ```
 
-No API key, no auth, no rate limits. The dataset refreshes every 24 hours.
+No API key, no auth, no rate limits. Install `jobhive-py[parquet]` for
+full-dataset search; the base install can query per-ATS CSV slices.
 
 ---
 
@@ -39,24 +40,24 @@ companies actually post.
 
 | Metric | Value |
 |---|---:|
-| Live jobs | **3 376 000+** |
-| Companies | **406 000+** |
-| ATS platforms | **31** |
+| Live jobs | **3 271 000+** |
+| Companies | **86 000+** |
+| ATS platforms | **47** |
 
 Top 10 by job count:
 
 | ATS | Jobs |
 |---|---:|
-| Bundesagentur (DE public-sector) | 931 049 |
-| Workday | 653 041 |
-| EURES (EU/EEA public-sector) | 626 783 |
-| SmartRecruiters | 213 372 |
-| SuccessFactors | 180 499 |
-| Greenhouse | 110 071 |
-| Oracle HCM | 107 464 |
-| iCIMS | 92 211 |
-| Lever | 60 342 |
-| Phenom | 56 483 |
+| EURES (EU/EEA public-sector) | 1 498 440 |
+| Workday | 449 167 |
+| SmartRecruiters | 213 154 |
+| SuccessFactors | 181 093 |
+| Greenhouse | 169 812 |
+| Oracle HCM | 144 106 |
+| iCIMS | 120 934 |
+| JazzHR | 71 050 |
+| Lever | 68 303 |
+| Phenom | 56 546 |
 
 Counts come from the live manifest at
 `https://storage.stapply.ai/jobhive/v1/manifest.json` — verify any time
@@ -69,6 +70,8 @@ pip install jobhive-py
 ```
 
 Distributed as `jobhive-py` on PyPI; the import name is still `jobhive`.
+`pip install jobhive` is a different package name and is not used by this
+project.
 
 Optional extras:
 
@@ -86,10 +89,15 @@ pip install "jobhive-py[all]"
 from jobhive import search
 
 # Free-text title + location + remote filter
-df = search(query="rust", location="Berlin", remote=True, salary_min=80_000)
+df = search(query="rust", ats="greenhouse", location="Berlin", remote=True)
 
 # Restrict to one ATS slice (smaller download)
 df = search(query="data engineer", ats="ashby")
+
+# Full-dataset search needs the parquet extra because jobhive/v1/all is
+# published as all.parquet.
+#   pip install "jobhive-py[parquet]"
+df = search(query="ml engineer", location="Paris")
 
 # Pandas all the way down
 df.groupby("company").size().sort_values(ascending=False).head(20)

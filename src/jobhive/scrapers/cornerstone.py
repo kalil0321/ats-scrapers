@@ -69,10 +69,19 @@ class CornerstoneScraper(BaseScraper):
         *,
         timeout: float = 30.0,
         site_id: int = 1,
+        company_name: str | None = None,
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
-        self.site_id = site_id
-        self.career_url, self.slug = _resolve_career_url(company_slug, site_id)
+        # Full URLs containing a career-site ID take precedence over site_id.
+        self.career_url, self.slug, resolved_site_id = _resolve_career_url(
+            company_slug, site_id
+        )
+        self.site_id = resolved_site_id
+        self.company_name = (
+            company_name.strip()
+            if company_name and company_name.strip()
+            else self.slug
+        )
 
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
@@ -234,7 +243,7 @@ class CornerstoneScraper(BaseScraper):
         return Job(
             url=url,
             title=title,
-            company=self.slug,
+            company=self.company_name,
             ats_type=ATSType.CORNERSTONE,
             ats_id=ats_id,
             location=_format_locations(item.get("locations")),
@@ -247,8 +256,13 @@ class CornerstoneScraper(BaseScraper):
         )
 
 
-def _resolve_career_url(slug_or_url: str, site_id: int) -> tuple[str, str]:
-    """Return ``(career_url, slug)``. Accepts a bare slug or the full URL."""
+def _resolve_career_url(slug_or_url: str, site_id: int) -> tuple[str, str, int]:
+    """Return ``(career_url, slug, site_id)``.
+
+    Accepts a bare slug or the full URL. Full URLs may point at non-default
+    career sites such as ``/careersite/3/home``; keep that site id for API
+    requests instead of silently using the constructor default.
+    """
     if slug_or_url.startswith(("http://", "https://")):
         # Try to extract slug from the URL's `?c=` query param or hostname.
         m = re.search(r"[?&]c=([^&#]+)", slug_or_url)
@@ -257,11 +271,14 @@ def _resolve_career_url(slug_or_url: str, site_id: int) -> tuple[str, str]:
         else:
             host = urlparse(slug_or_url).hostname or ""
             slug = host.split(".")[0] if host else slug_or_url
-        return slug_or_url, slug
+        site_match = re.search(r"/careersite/(\d+)/", slug_or_url)
+        resolved_site_id = int(site_match.group(1)) if site_match else site_id
+        return slug_or_url, slug, resolved_site_id
     slug = slug_or_url
     return (
         f"https://{slug}.csod.com/ux/ats/careersite/{site_id}/home?c={slug}",
         slug,
+        site_id,
     )
 
 
@@ -311,7 +328,7 @@ def _clean_description(value: object) -> str | None:
         return None
     if cleaned.lower() in _PLACEHOLDER_DESCRIPTIONS:
         return None
-    return cleaned[:10_000]
+    return cleaned[:25_000]
 
 
 def _parse_iso(value: object) -> datetime | None:

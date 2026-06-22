@@ -31,7 +31,9 @@ the publisher's cross-ATS dedup still works.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -52,6 +54,9 @@ API_URL = (
 )
 DETAIL_URL_FMT = (
     "https://europa.eu/eures/portal/jv-se/jv-details/{jv_id}?lang=en"
+)
+DETAIL_API_URL_FMT = (
+    "https://europa.eu/eures/api/jv-searchengine/public/jv/id/{jv_id}?lang=en"
 )
 PAGE_SIZE = 50  # API caps `resultsPerPage` at 50 (>50 returns 400).
 PAGE_LIMIT = 200  # `page` caps at 200 (page>200 returns 400).
@@ -131,6 +136,28 @@ class EuresScraper(BaseScraper):
         write straight to disk."""
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            cleaned = _clean_description_text(job.description)
+            if cleaned:
+                return cleaned
+        if not job.ats_id:
+            return _job_summary_description(job)
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.get(
+                    DETAIL_API_URL_FMT.format(jv_id=job.ats_id),
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": "Mozilla/5.0",
+                    },
+                )
+            if response.status_code != 200:
+                return _job_summary_description(job)
+            return _extract_detail_description(response.json()) or _job_summary_description(job)
+        except (httpx.HTTPError, ValueError):
+            return _job_summary_description(job)
+
     async def fetch_stream(self) -> AsyncGenerator[Job, None]:
         """Stream jobs as they're parsed.
 
@@ -209,26 +236,27 @@ class EuresScraper(BaseScraper):
         all_jobs: list[Job] = []
         lock = asyncio.Lock()
 
-        async def absorb(items: list[dict[str, Any]]) -> None:
-            # Dedup under the lock, then dispatch to the sink outside
-            # the lock so a slow ``on_job`` callback can't serialise
-            # every absorbing task on the lock.
-            new_jobs: list[Job] = []
-            async with lock:
-                for it in items:
-                    job = self._parse(it)
-                    if job is None or job.ats_id in seen:
-                        continue
-                    seen.add(job.ats_id)
-                    new_jobs.append(job)
-            if on_job is not None:
-                for job in new_jobs:
-                    await on_job(job)
-            else:
-                all_jobs.extend(new_jobs)
-
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
+
+            async def absorb(items: list[dict[str, Any]]) -> None:
+                # Dedup under the lock, then dispatch to the sink outside
+                # the lock so a slow ``on_job`` callback can't serialise
+                # every absorbing task on the lock.
+                new_jobs: list[Job] = []
+                async with lock:
+                    for it in items:
+                        job = self._parse(it)
+                        if job is None or job.ats_id in seen:
+                            continue
+                        seen.add(job.ats_id)
+                        new_jobs.append(job)
+                if on_job is not None:
+                    for job in new_jobs:
+                        await on_job(job)
+                else:
+                    all_jobs.extend(new_jobs)
+
             # Country-level fan-out — even tiny markets get their own
             # query so the 10k cap is split before we have to look at
             # facets at all.
@@ -498,6 +526,7 @@ class EuresScraper(BaseScraper):
             location=location,
             employment_type=employment_type,
             commitment=commitment,
+            description=_extract_description(item),
             posted_at=posted_at,
             fetched_at=datetime.now(),
             raw=raw or None,
@@ -549,6 +578,133 @@ def _flatten_location(loc_map: dict[str, Any]) -> str | None:
     if regions:
         return f"{country} ({', '.join(regions[:3])})"
     return country
+
+
+def _extract_description(item: dict[str, Any]) -> str | None:
+    value = item.get("description")
+    if not isinstance(value, str) or not value.strip():
+        translations = item.get("translations") or {}
+        if isinstance(translations, dict):
+            for translation in translations.values():
+                if isinstance(translation, dict):
+                    candidate = translation.get("description")
+                    if isinstance(candidate, str) and candidate.strip():
+                        value = candidate
+                        break
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return _clean_description_text(value)
+
+
+def _extract_detail_description(payload: dict[str, Any]) -> str | None:
+    """Extract the richest text available from the EURES detail API.
+
+    Some national feeds publish a listing with no ``description`` at all,
+    but the detail API still has application instructions, employer text,
+    or required skills. Use those as a last-resort description so the row
+    remains searchable without hitting the browser-rendered Angular page.
+    """
+    candidates: list[str] = []
+    translation = payload.get("translation")
+    if isinstance(translation, dict):
+        description = translation.get("description")
+        if isinstance(description, str):
+            candidates.append(description)
+
+    profiles = payload.get("jvProfiles") or {}
+    if isinstance(profiles, dict):
+        preferred = payload.get("preferredLanguage")
+        ordered_profiles = []
+        if isinstance(preferred, str) and preferred in profiles:
+            ordered_profiles.append(profiles[preferred])
+        ordered_profiles.extend(
+            profile
+            for lang, profile in profiles.items()
+            if lang != preferred
+        )
+        for profile in ordered_profiles:
+            if not isinstance(profile, dict):
+                continue
+            description = profile.get("description")
+            if isinstance(description, str):
+                candidates.append(description)
+            employer = profile.get("employer") or {}
+            if isinstance(employer, dict):
+                employer_description = employer.get("description")
+                if isinstance(employer_description, str):
+                    candidates.append(employer_description)
+            skills = _detail_skills_text(profile.get("requiredSkills") or [])
+            if skills:
+                candidates.append(skills)
+            instructions = _detail_instructions_text(
+                profile.get("applicationInstructions") or []
+            )
+            if instructions:
+                candidates.append(f"Application instructions: {instructions}")
+
+    for candidate in candidates:
+        cleaned = _clean_description_text(candidate)
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _detail_instructions_text(values: object) -> str | None:
+    if not isinstance(values, list):
+        return None
+    text = " ".join(str(value) for value in values if value)
+    return text.strip() or None
+
+
+def _detail_skills_text(values: object) -> str | None:
+    if not isinstance(values, list):
+        return None
+    parts: list[str] = []
+    for value in values:
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, dict):
+            for key in ("prefLabel", "label", "description", "name"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    parts.append(candidate)
+                    break
+    if not parts:
+        return None
+    return "Required skills: " + "; ".join(parts)
+
+
+def _job_summary_description(job: Job) -> str | None:
+    """Last-resort searchable text when EURES publishes no description.
+
+    A small number of national feeds return an empty listing description
+    and either an empty/404 detail response. Keep those rows non-empty by
+    composing a factual summary from fields already present in the job.
+    """
+    parts = [job.title.strip()] if job.title and job.title.strip() else []
+    if job.company and job.company.strip():
+        parts.append(f"Employer: {job.company.strip()}")
+    if job.location and job.location.strip():
+        parts.append(f"Location: {job.location.strip()}")
+    if job.employment_type and job.employment_type.strip():
+        parts.append(f"Employment type: {job.employment_type.strip()}")
+    if job.commitment and job.commitment.strip():
+        parts.append(f"Contract type: {job.commitment.strip()}")
+    return ". ".join(parts)[:25_000] or None
+
+
+def _clean_description_text(value: str) -> str | None:
+    text = html.unescape(value)
+    text = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", text)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = text.strip()[:25_000]
+    if len(text) < 4:
+        return None
+    return text
 
 
 async def _gather_tolerant(

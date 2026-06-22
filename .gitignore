@@ -69,6 +69,8 @@ urls.md
 CONTINUOUS_DISCOVERY_GUIDE.md
 DISCOVERY_ENHANCEMENTS.md
 XANALYSIS.md
+/todo.md
+/todo.*.md
 
 # Per-ATS operator dirs (company CSVs + jobs.csv outputs)
 amazon/

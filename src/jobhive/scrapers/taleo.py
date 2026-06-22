@@ -97,6 +97,21 @@ class TaleoScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_detail(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         url = self._validate_url(self.company_slug)
         async with httpx.AsyncClient(
@@ -104,7 +119,7 @@ class TaleoScraper(BaseScraper):
         ) as client:
             html_text = await self._fetch_with_retry(client, url)
             jobs = self._parse_listing(html_text, base_url=url)
-            if jobs:
+            if self.include_descriptions and jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_detail(client, sem, j) for j in jobs
@@ -231,7 +246,7 @@ def _apply_jsonld_to_job(job: Job, html_text: str) -> None:
 
     desc = posting.get("description")
     if isinstance(desc, str) and desc.strip() and not job.description:
-        job.description = _strip_jsonld_html(desc)[:10_000] or None
+        job.description = _strip_jsonld_html(desc)[:25_000] or None
 
     emp = posting.get("employmentType")
     if isinstance(emp, str) and not job.employment_type:

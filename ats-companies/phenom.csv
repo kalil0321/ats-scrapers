@@ -1,77 +1,86 @@
 url,name,company_code,locale,country
-https://jobs.bell.ca,bell canada,,en_us,us
-https://careers.gehealthcare.com,ge healthcare,,en_us,us
+https://jobs.bell.ca,Bell Canada,,en_us,us
+https://careers.gehealthcare.com,GE HealthCare,,en_us,us
 https://careers.roche.com,Roche,,en_us,us
 https://www.careers.philips.com,Philips,,en_us,us
-https://career.electroluxgroup.com,Electrolux Group,,en_us,us
 https://careers.southwestair.com,Southwest Airlines,,en_us,us
-https://careers.petco.com,Petco,,en_us,us
 https://careers.ucb.com,UCB Pharma,,en_us,us
-https://careers.honeywell.com,Honeywell,,en_us,us
 https://jobs.thecignagroup.com,Cigna Group,,en_us,us
 https://careers.chenmed.com,ChenMed,,en_us,us
 https://careers.fisglobal.com,FIS,,en_us,us
 https://careers.allianz.com,Allianz,,en_us,us
-https://jobs.cisco.com,Cisco,,en_us,us
 https://careers.abb,ABB,,en_us,us
-https://jobs.chop.edu,Children's Hospital of Philadelphia,,en_us,us
 https://careers.dhl.com,DHL,,en_us,us
-https://careers.clarivate.com,Clarivate,,en_us,us
-https://careers.thalesgroup.com,Thales Group alt,,en_us,us
+https://careers.thalesgroup.com,Thales Group,,en_us,us
 https://careers.hpe.com,HPE,,en_us,us
 https://careers.bcg.com,BCG,,en_us,us
 https://careers.wbd.com,Warner Bros Discovery,,en_us,us
 https://careers.regions.com,Regions Bank,,en_us,us
 https://careers.mastercard.com,Mastercard,,en_us,us
 https://jobs.baesystems.com,BAE Systems,,en_us,us
-https://careers.landolakes.com,Land O'Lakes,,en_us,us
-https://careers.united.com,United Airlines main,,en_us,us
-https://unitedairlines.phenompeople.net,United Airlines,,en_us,us
-https://landolakesinc.com/careers,Land O Lakes alt,,en_us,us
+https://careers.united.com,United Airlines,,en_us,us
 https://careers.merckgroup.com,Merck Group,,en_us,us
 https://jobs.bmo.com,BMO,,en_us,us
 https://careers.dutchbros.com,Dutch Bros Coffee,,en_us,us
-https://jobs.bmoharris.com,BMO Harris,,en_us,us
-https://careers.usbank.com,US Bank,,en_us,us
-https://careers.usventure.com,US Venture,,en_us,us
+https://careers.usbank.com,U.S. Bank,,en_us,us
+https://careers.usventure.com,U.S. Venture,,en_us,us
 https://careers.pnc.com,PNC,,en_us,us
 https://jobs.hilton.com,Hilton,,en_us,us
-https://careers.radian.com,radian,,en_us,us
-https://careers.mars.com,mars,,en_us,us
-https://careers.foxrehab.org,foxrehab,,en_us,us
-https://careers.conmed.com,conmed,,en_us,us
-https://careers.thermofisher.com,thermofisher,,en_us,us
-https://careers.michaels.com,michaels,,en_us,us
-https://careers.aspendental.com,aspendental,,en_us,us
-https://careers.gianteagle.com,gianteagle,,en_us,us
-https://careers.bonsecours.com,bonsecours,,en_us,us
-https://careers.omnicable.com,omnicable,,en_us,us
-https://careers.cisco.com,cisco,,en_us,us
-https://careers.itw.com,itw,,en_us,us
-https://jobs.raytheon.com,raytheon,,en_us,us
-https://careers.rtx.com,rtx,,en_us,us
-https://careers.dupont.com,dupont,,en_us,us
-https://careers.ppg.com,ppg,,en_us,us
-https://jobs.applied.com,applied,,en_us,us
-https://careers.thermofisher.com,thermofisher,,en_us,us
-https://jobs.danaher.com,danaher,,en_us,us
-https://careers.snowflake.com,snowflake,,en_us,us
-https://careers.adobe.com,adobe,,en_us,us
-https://careers.mcafee.com,mcafee,,en_us,us
-https://careers.snowflake.com,snowflake,,en_us,us
-https://careers.cisco.com,cisco,,en_us,us
-https://careers.mcafee.com,mcafee,,en_us,us
-https://careers.fiserv.com,fiserv,,en_us,us
-https://careers.statestreet.com,statestreet,,en_us,us
-https://careers.fiserv.com,fiserv,,en_us,us
-https://qualtricscareers.com,qualtrics,,en_us,us
-https://careers.cisco.com,cisco,,en_us,us
-https://jobs.abbott.com,abbott,,en_us,us
-https://jobs.msd.com,msd,,en_us,us
-https://careers.covance.com,covance,,en_us,us
-https://careers.labcorp.com,labcorp,,en_us,us
-https://questcareers.com,quest,,en_us,us
-https://careers.fortrea.com,fortrea,,en_us,us
-https://careers.catalent.com,catalent,,en_us,us
-https://jobs.abbott.com,abbott,,en_us,us
-https://careers.zimmerbiomet.com,zimmerbiomet,,en_us,us
+https://careers.radian.com,Radian,,en_us,us
+https://careers.mars.com,Mars,,en_us,us
+https://careers.foxrehab.org,Fox Rehabilitation,,en_us,us
+https://careers.michaels.com,Michaels,,en_us,us
+https://careers.aspendental.com,Aspen Dental,,en_us,us
+https://careers.bonsecours.com,Bon Secours,,en_us,us
+https://careers.omnicable.com,OmniCable,,en_us,us
+https://careers.cisco.com,Cisco,,en_us,us
+https://careers.itw.com,ITW,,en_us,us
+https://careers.dupont.com,DuPont,,en_us,us
+https://careers.ppg.com,PPG,,en_us,us
+https://jobs.applied.com,Applied Industrial Technologies,,en_us,us
+https://jobs.danaher.com,Danaher,,en_us,us
+https://careers.snowflake.com,Snowflake,,en_us,us
+https://careers.adobe.com,Adobe,,en_us,us
+https://careers.mcafee.com,McAfee,,en_us,us
+https://careers.fiserv.com,Fiserv,,en_us,us
+https://careers.statestreet.com,State Street,,en_us,us
+https://jobs.msd.com,MSD,,en_us,us
+https://careers.labcorp.com,Labcorp,,en_us,us
+https://careers.fortrea.com,Fortrea,,en_us,us
+https://careers.catalent.com,Catalent,,en_us,us
+https://careers.zimmerbiomet.com,Zimmer Biomet,,en_us,us
+https://careers.dollartree.com,Dollar Tree,,en_us,us
+https://jobs.merck.com,Merck,,en_us,us
+https://careers.frostbank.com,Frost Bank,,en_us,us
+https://careers.truist.com,Truist,,en_us,us
+https://careers.unum.com,Unum,,en_us,us
+https://careers.wexinc.com,WEX,,en_us,us
+https://careers.cboe.com,CBOE,,en_us,us
+https://careers.marsh.com,Marsh,,en_global,global
+https://careers.morningstar.com,Morningstar,,en_us,us
+https://jobs.thermofisher.com,Thermo Fisher,,en_global,global
+https://careers.alight.com,Alight,,en_us,us
+https://careers.hugoboss.com,Hugo Boss,,en_us,us
+https://careers.honda.com,Honda,,en_us,us
+https://careers.humana.com,Humana,,en_us,us
+https://careers.omers.com,OMERS,,en_us,us
+https://careers.tdsynnex.com,TD SYNNEX,,en_us,us
+https://careers.seic.com,SEI,,en_us,us
+https://careers.toyota.com,Toyota,,en_us,us
+https://careers.zelis.com,Zelis,,en_us,us
+https://jobs.cvshealth.com,CVS Health,,en_us,us
+https://jobs.kuehne-nagel.com,Kuehne+Nagel,,en_global,global
+https://winncompanies.phenompeople.net,WinnCompanies,,en_us,us
+https://careers.brp.com,BRP,,en_us,us
+https://careers.bsmhealth.org,Bon Secours Mercy Health,,en_us,us
+https://careers.cencora.com,Cencora,,en_us,us
+https://careers.dukehealth.org,Duke Health,,en_us,us
+https://careers.kbr.com,KBR,,en_us,us
+https://careers.geaerospace.com,GE Aerospace,,en_global,global
+https://careers.king.com,King,,en_us,us
+https://careers.mercy.com,Mercy,,en_us,us
+https://careers.stanfordhealthcare.org,Stanford Health Care,,en_us,us
+https://jobs.advanceautoparts.com,Advance Auto Parts,,en_us,us
+https://jobs.ascension.org,Ascension,,en_us,us
+https://jobs.tjx.com,TJX,,en_global,global
+https://jobs.virginia.edu,University of Virginia,,en_us,us

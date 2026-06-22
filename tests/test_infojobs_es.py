@@ -21,6 +21,7 @@ These tests exercise:
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC
 from typing import Any
 
@@ -38,6 +39,40 @@ from jobhive.scrapers.infojobs_es import (
     _parse_published_at,
     _parse_salary,
 )
+
+# --- live e2e ---------------------------------------------------------------
+
+
+def test_live_e2e_fetches_real_infojobs_page() -> None:
+    """Opt-in smoke test against the real InfoJobs Spain listing page.
+
+    Normal CI keeps this skipped because it depends on the public site and
+    httpcloak. Run with ``JOBHIVE_LIVE_E2E=1`` when reviewing the scraper PR.
+    """
+    if os.environ.get("JOBHIVE_LIVE_E2E") != "1":
+        pytest.skip("set JOBHIVE_LIVE_E2E=1 to hit the real infojobs.net site")
+
+    from importlib.util import find_spec
+
+    if find_spec("httpcloak") is None:
+        pytest.skip("httpcloak is required for live InfoJobs Spain e2e")
+
+    import jobhive.scrapers.infojobs_es as ij
+
+    ij.MAX_RETRIES = 3
+    ij.RETRY_BASE_DELAY = 1.5
+
+    jobs = InfoJobsSpainScraper("infojobs_es", max_pages=1, timeout=30).fetch()
+
+    assert jobs
+    for job in jobs[:5]:
+        assert job.ats_type is ATSType.INFOJOBSES
+        assert job.ats_id
+        assert job.title
+        assert job.company
+        assert str(job.url).startswith("https://www.infojobs.net/")
+        print(job.title, job.company, job.location, job.url, sep=" | ")
+
 
 # --- fixtures ---------------------------------------------------------------
 

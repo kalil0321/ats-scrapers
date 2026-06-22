@@ -76,6 +76,7 @@ class ATSType(StrEnum):
     PROGRAMATHOR = "programathor"
     BUILTIN = "builtin"
     JOBSCH = "jobsch"
+    JOBSCZ = "jobs_cz"
     MANFRED = "manfred"
     THEHUB = "thehub"
     YCOMBINATOR = "ycombinator"
@@ -85,7 +86,6 @@ class ATSType(StrEnum):
     BAMBOOHR = "bamboohr"
     BREEZY = "breezy"
     JAZZHR = "jazzhr"
-    JOBVITE = "jobvite"
     RECRUITEE = "recruitee"
     TALEO = "taleo"
     TEAMTAILOR = "teamtailor"
@@ -442,7 +442,7 @@ class Job(BaseModel):
         default=None,
         description=(
             "Plain-text job description. HTML and markdown are "
-            "stripped to text. Truncated to ~10kB when the source "
+            "stripped to text. Truncated to ~25k chars when the source "
             "exceeds it."
         ),
     )

@@ -161,10 +161,10 @@ class UberScraper(BaseScraper):
         elif isinstance(first_loc, str):
             location = first_loc
 
-        # Description is markdown — kept verbatim, capped at 10kB.
+        # Description is markdown — kept verbatim, capped at 25k chars.
         description_raw = item.get("description")
         description = (
-            description_raw.strip()[:10_000] or None
+            description_raw.strip()[:25_000] or None
             if isinstance(description_raw, str)
             else None
         )

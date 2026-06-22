@@ -23,6 +23,7 @@ import pytest
 from jobhive.exceptions import CompanyNotFoundError, ScraperError
 from jobhive.models import ATSType
 from jobhive.scrapers import AvatureScraper, ScraperRegistry, get_scraper
+from jobhive.scrapers.avature import _paginated_search_url
 
 
 @pytest.fixture(autouse=True)
@@ -246,6 +247,123 @@ def test_full_base_url_is_supported_for_custom_domain_tenants(httpx_mock) -> Non
     jobs = AvatureScraper(base).fetch()
     assert len(jobs) == 1
     assert str(jobs[0].url) == "https://careers.example.com/en_US/careers/JobDetail/Eng/1"
+
+
+def test_full_base_url_with_custom_search_path_is_supported(httpx_mock) -> None:
+    """Some custom-domain tenants use `/jobs/SearchJobs` or other portal
+    prefixes instead of the default `/careers/SearchJobs`."""
+    base = "https://jobs.example.com/jobs"
+    httpx_mock.add_response(
+        url=f"{base}/SearchJobs/?jobOffset=0&jobRecordsPerPage=12",
+        text='<a href="/jobs/ProjectDetail/Eng/1">Eng</a>',
+    )
+
+    jobs = AvatureScraper(base).fetch()
+
+    assert len(jobs) == 1
+    assert str(jobs[0].url) == "https://jobs.example.com/jobs/ProjectDetail/Eng/1"
+
+
+def test_full_searchjobs_url_is_supported(httpx_mock) -> None:
+    base = "https://company.example.com/custom/SearchJobs"
+    httpx_mock.add_response(
+        url=f"{base}/?jobOffset=0&jobRecordsPerPage=12",
+        text='<a href="/custom/JobDetail/Eng/1">Eng</a>',
+    )
+
+    jobs = AvatureScraper(base).fetch()
+
+    assert len(jobs) == 1
+    assert str(jobs[0].url) == "https://company.example.com/custom/JobDetail/Eng/1"
+
+
+def test_searchjobs_maps_pipeline_variant_is_supported(httpx_mock) -> None:
+    base = "https://company.example.com/en_US/jobs/SearchJobsMaps"
+    httpx_mock.add_response(
+        url=f"{base}/?pipelineOffset=0",
+        text=(
+            '<li class="list__item">'
+            '<div class="list__item__text__title">'
+            '<a href="https://company.example.com/en_US/jobs/'
+            'PipelineDetail?pipelineId=123">Retail Specialist</a>'
+            "</div>"
+            '<div class="list__item__text__subtitle">'
+            "<span>Chicago, Illinois, United States</span>"
+            "</div>"
+            "</li>"
+        ),
+    )
+
+    jobs = AvatureScraper(base).fetch()
+
+    assert len(jobs) == 1
+    assert jobs[0].ats_id == "123"
+    assert jobs[0].title == "Retail Specialist"
+    assert str(jobs[0].url) == (
+        "https://company.example.com/en_US/jobs/PipelineDetail?pipelineId=123"
+    )
+
+
+def test_searchjobs_maps_direct_pagination_uses_pipeline_offsets(httpx_mock) -> None:
+    base = "https://company.example.com/en_US/jobs/SearchJobsMaps"
+
+    def mkpage(start: int, count: int) -> str:
+        return "".join(
+            "<li class='list__item'>"
+            "<div class='list__item__text__title'>"
+            f"<a href='/en_US/jobs/PipelineDetail?pipelineId={i}'>Job {i}</a>"
+            "</div>"
+            "<div class='list__item__text__subtitle'><span>Remote</span></div>"
+            "</li>"
+            for i in range(start, start + count)
+        )
+
+    httpx_mock.add_response(url=f"{base}/?pipelineOffset=0", text=mkpage(0, 30))
+    httpx_mock.add_response(url=f"{base}/?pipelineOffset=30", text=mkpage(30, 1))
+
+    jobs = AvatureScraper(base).fetch()
+
+    assert len(jobs) == 31
+    assert jobs[-1].ats_id == "30"
+    assert str(jobs[0].url) == (
+        "https://company.example.com/en_US/jobs/PipelineDetail?pipelineId=0"
+    )
+
+
+def test_searchjobs_maps_query_params_are_preserved(httpx_mock) -> None:
+    base = "https://company.example.com/en_US/jobs/SearchJobsMaps?folderId=abc&lang=en"
+    expected_url = (
+        "https://company.example.com/en_US/jobs/SearchJobsMaps/"
+        "?folderId=abc&lang=en&pipelineOffset=0"
+    )
+    httpx_mock.add_response(
+        url=expected_url,
+        text=(
+            "<li class='list__item'>"
+            "<div class='list__item__text__title'>"
+            "<a href='/en_US/jobs/PipelineDetail?pipelineId=123'>Retail Specialist</a>"
+            "</div>"
+            "</li>"
+        ),
+    )
+
+    jobs = AvatureScraper(base).fetch()
+
+    assert len(jobs) == 1
+    assert str(jobs[0].url) == (
+        "https://company.example.com/en_US/jobs/PipelineDetail?pipelineId=123"
+    )
+
+
+def test_browserbase_pagination_url_preserves_searchjobs_maps_query_params() -> None:
+    base = "https://company.example.com/en_US/jobs/SearchJobsMaps?folderId=abc&lang=en"
+
+    url = _paginated_search_url(base, 30)
+
+    assert url == (
+        "https://company.example.com/en_US/jobs/SearchJobsMaps/"
+        "?folderId=abc&lang=en&pipelineOffset=30"
+    )
 
 
 # --- Error handling --------------------------------------------------------

@@ -27,7 +27,9 @@ The ``facets`` field in every response carries each value's true ``count``
 from __future__ import annotations
 
 import asyncio
+import html as html_mod
 import re
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -87,15 +89,16 @@ MAX_SUBDIVISION_DEPTH = 4  # Recursion bound — Accenture needs depth 3 to full
 MAX_CONCURRENCY = 10
 MAX_RETRIES = 3
 RETRY_BACKOFF = 1.5
+MAX_RETRY_DELAY = 30.0
 
 # When a Workday job spans multiple offices, the search endpoint returns a
 # rollup string in ``locationsText`` like "2 Locations" / "5 Locations"
 # instead of the actual list — the underlying ``locations`` array is not
-# included in the search payload. We detect those and fetch the per-job
-# detail endpoint (which DOES expose ``jobPostingInfo.location`` plus
-# ``additionalLocations``) to recover the real cities. About 9% of typical
-# Workday rows hit this code path on multi-tenant runs.
+# included in the search payload. ``_enrich_details`` detects these and
+# overwrites the placeholder with the real city list from
+# ``jobPostingInfo.location`` + ``additionalLocations``.
 _LOCATION_ROLLUP_RE = re.compile(r"^\s*\d+\s+Locations?\s*$", re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
 
 # Facets we'll try as subdivision dimensions, in priority order. After
 # `jobFamilyGroup` (which usually covers level 1 well), `timeType`
@@ -112,6 +115,23 @@ class WorkdayScraper(BaseScraper):
 
     ats = ATSType.WORKDAY
 
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        timeout: float = 30.0,
+        max_fetch_seconds: float | None = None,
+        company_name: str | None = None,
+    ) -> None:
+        super().__init__(company_slug, timeout=timeout)
+        self.max_fetch_seconds = max_fetch_seconds
+        self.company_name = (
+            company_name.strip()
+            if company_name and company_name.strip()
+            else None
+        )
+        self._deadline: float | None = None
+
     def fetch(self) -> list[Job]:
         match = URL_PATTERN.match(self.company_slug.rstrip("/"))
         if not match:
@@ -120,6 +140,7 @@ class WorkdayScraper(BaseScraper):
                 f"got {self.company_slug!r}"
             )
         company = match.group("company")
+        display_company = self.company_name or company
         instance = match.group("instance")
         site = match.group("site")
         api = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}/jobs"
@@ -128,7 +149,44 @@ class WorkdayScraper(BaseScraper):
         detail_prefix = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}"
         base = self.company_slug.split("/wday/")[0].rstrip("/")
 
-        return asyncio.run(self._fetch_async(api, base, company, detail_prefix))
+        self._deadline = (
+            time.monotonic() + self.max_fetch_seconds
+            if self.max_fetch_seconds
+            else None
+        )
+        try:
+            return asyncio.run(self._fetch_async(api, base, display_company, detail_prefix))
+        finally:
+            self._deadline = None
+
+    def _check_deadline(self) -> None:
+        if self._deadline is not None and time.monotonic() >= self._deadline:
+            raise ScraperError(
+                f"Workday tenant exceeded max_fetch_seconds="
+                f"{self.max_fetch_seconds:g}: {self.company_slug}"
+            )
+
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        match = URL_PATTERN.match(self.company_slug.rstrip("/"))
+        if not match:
+            return None
+        company = match.group("company")
+        instance = match.group("instance")
+        site = match.group("site")
+        detail_prefix = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}"
+        jobs = [job.model_copy()]
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_details(client, sem, detail_prefix, jobs)
+            return jobs[0].description
+
+        return asyncio.run(run())
 
     async def _fetch_async(
         self,
@@ -158,29 +216,33 @@ class WorkdayScraper(BaseScraper):
                 applied_facets={}, absorb=absorb, depth=0,
             )
 
-            await self._resolve_location_rollups(
-                client, sem, detail_prefix, all_jobs,
-            )
+            if self.include_descriptions:
+                await self._enrich_details(
+                    client, sem, detail_prefix, all_jobs,
+                )
         return all_jobs
 
-    async def _resolve_location_rollups(
+    async def _enrich_details(
         self,
         client: httpx.AsyncClient,
         sem: asyncio.Semaphore,
         detail_prefix: str,
         jobs: list[Job],
     ) -> None:
-        """Replace 'N Locations' rollup strings with the actual city list.
+        """Best-effort per-job detail hydration.
 
-        The search endpoint returns ``locationsText="2 Locations"`` for any
-        posting that spans multiple offices but does not include the
-        underlying location array in the response. We can recover the real
-        cities from the per-job detail endpoint
-        (``jobPostingInfo.location`` + ``additionalLocations``).
+        The search endpoint intentionally omits full posting bodies, so rows
+        built only from ``jobPostings`` have ``description=None``. The detail
+        endpoint exposes ``jobPostingInfo.jobDescription`` for the same
+        ``externalPath``. It also exposes real locations for search rows whose
+        ``locationsText`` is only a rollup string like ``"2 Locations"``.
+
+        Detail failures stay non-fatal: a blocked/moved single posting should
+        not discard the listing row or the rest of the tenant.
         """
         targets = [
             (i, j) for i, j in enumerate(jobs)
-            if isinstance(j.location, str) and _LOCATION_ROLLUP_RE.match(j.location)
+            if (j.raw or {}).get("externalPath") or _external_path(j.url)
         ]
         if not targets:
             return
@@ -208,12 +270,21 @@ class WorkdayScraper(BaseScraper):
             except ValueError:
                 return
             jpi = payload.get("jobPostingInfo") or {}
-            primary = jpi.get("location")
-            additional = jpi.get("additionalLocations") or []
-            resolved = _format_locations(primary, additional)
-            if resolved:
-                # Job is frozen — rebuild via model_copy.
-                jobs[i] = job.model_copy(update={"location": resolved})
+            updates: dict[str, str] = {}
+
+            description = _extract_description(jpi)
+            if description and not job.description:
+                updates["description"] = description[:25_000]
+
+            if isinstance(job.location, str) and _LOCATION_ROLLUP_RE.match(job.location):
+                primary = jpi.get("location")
+                additional = jpi.get("additionalLocations") or []
+                resolved = _format_locations(primary, additional)
+                if resolved:
+                    updates["location"] = resolved
+
+            if updates:
+                jobs[i] = job.model_copy(update=updates)
 
         await asyncio.gather(*(resolve(i, j) for i, j in targets))
 
@@ -234,6 +305,7 @@ class WorkdayScraper(BaseScraper):
         - Otherwise (cap reached, no more facets, or max depth) → take
           what we can from this capped query (up to 2000 jobs) and stop.
         """
+        self._check_deadline()
         first = await self._request(client, api, sem, applied_facets=applied_facets, offset=0)
         if first is None:
             return
@@ -274,6 +346,7 @@ class WorkdayScraper(BaseScraper):
         param, values = facet
 
         async def child(value_id: str) -> None:
+            self._check_deadline()
             child_filters = {**applied_facets, param: [value_id]}
             await self._exhaust_query(
                 client, api, sem,
@@ -293,9 +366,11 @@ class WorkdayScraper(BaseScraper):
         absorb,
     ) -> None:
         """Fan out offsets [PAGE_LIMIT, total) under the shared semaphore."""
+        self._check_deadline()
         offsets = list(range(PAGE_LIMIT, total, PAGE_LIMIT))
 
         async def fetch_one(offset: int) -> list[dict[str, Any]]:
+            self._check_deadline()
             payload = await self._request(
                 client, api, sem, applied_facets=applied_facets, offset=offset
             )
@@ -325,6 +400,7 @@ class WorkdayScraper(BaseScraper):
         retryable_statuses = {403, 429, 502, 503, 504}
         last_exc: Exception | None = None
         for attempt in range(MAX_RETRIES):
+            self._check_deadline()
             async with sem:
                 try:
                     response = await client.post(
@@ -332,7 +408,7 @@ class WorkdayScraper(BaseScraper):
                     )
                 except httpx.HTTPError as exc:
                     last_exc = exc
-                    await asyncio.sleep(RETRY_BACKOFF ** attempt)
+                    await asyncio.sleep(min(MAX_RETRY_DELAY, RETRY_BACKOFF ** attempt))
                     continue
             if response.status_code == 404:
                 raise CompanyNotFoundError(
@@ -347,6 +423,7 @@ class WorkdayScraper(BaseScraper):
                     float(retry_after) if retry_after and retry_after.isdigit()
                     else RETRY_BACKOFF ** attempt
                 )
+                delay = min(MAX_RETRY_DELAY, delay)
                 await asyncio.sleep(delay)
                 continue
             raise ScraperError(
@@ -472,6 +549,24 @@ def _format_locations(primary: object, additional: object) -> str | None:
             if isinstance(v, str) and v.strip() and v.strip() not in locs:
                 locs.append(v.strip())
     return " | ".join(locs) if locs else None
+
+
+def _extract_description(job_posting_info: dict[str, Any]) -> str | None:
+    """Return Workday's full posting body as plain text.
+
+    The canonical detail field is ``jobDescription`` and is usually HTML.
+    A few tenants expose closely named fallback fields, so try those before
+    giving up.
+    """
+    for key in ("jobDescription", "externalJobDescription", "description"):
+        value = job_posting_info.get(key)
+        if isinstance(value, str) and value.strip():
+            text = html_mod.unescape(value)
+            text = _TAG_RE.sub(" ", text)
+            text = html_mod.unescape(text)
+            text = re.sub(r"\s+", " ", text).strip()
+            return text or None
+    return None
 
 
 def _pick_subdivision_facet(

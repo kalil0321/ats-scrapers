@@ -1,8 +1,8 @@
 """ATS scrapers — one class per platform.
 
 Each scraper is a thin, dependency-light fetch+parse layer that returns
-`Job` instances. Heavy lifting (discovery, enrichment, deduplication) lives
-in `jobhive.pipeline` so a scraper stays usable on its own.
+`Job` instances. Discovery, enrichment, deduplication, and publishing are
+kept outside the public scraper API so each scraper stays usable on its own.
 
 >>> from jobhive.scrapers import GreenhouseScraper
 >>> jobs = GreenhouseScraper("openai").fetch()
@@ -28,6 +28,7 @@ from jobhive.scrapers.greenhouse import GreenhouseScraper
 from jobhive.scrapers.icims import iCIMSScraper
 from jobhive.scrapers.infojobs_es import InfoJobsSpainScraper
 from jobhive.scrapers.jazzhr import JazzHRScraper
+from jobhive.scrapers.jobs_cz import JobsCzScraper
 from jobhive.scrapers.jobsch import JobsChScraper
 from jobhive.scrapers.join_com import JoinComScraper
 from jobhive.scrapers.lever import LeverScraper
@@ -81,6 +82,7 @@ __all__ = [
     "InfoJobsSpainScraper",
     "JazzHRScraper",
     "JobsChScraper",
+    "JobsCzScraper",
     "JoinComScraper",
     "LeverScraper",
     "ManfredScraper",

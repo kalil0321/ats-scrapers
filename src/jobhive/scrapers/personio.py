@@ -94,7 +94,8 @@ class PersonioScraper(BaseScraper):
                     jobs = [self._parse_job(item, base) for item in items]
                     break
             if jobs:
-                self._enrich_descriptions(jobs)
+                if self.include_descriptions:
+                    self._enrich_descriptions(jobs)
                 return jobs
         if last_error:
             raise CompanyNotFoundError(
@@ -102,28 +103,32 @@ class PersonioScraper(BaseScraper):
             ) from last_error
         return []
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        try:
+            with httpx.Client(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                response = client.get(
+                    str(job.url),
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+        except httpx.HTTPError:
+            return None
+        if response.status_code != 200:
+            return None
+        description = _extract_description(response.text)
+        return description[:25_000] if description else None
+
     def _enrich_descriptions(self, jobs: list[Job]) -> None:
         """Fan out per-job HTML fetches; pull the description body out
         of the ``page_jobDescription`` block. ``httpx.Client`` is not
         thread-safe so we use short-lived per-thread clients."""
-        timeout = self.timeout
-
         def fetch_one(job: Job) -> None:
-            try:
-                with httpx.Client(
-                    timeout=timeout, follow_redirects=True,
-                ) as client:
-                    response = client.get(
-                        str(job.url),
-                        headers={"User-Agent": "Mozilla/5.0"},
-                    )
-            except httpx.HTTPError:
-                return
-            if response.status_code != 200:
-                return
-            description = _extract_description(response.text)
+            description = self.get_description(job)
             if description:
-                job.description = description[:10_000]
+                job.description = description
 
         with ThreadPoolExecutor(max_workers=DETAIL_CONCURRENCY) as pool:
             list(pool.map(fetch_one, jobs))

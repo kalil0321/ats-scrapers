@@ -138,12 +138,15 @@ def test_workplace_type_remote_maps_to_is_remote(httpx_mock) -> None:
     assert by_id["h"].is_remote is None  # hybrid: ambiguous
 
 
-def test_html_description_stripped(httpx_mock) -> None:
+def test_html_description_preserved(httpx_mock) -> None:
+    """Description now keeps HTML tags intact for downstream
+    markdownification; only entities are decoded at scrape time."""
     p = _posting()
-    p["description"] = "<div><p>Hello\n\n<b>world</b></p></div>"
+    p["description"] = "<div><p>Hello&nbsp;<b>world</b></p></div>"
     httpx_mock.add_response(url=URL, json={"data": [p]})
     job = PinpointScraper("acme").fetch()[0]
-    assert job.description == "Hello world"
+    assert "<b>world</b>" in job.description
+    assert "&nbsp;" not in job.description  # entity decoded
 
 
 def test_location_falls_back_to_city_when_name_missing(httpx_mock) -> None:

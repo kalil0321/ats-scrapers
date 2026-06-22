@@ -13,6 +13,7 @@ Implementation notes:
 from __future__ import annotations
 
 from functools import lru_cache
+from importlib.util import find_spec
 from io import BytesIO
 from typing import TYPE_CHECKING
 
@@ -40,11 +41,11 @@ class Client:
         self,
         *,
         manifest_url: str = DEFAULT_MANIFEST_URL,
-        prefer_parquet: bool = True,
+        prefer_parquet: bool | None = None,
         http_client: httpx.Client | None = None,
     ) -> None:
         self._manifest_url = manifest_url
-        self._prefer_parquet = prefer_parquet
+        self._prefer_parquet = _has_parquet_engine() if prefer_parquet is None else prefer_parquet
         self._http_client = http_client or httpx.Client(
             timeout=120.0, follow_redirects=True
         )
@@ -88,12 +89,8 @@ class Client:
             return self._download(url)
 
         if date is not None:
-            entry = self.manifest.by_date.get(date)
-            if entry is None:
-                raise StorageError(f"No snapshot for date {date}")
-            return self._download(
-                str(entry.parquet) if self._prefer_parquet and entry.parquet else str(entry.csv)
-            )
+            url = self.manifest.url_for_date(date, prefer_parquet=self._prefer_parquet)
+            return self._download(url)
 
         if self._snapshot is None:
             url = self.manifest.url_for_all(prefer_parquet=self._prefer_parquet)
@@ -148,13 +145,24 @@ class Client:
 
         buffer = BytesIO(response.content)
         if url.endswith(".parquet"):
-            return pd.read_parquet(buffer)
+            try:
+                return pd.read_parquet(buffer)
+            except ImportError as exc:
+                raise StorageError(
+                    "This dataset artifact is Parquet-only, but no Parquet engine "
+                    "is installed. Install with `pip install jobhive-py[parquet]`, "
+                    "or load a per-ATS CSV slice with `Client(prefer_parquet=False).load(ats=...)`."
+                ) from exc
         return pd.read_csv(buffer)
 
 
 @lru_cache(maxsize=1)
 def _default_client() -> Client:
     return Client()
+
+
+def _has_parquet_engine() -> bool:
+    return find_spec("pyarrow") is not None or find_spec("fastparquet") is not None
 
 
 def search(

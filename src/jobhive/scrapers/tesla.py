@@ -77,6 +77,35 @@ class TeslaScraper(BaseScraper):
             return []
         return asyncio.run(self._fetch_via_cloakbrowser())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        if not job.ats_id or not cb.is_enabled():
+            return None
+
+        async def run() -> str | None:
+            from cloakbrowser import launch_async
+
+            proxy = cb.evomi_proxy_from_env()
+            browser = await launch_async(
+                headless=True, humanize=True, proxy=proxy,
+            )
+            try:
+                page = await browser.new_page()
+                await page.goto(
+                    f"{_BASE_URL}{_CAREERS_HOME}",
+                    wait_until="domcontentloaded",
+                    timeout=60_000,
+                )
+                await asyncio.sleep(_INITIAL_SETTLE_S)
+                details = await self._fetch_details(page, [job.ats_id])
+            finally:
+                await browser.close()
+            detail = details.get(job.ats_id)
+            return _format_description(detail) if detail else None
+
+        return asyncio.run(run())
+
     async def _fetch_via_cloakbrowser(self) -> list[Job]:
         from cloakbrowser import launch_async
 
@@ -135,14 +164,15 @@ class TeslaScraper(BaseScraper):
             # this step every Tesla row ships with an empty
             # ``description`` (violates the
             # always-include-descriptions invariant).
-            ids = [j.ats_id for j in jobs]
-            details = await self._fetch_details(page, ids)
-            for j in jobs:
-                d = details.get(j.ats_id)
-                if d:
-                    j.description = _format_description(d) or None
-                    if not j.department:
-                        j.department = d.get("department") or None
+            if self.include_descriptions:
+                ids = [j.ats_id for j in jobs]
+                details = await self._fetch_details(page, ids)
+                for j in jobs:
+                    d = details.get(j.ats_id)
+                    if d:
+                        j.description = _format_description(d) or None
+                        if not j.department:
+                            j.department = d.get("department") or None
         finally:
             await browser.close()
 

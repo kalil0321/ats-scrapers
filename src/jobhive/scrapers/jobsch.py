@@ -40,8 +40,10 @@ Single-source scraper: ``company_slug`` is informational and ignored.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -61,12 +63,25 @@ PER_PAGE = 20  # API hard-caps ``rows`` at 20 (>20 → 422).
 MAX_CONCURRENCY = 4
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 1.5
+DETAIL_CONCURRENCY = 4
 # The API hard-caps deep pagination at start=2000 (==page 100). Any
 # per-query fetch therefore tops out at 2 000 rows.
 MAX_USABLE_OFFSET = 2000
 # Default cap on pages per query — 100 × 20 rows = the API's per-query
 # ceiling. Lower via ``max_pages`` for quick smoke runs.
 DEFAULT_MAX_PAGES = 100
+
+_TAG_RE = re.compile(r"<[^>]+>")
+_META_TAG_RE = re.compile(r"<meta\b(?P<attrs>[^>]*)>", re.IGNORECASE | re.DOTALL)
+_ATTR_RE = re.compile(
+    r"(?P<name>[a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*"
+    r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
+    re.DOTALL,
+)
+_DESCRIPTION_BLOCK_RE = re.compile(
+    r'<(?:div|section|article)[^>]+class=["\'][^"\']*(?:job-description|vacancy-description|description|jobad)[^"\']*["\'][^>]*>(?P<body>.*?)</(?:div|section|article)>',
+    re.IGNORECASE | re.DOTALL,
+)
 
 # Keyword seeds covering DE / FR / IT / EN to defeat the per-query
 # 2 000-row pagination cap. Probed live 2026-05-09: each seed below
@@ -128,6 +143,26 @@ class JobsChScraper(BaseScraper):
 
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
+
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+        proxy_url = _evomi_proxy_url_from_env()
+
+        async def run() -> str | None:
+            client_kwargs: dict[str, Any] = {
+                "timeout": self.timeout,
+                "follow_redirects": True,
+            }
+            if proxy_url is not None:
+                client_kwargs["proxy"] = proxy_url
+            async with httpx.AsyncClient(**client_kwargs) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_description(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
 
     async def _fetch_async(self) -> list[Job]:
         # Probe IP routing on the empty query: if the datacenter IP is
@@ -200,6 +235,8 @@ class JobsChScraper(BaseScraper):
                 seed, len(slice_jobs), new_count, len(all_jobs),
             )
 
+        if self.include_descriptions and all_jobs:
+            await self._enrich_descriptions(all_jobs, proxy_url=proxy_url)
         return all_jobs
 
     async def _run_fetch(
@@ -259,6 +296,42 @@ class JobsChScraper(BaseScraper):
 
             await asyncio.gather(*(one(o) for o in offsets))
         return jobs
+
+    async def _enrich_descriptions(
+        self, jobs: list[Job], *, proxy_url: str | None
+    ) -> None:
+        client_kwargs: dict[str, Any] = {
+            "timeout": self.timeout,
+            "follow_redirects": True,
+        }
+        if proxy_url is not None:
+            client_kwargs["proxy"] = proxy_url
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            detail_sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+            await asyncio.gather(*(
+                self._enrich_description(client, detail_sem, job) for job in jobs
+            ))
+
+    async def _enrich_description(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        async with sem:
+            try:
+                response = await client.get(
+                    str(job.url),
+                    headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*"},
+                )
+            except httpx.HTTPError:
+                return
+        if response.status_code != 200:
+            return
+        description = _extract_description(response.text)
+        if description and not job.description:
+            job.description = description[:25_000]
 
     async def _fetch_page(
         self,
@@ -406,6 +479,37 @@ def _parse_iso(value: object) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _extract_description(text: str) -> str | None:
+    match = _DESCRIPTION_BLOCK_RE.search(text)
+    if match:
+        cleaned = _strip_html(match.group("body"))
+        if cleaned:
+            return cleaned
+    meta = _extract_meta_description(text)
+    return meta or None
+
+
+def _extract_meta_description(text: str) -> str | None:
+    for tag in _META_TAG_RE.finditer(text):
+        attrs = {
+            m.group("name").lower(): html.unescape(m.group("value"))
+            for m in _ATTR_RE.finditer(tag.group("attrs"))
+        }
+        kind = (attrs.get("name") or attrs.get("property") or "").lower()
+        if kind not in {"description", "og:description"}:
+            continue
+        cleaned = _strip_html(attrs.get("content") or "")
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _strip_html(value: str) -> str:
+    text = html.unescape(value)
+    text = _TAG_RE.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _evomi_proxy_url_from_env() -> str | None:

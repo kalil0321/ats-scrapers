@@ -384,9 +384,9 @@ def _concat_descriptions(attrs: dict[str, Any]) -> str:
 
 def _strip_html(text: str) -> str:
     """Strip tags + entities + collapse whitespace, then truncate so the
-    canonical schema's ~10kB description budget isn't blown by long
+    canonical schema's ~25k chars description budget isn't blown by long
     HTML-formatted bodies."""
     cleaned = _TAG_RE.sub(" ", text)
     cleaned = html.unescape(cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned[:10_000]
+    return cleaned[:25_000]

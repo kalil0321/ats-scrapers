@@ -129,11 +129,15 @@ class AshbyScraper(BaseScraper):
                 elif wp_norm in ("onsite", "inperson", "office"):
                     is_remote = False
 
-        # Description — prefer plain text; HTML is a fallback in case
-        # Ashby ever drops the plaintext field.
+        # Description — prefer ``descriptionHtml`` over ``descriptionPlain``.
+        # The HTML form retains paragraph breaks, bullet lists, and headings
+        # (the plain text concatenates them into a single block); the
+        # post-scrape markdownify step in scripts/normalize_descriptions.py
+        # then converts the HTML into clean markdown. Plain stays as a
+        # last-ditch fallback.
         description = (
-            item.get("descriptionPlain")
-            or item.get("descriptionHtml")
+            item.get("descriptionHtml")
+            or item.get("descriptionPlain")
             or None
         )
 

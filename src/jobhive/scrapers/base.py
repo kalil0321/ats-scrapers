@@ -41,10 +41,35 @@ class BaseScraper(ABC):
     def __init__(self, company_slug: str, *, timeout: float = 30.0) -> None:
         self.company_slug = company_slug
         self.timeout = timeout
+        self.include_descriptions = True
 
     @abstractmethod
     def fetch(self) -> list[Job]:
         """Return all currently active jobs for this company."""
+
+    def get_description(self, job: Job) -> str | None:
+        """Fetch or return the best-known description for one job.
+
+        The default implementation is correct for providers whose listing
+        payload already includes the full description. Providers that need a
+        per-job detail request override this method.
+        """
+        return job.description
+
+    def enrich_descriptions(self, jobs: list[Job]) -> list[Job]:
+        """Fill missing descriptions in ``jobs`` when the provider supports it.
+
+        The default path calls :meth:`get_description` one job at a time.
+        High-volume providers can override this with a batched/concurrent
+        implementation while keeping the public API stable.
+        """
+        for job in jobs:
+            if job.description:
+                continue
+            description = self.get_description(job)
+            if description:
+                job.description = description[:25_000]
+        return jobs
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.company_slug!r})"

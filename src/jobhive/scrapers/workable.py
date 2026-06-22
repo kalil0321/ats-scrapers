@@ -19,14 +19,12 @@ Workable rate-limits hard from a single IP — bulk pipeline runs at
 concurrency >2 see 429s on most tenants. The scraper retries 429/5xx
 with exponential backoff (honouring ``Retry-After`` when present); the
 caller should still keep concurrency low (2-4) for full re-scrapes.
-The per-job Markdown fetch is opt-in via
-``JOBHIVE_WORKABLE_FETCH_DESCRIPTIONS=1`` to avoid amplifying the
-rate-limit pressure during default discovery passes.
+The per-job Markdown fetch is best-effort so the listing row survives
+when a detail request is rate-limited or unavailable.
 """
 
 from __future__ import annotations
 
-import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -128,35 +126,38 @@ class WorkableScraper(BaseScraper):
         payload = response.json()
         jobs = [self._parse_job(item) for item in payload.get("jobs", [])]
 
-        # Optional per-job Markdown enrichment for description body.
-        # Default off — Workable rate-limits aggressively, so bulk runs
-        # opt in only when description coverage is wanted.
-        if jobs and os.getenv("JOBHIVE_WORKABLE_FETCH_DESCRIPTIONS"):
+        if self.include_descriptions and jobs:
             self._enrich_descriptions(jobs)
         return jobs
+
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        if not job.ats_id:
+            return None
+        url = MARKDOWN_TEMPLATE.format(slug=self.company_slug, shortcode=job.ats_id)
+        try:
+            with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
+                response = client.get(
+                    url,
+                    headers={"User-Agent": USER_AGENT, "Accept": "text/markdown"},
+                )
+        except httpx.HTTPError:
+            return None
+        if response.status_code != 200:
+            return None
+        text = response.text.strip()
+        return text[:25_000] if text else None
 
     def _enrich_descriptions(self, jobs: list[Job]) -> None:
         """Pull the Markdown body for each job from
         ``/{slug}/jobs/view/{shortcode}.md``. Runs in a thread pool with
         a low cap (4) so we stay below the per-tenant rate limit."""
-        slug = self.company_slug
-        timeout = self.timeout
 
         def fetch_one(job: Job) -> None:
-            url = MARKDOWN_TEMPLATE.format(slug=slug, shortcode=job.ats_id)
-            try:
-                with httpx.Client(timeout=timeout, follow_redirects=True) as c:
-                    resp = c.get(
-                        url,
-                        headers={"User-Agent": USER_AGENT, "Accept": "text/markdown"},
-                    )
-            except httpx.HTTPError:
-                return
-            if resp.status_code != 200:
-                return
-            text = resp.text.strip()
-            if text and not job.description:
-                job.description = text[:10_000]
+            description = self.get_description(job)
+            if description and not job.description:
+                job.description = description
 
         with ThreadPoolExecutor(max_workers=DETAIL_CONCURRENCY) as pool:
             list(pool.map(fetch_one, jobs))

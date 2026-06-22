@@ -125,6 +125,22 @@ class BambooHRScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=True,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_one(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         async with httpx.AsyncClient(
             timeout=self.timeout,
@@ -136,7 +152,7 @@ class BambooHRScraper(BaseScraper):
         ) as client:
             html = await self._fetch_widget(client)
             jobs = self._parse_widget(html)
-            if jobs:
+            if self.include_descriptions and jobs:
                 await self._enrich_from_detail_api(client, jobs)
             return jobs
 
@@ -296,8 +312,8 @@ def _apply_opening_to_job(job: Job, opening: dict) -> None:
     desc_html = opening.get("description")
     if isinstance(desc_html, str) and desc_html.strip():
         # ``description`` is HTML on BambooHR's side. Strip tags for
-        # plain-text storage; cap at 10kB to match the Job schema doc.
-        job.description = _strip_tags(desc_html)[:10_000] or None
+        # plain-text storage; cap at 25k chars to match the Job schema doc.
+        job.description = _strip_tags(desc_html)[:25_000] or None
 
     emp_label = opening.get("employmentStatusLabel")
     if isinstance(emp_label, str) and emp_label.strip():

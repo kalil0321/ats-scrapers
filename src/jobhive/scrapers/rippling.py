@@ -64,6 +64,21 @@ class RipplingScraper(BaseScraper):
     def fetch(self) -> list[Job]:
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True,
+            ) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_detail(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         url = API_TEMPLATE.format(slug=self.company_slug)
         async with httpx.AsyncClient(
@@ -96,7 +111,7 @@ class RipplingScraper(BaseScraper):
                 items = []
             jobs = [self._parse_job(item) for item in items]
 
-            if jobs:
+            if self.include_descriptions and jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_detail(client, sem, j) for j in jobs
@@ -188,7 +203,7 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
             if isinstance(html, str) and html.strip():
                 parts.append(_strip_html(html))
         if parts:
-            job.description = "\n\n".join(parts)[:10_000]
+            job.description = "\n\n".join(parts)[:25_000]
 
     emp = detail.get("employmentType")
     if isinstance(emp, dict):

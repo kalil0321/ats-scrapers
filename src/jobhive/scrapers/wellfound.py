@@ -152,6 +152,21 @@ class WellfoundScraper(BaseScraper):
             )
         return asyncio.run(self._fetch_async())
 
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        if not self.firecrawl_api_key:
+            return None
+        copy = job.model_copy()
+
+        async def run() -> str | None:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_description(client, sem, copy)
+            return copy.description
+
+        return asyncio.run(run())
+
     async def _fetch_async(self) -> list[Job]:
         seen: set[str] = set()
         jobs: list[Job] = []
@@ -181,7 +196,27 @@ class WellfoundScraper(BaseScraper):
 
             tasks = [fetch_overall()] + [per_role(s) for s in self.role_slugs]
             await asyncio.gather(*tasks)
+            if self.include_descriptions and jobs:
+                await asyncio.gather(*(
+                    self._enrich_description(client, sem, job) for job in jobs
+                ))
         return jobs
+
+    async def _enrich_description(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        try:
+            markdown = await self._firecrawl_scrape(client, sem, str(job.url))
+        except ScraperError:
+            return
+        if not markdown:
+            return
+        description = _description_from_markdown(markdown, title=job.title)
+        if description and not job.description:
+            job.description = description[:25_000]
 
     async def _fetch_role(
         self,
@@ -326,6 +361,50 @@ def _parse_markdown(md: str):
             posted_at=posted,
             fetched_at=datetime.now(),
         )
+
+
+def _description_from_markdown(md: str, *, title: str) -> str | None:
+    """Extract a useful body from a rendered Wellfound job page.
+
+    Role/list pages are company-grouped and include multiple card links; those
+    are intentionally ignored so we don't store listing chrome as a posting
+    description.
+    """
+    if _COMPANY_HEADER_RE.search(md):
+        return None
+    lines: list[str] = []
+    skip_until_body = bool(title)
+    for raw in md.splitlines():
+        line = raw.strip()
+        if not line:
+            if lines and lines[-1] != "":
+                lines.append("")
+            continue
+        if skip_until_body:
+            if title.lower() in line.lower():
+                skip_until_body = False
+            continue
+        if line in {"Apply", "Save", "SaveApply"}:
+            continue
+        if line.startswith("[") and "wellfound.com/jobs/" in line:
+            continue
+        if _parse_relative(line) is not None:
+            continue
+        if "$" in line and _parse_salary(line) is not None:
+            continue
+        cleaned = _markdown_to_text(line)
+        if cleaned:
+            lines.append(cleaned)
+    text = "\n".join(lines).strip()
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text or None
+
+
+def _markdown_to_text(value: str) -> str:
+    value = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", value)
+    value = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)
+    value = re.sub(r"[*_`#>]+", "", value)
+    return re.sub(r"[ \t\r\f\v]+", " ", value).strip()
 
 
 def _parse_job_window(window: str) -> tuple[

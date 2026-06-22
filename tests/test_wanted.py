@@ -16,14 +16,28 @@ from jobhive.exceptions import ScraperError
 from jobhive.models import ATSType
 from jobhive.scrapers import ScraperRegistry, WantedScraper
 
-_API_RE = re.compile(r"^https://www\.wanted\.co\.kr/api/v4/jobs")
+_API_RE = re.compile(r"^https://www\.wanted\.co\.kr/api/v4/jobs(?:\?.*)?$")
 
 
 @pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+def _fast_retries(monkeypatch: pytest.MonkeyPatch, httpx_mock) -> None:
     import jobhive.scrapers.wanted as w
     monkeypatch.setattr(w, "MAX_RETRIES", 1)
     monkeypatch.setattr(w, "RETRY_BASE_DELAY", 0.0)
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.wanted\.co\.kr/api/v4/jobs/\d+$"),
+        json={
+            "job": {
+                "detail": {
+                    "intro": "Build hiring products.",
+                    "main_tasks": "Own the platform.",
+                    "requirements": "Python experience.",
+                }
+            }
+        },
+        is_reusable=True,
+        is_optional=True,
+    )
 
 
 def _job(
@@ -111,6 +125,7 @@ def test_parses_full_v4_job_payload(httpx_mock) -> None:
     # listings ship Korean strings — keep them verbatim).
     assert j.location == "중구, 서울, 한국"
     assert j.experience == 4  # annual_from
+    assert j.description == "Build hiring products.\n\nOwn the platform.\n\nPython experience."
     assert j.raw is not None
     assert j.raw.get("annual_to") == 6
     assert j.raw.get("industry_name") == "Tech"
