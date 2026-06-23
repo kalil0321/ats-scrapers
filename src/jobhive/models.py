@@ -68,6 +68,7 @@ class ATSType(StrEnum):
     ARBETSFORMEDLINGEN = "arbetsformedlingen"
     EURES = "eures"
     # Hybrid jobboards (companies post directly, not aggregated)
+    ZHAOPIN = "zhaopin"
     WELCOMETOTHEJUNGLE = "welcometothejungle"
     GETONBRD = "getonbrd"
     WANTED = "wanted"
