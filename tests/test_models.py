@@ -34,6 +34,8 @@ def test_ats_type_includes_every_supported_platform() -> None:
         # Additional multi-tenant ATSes
         "bamboohr", "breezy", "jazzhr",
         "recruitee", "taleo", "teamtailor",
+        # Moroccan job boards
+        "rekrute", "avito_ma",
         # Catch-all
         "custom",
     }
