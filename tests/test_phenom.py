@@ -30,13 +30,8 @@ from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import PhenomScraper, ScraperRegistry
 
-
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.phenom as ph
-    monkeypatch.setattr(ph, "MAX_RETRIES", 1)
-    monkeypatch.setattr(ph, "RETRY_BASE_DELAY", 0.0)
-
+# Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture in
+# conftest.py — the shared fetch layer replaced per-scraper retry constants.
 
 BASE = "https://jobs.acme.com"
 SEARCH_URL = f"{BASE}/us/en/search-results"
@@ -333,9 +328,7 @@ def test_init_404_raises_company_not_found(httpx_mock) -> None:
         PhenomScraper(BASE).fetch()
 
 
-def test_widgets_5xx_retries(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.phenom as ph
-    monkeypatch.setattr(ph, "MAX_RETRIES", 3)
+def test_widgets_5xx_retries(httpx_mock) -> None:
     _seed_csrf(httpx_mock)
     httpx_mock.add_response(url=WIDGETS_URL, status_code=503)
     httpx_mock.add_response(
@@ -346,9 +339,6 @@ def test_widgets_5xx_retries(monkeypatch, httpx_mock) -> None:
 
 
 def test_widgets_429_with_retry_after_honored(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.phenom as ph
-    monkeypatch.setattr(ph, "MAX_RETRIES", 3)
-
     sleeps: list[float] = []
     async def fake_sleep(s: float) -> None:
         sleeps.append(s)
@@ -372,9 +362,7 @@ def test_malformed_json_raises_clean_error(httpx_mock) -> None:
         PhenomScraper(BASE).fetch()
 
 
-def test_network_error_raises(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.phenom as ph
-    monkeypatch.setattr(ph, "MAX_RETRIES", 2)
+def test_network_error_raises(httpx_mock) -> None:
     _seed_csrf(httpx_mock)
     httpx_mock.add_exception(
         httpx.ConnectError("DNS failed"), url=WIDGETS_URL, is_reusable=True

@@ -12,13 +12,8 @@ from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import ScraperRegistry, SuccessFactorsScraper
 
-
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.successfactors as sf
-    monkeypatch.setattr(sf, "MAX_RETRIES", 1)
-    monkeypatch.setattr(sf, "RETRY_BASE_DELAY", 0.0)
-
+# Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture in
+# conftest.py — the shared fetch layer replaced per-scraper retry constants.
 
 FEED_URL = "https://job.acme.com/sitemal.xml"
 
@@ -171,9 +166,7 @@ def test_raises_company_not_found_on_404(httpx_mock) -> None:
         SuccessFactorsScraper("job.acme.com").fetch()
 
 
-def test_5xx_retries(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.successfactors as sf
-    monkeypatch.setattr(sf, "MAX_RETRIES", 3)
+def test_5xx_retries(httpx_mock) -> None:
     httpx_mock.add_response(url=FEED_URL, status_code=503)
     httpx_mock.add_response(url=FEED_URL, text=_rss([_item()]))
     jobs = SuccessFactorsScraper("job.acme.com").fetch()
@@ -181,8 +174,8 @@ def test_5xx_retries(monkeypatch, httpx_mock) -> None:
 
 
 def test_5xx_exhausts_retries(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.successfactors as sf
-    monkeypatch.setattr(sf, "MAX_RETRIES", 2)
+    import ats_scrapers.fetch
+    monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 2)
     httpx_mock.add_response(url=FEED_URL, status_code=502, is_reusable=True)
     with pytest.raises(ScraperError, match="502"):
         SuccessFactorsScraper("job.acme.com").fetch()

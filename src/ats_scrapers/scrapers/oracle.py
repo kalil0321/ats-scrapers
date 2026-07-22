@@ -26,25 +26,23 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlparse
 
-import httpx
-
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 PAGE_LIMIT = 200
 SITE_RE = re.compile(r"site_number=([^&]+)")
 SITE_PATH_RE = re.compile(r"/sites/([^/?#]+)")
 DEFAULT_SITE = "CX_1"
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 DETAIL_CONCURRENCY = 8
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -112,8 +110,7 @@ class OracleScraper(BaseScraper):
 
     ats = ATSType.ORACLE
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str]] = {"Accept": "application/json"}
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -128,16 +125,14 @@ class OracleScraper(BaseScraper):
         )
 
         async def run() -> str | None:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=True,
-            ) as client:
+            async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
-                await self._enrich_detail(client, sem, detail_url, copy)
+                await self._enrich_detail(fetch, sem, detail_url, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         base, site = _normalize_oracle_target(self.company_slug)
         if not base.startswith(("http://", "https://")):
             raise ScraperError(
@@ -147,11 +142,9 @@ class OracleScraper(BaseScraper):
 
         all_jobs: list[Job] = []
         seen: set[str] = set()
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
+        async with self.make_fetcher() as fetch:
             # First call also tells us TotalJobsCount.
-            first = await self._fetch_with_retry(client, api, base, site, offset=0)
+            first = await self._fetch_page(fetch, api, site, offset=0)
             items, total = _unwrap(first)
             for it in items:
                 job = self._parse_job(it, base, site)
@@ -167,9 +160,7 @@ class OracleScraper(BaseScraper):
             page_size = max(len(items), 1)
             offsets = list(range(page_size, total, page_size))
             for offset in offsets:
-                payload = await self._fetch_with_retry(
-                    client, api, base, site, offset=offset
-                )
+                payload = await self._fetch_page(fetch, api, site, offset=offset)
                 page_items, _ = _unwrap(payload)
                 if not page_items:
                     break
@@ -186,31 +177,31 @@ class OracleScraper(BaseScraper):
                     "recruitingCEJobRequisitionDetails"
                 )
                 await asyncio.gather(*(
-                    self._enrich_detail(client, sem, detail_url, j)
+                    self._enrich_detail(fetch, sem, detail_url, j)
                     for j in all_jobs
                 ))
         return all_jobs
 
     async def _enrich_detail(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         detail_url: str,
         job: Job,
     ) -> None:
+        # Best-effort: detail failures keep the listing-derived row
+        # (CompanyNotFoundError subclasses ScraperError).
         if not job.ats_id or job.description:
             return
         async with sem:
             try:
-                response = await client.get(
+                response = await fetch.request(
+                    "GET",
                     detail_url,
                     params={"finder": f"ById;Id={job.ats_id}", "onlyData": "true"},
-                    headers={"Accept": "application/json"},
                 )
-            except httpx.HTTPError:
+            except ScraperError:
                 return
-        if response.status_code != 200:
-            return
         try:
             data = response.json()
         except ValueError:
@@ -235,12 +226,12 @@ class OracleScraper(BaseScraper):
         if parts:
             job.description = "\n\n".join(parts)[:25_000]
 
-    async def _fetch_with_retry(
+    async def _fetch_page(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         api: str,
-        base: str,
         site: str,
+        *,
         offset: int,
     ) -> dict[str, Any]:
         params = {
@@ -253,39 +244,7 @@ class OracleScraper(BaseScraper):
             # search-context metadata (facets, totalCount), not actual jobs.
             "expand": "requisitionList",
         }
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(
-                    api, params=params, headers={"Accept": "application/json"},
-                )
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Oracle fetch failed for {base} at offset={offset}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                return response.json()
-            if response.status_code == 404:
-                raise CompanyNotFoundError(f"Oracle careers site not found: {base}")
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Oracle ({base}) returned {response.status_code} at "
-                        f"offset={offset} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Oracle returned {response.status_code} for {base} at offset={offset}"
-            )
-        raise ScraperError(f"Oracle ({base}) exhausted retries at offset={offset}")
+        return await fetch.get_json(api, params=params)
 
     def _parse_job(self, item: dict[str, Any], base: str, site: str) -> Job:
         ats_id = str(item.get("Id") or item.get("RequisitionNumber") or "")
@@ -380,7 +339,7 @@ class OracleScraper(BaseScraper):
             description=description,
             requisition_id=requisition_id,
             posted_at=_parse_iso(item.get("PostedDate") or item.get("CreatedOn")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

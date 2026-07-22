@@ -59,6 +59,19 @@ def test_workday_retry_after_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
     assert delays == [7.0, 7.0, 7.0]
 
 
+def test_workday_from_url_delegates_to_constructor() -> None:
+    """`from_url` is the explicit full-careers-URL entry point; it must
+    behave exactly like passing the URL as `company_slug`."""
+    url = "https://accenture.wd103.myworkdayjobs.com/accenturecareers"
+    scraper = WorkdayScraper.from_url(
+        url, max_fetch_seconds=5, company_name="Accenture"
+    )
+    assert isinstance(scraper, WorkdayScraper)
+    assert scraper.company_slug == url
+    assert scraper.max_fetch_seconds == 5
+    assert scraper.company_name == "Accenture"
+
+
 def test_workday_runner_sets_tenant_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ATS_SCRAPERS_WORKDAY_TENANT_TIMEOUT", "123")
     kwargs = runner.CONFIGS["workday"]["kwargs"]({"name": "Advocate Health"})

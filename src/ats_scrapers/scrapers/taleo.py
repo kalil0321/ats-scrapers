@@ -30,21 +30,17 @@ import asyncio
 import html
 import json
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlparse
 
-import httpx
-
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    pass
+    from ats_scrapers.fetch import Fetcher
 
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 DETAIL_CONCURRENCY = 8
 
 # Each job is rendered as `<a class="viewJobLink" href="...rid=NN">Title</a>`.
@@ -94,8 +90,10 @@ class TaleoScraper(BaseScraper):
 
     ats = ATSType.TALEO
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/html,application/xhtml+xml",
+    }
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -103,48 +101,38 @@ class TaleoScraper(BaseScraper):
         copy = job.model_copy()
 
         async def run() -> str | None:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=True,
-            ) as client:
+            async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
-                await self._enrich_detail(client, sem, copy)
+                await self._enrich_detail(fetch, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         url = self._validate_url(self.company_slug)
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
-            html_text = await self._fetch_with_retry(client, url)
+        async with self.make_fetcher() as fetch:
+            html_text = await fetch.get_text(url)
             jobs = self._parse_listing(html_text, base_url=url)
             if self.include_descriptions and jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
-                    self._enrich_detail(client, sem, j) for j in jobs
+                    self._enrich_detail(fetch, sem, j) for j in jobs
                 ))
         return jobs
 
     async def _enrich_detail(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         job: Job,
     ) -> None:
+        # Best-effort: a broken/moved detail page must not discard the
+        # listing row (CompanyNotFoundError subclasses ScraperError).
         async with sem:
             try:
-                response = await client.get(
-                    str(job.url),
-                    headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Accept": "text/html,application/xhtml+xml",
-                    },
-                )
-            except httpx.HTTPError:
+                response = await fetch.request("GET", str(job.url))
+            except ScraperError:
                 return
-        if response.status_code != 200:
-            return
         _apply_jsonld_to_job(job, response.text)
 
     def _validate_url(self, slug: str) -> str:
@@ -159,47 +147,6 @@ class TaleoScraper(BaseScraper):
                 f"Taleo URL must contain `tbe.taleo.net`, got {slug!r}"
             )
         return slug.rstrip("/")
-
-    async def _fetch_with_retry(
-        self, client: httpx.AsyncClient, url: str
-    ) -> str:
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(
-                    url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Accept": "text/html,application/xhtml+xml",
-                    },
-                )
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Taleo fetch failed for {url}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 404:
-                raise CompanyNotFoundError(f"Taleo career site not found: {url}")
-            if response.status_code == 200:
-                return response.text
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Taleo returned {response.status_code} for {url} "
-                        f"after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Taleo returned {response.status_code} for {url}"
-            )
-        raise ScraperError(f"Taleo exhausted retries for {url}")
 
     def _parse_listing(self, html_text: str, *, base_url: str) -> list[Job]:
         company = _company_from_url(base_url)
@@ -225,7 +172,7 @@ class TaleoScraper(BaseScraper):
                     ats_id=rid,
                     location=None,  # location requires per-job page fetch
                     posted_at=None,
-                    fetched_at=datetime.now(),
+                    fetched_at=datetime.now(UTC),
                 )
             )
         return jobs
