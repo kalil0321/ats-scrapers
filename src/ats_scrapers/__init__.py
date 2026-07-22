@@ -16,7 +16,6 @@ directory and is not part of the installable package.
 
 from ats_scrapers._version import __version__
 from ats_scrapers.client import Client, list_ats, search
-from ats_scrapers.fetch import Fetcher, FetchResponse
 from ats_scrapers.exceptions import (
     ATSScrapersError,
     CompanyNotFoundError,
@@ -24,6 +23,7 @@ from ats_scrapers.exceptions import (
     ScraperError,
     StorageError,
 )
+from ats_scrapers.fetch import Fetcher, FetchResponse
 from ats_scrapers.manifest import Manifest
 from ats_scrapers.models import ATSType, Company, EmploymentType, Job, Salary, SalaryPeriod
 
