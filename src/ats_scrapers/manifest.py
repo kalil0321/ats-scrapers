@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ats_scrapers.exceptions import ManifestError
 from ats_scrapers.models import ATSType
 
-DEFAULT_MANIFEST_URL = "https://storage.stapply.ai/ats-scrapers/v1/manifest.json"
+DEFAULT_MANIFEST_URL = "https://storage.stapply.ai/jobhive/v1/manifest.json"
 
 
 class FileEntry(BaseModel):
