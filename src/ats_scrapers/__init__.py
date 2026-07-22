@@ -1,6 +1,6 @@
 """ats-scrapers — open dataset and toolkit for global job market data.
 
-Three layers of progressive disclosure:
+Two layers of progressive disclosure:
 
 1. Dataset client (zero config):
    >>> from ats_scrapers import search
@@ -10,12 +10,12 @@ Three layers of progressive disclosure:
    >>> from ats_scrapers.scrapers import GreenhouseScraper
    >>> jobs = GreenhouseScraper("anthropic").fetch()
 
-3. Publishing and orchestration helpers:
-   >>> from ats_scrapers.storage import DatasetPublisher
+Publishing/orchestration code lives in the repo-only ``pipeline/``
+directory and is not part of the installable package.
 """
 
 from ats_scrapers._version import __version__
-from ats_scrapers.client import Client, search
+from ats_scrapers.client import Client, list_ats, search
 from ats_scrapers.exceptions import (
     ATSScrapersError,
     CompanyNotFoundError,
@@ -41,5 +41,6 @@ __all__ = [
     "ScraperError",
     "StorageError",
     "__version__",
+    "list_ats",
     "search",
 ]

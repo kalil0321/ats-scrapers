@@ -93,16 +93,8 @@ Scraper adapters include:
 - Public and regional sources: EURES, Bundesagentur, Arbetsformedlingen,
   Welcome to the Jungle, and others.
 
-Run `ats-scrapers list-ats` for the sources currently present in the hosted
-dataset.
-
-## CLI
-
-```bash
-ats-scrapers search "platform engineer" --location Paris --ats greenhouse --limit 20
-ats-scrapers scrape ashby openai
-ats-scrapers list-ats
-```
+Run `python -c "from ats_scrapers import list_ats; print(*list_ats())"` for the
+sources currently present in the hosted dataset.
 
 ## Contributing
 
@@ -114,6 +106,7 @@ to the CSV inventories in
 git clone https://github.com/kalil0321/ats-scrapers
 cd ats-scrapers
 uv sync --extra dev
+uv pip install -r pipeline/requirements.txt  # repo-only ops/publisher tests
 uv run pytest
 uv run ruff check .
 ```

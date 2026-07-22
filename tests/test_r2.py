@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from ats_scrapers.exceptions import StorageError
-from ats_scrapers.storage.r2 import R2Client, R2Config
+from pipeline.r2 import R2Client, R2Config
 
 R2_VARS = (
     "CLOUDFLARE_ACCOUNT_ID",

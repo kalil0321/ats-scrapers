@@ -21,7 +21,7 @@ jobs:
       - name: Install uv
         run: pip install uv
       - name: Install package
-        run: uv pip install --system -e ".[dev,publish,scrapers]"
+        run: uv pip install --system -e ".[dev]" -r pipeline/requirements.txt
       - name: Lint
         run: ruff check .
       - name: Type check

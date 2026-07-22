@@ -75,7 +75,7 @@ except ImportError:
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from ats_scrapers.storage.r2 import R2Client
+    from pipeline.r2 import R2Client
 
 logger = logging.getLogger(__name__)
 

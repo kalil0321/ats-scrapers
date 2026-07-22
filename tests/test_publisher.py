@@ -23,7 +23,7 @@ import pandas as pd
 import pytest
 
 from ats_scrapers.exceptions import StorageError
-from ats_scrapers.storage.publisher import (
+from pipeline.publisher import (
     CACHE_CONTROL_LATEST,
     DEFAULT_PREFIX,
     DatasetPublisher,
@@ -784,7 +784,7 @@ def test_phase2_oversize_block_skipped(caplog):
     """
     import polars as pl
 
-    from ats_scrapers.storage.publisher import _decide_dedup_survivors_polars
+    from pipeline.publisher import _decide_dedup_survivors_polars
 
     # 20 + 20 = 40-row block. Each ATS uses a different role family per
     # row so no two rows across slices share the same ``title_core``
@@ -837,7 +837,7 @@ def test_phase2_oversize_block_skipped(caplog):
 
 
 def test_country_iso_extracts_common_eu_patterns():
-    from ats_scrapers.storage.publisher import _country_iso_from_location as f
+    from pipeline.publisher import _country_iso_from_location as f
 
     # Full-text suffixes (Bundesagentur style)
     assert f("Berlin, Berlin, Deutschland") == "DE"
@@ -855,7 +855,7 @@ def test_country_iso_uses_word_boundaries():
     tagged Lausanne jobs as US — cubic #1 on PR #33. The fix
     word-boundary-anchors every needle so the substring no longer
     matches."""
-    from ats_scrapers.storage.publisher import _country_iso_from_location as f
+    from pipeline.publisher import _country_iso_from_location as f
 
     # Lausanne (CH) standalone — no country suffix. The bare city name
     # used to false-positive on US via the ``usa`` substring; now it
@@ -889,7 +889,7 @@ def test_country_iso_uses_word_boundaries():
 
 
 def test_title_core_strips_trailing_parenthesised_tag():
-    from ats_scrapers.storage.publisher import _title_core as f
+    from pipeline.publisher import _title_core as f
 
     # The classic eures pattern: trailing Berufenet code in parens.
     assert (

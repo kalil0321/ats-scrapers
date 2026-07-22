@@ -66,47 +66,13 @@ scrapers = [
 parquet = [
     "pyarrow>=15.0",
 ]
-publish = [
-    "boto3>=1.34",
-    "pyarrow>=15.0",
-    # Cross-ATS dedup operates on a 3M+-row keys frame and writes the
-    # global all.parquet. Polars keeps the working set Arrow-backed
-    # so peak RSS stays below 1 GB on a 7.6 GB box; pandas equivalents
-    # peaked at 5-6 GB.
-    "polars>=0.20",
-    # Cross-source fuzzy-match dedup (Phase 2): catches near-dups that
-    # the exact-key passes miss because of formatting variations
-    # between aggregators (eures NUTS-code locations vs Bundesagentur
-    # full text, trailing parenthesized occupation codes, etc.).
-    "rapidfuzz>=3.0",
-    # markdownify is the canonical HTML→markdown converter; used by
-    # scripts/normalize_descriptions.py which runs post-scrape to clean
-    # the raw HTML several scrapers (lever, ashby, greenhouse, the
-    # batch of 6 strip-html scrapers, apple's assembled body) now emit.
-    "markdownify>=0.13",
-    # linkify-it-py runs as the final pass over each normalized
-    # description: bare URLs and emails left in plain-text postings
-    # get wrapped in CommonMark autolinks (``<https://…>``) so the
-    # viewer renders them as clickable links.
-    "linkify-it-py>=2.0",
-    # zstandard backs the optional compress=True path on the persistent
-    # DescriptionCache. Workday's cache uses it to keep ~700k entries
-    # under 3 GB on disk; without this package the persistent cache
-    # raises ModuleNotFoundError on open.
-    "zstandard>=0.22",
-]
-discovery = [
-    "firecrawl-py>=1.0",
-]
 all = [
-    "ats-scrapers[scrapers,parquet,publish,discovery]",
+    "ats-scrapers[scrapers,parquet]",
 ]
-# Set to run the test suite cleanly. Pulls in every runtime extra
-# (``all``) so ``pytest`` can collect ``test_publisher.py`` (which
-# imports ``polars`` / ``boto3`` / ``rapidfuzz`` via the publisher
-# module). External CI / reviewers should install this extra rather
-# than ``publish`` alone — Kind AI flagged on PR #33 / #34 that the
-# minimal extras left the suite uncollectable.
+# Runs the library test suite. The ops pipeline under ``pipeline/``
+# (publisher, R2 client) is repo-only — its tests additionally need
+# ``pipeline/requirements.txt``, which CI installs alongside this
+# extra.
 test = [
     "ats-scrapers[all]",
     "pytest>=8.0",
@@ -129,16 +95,14 @@ Issues = "https://github.com/kalil0321/ats-scrapers/issues"
 Changelog = "https://github.com/kalil0321/ats-scrapers/blob/main/CHANGELOG.md"
 Dataset = "https://storage.stapply.ai/jobhive/v1/manifest.json"
 
-[project.scripts]
-ats-scrapers = "ats_scrapers.cli:main"
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/ats_scrapers"]
 
+# Tests are not shipped: the suite also covers the repo-only ops code
+# under ``pipeline/``, so it only runs from a full checkout.
 [tool.hatch.build.targets.sdist]
 include = [
     "/src",
-    "/tests",
     "/README.md",
     "/LICENSE",
 ]
@@ -161,5 +125,8 @@ warn_unused_configs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Repo root on sys.path so tests can import the unpackaged ops code
+# under ``pipeline/``.
+pythonpath = ["."]
 asyncio_mode = "auto"
 addopts = "-ra --strict-markers"
