@@ -37,8 +37,8 @@ import contextlib
 import html
 import json
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING, Literal
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 import httpx
 
@@ -52,8 +52,6 @@ if TYPE_CHECKING:
 LISTING_TEMPLATE = "https://{slug}.applytojob.com/apply/jobs"
 JOB_URL_TEMPLATE = "https://{slug}.applytojob.com/apply/jobs/details/{id}"
 
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 DETAIL_CONCURRENCY = 8
 
 ClientKind = Literal["auto", "httpx", "httpcloak"]
@@ -121,18 +119,24 @@ class JazzHRScraper(BaseScraper):
 
     ats = ATSType.JAZZHR
 
+    default_headers: ClassVar[dict[str, str] | None] = {"User-Agent": "Mozilla/5.0"}
+
     def __init__(
         self,
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         client_kind: ClientKind = "auto",
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.client_kind: ClientKind = client_kind
-
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -147,9 +151,9 @@ class JazzHRScraper(BaseScraper):
                 await self._enrich_detail(client, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         if self.client_kind == "httpcloak":
             html_text = await asyncio.to_thread(self._fetch_via_httpcloak_sync)
             return self._parse_listing(html_text)
@@ -205,46 +209,13 @@ class JazzHRScraper(BaseScraper):
 
     async def _fetch_via_httpx(self) -> str:
         url = LISTING_TEMPLATE.format(slug=self.company_slug)
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
-            for attempt in range(1, MAX_RETRIES + 1):
-                try:
-                    response = await client.get(
-                        url, headers={"User-Agent": "Mozilla/5.0"}
-                    )
-                except httpx.HTTPError as exc:
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"JazzHR fetch failed for {self.company_slug}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
-                if response.status_code == 404:
-                    raise CompanyNotFoundError(
-                        f"JazzHR tenant not found: {self.company_slug}"
-                    )
-                if response.status_code == 403:
-                    raise _WAFBlocked()
-                if response.status_code == 200:
-                    return response.text
-                if response.status_code == 429 or 500 <= response.status_code < 600:
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"JazzHR ({self.company_slug}) returned "
-                            f"{response.status_code} after {MAX_RETRIES} retries"
-                        )
-                    retry_after = response.headers.get("Retry-After")
-                    delay = (
-                        float(retry_after) if retry_after and retry_after.isdigit()
-                        else RETRY_BASE_DELAY * (2 ** attempt)
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                raise ScraperError(
-                    f"JazzHR ({self.company_slug}) returned {response.status_code}"
-                )
-        raise ScraperError(f"JazzHR ({self.company_slug}) exhausted retries")
+        async with self.make_fetcher() as fetch:
+            # 403 is a WAF signal, not an error — the caller decides
+            # whether to fall back to httpcloak (auto) or surface it.
+            response = await fetch.request("GET", url, handled={403})
+        if response.status_code == 403:
+            raise _WAFBlocked()
+        return response.text
 
     # --- httpcloak path -------------------------------------------------
 
@@ -315,7 +286,7 @@ class JazzHRScraper(BaseScraper):
                     location=location,
                     department=department,
                     posted_at=None,
-                    fetched_at=datetime.now(),
+                    fetched_at=datetime.now(UTC),
                 )
             )
         return jobs
