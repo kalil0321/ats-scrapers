@@ -5,6 +5,25 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ## [Unreleased]
 
+### Changed — async-first scrapers and a shared fetch layer
+
+- Every scraper now implements `async def afetch()`; the sync
+  `fetch()` wrapper remains and is now safe to call from inside a
+  running event loop (Jupyter, FastAPI) — it runs the coroutine on a
+  worker thread instead of crashing in `asyncio.run`.
+- New `ats_scrapers.fetch.Fetcher` (exported at the package root):
+  one shared implementation of retries/backoff with `Retry-After`,
+  status→exception mapping, client lifecycle, default headers, proxy
+  configuration (`ATS_SCRAPERS_PROXY`, legacy 4-colon `PROXY`), and
+  two engines — plain httpx and httpcloak TLS impersonation — with
+  per-scraper declared escalation for 403/406-blocking load
+  balancers. Scrapers no longer hand-roll any of this.
+- `include_descriptions` and `proxy` are `BaseScraper` constructor
+  parameters (assigning the attribute post-construction still works).
+- `WorkdayScraper.from_url(...)` makes the full-careers-URL contract
+  explicit.
+- `Job.fetched_at` is now timezone-aware UTC.
+
 ### Removed — narrower package scope
 
 The installable package now contains only the library: the dataset
