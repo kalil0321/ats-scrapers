@@ -8,9 +8,9 @@
 An open dataset and Python toolkit for job data from ATS platforms and public
 sources.
 
-[![PyPI](https://img.shields.io/pypi/v/ats-scrapers.svg?color=brightgreen)](https://pypi.org/project/ats-scrapers/)
-[![Python](https://img.shields.io/pypi/pyversions/ats-scrapers.svg?color=brightgreen)](https://pypi.org/project/ats-scrapers/)
-[![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](https://github.com/kalil0321/ats-scrapers/blob/main/LICENSE)
+[![PyPI version](https://img.shields.io/pypi/v/ats-scrapers)](https://pypi.org/project/ats-scrapers/)
+[![Python versions](https://img.shields.io/pypi/pyversions/ats-scrapers)](https://pypi.org/project/ats-scrapers/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/kalil0321/ats-scrapers/blob/main/LICENSE)
 
 `ats-scrapers` provides two layers:
 
