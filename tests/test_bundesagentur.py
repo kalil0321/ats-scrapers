@@ -192,10 +192,10 @@ def test_malformed_json_crashes_not_skips(httpx_mock) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Streaming mode — :meth:`_fetch_async(on_job=...)` and :meth:`fetch_stream`
+# Streaming mode — :meth:`afetch(on_job=...)` and :meth:`fetch_stream`
 # ---------------------------------------------------------------------------
 #
-# At ~750 k jobs the legacy list-accumulating ``_fetch_async`` holds a
+# At ~750 k jobs the legacy list-accumulating ``afetch`` holds a
 # few GB of Job objects in memory, which is tight on the 7.6 GB VPS
 # when other scrapers are also resident. The streaming variant pushes
 # each parsed Job to an async callback (or asyncio.Queue in the
@@ -212,7 +212,7 @@ def _fake_exhaust(items_to_emit):
 
 
 def test_on_job_callback_invoked_per_deduped_job(monkeypatch) -> None:
-    """``_fetch_async(on_job=cb)`` must call ``cb`` for every parsed
+    """``afetch(on_job=cb)`` must call ``cb`` for every parsed
     job that survives dedup, and must NOT accumulate them into the
     returned list. Dedup is by ``refnr`` / ``ats_id``."""
     scraper = BundesagenturScraper("any")
@@ -227,7 +227,7 @@ def test_on_job_callback_invoked_per_deduped_job(monkeypatch) -> None:
     async def collect(job):
         received.append(job)
 
-    out = asyncio.run(scraper._fetch_async(on_job=collect))
+    out = asyncio.run(scraper.afetch(on_job=collect))
     # Streaming mode → returned list is empty.
     assert out == []
     # 2 jobs survived dedup (A, B).
@@ -240,13 +240,13 @@ def test_on_job_none_accumulates_to_list(monkeypatch) -> None:
     scraper = BundesagenturScraper("any")
     items = [_job("R1", "T1"), _job("R2", "T2"), _job("R1", "T1 dup")]
     monkeypatch.setattr(scraper, "_exhaust_query", _fake_exhaust(items))
-    out = asyncio.run(scraper._fetch_async())
+    out = asyncio.run(scraper.afetch())
     assert [j.ats_id for j in out] == ["R1", "R2"]
 
 
 def test_fetch_stream_yields_same_jobs_as_legacy(monkeypatch) -> None:
     """``fetch_stream()`` is an async-iterator façade over
-    ``_fetch_async`` — every job legacy ``_fetch_async`` would have
+    ``afetch`` — every job legacy ``afetch`` would have
     returned must come out of the stream in some order."""
     scraper = BundesagenturScraper("any")
     items = [_job(f"R-{i}", f"Job {i}") for i in range(7)]
