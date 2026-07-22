@@ -179,6 +179,18 @@ class Fetcher:
             await self._client.aclose()
             self._client = None
 
+    @property
+    def cookies(self) -> httpx.Cookies:
+        """Cookie jar of the underlying httpx client.
+
+        Session-flow scrapers (e.g. Phenom's CSRF dance) seed cookies
+        with an initial request on this fetcher and need to read them
+        back; the jar persists for the fetcher's lifetime. Only
+        meaningful on the httpx engine — the cloak engine is
+        stateless per request.
+        """
+        return self._httpx_client().cookies
+
     def _httpx_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
