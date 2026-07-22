@@ -17,13 +17,9 @@ No per-job fetch needed.
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-import httpx
-
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -31,9 +27,6 @@ if TYPE_CHECKING:
     from typing import Any
 
 API_TEMPLATE = "https://api.lever.co/v0/postings/{slug}?mode=json"
-
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 
 _LEVER_INTERVAL_MAP = {
     "1-YEAR": "YEAR",
@@ -79,53 +72,11 @@ _COMMITMENT_TO_EMPLOYMENT_TYPE = {
 class LeverScraper(BaseScraper):
     ats = ATSType.LEVER
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         url = API_TEMPLATE.format(slug=self.company_slug)
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
-            payload = await self._fetch_with_retry(client, url)
+        async with self.make_fetcher() as fetch:
+            payload = await fetch.get_json(url)
         return [self._parse_job(item) for item in payload]
-
-    async def _fetch_with_retry(
-        self, client: httpx.AsyncClient, url: str
-    ) -> list[dict[str, Any]]:
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(url)
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Lever fetch failed for {self.company_slug}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                return response.json()
-            if response.status_code == 404:
-                raise CompanyNotFoundError(
-                    f"Lever board not found: {self.company_slug}"
-                )
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Lever ({self.company_slug}) returned "
-                        f"{response.status_code} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Lever returned {response.status_code} for {self.company_slug}"
-            )
-        raise ScraperError(f"Lever ({self.company_slug}) exhausted retries")
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
         categories = item.get("categories") or {}
@@ -221,7 +172,7 @@ class LeverScraper(BaseScraper):
             salary_currency=salary_currency,
             salary_period=salary_period,
             posted_at=_parse_ms(item.get("createdAt")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

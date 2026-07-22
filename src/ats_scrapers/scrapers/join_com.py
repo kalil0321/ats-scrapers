@@ -13,14 +13,12 @@ with 50 open positions still finishes in a few seconds.
 
 from __future__ import annotations
 
+import asyncio
 import html as html_mod
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-
-import httpx
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -29,9 +27,15 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 BASE_URL = "https://join.com"
 API_BASE = f"{BASE_URL}/api/public"
 DETAIL_CONCURRENCY = 8
+
+# Per-job JSON-LD detail fetches are best-effort — any error keeps the
+# listing-derived row, so error statuses come back unmapped.
+_DETAIL_HANDLED = frozenset(range(400, 600))
 
 _EMPLOYMENT_TYPE_MAP = {
     "FULL_TIME": "FULL_TIME",
@@ -62,10 +66,10 @@ _TAG_RE = re.compile(r"<[^>]+>")
 class JoinComScraper(BaseScraper):
     ats = ATSType.JOIN_COM
 
-    def fetch(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         all_jobs: list[Job] = []
-        with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
-            company_id = self._resolve_company_id(client)
+        async with self.make_fetcher() as fetch:
+            company_id = await self._resolve_company_id(fetch)
             page = 1
             while True:
                 params = {
@@ -75,20 +79,9 @@ class JoinComScraper(BaseScraper):
                     "withAggregations": "true",
                     "sort": "+title",
                 }
-                try:
-                    response = client.get(
-                        f"{API_BASE}/companies/{company_id}/jobs", params=params
-                    )
-                except httpx.HTTPError as exc:
-                    raise ScraperError(
-                        f"join.com jobs fetch failed for {self.company_slug}: {exc}"
-                    ) from exc
-                if response.status_code != 200:
-                    raise ScraperError(
-                        f"join.com returned {response.status_code} listing jobs for "
-                        f"{self.company_slug}"
-                    )
-                payload = response.json()
+                payload = await fetch.get_json(
+                    f"{API_BASE}/companies/{company_id}/jobs", params=params
+                )
                 items = payload.get("items") or []
                 all_jobs.extend(self._parse_job(item) for item in items)
                 pagination = payload.get("pagination") or {}
@@ -97,70 +90,50 @@ class JoinComScraper(BaseScraper):
                 page += 1
 
             if self.include_descriptions and all_jobs:
-                self._enrich_with_details(client, all_jobs)
+                sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+                await asyncio.gather(*(
+                    self._enrich_with_detail(fetch, sem, j) for j in all_jobs
+                ))
         return all_jobs
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
         copy = job.model_copy()
-        self._enrich_with_detail(copy)
-        return copy.description
 
-    def _enrich_with_details(
-        self, client: httpx.Client, jobs: list[Job],
+        async def run() -> str | None:
+            async with self.make_fetcher() as fetch:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_with_detail(fetch, sem, copy)
+            return copy.description
+
+        return self._run_sync(run())
+
+    async def _enrich_with_detail(
+        self,
+        fetch: Fetcher,
+        sem: asyncio.Semaphore,
+        job: Job,
     ) -> None:
         """Per-job detail fetch — pull JSON-LD (description, salary,
-        remote flag) from each job page. Runs in a thread pool to avoid
-        blocking on N+1 sequential requests.
-
-        Each detail page is independent of the listing client, so we
-        spin up short-lived per-thread clients with their own connection
-        pool. ``httpx.Client`` is not thread-safe.
-        """
-        def fetch_one(job: Job) -> None:
+        remote flag) from each job page. Best-effort: any error keeps
+        the listing-derived row."""
+        async with sem:
             try:
-                with httpx.Client(
-                    timeout=self.timeout, follow_redirects=True,
-                ) as detail_client:
-                    response = detail_client.get(
-                        str(job.url),
-                        headers={"User-Agent": "Mozilla/5.0"},
-                    )
-            except httpx.HTTPError:
-                return
-            if response.status_code != 200:
-                return
-            _apply_jsonld_to_job(job, response.text)
-
-        with ThreadPoolExecutor(max_workers=DETAIL_CONCURRENCY) as pool:
-            list(pool.map(fetch_one, jobs))
-
-    def _enrich_with_detail(self, job: Job) -> None:
-        try:
-            with httpx.Client(
-                timeout=self.timeout, follow_redirects=True,
-            ) as detail_client:
-                response = detail_client.get(
+                response = await fetch.request(
+                    "GET",
                     str(job.url),
                     headers={"User-Agent": "Mozilla/5.0"},
+                    handled=_DETAIL_HANDLED,
                 )
-        except httpx.HTTPError:
-            return
+            except ScraperError:
+                return
         if response.status_code != 200:
             return
         _apply_jsonld_to_job(job, response.text)
 
-    def _resolve_company_id(self, client: httpx.Client) -> str:
-        try:
-            response = client.get(f"{BASE_URL}/companies/{self.company_slug}")
-        except httpx.HTTPError as exc:
-            raise ScraperError(
-                f"join.com company resolve failed for {self.company_slug}: {exc}"
-            ) from exc
-        if response.status_code == 404:
-            raise CompanyNotFoundError(f"join.com company not found: {self.company_slug}")
-        body = response.text
+    async def _resolve_company_id(self, fetch: Fetcher) -> str:
+        body = await fetch.get_text(f"{BASE_URL}/companies/{self.company_slug}")
         # The page embeds the same Next.js page data several times. The
         # *first* numeric ``"id"`` in the body is **not** the company id
         # — that's the first department/category in the picker (e.g.
@@ -236,7 +209,7 @@ class JoinComScraper(BaseScraper):
             department=department,
             commitment=employment_type,
             posted_at=_parse_iso(item.get("publishedAt") or item.get("createdAt")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

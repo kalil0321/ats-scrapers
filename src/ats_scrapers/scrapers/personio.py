@@ -18,14 +18,12 @@ The `slug` argument can be either the bare slug or the full base URL.
 
 from __future__ import annotations
 
+import asyncio
 import html as html_mod
 import re
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
-
-import httpx
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -34,8 +32,16 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 ENDPOINTS = ("/search.json", "/api/careers/jobs/list/")
 DETAIL_CONCURRENCY = 8
+
+# Endpoint fallback (listing) and per-job detail fetches are both
+# scraper-driven: a 404 means "try the next endpoint" / "skip this
+# job", never CompanyNotFoundError, so error statuses come back
+# unmapped for the scraper to branch on.
+_HANDLED_STATUSES = frozenset(range(400, 600))
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _DESC_CLASS_RE = re.compile(r"page_jobDescription", re.IGNORECASE)
@@ -69,15 +75,17 @@ _EMPLOYMENT_TYPE_PATTERNS = {
 class PersonioScraper(BaseScraper):
     ats = ATSType.PERSONIO
 
-    def fetch(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         base = self._resolve_base_url()
         last_error: Exception | None = None
         jobs: list[Job] = []
-        with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
+        async with self.make_fetcher() as fetch:
             for path in ENDPOINTS:
                 try:
-                    response = client.get(f"{base}{path}")
-                except httpx.HTTPError as exc:
+                    response = await fetch.request(
+                        "GET", f"{base}{path}", handled=_HANDLED_STATUSES,
+                    )
+                except ScraperError as exc:
                     last_error = exc
                     continue
                 if response.status_code == 404:
@@ -95,7 +103,10 @@ class PersonioScraper(BaseScraper):
                     break
             if jobs:
                 if self.include_descriptions:
-                    self._enrich_descriptions(jobs)
+                    sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+                    await asyncio.gather(*(
+                        self._enrich_description(fetch, sem, j) for j in jobs
+                    ))
                 return jobs
         if last_error:
             raise CompanyNotFoundError(
@@ -106,32 +117,43 @@ class PersonioScraper(BaseScraper):
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
+
+        async def run() -> str | None:
+            async with self.make_fetcher() as fetch:
+                return await self._fetch_description(fetch, job)
+
+        return self._run_sync(run())
+
+    async def _fetch_description(self, fetch: Fetcher, job: Job) -> str | None:
+        """Pull the description body out of the detail page's
+        ``page_jobDescription`` block. Best-effort — any error keeps
+        the listing-derived row."""
         try:
-            with httpx.Client(
-                timeout=self.timeout, follow_redirects=True,
-            ) as client:
-                response = client.get(
-                    str(job.url),
-                    headers={"User-Agent": "Mozilla/5.0"},
-                )
-        except httpx.HTTPError:
+            response = await fetch.request(
+                "GET",
+                str(job.url),
+                headers={"User-Agent": "Mozilla/5.0"},
+                handled=_HANDLED_STATUSES,
+            )
+        except ScraperError:
             return None
         if response.status_code != 200:
             return None
         description = _extract_description(response.text)
         return description[:25_000] if description else None
 
-    def _enrich_descriptions(self, jobs: list[Job]) -> None:
-        """Fan out per-job HTML fetches; pull the description body out
-        of the ``page_jobDescription`` block. ``httpx.Client`` is not
-        thread-safe so we use short-lived per-thread clients."""
-        def fetch_one(job: Job) -> None:
-            description = self.get_description(job)
-            if description:
-                job.description = description
-
-        with ThreadPoolExecutor(max_workers=DETAIL_CONCURRENCY) as pool:
-            list(pool.map(fetch_one, jobs))
+    async def _enrich_description(
+        self,
+        fetch: Fetcher,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        if job.description:
+            return
+        async with sem:
+            description = await self._fetch_description(fetch, job)
+        if description:
+            job.description = description
 
     def _resolve_base_url(self) -> str:
         slug = self.company_slug
@@ -183,7 +205,7 @@ class PersonioScraper(BaseScraper):
             employment_type=employment_type,
             commitment=commitment if isinstance(commitment, str) else None,
             posted_at=_parse_iso(item.get("createdAt") or item.get("created_at")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

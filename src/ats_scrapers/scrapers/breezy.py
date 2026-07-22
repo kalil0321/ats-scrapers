@@ -25,11 +25,10 @@ This scraper uses only the public unauthenticated endpoint.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
-import httpx
-
+from ats_scrapers import fetch as fetch_layer
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -37,15 +36,27 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 API_TEMPLATE = "https://{slug}.breezy.hr/json"
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 # Per-tenant concurrent detail-page fetches. Tenants are usually
 # small (<50 jobs). Keep this low — Breezy fronts every tenant on a
 # shared CF/Akamai-style edge which 403-blocks bursty traffic. Empirically
 # we got blocked at ~14 req/s during a 685-tenant pass with cross-tenant
 # concurrency 8 + per-tenant 6; 4 keeps us under the threshold.
 DETAIL_CONCURRENCY = 4
+
+# The listing fetcher runs with ``follow_redirects=False`` so the
+# 302→marketing-site bounce is visible; redirect statuses come back
+# unmapped for the scraper to turn into ``CompanyNotFoundError``.
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+# 403 on the listing is edge-rate-limit (CF/Akamai-style) rather than a
+# real auth failure — the Fetcher would treat it as a hard block, so the
+# scraper takes it back unmapped and retries with backoff itself.
+_LISTING_HANDLED = _REDIRECT_STATUSES | {403}
+# Detail-page fetches are best-effort: any error status just keeps the
+# listing-derived row.
+_DETAIL_HANDLED = frozenset(range(400, 600))
 
 _TYPE_MAP = {
     "fullTime": "FULL_TIME",
@@ -64,8 +75,7 @@ class BreezyScraper(BaseScraper):
 
     ats = ATSType.BREEZY
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str] | None] = {"User-Agent": "Mozilla/5.0"}
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -73,63 +83,58 @@ class BreezyScraper(BaseScraper):
         copy = job.model_copy()
 
         async def run() -> str | None:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=False,
-            ) as client:
+            async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
-                await self._enrich_description(client, sem, copy)
+                await self._enrich_description(fetch, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
-        # ``follow_redirects=False`` on the client default — the JSON
+    async def afetch(self) -> list[Job]:
+        # ``follow_redirects=False`` on the listing fetcher — the JSON
         # listing endpoint must NOT follow redirects so we can detect
         # the 302→marketing-site bounce as ``CompanyNotFoundError``.
-        # Detail-page fetches opt into redirects per-call below.
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=False
-        ) as client:
-            payload = await self._fetch_with_retry(client)
-            if not isinstance(payload, list):
-                raise ScraperError(
-                    f"BreezyHR returned non-list JSON for {self.company_slug}"
-                )
-            seen: set[str] = set()
-            jobs: list[Job] = []
-            for item in payload:
-                if not isinstance(item, dict):
-                    continue
-                job = self._parse_position(item)
-                if job is None or job.ats_id in seen:
-                    continue
-                seen.add(job.ats_id)
-                jobs.append(job)
+        async with self.make_fetcher(follow_redirects=False) as fetch:
+            payload = await self._fetch_listing(fetch)
+        if not isinstance(payload, list):
+            raise ScraperError(
+                f"BreezyHR returned non-list JSON for {self.company_slug}"
+            )
+        seen: set[str] = set()
+        jobs: list[Job] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            job = self._parse_position(item)
+            if job is None or job.ats_id in seen:
+                continue
+            seen.add(job.ats_id)
+            jobs.append(job)
 
-            # Detail-page enrichment is best-effort. Breezy's edge blocks
-            # bursty traffic with 403s, so per-job failures keep the
-            # listing-derived row instead of failing the tenant.
-            if self.include_descriptions and jobs:
+        # Detail-page enrichment is best-effort. Breezy's edge blocks
+        # bursty traffic with 403s, so per-job failures keep the
+        # listing-derived row instead of failing the tenant. Detail
+        # pages redirect legitimately, so this fetcher follows them.
+        if self.include_descriptions and jobs:
+            async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
-                    self._enrich_description(client, sem, j) for j in jobs
+                    self._enrich_description(fetch, sem, j) for j in jobs
                 ))
-            return jobs
+        return jobs
 
     async def _enrich_description(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         job: Job,
     ) -> None:
         async with sem:
             try:
-                response = await client.get(
-                    str(job.url),
-                    headers={"User-Agent": "Mozilla/5.0"},
-                    follow_redirects=True,
+                response = await fetch.request(
+                    "GET", str(job.url), handled=_DETAIL_HANDLED,
                 )
-            except httpx.HTTPError:
+            except ScraperError:
                 return
         if response.status_code != 200:
             return
@@ -137,62 +142,51 @@ class BreezyScraper(BaseScraper):
         if description:
             job.description = description[:25_000]
 
-    async def _fetch_with_retry(
-        self, client: httpx.AsyncClient
-    ) -> list[dict[str, Any]]:
+    async def _fetch_listing(self, fetch: Fetcher) -> list[dict[str, Any]]:
         url = API_TEMPLATE.format(slug=self.company_slug)
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(
-                    url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Accept": "application/json",
-                    },
-                )
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"BreezyHR fetch failed for {self.company_slug}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code in (301, 302, 303, 307, 308):
+        # The Fetcher covers 404/429/5xx and network retries; redirects
+        # and the 403-means-rate-limited quirk are handled here. The 403
+        # retry loop reads the shared fetch-layer defaults at call time
+        # (same knobs the suite-wide conftest fixture zeroes).
+        retries = fetch_layer.DEFAULT_RETRIES
+        for attempt in range(1, retries + 1):
+            response = await fetch.request(
+                "GET",
+                url,
+                headers={"Accept": "application/json"},
+                handled=_LISTING_HANDLED,
+            )
+            if response.status_code in _REDIRECT_STATUSES:
                 # The slug doesn't have an active Breezy careers site —
                 # Breezy redirects to its marketing site.
                 raise CompanyNotFoundError(
                     f"BreezyHR tenant has no active careers site: {self.company_slug}"
                 )
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except ValueError as exc:
+            if response.status_code == 403:
+                # Edge-rate-limit (CF/Akamai-style) rather than a real
+                # auth failure — Breezy's public JSON endpoint is
+                # unauthenticated. Treat it as transient and back off.
+                if attempt == retries:
                     raise ScraperError(
-                        f"BreezyHR returned malformed JSON for {self.company_slug}: {exc}"
-                    ) from exc
-            if response.status_code == 404:
-                raise CompanyNotFoundError(
-                    f"BreezyHR tenant not found: {self.company_slug}"
-                )
-            if response.status_code in (403, 429) or 500 <= response.status_code < 600:
-                # 403 here is edge-rate-limit (CF/Akamai-style) rather
-                # than a real auth failure — Breezy's public JSON endpoint
-                # is unauthenticated. Treat it as transient and back off.
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"BreezyHR returned {response.status_code} for "
-                        f"{self.company_slug} after {MAX_RETRIES} retries"
+                        f"BreezyHR returned 403 for {self.company_slug} "
+                        f"after {retries} retries"
                     )
                 retry_after = response.headers.get("Retry-After")
                 delay = (
                     float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
+                    else min(
+                        fetch_layer.DEFAULT_RETRY_BASE_DELAY * 2 ** (attempt - 1),
+                        fetch_layer.DEFAULT_MAX_RETRY_DELAY,
+                    )
                 )
                 await asyncio.sleep(delay)
                 continue
-            raise ScraperError(
-                f"BreezyHR returned {response.status_code} for {self.company_slug}"
-            )
+            try:
+                return response.json()
+            except ValueError as exc:
+                raise ScraperError(
+                    f"BreezyHR returned malformed JSON for {self.company_slug}: {exc}"
+                ) from exc
         raise ScraperError(f"BreezyHR exhausted retries for {self.company_slug}")
 
     def _parse_position(self, item: dict[str, Any]) -> Job | None:
@@ -231,7 +225,7 @@ class BreezyScraper(BaseScraper):
             salary_summary=item.get("salary") or None,
             employment_type=employment_type,
             posted_at=_parse_iso(item.get("published_date")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

@@ -17,10 +17,8 @@ from __future__ import annotations
 import asyncio
 import html as html_mod
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-
-import httpx
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -29,8 +27,14 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 BASE_URL = "https://jobs.gem.com"
 GRAPHQL_URL = f"{BASE_URL}/api/public/graphql/batch"
+
+# Detail-batch fetches are best-effort: a failed batch keeps the
+# listing-derived rows, so error statuses come back unmapped.
+_DETAIL_HANDLED = frozenset(range(400, 600))
 
 # Pack this many ``ExternalJobPostingQuery`` ops into a single POST.
 # Gem's batch endpoint comfortably handles 25; cap conservatively to
@@ -120,9 +124,6 @@ class GemScraper(BaseScraper):
 
     ats = ATSType.GEM
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
@@ -130,25 +131,21 @@ class GemScraper(BaseScraper):
         posting = {"extId": job.ats_id}
 
         async def run() -> str | None:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=True,
-            ) as client:
-                await self._enrich_with_details(client, [copy], [posting])
+            async with self.make_fetcher() as fetch:
+                await self._enrich_with_details(fetch, [copy], [posting])
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True,
-        ) as client:
-            postings = await self._fetch_list(client)
+    async def afetch(self) -> list[Job]:
+        async with self.make_fetcher() as fetch:
+            postings = await self._fetch_list(fetch)
             jobs = [self._parse_job(item) for item in postings]
             if self.include_descriptions and jobs:
-                await self._enrich_with_details(client, jobs, postings)
+                await self._enrich_with_details(fetch, jobs, postings)
             return jobs
 
-    async def _fetch_list(self, client: httpx.AsyncClient) -> list[dict[str, Any]]:
+    async def _fetch_list(self, fetch: Fetcher) -> list[dict[str, Any]]:
         payload = [
             {
                 "operationName": "JobBoardList",
@@ -156,21 +153,7 @@ class GemScraper(BaseScraper):
                 "query": JOB_BOARD_LIST_QUERY,
             }
         ]
-        try:
-            response = await client.post(
-                GRAPHQL_URL,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-            )
-        except httpx.HTTPError as exc:
-            raise ScraperError(
-                f"Gem fetch failed for {self.company_slug}: {exc}"
-            ) from exc
-        if response.status_code != 200:
-            raise ScraperError(
-                f"Gem returned {response.status_code} for {self.company_slug}"
-            )
-        batch = response.json()
+        batch = await fetch.post_json(GRAPHQL_URL, json=payload)
         if not batch:
             return []
         result = batch[0] or {}
@@ -187,7 +170,7 @@ class GemScraper(BaseScraper):
 
     async def _enrich_with_details(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         jobs: list[Job],
         postings: list[dict[str, Any]],
     ) -> None:
@@ -214,12 +197,10 @@ class GemScraper(BaseScraper):
                 for _, ext_id in batch
             ]
             try:
-                response = await client.post(
-                    GRAPHQL_URL,
-                    json=payload,
-                    headers={"Content-Type": "application/json"},
+                response = await fetch.request(
+                    "POST", GRAPHQL_URL, json=payload, handled=_DETAIL_HANDLED,
                 )
-            except httpx.HTTPError:
+            except ScraperError:
                 return
             if response.status_code != 200:
                 return
@@ -276,7 +257,7 @@ class GemScraper(BaseScraper):
             employment_type=employment_type,
             commitment=emp_raw if isinstance(emp_raw, str) else None,
             posted_at=None,  # Filled by detail enrichment.
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 
