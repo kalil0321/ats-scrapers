@@ -129,4 +129,11 @@ testpaths = ["tests"]
 # under ``pipeline/``.
 pythonpath = ["."]
 asyncio_mode = "auto"
-addopts = "-ra --strict-markers"
+# Live e2e tests (tests/e2e/) hit real ATS endpoints. They are doubly
+# gated: deselected by default (`-m "not live"`) AND skipped unless
+# ATS_SCRAPERS_LIVE_E2E=1. Run them with:
+#   ATS_SCRAPERS_LIVE_E2E=1 pytest -m live
+addopts = "-ra --strict-markers -m 'not live'"
+markers = [
+    "live: hits real ATS endpoints / the hosted dataset (opt-in)",
+]
