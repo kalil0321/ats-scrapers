@@ -106,6 +106,7 @@ class EightfoldScraper(BaseScraper):
                 timeout=self.timeout,
                 follow_redirects=True,
                 headers={"User-Agent": "Mozilla/5.0"},
+                proxy=self.proxy,
             ) as client:
                 sem = asyncio.Semaphore(1)
                 await self._enrich_position_details(client, sem, copy)
@@ -154,6 +155,7 @@ class EightfoldScraper(BaseScraper):
                 max_connections=MAX_CONCURRENCY_HTTPX * 2,
                 max_keepalive_connections=MAX_CONCURRENCY_HTTPX,
             ),
+            proxy=self.proxy,
         ) as client:
             first = await self._fetch_page_httpx(client, start=0)
             self._collect(first.get("positions") or [], seen, all_jobs)
@@ -197,6 +199,7 @@ class EightfoldScraper(BaseScraper):
                 max_connections=MAX_CONCURRENCY_HTTPX * 2,
                 max_keepalive_connections=MAX_CONCURRENCY_HTTPX,
             ),
+            proxy=self.proxy,
         ) as client:
             first = await self._fetch_page_smartapply_httpx(client, start=0)
             self._collect(first.get("positions") or [], seen, all_jobs)
@@ -430,6 +433,9 @@ class EightfoldScraper(BaseScraper):
     def _fetch_page_httpcloak(self, *, start: int) -> dict[str, Any]:
         import httpcloak  # local import: optional dep
 
+        kwargs: dict[str, Any] = {}
+        if self.proxy:
+            kwargs["proxy"] = self.proxy
         try:
             response = httpcloak.get(
                 f"{self.base_url}/api/pcsx/search",
@@ -445,6 +451,7 @@ class EightfoldScraper(BaseScraper):
                     "Accept": "application/json, text/plain, */*",
                 },
                 timeout=self.timeout,
+                **kwargs,
             )
         except Exception as exc:  # httpcloak may raise misc subclasses
             raise ScraperError(

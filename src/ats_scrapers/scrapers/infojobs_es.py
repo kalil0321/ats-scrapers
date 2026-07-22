@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.fetch import proxy_url_from_env
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -220,8 +221,12 @@ class InfoJobsSpainScraper(BaseScraper):
         even httpcloak gets challenged on deep pagination) is treated
         as transient up to ``MAX_RETRIES``."""
         last_status: int | None = None
+        # Explicit ctor proxy wins over the env-derived one.
+        proxy = self.proxy or proxy_url_from_env()
         for attempt in range(1, MAX_RETRIES + 1):
-            result = await asyncio.to_thread(_httpcloak_get_sync, url, self.timeout)
+            result = await asyncio.to_thread(
+                _httpcloak_get_sync, url, self.timeout, proxy
+            )
             if isinstance(result, str):
                 return result
             last_status = result
@@ -311,13 +316,18 @@ class InfoJobsSpainScraper(BaseScraper):
 # --- module-level helpers ---------------------------------------------------
 
 
-def _httpcloak_get_sync(url: str, timeout: float) -> str | int:
+def _httpcloak_get_sync(
+    url: str, timeout: float, proxy: str | None = None
+) -> str | int:
     """Sync ``httpcloak.get`` — returns the page text on 200, the
     bare status int otherwise so the async caller can retry vs.
     escalate. ``timeout`` is forwarded verbatim."""
     import httpcloak
 
-    r = httpcloak.get(url, timeout=timeout)
+    kwargs: dict[str, str] = {}
+    if proxy:
+        kwargs["proxy"] = proxy
+    r = httpcloak.get(url, timeout=timeout, **kwargs)
     if r.status_code != 200:
         return int(r.status_code)
     content = r.content
