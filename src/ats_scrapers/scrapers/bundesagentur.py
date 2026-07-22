@@ -44,7 +44,7 @@ import asyncio
 import base64
 import logging
 import random
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
@@ -122,13 +122,6 @@ class BundesagenturScraper(BaseScraper):
 
     ats = ATSType.BUNDESAGENTUR
 
-    def fetch(self) -> list[Job]:
-        """Legacy in-memory fetch — accumulates the full corpus into a
-        list. At ~750 k jobs that's a few GB of Job objects in RAM,
-        sitting alongside other cron jobs. Prefer :meth:`fetch_stream`
-        from cron contexts that write straight to disk."""
-        return asyncio.run(self._fetch_async())
-
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
@@ -140,14 +133,17 @@ class BundesagenturScraper(BaseScraper):
                 await self._enrich_description(client, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
     async def fetch_stream(self) -> AsyncGenerator[Job, None]:
         """Stream jobs as they're parsed.
 
         Memory profile: ~200 MB regardless of corpus size — only the
         ``seen`` ID set + a bounded in-flight queue stays resident.
-        Shares its fan-out + dedup logic with :meth:`_fetch_async` by
+        Prefer this over the in-memory :meth:`fetch` / :meth:`afetch`
+        from cron contexts that write straight to disk — at ~750 k jobs
+        the accumulated list is a few GB of Job objects in RAM.
+        Shares its fan-out + dedup logic with :meth:`afetch` by
         plugging a queue-pushing ``on_job`` callback into it. The
         consumer iterator yields each job as it lands so callers
         (e.g. :func:`scripts.run_pipeline.run`) can write straight
@@ -168,7 +164,7 @@ class BundesagenturScraper(BaseScraper):
 
         async def producer() -> None:
             try:
-                await self._fetch_async(on_job=on_job)
+                await self.afetch(on_job=on_job)
             finally:
                 producer_done.set()
 
@@ -187,7 +183,7 @@ class BundesagenturScraper(BaseScraper):
             task.cancel()
             raise
 
-    async def _fetch_async(
+    async def afetch(
         self,
         *,
         on_job: Callable[[Job], Awaitable[None]] | None = None,
@@ -566,7 +562,7 @@ class BundesagenturScraper(BaseScraper):
                 else None
             ),
             posted_at=_parse_iso(item.get("eintrittsdatum") or item.get("aktuelleVeroeffentlichungsdatum")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

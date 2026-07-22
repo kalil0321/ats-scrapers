@@ -16,10 +16,8 @@ Public API docs: https://jobtechdev.se/sv/komponenter/jobsearch
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
-from typing import TYPE_CHECKING
-
-import httpx
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -28,12 +26,12 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 API_URL = "https://jobsearch.api.jobtechdev.se/search"
 PAGE_SIZE = 100  # API hard-caps at 100/page.
 PAGINATION_CAP = 10_000  # offset+limit cap. Past 10k the API returns 0 hits.
 MAX_CONCURRENCY = 8
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 
 # Swedish region concept_ids (län). Static — the Arbetsförmedlingen
 # taxonomy doesn't churn. Fetched from the API's ``stats=region`` facet.
@@ -68,10 +66,12 @@ class ArbetsformedlingenScraper(BaseScraper):
 
     ats = ATSType.ARBETSFORMEDLINGEN
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str] | None] = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+    }
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
 
@@ -83,14 +83,14 @@ class ArbetsformedlingenScraper(BaseScraper):
                 seen.add(job.ats_id)
                 all_jobs.append(job)
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self.make_fetcher() as fetch:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             # Fetch the live region list rather than hardcoding —
             # the taxonomy adjusts over time (län merges, retired codes,
             # etc.). ``stats.limit=30`` returns all 21 current regions
             # (default is 5, which is the trap that bit us before).
             seed = await self._fetch_page(
-                client, sem,
+                fetch, sem,
                 params={"limit": 0, "stats": "region", "stats.limit": 30},
             )
             stats = seed.get("stats") or []
@@ -106,19 +106,19 @@ class ArbetsformedlingenScraper(BaseScraper):
                 # partial coverage than to crash if the API moves.
                 regions = list(SWEDEN_REGIONS)
             await asyncio.gather(*(
-                self._exhaust_region(client, sem, region, absorb)
+                self._exhaust_region(fetch, sem, region, absorb)
                 for region in regions
             ))
         return all_jobs
 
     async def _exhaust_region(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         region: str,
         absorb,
     ) -> None:
-        first = await self._fetch_page(client, sem, params={
+        first = await self._fetch_page(fetch, sem, params={
             "region": region, "limit": PAGE_SIZE, "offset": 0,
         })
         total = (first.get("total") or {}).get("value", 0)
@@ -133,13 +133,13 @@ class ArbetsformedlingenScraper(BaseScraper):
         # by occupation-field (currently ~28 buckets in 2026, each well
         # under 10k); other regions stay under the cap.
         if total > PAGINATION_CAP:
-            await self._subdivide_by_occupation(client, sem, region, absorb)
+            await self._subdivide_by_occupation(fetch, sem, region, absorb)
             return
 
         offsets = list(range(PAGE_SIZE, total, PAGE_SIZE))
         await asyncio.gather(*(
             self._fetch_and_absorb(
-                client, sem,
+                fetch, sem,
                 params={"region": region, "limit": PAGE_SIZE, "offset": o},
                 absorb=absorb,
             )
@@ -148,7 +148,7 @@ class ArbetsformedlingenScraper(BaseScraper):
 
     async def _subdivide_by_occupation(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         region: str,
         absorb,
@@ -156,7 +156,7 @@ class ArbetsformedlingenScraper(BaseScraper):
         # Discover occupation-field codes via stats — the API returns the
         # top buckets dynamically, which is fine because the largest
         # buckets are what we need to hit before the trailing cap.
-        stats = await self._fetch_page(client, sem, params={
+        stats = await self._fetch_page(fetch, sem, params={
             "region": region, "limit": 0, "stats": "occupation-field",
         })
         fields = stats.get("stats") or []
@@ -172,7 +172,7 @@ class ArbetsformedlingenScraper(BaseScraper):
             offsets = list(range(PAGE_SIZE, PAGINATION_CAP, PAGE_SIZE))
             await asyncio.gather(*(
                 self._fetch_and_absorb(
-                    client, sem,
+                    fetch, sem,
                     params={"region": region, "limit": PAGE_SIZE, "offset": o},
                     absorb=absorb,
                 )
@@ -181,7 +181,7 @@ class ArbetsformedlingenScraper(BaseScraper):
             return
 
         async def occ_bucket(code: str) -> None:
-            sub = await self._fetch_page(client, sem, params={
+            sub = await self._fetch_page(fetch, sem, params={
                 "region": region, "occupation-field": code,
                 "limit": PAGE_SIZE, "offset": 0,
             })
@@ -192,7 +192,7 @@ class ArbetsformedlingenScraper(BaseScraper):
             offsets = list(range(PAGE_SIZE, sub_total, PAGE_SIZE))
             await asyncio.gather(*(
                 self._fetch_and_absorb(
-                    client, sem,
+                    fetch, sem,
                     params={"region": region, "occupation-field": code,
                             "limit": PAGE_SIZE, "offset": o},
                     absorb=absorb,
@@ -204,67 +204,37 @@ class ArbetsformedlingenScraper(BaseScraper):
 
     async def _fetch_and_absorb(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         *,
         params: dict[str, Any],
         absorb,
     ) -> None:
-        payload = await self._fetch_page(client, sem, params=params)
+        payload = await self._fetch_page(fetch, sem, params=params)
         absorb(payload.get("hits") or [])
 
     async def _fetch_page(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         *,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
-                    r = await client.get(
-                        API_URL,
-                        params=params,
-                        headers={
-                            "User-Agent": "Mozilla/5.0",
-                            "Accept": "application/json",
-                        },
-                    )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
-            if r.status_code == 200:
-                try:
-                    return r.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"Arbetsförmedlingen returned non-JSON for {params}: {exc}"
-                    ) from exc
-            if r.status_code == 400:
-                # Past pagination cap or invalid params — return empty.
-                return {"hits": [], "total": {"value": 0}}
-            if r.status_code == 429 or 500 <= r.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Arbetsförmedlingen returned {r.status_code} after "
-                        f"{MAX_RETRIES} retries for {params}"
-                    )
-                retry_after = r.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
+        # Retries, backoff, and 429/5xx → ScraperError mapping live in
+        # the shared Fetcher. The one provider quirk kept here: the API
+        # answers 400 when a query walks past the pagination cap (or the
+        # params are invalid) — treat that as an empty result set.
+        async with sem:
+            r = await fetch.request("GET", API_URL, params=params, handled={400})
+        if r.status_code == 400:
+            # Past pagination cap or invalid params — return empty.
+            return {"hits": [], "total": {"value": 0}}
+        try:
+            return r.json()
+        except ValueError as exc:
             raise ScraperError(
-                f"Arbetsförmedlingen returned {r.status_code} for {params}"
-            )
-        raise ScraperError(
-            f"Arbetsförmedlingen exhausted retries for {params}: {last_exc}"
-        )
+                f"Arbetsförmedlingen returned non-JSON for {params}: {exc}"
+            ) from exc
 
     def _parse(self, item: dict[str, Any]) -> Job | None:
         ats_id = str(item.get("id") or "").strip()
@@ -382,7 +352,7 @@ class ArbetsformedlingenScraper(BaseScraper):
             requisition_id=requisition_id,
             salary_summary=salary_summary,
             posted_at=_parse_iso(item.get("publication_date") or item.get("application_deadline")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

@@ -19,17 +19,16 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-import httpx
-
-from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
+
+    from ats_scrapers.fetch import Fetcher
 
 logger = logging.getLogger(__name__)
 
@@ -81,14 +80,23 @@ class WTTJScraper(BaseScraper):
 
     ats = ATSType.WELCOMETOTHEJUNGLE
 
+    default_headers = HEADERS
+
     def __init__(
         self,
         company_slug: str = "*",
         *,
         language: str = "en",
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.language = language
         # Default index for company-filtered queries. The full-walk path uses
         # the `_published_at_desc` replica so the cursor strategy is reliable.
@@ -99,16 +107,16 @@ class WTTJScraper(BaseScraper):
             f"https://{APP_ID}-dsn.algolia.net/1/indexes/{sorted_index}/query"
         )
 
-    def fetch(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         """Fetch every matching job. Uses a `published_at_timestamp` cursor
         to walk past Algolia's hard 1000-result-per-query cap."""
         all_jobs: list[Job] = []
         seen: set[str] = set()
-        with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
+        async with self.make_fetcher() as fetch:
             if self.company_slug not in ("*", "all", ""):
                 # Per-org filter: well under 1000, simple page loop suffices
                 for page in range(9):
-                    hits = self._query(client, page=page)
+                    hits = await self._query(fetch, page=page)
                     if not hits:
                         break
                     for hit in hits:
@@ -125,7 +133,7 @@ class WTTJScraper(BaseScraper):
                 page_count = 0
                 max_pages = 200  # safety bound — handles up to 200k jobs
                 while page_count < max_pages:
-                    hits = self._query(client, cursor_ts=cursor_ts)
+                    hits = await self._query(fetch, cursor_ts=cursor_ts)
                     if not hits:
                         break
                     new_count = 0
@@ -152,9 +160,9 @@ class WTTJScraper(BaseScraper):
                     )
         return all_jobs
 
-    def _query(
+    async def _query(
         self,
-        client: httpx.Client,
+        fetch: Fetcher,
         *,
         page: int = 0,
         cursor_ts: int | None = None,
@@ -178,15 +186,8 @@ class WTTJScraper(BaseScraper):
             # First page of a full walk also benefits from the sorted replica
             target_url = self._sorted_url
         request: dict[str, Any] = {"params": "&".join([*params, f"page={page}"])}
-        try:
-            response = client.post(target_url, headers=HEADERS, json=request)
-        except httpx.HTTPError as exc:
-            raise ScraperError(f"WTTJ Algolia call failed: {exc}") from exc
-        if response.status_code != 200:
-            raise ScraperError(
-                f"WTTJ Algolia returned {response.status_code}: {response.text[:120]}"
-            )
-        return response.json().get("hits") or []
+        payload = await fetch.post_json(target_url, json=request)
+        return payload.get("hits") or []
 
     def _parse_hit(self, hit: dict[str, Any]) -> Job:
         org = hit.get("organization") or {}
@@ -248,7 +249,7 @@ class WTTJScraper(BaseScraper):
             requisition_id=hit.get("reference") if isinstance(hit.get("reference"), str) else None,
             description=_compose_description(hit),
             posted_at=_parse_iso(hit.get("published_at")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

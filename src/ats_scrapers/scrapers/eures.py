@@ -34,11 +34,10 @@ import asyncio
 import html
 import logging
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
-import httpx
-
+from ats_scrapers import fetch as fetch_mod
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -46,6 +45,8 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
     from typing import Any
+
+    from ats_scrapers.fetch import Fetcher
 
 log = logging.getLogger(__name__)
 
@@ -62,8 +63,6 @@ PAGE_SIZE = 50  # API caps `resultsPerPage` at 50 (>50 returns 400).
 PAGE_LIMIT = 200  # `page` caps at 200 (page>200 returns 400).
 PAGINATION_CAP = PAGE_SIZE * PAGE_LIMIT  # 10,000 jobs per query.
 MAX_CONCURRENCY = 6  # The portal is generous but we stay polite.
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 MAX_SUBDIVISION_DEPTH = 4
 
 # 31 EURES countries (EU 27 + EEA 3 + Switzerland), as used by the
@@ -129,12 +128,10 @@ class EuresScraper(BaseScraper):
 
     ats = ATSType.EURES
 
-    def fetch(self) -> list[Job]:
-        """Legacy in-memory fetch — accumulates the full corpus into a
-        list. At ~2.7 M jobs that's ~10 GB RSS which exceeds our 7.6 GB
-        VPS, so prefer :meth:`fetch_stream` from cron contexts that
-        write straight to disk."""
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str] | None] = {
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0",
+    }
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -143,28 +140,31 @@ class EuresScraper(BaseScraper):
                 return cleaned
         if not job.ats_id:
             return _job_summary_description(job)
+        return self._run_sync(self._aget_description(job))
+
+    async def _aget_description(self, job: Job) -> str | None:
+        # Any failure shape — non-200 detail response (incl. 404 for a
+        # vanished posting), network error, malformed JSON — falls back
+        # to the factual summary; the row must stay searchable.
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.get(
-                    DETAIL_API_URL_FMT.format(jv_id=job.ats_id),
-                    headers={
-                        "Accept": "application/json",
-                        "User-Agent": "Mozilla/5.0",
-                    },
+            async with self.make_fetcher(follow_redirects=False) as fetcher:
+                payload = await fetcher.get_json(
+                    DETAIL_API_URL_FMT.format(jv_id=job.ats_id)
                 )
-            if response.status_code != 200:
-                return _job_summary_description(job)
-            return _extract_detail_description(response.json()) or _job_summary_description(job)
-        except (httpx.HTTPError, ValueError):
+        except (ScraperError, ValueError):
             return _job_summary_description(job)
+        return _extract_detail_description(payload) or _job_summary_description(job)
 
     async def fetch_stream(self) -> AsyncGenerator[Job, None]:
         """Stream jobs as they're parsed.
 
         Memory profile: ~200 MB regardless of corpus size — only the
         ``seen`` ID set + a bounded in-flight queue stays resident.
+        Prefer this over the in-memory :meth:`fetch` / :meth:`afetch`
+        from cron contexts that write straight to disk — at ~2.7 M jobs
+        the accumulated list is ~10 GB RSS, exceeding our 7.6 GB VPS.
         The producer-side fan-out and dedup logic is shared with the
-        legacy :meth:`fetch` via :meth:`_fetch_async`; we just plug a
+        legacy :meth:`fetch` via :meth:`afetch`; we just plug a
         queue-pushing ``on_job`` callback into it and yield from the
         queue on the consumer side.
 
@@ -192,7 +192,7 @@ class EuresScraper(BaseScraper):
 
         async def producer() -> None:
             try:
-                await self._fetch_async(on_job=on_job)
+                await self.afetch(on_job=on_job)
             finally:
                 producer_done.set()
 
@@ -212,7 +212,7 @@ class EuresScraper(BaseScraper):
             task.cancel()
             raise
 
-    async def _fetch_async(
+    async def afetch(
         self,
         *,
         on_job: Callable[[Job], Awaitable[None]] | None = None,
@@ -236,7 +236,11 @@ class EuresScraper(BaseScraper):
         all_jobs: list[Job] = []
         lock = asyncio.Lock()
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        # ``follow_redirects=False`` matters: the CDN's transient 307
+        # "Network Error" responses must surface to ``_search`` so it
+        # can retry them instead of httpx chasing the redirect into an
+        # HTML error page.
+        async with self.make_fetcher(follow_redirects=False) as fetcher:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
             async def absorb(items: list[dict[str, Any]]) -> None:
@@ -262,7 +266,7 @@ class EuresScraper(BaseScraper):
             # facets at all.
             async def per_country(cc: str) -> None:
                 await self._exhaust_query(
-                    client, sem,
+                    fetcher, sem,
                     base={"locationCodes": [cc]},
                     depth=0, used_dims=set(),
                     absorb=absorb,
@@ -275,7 +279,7 @@ class EuresScraper(BaseScraper):
 
     async def _exhaust_query(
         self,
-        client: httpx.AsyncClient,
+        fetcher: Fetcher,
         sem: asyncio.Semaphore,
         *,
         base: dict[str, Any],
@@ -285,7 +289,7 @@ class EuresScraper(BaseScraper):
     ) -> None:
         """Pull every job matching ``base``. If the total exceeds the
         per-query cap, pick the next subdivision dimension and recurse."""
-        first = await self._search(client, sem, base=base, page=1)
+        first = await self._search(fetcher, sem, base=base, page=1)
         total = int(first.get("numberRecords") or 0)
         if total == 0:
             return
@@ -293,14 +297,14 @@ class EuresScraper(BaseScraper):
 
         if total <= PAGINATION_CAP:
             await self._fan_out_pages(
-                client, sem, base=base, total=total, absorb=absorb,
+                fetcher, sem, base=base, total=total, absorb=absorb,
             )
             return
 
         if depth >= MAX_SUBDIVISION_DEPTH:
             # Out of depth — accept the cap loss.
             await self._fan_out_pages(
-                client, sem, base=base, total=PAGINATION_CAP, absorb=absorb,
+                fetcher, sem, base=base, total=PAGINATION_CAP, absorb=absorb,
             )
             return
 
@@ -315,7 +319,7 @@ class EuresScraper(BaseScraper):
             if children:
                 async def child_region(code: str) -> None:
                     await self._exhaust_query(
-                        client, sem,
+                        fetcher, sem,
                         base={**base, "locationCodes": [code]},
                         depth=depth + 1,
                         used_dims=used_dims | {"region"},
@@ -335,7 +339,7 @@ class EuresScraper(BaseScraper):
             ] or list(_NACE_SECTORS)
             async def child_sector(code: str) -> None:
                 await self._exhaust_query(
-                    client, sem,
+                    fetcher, sem,
                     base={**base, "sectorCodes": [code]},
                     depth=depth + 1,
                     used_dims=used_dims | {"sector"},
@@ -350,7 +354,7 @@ class EuresScraper(BaseScraper):
         if "schedule" not in used_dims:
             async def child_sched(code: str) -> None:
                 await self._exhaust_query(
-                    client, sem,
+                    fetcher, sem,
                     base={**base, "positionScheduleCodes": [code]},
                     depth=depth + 1,
                     used_dims=used_dims | {"schedule"},
@@ -364,12 +368,12 @@ class EuresScraper(BaseScraper):
 
         # Exhausted dimensions — accept the cap loss for this slice.
         await self._fan_out_pages(
-            client, sem, base=base, total=PAGINATION_CAP, absorb=absorb,
+            fetcher, sem, base=base, total=PAGINATION_CAP, absorb=absorb,
         )
 
     async def _fan_out_pages(
         self,
-        client: httpx.AsyncClient,
+        fetcher: Fetcher,
         sem: asyncio.Semaphore,
         *,
         base: dict[str, Any],
@@ -382,7 +386,7 @@ class EuresScraper(BaseScraper):
             return
 
         async def one(page: int) -> None:
-            payload = await self._search(client, sem, base=base, page=page)
+            payload = await self._search(fetcher, sem, base=base, page=page)
             await absorb(payload.get("jvs") or [])
 
         await _gather_tolerant(
@@ -392,7 +396,7 @@ class EuresScraper(BaseScraper):
 
     async def _search(
         self,
-        client: httpx.AsyncClient,
+        fetcher: Fetcher,
         sem: asyncio.Semaphore,
         *,
         base: dict[str, Any],
@@ -400,64 +404,53 @@ class EuresScraper(BaseScraper):
     ) -> dict[str, Any]:
         body = _empty_search_body(PAGE_SIZE, page)
         body.update(base)
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
+        # Network errors and 429/5xx are retried inside the shared
+        # Fetcher. Two provider quirks stay here via ``handled``:
+        #
+        # - 400 means "past pagination cap or invalid filter" — return
+        #   an empty payload so the caller treats the slice as exhausted.
+        # - 307 with an HTML "Network Error" body is the CDN/load-
+        #   balancer in front of EURES timing out; the next attempt
+        #   routes through a fresh upstream and almost always succeeds,
+        #   so we retry it here like the Fetcher retries 429/5xx.
+        #   Observed 2026-05-11: 5 711 page failures were
+        #   307-with-error-page, costing ~285 k rows of the EURES
+        #   corpus when the previous code treated 307 as terminal.
+        #   (Retry budget/backoff read the fetch-module defaults at
+        #   call time, same as the Fetcher itself.)
+        retries = fetch_mod.DEFAULT_RETRIES
+        for attempt in range(1, retries + 1):
             async with sem:
-                try:
-                    r = await client.post(
-                        API_URL, json=body,
-                        headers={
-                            "Accept": "application/json",
-                            "Content-Type": "application/json",
-                            "User-Agent": "Mozilla/5.0",
-                        },
-                    )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
-            if r.status_code == 200:
-                try:
-                    return r.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"EURES returned non-JSON for {base}: {exc}"
-                    ) from exc
+                r = await fetcher.request(
+                    "POST", API_URL, json=body, handled={307, 400},
+                )
             if r.status_code == 400:
-                # Past pagination cap or invalid filter — return empty
-                # so the caller treats this slice as exhausted.
                 return {"numberRecords": 0, "jvs": [], "facets": {}}
-            # 307 with an HTML "Network Error" body is the
-            # CDN/load-balancer in front of EURES timing out; the
-            # next attempt routes through a fresh upstream and almost
-            # always succeeds. Treat it the same as 429/5xx so we
-            # exhaust ``MAX_RETRIES`` instead of giving up on the
-            # very first redirect. Observed 2026-05-11: 5 711 page
-            # failures were 307-with-error-page, costing ~285 k rows
-            # of the EURES corpus when the previous code treated 307
-            # as terminal.
-            if (
-                r.status_code in (307, 429)
-                or 500 <= r.status_code < 600
-            ):
-                if attempt == MAX_RETRIES:
+            if r.status_code == 307:
+                if attempt == retries:
                     raise ScraperError(
-                        f"EURES returned {r.status_code} after "
-                        f"{MAX_RETRIES} retries for {base} page={page}"
+                        f"EURES returned 307 after "
+                        f"{retries} retries for {base} page={page}"
                     )
                 retry_after = r.headers.get("Retry-After")
                 delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
+                    float(retry_after)
+                    if retry_after and retry_after.isdigit()
+                    else min(
+                        fetch_mod.DEFAULT_RETRY_BASE_DELAY * (2 ** attempt),
+                        fetch_mod.DEFAULT_MAX_RETRY_DELAY,
+                    )
                 )
                 await asyncio.sleep(delay)
                 continue
-            raise ScraperError(
-                f"EURES returned {r.status_code} for {base} page={page}: "
-                f"{r.text[:120]}"
-            )
+            try:
+                return r.json()
+            except ValueError as exc:
+                raise ScraperError(
+                    f"EURES returned non-JSON for {base}: {exc}"
+                ) from exc
         raise ScraperError(
-            f"EURES exhausted retries for {base} page={page}: {last_exc}"
+            f"EURES exhausted retries for {base} page={page}"
         )
 
     def _parse(self, item: dict[str, Any]) -> Job | None:
@@ -528,7 +521,7 @@ class EuresScraper(BaseScraper):
             commitment=commitment,
             description=_extract_description(item),
             posted_at=posted_at,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

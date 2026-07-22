@@ -225,11 +225,11 @@ def test_missing_title_still_drops_row() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Streaming mode — :meth:`_fetch_async(on_job=...)` and :meth:`fetch_stream`
+# Streaming mode — :meth:`afetch(on_job=...)` and :meth:`fetch_stream`
 # ---------------------------------------------------------------------------
 #
 # Memory model: projection from a 10 k FR sample showed the legacy
-# list-accumulating ``_fetch_async`` would peak at ~10 GB RSS on the
+# list-accumulating ``afetch`` would peak at ~10 GB RSS on the
 # ~2.7 M-job full corpus — over the 7.6 GB VPS RAM. The streaming
 # variant pushes each parsed Job to an async callback (or asyncio.Queue
 # in the ``fetch_stream`` wrapper) instead of accumulating, leaving
@@ -246,7 +246,7 @@ def _fake_exhaust(items_to_emit):
 
 
 def test_on_job_callback_invoked_per_deduped_job(monkeypatch) -> None:
-    """``_fetch_async(on_job=cb)`` must call ``cb`` for every parsed
+    """``afetch(on_job=cb)`` must call ``cb`` for every parsed
     job that survives dedup, and must NOT accumulate them into the
     returned list. Dedup is by ``ats_id``."""
     scraper = EuresScraper("eures")
@@ -263,7 +263,7 @@ def test_on_job_callback_invoked_per_deduped_job(monkeypatch) -> None:
     async def collect(job):
         received.append(job)
 
-    out = asyncio.run(scraper._fetch_async(on_job=collect))
+    out = asyncio.run(scraper.afetch(on_job=collect))
     # Streaming mode → returned list is empty.
     assert out == []
     # 3 jobs survived dedup + blank-title filter (a, b, c).
@@ -283,13 +283,13 @@ def test_on_job_none_accumulates_to_list(monkeypatch) -> None:
     ]
     monkeypatch.setattr(scraper, "_exhaust_query", _fake_exhaust(items))
 
-    out = asyncio.run(scraper._fetch_async())
+    out = asyncio.run(scraper.afetch())
     assert [j.ats_id for j in out] == ["a", "b"]
 
 
 def test_fetch_stream_yields_same_jobs_as_legacy(monkeypatch) -> None:
     """``fetch_stream()`` is an async-iterator façade over
-    ``_fetch_async`` — every job legacy ``_fetch_async`` would have
+    ``afetch`` — every job legacy ``afetch`` would have
     returned must come out of the stream in some order."""
     scraper = EuresScraper("eures")
     items = [_base_item(id=str(i)) for i in range(7)]
