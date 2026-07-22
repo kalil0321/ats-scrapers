@@ -15,13 +15,6 @@ from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import RemoteOKScraper, ScraperRegistry
 
 
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.remoteok as ro
-    monkeypatch.setattr(ro, "MAX_RETRIES", 1)
-    monkeypatch.setattr(ro, "RETRY_BASE_DELAY", 0.0)
-
-
 def _meta() -> dict[str, Any]:
     return {
         "last_updated": 1778083391,

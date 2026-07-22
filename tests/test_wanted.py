@@ -20,10 +20,7 @@ _API_RE = re.compile(r"^https://www\.wanted\.co\.kr/api/v4/jobs(?:\?.*)?$")
 
 
 @pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.wanted as w
-    monkeypatch.setattr(w, "MAX_RETRIES", 1)
-    monkeypatch.setattr(w, "RETRY_BASE_DELAY", 0.0)
+def _stub_detail_endpoint(httpx_mock) -> None:
     httpx_mock.add_response(
         url=re.compile(r"^https://www\.wanted\.co\.kr/api/v4/jobs/\d+$"),
         json={

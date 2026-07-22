@@ -21,10 +21,8 @@ from __future__ import annotations
 import asyncio
 import html
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
-
-import httpx
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -33,12 +31,12 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 API_URL = "https://www.getmanfred.com/api/v2/public/offers"
 DETAIL_URL_TEMPLATE = "https://www.getmanfred.com/api/v2/public/offers/{offer_id}"
 JOB_URL_TEMPLATE = "https://www.getmanfred.com/job-offers/{slug}"
 DEFAULT_LANG = "EN"
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 DETAIL_CONCURRENCY = 6
 
 # Manfred's currency field is the human symbol ('€', '$', '£'); map
@@ -68,23 +66,31 @@ class ManfredScraper(BaseScraper):
     """
 
     ats = ATSType.MANFRED
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+    }
 
     def __init__(
         self,
         company_slug: str,
         *,
         timeout: float = 60.0,  # API can take ~10s for the full payload.
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         lang: str = DEFAULT_LANG,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.lang = lang.upper()
         if self.lang not in ("EN", "ES"):
             raise ScraperError(
                 f"Manfred ``lang`` must be 'EN' or 'ES', got {lang!r}"
             )
-
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -92,23 +98,24 @@ class ManfredScraper(BaseScraper):
         copy = job.model_copy()
 
         async def run() -> str | None:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=True,
-            ) as client:
+            async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
-                await self._enrich_description(client, sem, copy)
+                await self._enrich_description(fetch, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True,
-        ) as client:
-            offers = await self._fetch_with_retry(client)
+    async def afetch(self) -> list[Job]:
+        async with self.make_fetcher() as fetch:
+            payload = await fetch.get_json(API_URL, params={"lang": self.lang})
+            if not isinstance(payload, list):
+                raise ScraperError(
+                    f"Manfred API shape changed — expected a list, "
+                    f"got {type(payload).__name__}"
+                )
             seen: set[str] = set()
             jobs: list[Job] = []
-            for item in offers:
+            for item in payload:
                 job = self._parse(item)
                 if job is None or job.ats_id in seen:
                     continue
@@ -116,12 +123,12 @@ class ManfredScraper(BaseScraper):
                 jobs.append(job)
             if self.include_descriptions and jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
-                await asyncio.gather(*(self._enrich_description(client, sem, j) for j in jobs))
+                await asyncio.gather(*(self._enrich_description(fetch, sem, j) for j in jobs))
         return jobs
 
     async def _enrich_description(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         job: Job,
     ) -> None:
@@ -131,71 +138,14 @@ class ManfredScraper(BaseScraper):
         url = DETAIL_URL_TEMPLATE.format(offer_id=offer_id)
         async with sem:
             try:
-                response = await client.get(
-                    url,
-                    params={"lang": self.lang},
-                    headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-                )
-            except httpx.HTTPError:
+                detail = await fetch.get_json(url, params={"lang": self.lang})
+            except (ScraperError, ValueError):
+                # Detail enrichment is best-effort — a missing or broken
+                # detail endpoint must not sink the listing row.
                 return
-        if response.status_code != 200:
-            return
-        try:
-            detail = response.json()
-        except ValueError:
-            return
         description = _compose_description(detail)
         if description and not job.description:
             job.description = description[:25_000]
-
-    async def _fetch_with_retry(
-        self, client: httpx.AsyncClient
-    ) -> list[dict[str, Any]]:
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(
-                    API_URL, params={"lang": self.lang}, headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Accept": "application/json",
-                    },
-                )
-            except httpx.HTTPError as exc:
-                last_exc = exc
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(f"Manfred fetch failed: {exc}") from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                try:
-                    payload = response.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"Manfred returned non-JSON: {exc}"
-                    ) from exc
-                if not isinstance(payload, list):
-                    raise ScraperError(
-                        f"Manfred API shape changed — expected a list, "
-                        f"got {type(payload).__name__}"
-                    )
-                return payload
-            if response.status_code in (429,) or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Manfred returned {response.status_code} after "
-                        f"{MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Manfred returned {response.status_code}"
-            )
-        raise ScraperError(f"Manfred exhausted retries: {last_exc}")
 
     def _parse(self, item: dict[str, Any]) -> Job | None:
         slug = (item.get("slug") or "").strip()
@@ -261,7 +211,7 @@ class ManfredScraper(BaseScraper):
             salary_max=salary_max,
             requisition_id=ic if isinstance(ic, str) else None,
             posted_at=posted_at,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

@@ -28,13 +28,6 @@ _COMPANIES_RE = re.compile(r"^https://api\.ycombinator\.com/v0\.1/companies")
 _PAGE_RE = re.compile(r"^https://www\.ycombinator\.com/companies/[a-z0-9-]+$")
 
 
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.ycombinator as yc
-    monkeypatch.setattr(yc, "MAX_RETRIES", 1)
-    monkeypatch.setattr(yc, "RETRY_BASE_DELAY", 0.0)
-
-
 # --- helpers ----------------------------------------------------------------
 
 

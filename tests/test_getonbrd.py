@@ -20,13 +20,6 @@ _API = "https://www.getonbrd.com/api/v0"
 _API_RE = re.compile(r"^https://www\.getonbrd\.com/api/v0/")
 
 
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.getonbrd as gob
-    monkeypatch.setattr(gob, "MAX_RETRIES", 1)
-    monkeypatch.setattr(gob, "RETRY_BASE_DELAY", 0.0)
-
-
 def _categories(slugs: list[str]) -> dict:
     return {
         "data": [{"id": s, "type": "category", "attributes": {"name": s}} for s in slugs],

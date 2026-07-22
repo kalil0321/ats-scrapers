@@ -23,10 +23,8 @@ from __future__ import annotations
 import asyncio
 import html
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
-
-import httpx
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -35,15 +33,16 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 API_ROOT = "https://www.getonbrd.com/api/v0"
 PER_PAGE = 120  # API hard-caps per_page; lower values just paginate more.
 # Keep the request rate gentle — Get on Board returns 429 quickly when 18
 # categories paginate concurrently AND each new job triggers an extra
-# /companies/{id} fetch. Concurrency=3 + a longer backoff is enough to
-# complete a full ~1k-job sweep in <60s without rate-limit drops.
+# /companies/{id} fetch. Concurrency=3 + extra retry attempts is enough
+# to complete a full ~1k-job sweep in <60s without rate-limit drops.
 MAX_CONCURRENCY = 3
-MAX_RETRIES = 5
-RETRY_BASE_DELAY = 2.0
+MAX_RETRIES = 5  # This API 429s often — allow more attempts than the default.
 
 # Modality ``locale_key`` → canonical ``employment_type`` enum.
 _MODALITY_MAP: dict[str, str] = {
@@ -67,21 +66,20 @@ class GetOnBrdScraper(BaseScraper):
     """
 
     ats = ATSType.GETONBRD
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+    }
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
-    async def _fetch_async(self) -> list[Job]:
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
+    async def afetch(self) -> list[Job]:
+        async with self.make_fetcher(retries=MAX_RETRIES) as fetch:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
-            categories = await self._list_categories(client, sem)
+            categories = await self._list_categories(fetch, sem)
 
             # Lookup tables — one fetch each, then cached in memory for
             # the full run. Modalities is a tiny enum (~5-10 values);
             # cities are populated lazily as we encounter referenced IDs.
-            modalities = await self._fetch_lookup(client, sem, "modalities")
+            modalities = await self._fetch_lookup(fetch, sem, "modalities")
             companies: dict[str, str] = {}
             cities: dict[str, dict[str, str]] = {}
 
@@ -92,7 +90,7 @@ class GetOnBrdScraper(BaseScraper):
                 page = 1
                 while True:
                     payload = await self._fetch_jobs_page(
-                        client, sem, slug=slug, page=page,
+                        fetch, sem, slug=slug, page=page,
                     )
                     items = payload.get("data") or []
                     for item in items:
@@ -102,7 +100,7 @@ class GetOnBrdScraper(BaseScraper):
                         seen.add(ats_id)
                         jobs.append(
                             await self._parse_job(
-                                client, sem, item,
+                                fetch, sem, item,
                                 modalities=modalities,
                                 companies=companies, cities=cities,
                             )
@@ -119,60 +117,21 @@ class GetOnBrdScraper(BaseScraper):
 
     async def _request_json(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         url: str,
     ) -> dict[str, Any]:
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
-                    response = await client.get(
-                        url, headers={
-                            "User-Agent": "Mozilla/5.0",
-                            "Accept": "application/json",
-                        },
-                    )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"Get on Board fetch failed for {url}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"Get on Board returned non-JSON for {url}: {exc}"
-                    ) from exc
-            if response.status_code == 404:
-                # Treat 404 as "no such resource" — caller decides.
-                return {}
-            if response.status_code in (429,) or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Get on Board returned {response.status_code} for "
-                        f"{url} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Get on Board returned {response.status_code} for {url}"
-            )
-        raise ScraperError(f"Get on Board exhausted retries for {url}: {last_exc}")
+        async with sem:
+            # Treat 404 as "no such resource" — caller decides.
+            response = await fetch.request("GET", url, handled={404})
+        if response.status_code == 404:
+            return {}
+        return response.json()
 
     async def _list_categories(
-        self, client: httpx.AsyncClient, sem: asyncio.Semaphore
+        self, fetch: Fetcher, sem: asyncio.Semaphore
     ) -> list[str]:
-        payload = await self._request_json(client, sem, f"{API_ROOT}/categories")
+        payload = await self._request_json(fetch, sem, f"{API_ROOT}/categories")
         cats = [
             str(entry.get("id"))
             for entry in (payload.get("data") or [])
@@ -184,13 +143,13 @@ class GetOnBrdScraper(BaseScraper):
 
     async def _fetch_lookup(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         resource: str,
     ) -> dict[str, dict[str, str]]:
         """Fetch a small enum-style resource (modalities) and
         index it by id."""
-        payload = await self._request_json(client, sem, f"{API_ROOT}/{resource}")
+        payload = await self._request_json(fetch, sem, f"{API_ROOT}/{resource}")
         return {
             str(entry.get("id")): entry.get("attributes") or {}
             for entry in (payload.get("data") or [])
@@ -199,7 +158,7 @@ class GetOnBrdScraper(BaseScraper):
 
     async def _fetch_jobs_page(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         *,
         slug: str,
@@ -209,11 +168,11 @@ class GetOnBrdScraper(BaseScraper):
             f"{API_ROOT}/categories/{slug}/jobs"
             f"?per_page={PER_PAGE}&page={page}"
         )
-        return await self._request_json(client, sem, url)
+        return await self._request_json(fetch, sem, url)
 
     async def _resolve_company(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         company_id: str,
         cache: dict[str, str],
@@ -221,7 +180,7 @@ class GetOnBrdScraper(BaseScraper):
         if company_id in cache:
             return cache[company_id]
         payload = await self._request_json(
-            client, sem, f"{API_ROOT}/companies/{company_id}"
+            fetch, sem, f"{API_ROOT}/companies/{company_id}"
         )
         attrs = (payload.get("data") or {}).get("attributes") or {}
         name = (attrs.get("name") or "").strip() or company_id
@@ -230,7 +189,7 @@ class GetOnBrdScraper(BaseScraper):
 
     async def _resolve_city(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         city_id: str,
         cache: dict[str, dict[str, str]],
@@ -238,7 +197,7 @@ class GetOnBrdScraper(BaseScraper):
         if city_id in cache:
             return cache[city_id]
         payload = await self._request_json(
-            client, sem, f"{API_ROOT}/cities/{city_id}"
+            fetch, sem, f"{API_ROOT}/cities/{city_id}"
         )
         attrs = (payload.get("data") or {}).get("attributes") or {}
         out = {
@@ -252,7 +211,7 @@ class GetOnBrdScraper(BaseScraper):
 
     async def _parse_job(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         item: dict[str, Any],
         *,
@@ -268,12 +227,12 @@ class GetOnBrdScraper(BaseScraper):
             ((attrs.get("company") or {}).get("data") or {}).get("id") or ""
         )
         company = (
-            await self._resolve_company(client, sem, company_id, companies)
+            await self._resolve_company(fetch, sem, company_id, companies)
             if company_id else "Unknown"
         )
 
         location = await self._format_location(
-            client, sem, attrs, cities=cities,
+            fetch, sem, attrs, cities=cities,
         )
 
         modality_id = str(
@@ -318,13 +277,13 @@ class GetOnBrdScraper(BaseScraper):
             department=attrs.get("category_name"),
             description=description,
             posted_at=_unix_to_dt(attrs.get("published_at")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 
     async def _format_location(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         attrs: dict[str, Any],
         *,
@@ -339,7 +298,7 @@ class GetOnBrdScraper(BaseScraper):
         if city_refs:
             cid = str(city_refs[0].get("id") or "")
             if cid:
-                resolved = await self._resolve_city(client, sem, cid, cities)
+                resolved = await self._resolve_city(fetch, sem, cid, cities)
                 name, country = resolved.get("name"), resolved.get("country")
                 if name and country:
                     return f"{name}, {country}"
