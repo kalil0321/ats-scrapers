@@ -11,11 +11,9 @@ from ats_scrapers.scrapers import GreenhouseScraper, ScraperRegistry
 API = "https://boards-api.greenhouse.io/v1/boards/acme/jobs?content=true"
 
 
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.greenhouse as gh
-    monkeypatch.setattr(gh, "MAX_RETRIES", 1)
-    monkeypatch.setattr(gh, "RETRY_BASE_DELAY", 0.0)
+# Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture
+# in conftest.py — the shared fetch layer replaced per-scraper retry
+# constants.
 
 
 # Greenhouse listing now requests ``?content=true``; the scraper fetches
@@ -67,17 +65,15 @@ def test_404_raises_company_not_found(httpx_mock) -> None:
         GreenhouseScraper("acme").fetch()
 
 
-def test_5xx_retries(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.greenhouse as gh
-    monkeypatch.setattr(gh, "MAX_RETRIES", 3)
+def test_5xx_retries(httpx_mock) -> None:
     httpx_mock.add_response(url=API, status_code=503)
     httpx_mock.add_response(url=API, json={"jobs": [_job()]})
     assert len(GreenhouseScraper("acme").fetch()) == 1
 
 
 def test_5xx_exhausts(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.greenhouse as gh
-    monkeypatch.setattr(gh, "MAX_RETRIES", 2)
+    from ats_scrapers import fetch as fetch_module
+    monkeypatch.setattr(fetch_module, "DEFAULT_RETRIES", 2)
     httpx_mock.add_response(url=API, status_code=502, is_reusable=True)
     with pytest.raises(ScraperError):
         GreenhouseScraper("acme").fetch()

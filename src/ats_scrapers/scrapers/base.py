@@ -9,43 +9,118 @@ Adding a new scraper:
     class GreenhouseScraper(BaseScraper):
         ats = ATSType.GREENHOUSE
 
-        def fetch(self) -> list[Job]:
-            ...
+        async def afetch(self) -> list[Job]:
+            async with self.make_fetcher() as fetch:
+                payload = await fetch.get_json(API_URL.format(slug=self.company_slug))
+            return [self._parse(item) for item in payload["jobs"]]
 
 The registry is the only stable lookup mechanism — never import scraper
 classes by path from outside the package.
+
+Scrapers are async-first: implement :meth:`afetch`. The sync
+:meth:`fetch` wrapper works both from plain scripts and from inside a
+running event loop (Jupyter, FastAPI, …), where it runs the coroutine
+on a private loop in a worker thread instead of crashing in
+``asyncio.run``.
 """
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.fetch import Engine, Fetcher
 from ats_scrapers.models import ATSType
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Coroutine
 
     from ats_scrapers.models import Job
+
+T = TypeVar("T")
 
 
 class BaseScraper(ABC):
     """Abstract base for every ATS scraper.
 
-    Subclasses must set the `ats` class attribute and implement `fetch()`.
+    Subclasses must set the ``ats`` class attribute and implement
+    :meth:`afetch`. The class attributes ``fetch_engine``,
+    ``fetch_escalate``, and ``default_headers`` declare what the ATS
+    is known to need (see :class:`ats_scrapers.fetch.Fetcher`);
+    :meth:`make_fetcher` turns them into a configured fetcher.
     """
 
     ats: ClassVar[ATSType]
 
-    def __init__(self, company_slug: str, *, timeout: float = 30.0) -> None:
+    #: HTTP engine this ATS needs: "httpx" for nearly everything,
+    #: "cloak" (httpcloak TLS impersonation) for load balancers that
+    #: block plain clients outright.
+    fetch_engine: ClassVar[Engine] = "httpx"
+    #: Retry a 403/406 through httpcloak and stick with it. For ATSes
+    #: that block httpx only on some tenants.
+    fetch_escalate: ClassVar[bool] = False
+    #: Headers sent on every request (per-request headers merge over).
+    default_headers: ClassVar[dict[str, str] | None] = None
+
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
+    ) -> None:
         self.company_slug = company_slug
         self.timeout = timeout
-        self.include_descriptions = True
+        self.include_descriptions = include_descriptions
+        self.proxy = proxy
 
     @abstractmethod
-    def fetch(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         """Return all currently active jobs for this company."""
+
+    def fetch(self) -> list[Job]:
+        """Sync convenience wrapper around :meth:`afetch`.
+
+        Safe to call from inside a running event loop.
+        """
+        return self._run_sync(self.afetch())
+
+    def make_fetcher(self, **overrides: Any) -> Fetcher:
+        """Build a :class:`Fetcher` from this scraper's declared config.
+
+        Keyword arguments override the defaults derived from the class
+        attributes and constructor parameters.
+        """
+        config: dict[str, Any] = {
+            "label": f"{type(self).__name__}({self.company_slug!r})",
+            "timeout": self.timeout,
+            "engine": type(self).fetch_engine,
+            "escalate": type(self).fetch_escalate,
+            "headers": type(self).default_headers,
+            "proxy": self.proxy,
+        }
+        config.update(overrides)
+        return Fetcher(**config)
+
+    @staticmethod
+    def _run_sync(coro: Coroutine[Any, Any, T]) -> T:
+        """Run ``coro`` to completion from synchronous code.
+
+        Uses ``asyncio.run`` when no loop is running. Inside a running
+        loop (Jupyter cell, async web handler) it runs the coroutine on
+        a fresh loop in a worker thread — blocking the caller, as a
+        sync call must, but without touching the outer loop.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result()
 
     def get_description(self, job: Job) -> str | None:
         """Fetch or return the best-known description for one job.
