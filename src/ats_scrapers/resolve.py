@@ -1,0 +1,167 @@
+"""Resolve a careers-page URL to a scraper — no ATS knowledge required.
+
+Almost nobody knows which ATS a company uses ("OpenAI is on Ashby" is
+recruiting-insider trivia), but anyone can Google "<company> careers"
+and paste the URL. Every multi-tenant ATS serves tenants from a
+recognizable URL shape, so the mapping is deterministic and offline:
+
+    >>> from ats_scrapers import get_scraper_for_url
+    >>> scraper = get_scraper_for_url("https://jobs.ashbyhq.com/openai")
+    >>> jobs = scraper.fetch()
+
+Each pattern below mirrors the slug contract documented in the
+corresponding scraper module — path-based tenants (Greenhouse, Lever,
+Ashby, …), subdomain tenants (Recruitee, Teamtailor, Breezy, …), and
+full-URL tenants (Workday, Taleo, and iCIMS variants) where the
+scraper itself wants the whole URL.
+
+Custom-domain career sites (careers.example.com fronting Phenom,
+Avature, or Eightfold) cannot be recognized from the URL alone —
+``resolve_careers_url`` returns ``None`` and
+``get_scraper_for_url`` raises with guidance.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import TYPE_CHECKING, NamedTuple
+from urllib.parse import urlparse
+
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+
+if TYPE_CHECKING:
+    from ats_scrapers.scrapers.base import BaseScraper
+
+# Tenant slugs interpolated into hostnames/paths must look like DNS
+# labels / board identifiers — this also refuses anything that could
+# escape the intended host when a scraper interpolates the slug into
+# an f-string URL.
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._\-]*$", re.IGNORECASE)
+
+
+class ResolvedCareersUrl(NamedTuple):
+    """Outcome of :func:`resolve_careers_url`."""
+
+    ats: ATSType
+    slug: str
+
+
+def _first_path_segment(parsed) -> str | None:
+    segments = [s for s in parsed.path.split("/") if s]
+    return segments[0] if segments else None
+
+
+# Path-based tenants: https://{host}/{slug}/...
+_PATH_HOSTS: dict[str, ATSType] = {
+    "boards.greenhouse.io": ATSType.GREENHOUSE,
+    "job-boards.greenhouse.io": ATSType.GREENHOUSE,
+    "boards.eu.greenhouse.io": ATSType.GREENHOUSE,
+    "job-boards.eu.greenhouse.io": ATSType.GREENHOUSE,
+    "jobs.lever.co": ATSType.LEVER,
+    "jobs.eu.lever.co": ATSType.LEVER,
+    "jobs.ashbyhq.com": ATSType.ASHBY,
+    "apply.workable.com": ATSType.WORKABLE,
+    "careers.smartrecruiters.com": ATSType.SMARTRECRUITERS,
+    "jobs.smartrecruiters.com": ATSType.SMARTRECRUITERS,
+    "jobs.gem.com": ATSType.GEM,
+    "ats.rippling.com": ATSType.RIPPLING,
+}
+
+# Subdomain tenants: https://{slug}.{suffix}/...
+_SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
+    ".recruitee.com": ATSType.RECRUITEE,
+    ".teamtailor.com": ATSType.TEAMTAILOR,
+    ".breezy.hr": ATSType.BREEZY,
+    ".bamboohr.com": ATSType.BAMBOOHR,
+    ".jobs.personio.com": ATSType.PERSONIO,
+    ".jobs.personio.de": ATSType.PERSONIO,
+    ".pinpointhq.com": ATSType.PINPOINT,
+    ".applytojob.com": ATSType.JAZZHR,
+    ".avature.net": ATSType.AVATURE,
+    ".eightfold.ai": ATSType.EIGHTFOLD,
+}
+
+# Full-URL tenants: the scraper's slug IS the careers URL.
+_WORKDAY_HOST_RE = re.compile(r"^[^.]+\.wd\d+\.myworkdayjobs\.com$")
+_TALEO_HOST_RE = re.compile(r"^[^.]+\.tbe\.taleo\.net$")
+_ICIMS_HOST_RE = re.compile(r"^(?P<prefix>[a-z0-9-]+)\.icims\.com$", re.IGNORECASE)
+
+
+def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
+    """Map a public careers URL to ``(ats, slug)``.
+
+    Returns ``None`` when the URL doesn't match any known ATS shape
+    (typically a custom-domain careers site). The returned slug is in
+    the exact form the matching scraper's constructor expects.
+    """
+    parsed = urlparse(url if "//" in url else f"https://{url}")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return None
+    if host.startswith("www."):
+        host = host.removeprefix("www.")
+
+    if host in _PATH_HOSTS:
+        slug = _first_path_segment(parsed)
+        if slug and _SLUG_RE.match(slug):
+            return ResolvedCareersUrl(_PATH_HOSTS[host], slug)
+        return None
+
+    # join.com/companies/{slug}
+    if host == "join.com":
+        segments = [s for s in parsed.path.split("/") if s]
+        if len(segments) >= 2 and segments[0] == "companies" and _SLUG_RE.match(segments[1]):
+            return ResolvedCareersUrl(ATSType.JOIN_COM, segments[1])
+        return None
+
+    for suffix, ats in _SUBDOMAIN_SUFFIXES.items():
+        if host.endswith(suffix):
+            slug = host.removesuffix(suffix)
+            if slug and "." not in slug and _SLUG_RE.match(slug):
+                return ResolvedCareersUrl(ats, slug)
+            return None
+
+    if _WORKDAY_HOST_RE.match(host):
+        # WorkdayScraper wants the full careers URL (tenant, wdN
+        # instance, and site name are all load-bearing).
+        return ResolvedCareersUrl(ATSType.WORKDAY, f"https://{host}{parsed.path}")
+
+    if _TALEO_HOST_RE.match(host):
+        # Taleo TBE wants the full search-results URL including query.
+        query = f"?{parsed.query}" if parsed.query else ""
+        return ResolvedCareersUrl(ATSType.TALEO, f"https://{host}{parsed.path}{query}")
+
+    icims = _ICIMS_HOST_RE.match(host)
+    if icims:
+        prefix = icims.group("prefix").lower()
+        if prefix.startswith("careers-"):
+            return ResolvedCareersUrl(ATSType.ICIMS, prefix.removeprefix("careers-"))
+        # Non-standard portal prefixes (uscareers-..., jobs-...): the
+        # scraper accepts the full portal URL verbatim.
+        return ResolvedCareersUrl(ATSType.ICIMS, f"https://{host}")
+
+    return None
+
+
+def get_scraper_for_url(url: str, **kwargs: object) -> BaseScraper:
+    """Build a ready-to-use scraper from a public careers URL.
+
+    Keyword arguments are forwarded to the scraper constructor
+    (``timeout``, ``include_descriptions``, ``proxy``, …).
+
+    Raises :class:`ScraperError` for URLs that don't match a known ATS
+    shape — custom-domain careers sites need the explicit
+    ``get_scraper(ats, slug)`` path.
+    """
+    resolved = resolve_careers_url(url)
+    if resolved is None:
+        raise ScraperError(
+            f"Could not recognize an ATS from {url!r}. Custom-domain careers "
+            f"sites can't be resolved from the URL alone — if you know the "
+            f"platform, use get_scraper(ats, slug), or look the company up "
+            f"with find_company()."
+        )
+    from ats_scrapers.scrapers.base import ScraperRegistry
+
+    return ScraperRegistry.get(resolved.ats)(resolved.slug, **kwargs)  # type: ignore[arg-type]

@@ -3,6 +3,22 @@
 All notable changes to **ats-scrapers** are documented here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — company discovery without ATS knowledge
+
+Nobody knows OpenAI runs on Ashby. Two new package-root entry points
+remove the need to know the `(ats, slug)` pair:
+
+- `get_scraper_for_url("https://jobs.ashbyhq.com/openai")` — builds
+  the right scraper from a public careers URL. Recognizes 20+ ATS URL
+  shapes (path-tenant, subdomain-tenant, and full-URL platforms like
+  Workday/Taleo/iCIMS). `resolve_careers_url(url)` exposes the raw
+  `(ats, slug)` mapping.
+- `find_company("openai")` — case-insensitive name/slug lookup over
+  the hosted companies directory (`Client.companies()`, cached
+  in-process; exact matches rank first).
+
 ## [0.1.0] — 2026-07-22
 
 Initial release of `ats-scrapers`:

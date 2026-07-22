@@ -15,7 +15,7 @@ directory and is not part of the installable package.
 """
 
 from ats_scrapers._version import __version__
-from ats_scrapers.client import Client, list_ats, search
+from ats_scrapers.client import Client, find_company, list_ats, search
 from ats_scrapers.exceptions import (
     ATSScrapersError,
     CompanyNotFoundError,
@@ -26,6 +26,7 @@ from ats_scrapers.exceptions import (
 from ats_scrapers.fetch import Fetcher, FetchResponse, MalformedJSONError
 from ats_scrapers.manifest import Manifest
 from ats_scrapers.models import ATSType, Company, EmploymentType, Job, Salary, SalaryPeriod
+from ats_scrapers.resolve import ResolvedCareersUrl, get_scraper_for_url, resolve_careers_url
 
 __all__ = [
     "ATSScrapersError",
@@ -40,11 +41,15 @@ __all__ = [
     "MalformedJSONError",
     "Manifest",
     "ManifestError",
+    "ResolvedCareersUrl",
     "Salary",
     "SalaryPeriod",
     "ScraperError",
     "StorageError",
     "__version__",
+    "find_company",
+    "get_scraper_for_url",
     "list_ats",
+    "resolve_careers_url",
     "search",
 ]

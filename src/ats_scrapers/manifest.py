@@ -110,6 +110,12 @@ class Manifest(BaseModel):
             raise ManifestError(f"No snapshot for date {date}")
         return _pick_url(entry, prefer_parquet=prefer_parquet)
 
+    def url_for_companies(self, *, prefer_parquet: bool = True) -> str:
+        """Return the best download URL for the companies directory."""
+        if self.companies is None:
+            raise ManifestError("Manifest has no companies artifact")
+        return _pick_url(self.companies, prefer_parquet=prefer_parquet)
+
 
 def _pick_url(entry: FileEntry, *, prefer_parquet: bool) -> str:
     if prefer_parquet and entry.parquet is not None:

@@ -70,9 +70,22 @@ for field definitions and normalization rules.
 
 ## Scrape a company
 
+You don't need to know which ATS a company uses. Paste its careers URL:
+
 ```python
+from ats_scrapers import get_scraper_for_url
+
+scraper = get_scraper_for_url("https://jobs.ashbyhq.com/openai")
+jobs = scraper.fetch()
+```
+
+Or look it up by name in the hosted companies directory (63,000+ tenants):
+
+```python
+from ats_scrapers import find_company
 from ats_scrapers.scrapers import get_scraper
 
+find_company("openai")          # → ats="ashby", slug="openai", url=...
 scraper = get_scraper("ashby", "openai")
 jobs = scraper.fetch()
 ```

@@ -53,6 +53,7 @@ class Client:
         self._owns_http = http_client is None
         self._manifest: Manifest | None = None
         self._snapshot: pd.DataFrame | None = None
+        self._companies: pd.DataFrame | None = None
 
     def __enter__(self) -> Client:
         return self
@@ -96,6 +97,47 @@ class Client:
             url = self.manifest.url_for_all(prefer_parquet=self._prefer_parquet)
             self._snapshot = _normalize_dataset(self._download(url))
         return self._snapshot
+
+    def companies(self) -> pd.DataFrame:
+        """Load the companies directory (``ats``, ``name``, ``slug``, ``url``).
+
+        One row per tracked tenant. Cached in memory for the client's
+        lifetime — it's a few MB, far smaller than any jobs slice.
+        """
+        if self._companies is None:
+            url = self.manifest.url_for_companies(prefer_parquet=self._prefer_parquet)
+            self._companies = self._download(url)
+        return self._companies
+
+    def find_company(self, name: str, *, limit: int = 10) -> pd.DataFrame:
+        """Find tracked companies by (partial) name or slug.
+
+        Case-insensitive literal substring match — the answer to
+        "which ATS is this company on?" without knowing any ATS
+        exists:
+
+        >>> Client().find_company("openai")
+             ats    name  slug  url
+        0  ashby  OpenAI  openai  https://jobs.ashbyhq.com/openai
+
+        Rows whose slug matches exactly sort first, then exact name
+        matches, then everything else. Feed ``ats``/``slug`` straight
+        into ``get_scraper``.
+        """
+        df = self.companies()
+        needle = name.strip().lower()
+        if not needle:
+            return df.head(0)
+        names = df["name"].fillna("").str.lower()
+        slugs = df["slug"].fillna("").astype(str).str.lower()
+        matches = df[
+            names.str.contains(needle, regex=False) | slugs.str.contains(needle, regex=False)
+        ].copy()
+        rank = (slugs.loc[matches.index] != needle).astype(int) * 2 + (
+            names.loc[matches.index] != needle
+        ).astype(int)
+        matches = matches.loc[rank.sort_values(kind="stable").index]
+        return matches.head(limit).reset_index(drop=True)
 
     def search(
         self,
@@ -248,3 +290,16 @@ def search(
 def list_ats() -> Iterable[str]:
     """Return source names present in the current hosted manifest."""
     return _default_client().manifest.by_ats.keys()
+
+
+def find_company(name: str, *, limit: int = 10) -> pd.DataFrame:
+    """Find tracked companies by (partial) name or slug.
+
+    One-shot wrapper around :meth:`Client.find_company` — answers
+    "which ATS is this company on?" so you can scrape it without
+    knowing the ATS landscape:
+
+    >>> find_company("openai")
+    >>> get_scraper("ashby", "openai")  # from the ats/slug columns
+    """
+    return _default_client().find_company(name, limit=limit)
