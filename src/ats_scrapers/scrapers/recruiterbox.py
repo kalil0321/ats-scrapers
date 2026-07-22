@@ -20,12 +20,9 @@ zero open positions.
 
 from __future__ import annotations
 
-import asyncio
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
-
-import httpx
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -34,10 +31,10 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 API_URL = "https://jsapi.recruiterbox.com/v1/openings"
 PAGE_LIMIT = 100
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 WHITESPACE_RE = re.compile(r"\s+")
 MAX_DESCRIPTION_LEN = 25_000
@@ -61,18 +58,18 @@ class RecruiterboxScraper(BaseScraper):
 
     ats = ATSType.RECRUITERBOX
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+    }
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         jobs: list[Job] = []
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
+        async with self.make_fetcher() as fetch:
             offset = 0
             while True:
-                payload = await self._fetch_with_retry(client, offset)
+                payload = await self._fetch_page(fetch, offset)
                 meta = payload.get("meta") if isinstance(payload, dict) else {}
                 objects = (
                     payload.get("objects") if isinstance(payload, dict) else []
@@ -105,80 +102,39 @@ class RecruiterboxScraper(BaseScraper):
                     break
         return jobs
 
-    async def _fetch_with_retry(
-        self, client: httpx.AsyncClient, offset: int
-    ) -> dict[str, Any]:
+    async def _fetch_page(self, fetch: Fetcher, offset: int) -> dict[str, Any]:
         params = {
             "client_name": self.company_slug,
             "offset": offset,
             "limit": PAGE_LIMIT,
         }
-        for attempt in range(1, MAX_RETRIES + 1):
+        # A 400 with {"client_name": "Invalid client name"} means the slug
+        # isn't a Recruiterbox tenant — a provider quirk the shared Fetcher
+        # hands back to us unmapped.
+        response = await fetch.request(
+            "GET", API_URL, params=params, handled=frozenset({400})
+        )
+        if response.status_code == 400:
             try:
-                response = await client.get(
-                    API_URL,
-                    params=params,
-                    headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Accept": "application/json",
-                    },
-                )
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Recruiterbox fetch failed for {self.company_slug} "
-                        f"at offset={offset}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"Recruiterbox returned malformed JSON for "
-                        f"{self.company_slug}: {exc}"
-                    ) from exc
-            if response.status_code == 400:
-                # The API returns 400 with {"client_name": "Invalid client name"}
-                # for unknown tenants — treat that as not-found.
-                try:
-                    err = response.json()
-                except ValueError:
-                    err = {}
-                if isinstance(err, dict) and "Invalid client name" in str(
-                    err.get("client_name", "")
-                ):
-                    raise CompanyNotFoundError(
-                        f"Recruiterbox tenant not found: {self.company_slug}"
-                    )
-                raise ScraperError(
-                    f"Recruiterbox 400 for {self.company_slug}: {err or response.text[:120]}"
-                )
-            if response.status_code == 404:
+                err = response.json()
+            except ValueError:
+                err = {}
+            if isinstance(err, dict) and "Invalid client name" in str(
+                err.get("client_name", "")
+            ):
                 raise CompanyNotFoundError(
                     f"Recruiterbox tenant not found: {self.company_slug}"
                 )
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Recruiterbox returned {response.status_code} for "
-                        f"{self.company_slug} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
             raise ScraperError(
-                f"Recruiterbox returned {response.status_code} for "
-                f"{self.company_slug} at offset={offset}"
+                f"Recruiterbox 400 for {self.company_slug}: {err or response.text[:120]}"
             )
-        raise ScraperError(
-            f"Recruiterbox exhausted retries for {self.company_slug}"
-        )
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise ScraperError(
+                f"Recruiterbox returned malformed JSON for "
+                f"{self.company_slug}: {exc}"
+            ) from exc
 
     def _parse_opening(self, item: dict[str, Any]) -> Job | None:
         ats_id = str(item.get("id") or "").strip()
@@ -217,7 +173,7 @@ class RecruiterboxScraper(BaseScraper):
             commitment=item.get("position_type") if isinstance(item.get("position_type"), str) else None,
             description=_html_unescape_for_desc(item.get("description")),
             posted_at=_parse_iso(item.get("created_on") or item.get("updated_on")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

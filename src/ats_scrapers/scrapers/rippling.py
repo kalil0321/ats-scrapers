@@ -21,23 +21,27 @@ from __future__ import annotations
 import asyncio
 import html as html_mod
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
-import httpx
-
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 API_TEMPLATE = "https://api.rippling.com/platform/api/ats/v1/board/{slug}/jobs"
 DETAIL_TEMPLATE = (
     "https://api.rippling.com/platform/api/ats/v1/board/{slug}/jobs/{id}"
 )
 DETAIL_CONCURRENCY = 8
+
+# Detail enrichment is best-effort: any non-2xx keeps the listing row
+# as-is, so the shared Fetcher hands every error status back unmapped.
+_DETAIL_HANDLED = frozenset(range(300, 600))
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -61,8 +65,7 @@ _EMPLOYMENT_TYPE_MAP = {
 class RipplingScraper(BaseScraper):
     ats = ATSType.RIPPLING
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str]] = {"Accept": "application/json"}
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -70,39 +73,17 @@ class RipplingScraper(BaseScraper):
         copy = job.model_copy()
 
         async def run() -> str | None:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=True,
-            ) as client:
+            async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
-                await self._enrich_detail(client, sem, copy)
+                await self._enrich_detail(fetch, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         url = API_TEMPLATE.format(slug=self.company_slug)
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True,
-        ) as client:
-            try:
-                response = await client.get(
-                    url, headers={"Accept": "application/json"},
-                )
-            except httpx.HTTPError as exc:
-                raise ScraperError(
-                    f"Rippling fetch failed for {self.company_slug}: {exc}"
-                ) from exc
-            if response.status_code == 404:
-                raise CompanyNotFoundError(
-                    f"Rippling board not found: {self.company_slug}"
-                )
-            if response.status_code != 200:
-                raise ScraperError(
-                    f"Rippling returned {response.status_code} for "
-                    f"{self.company_slug}"
-                )
-
-            payload = response.json()
+        async with self.make_fetcher() as fetch:
+            payload = await fetch.get_json(url)
             if isinstance(payload, dict):
                 items = payload.get("items") or payload.get("jobs") or []
             elif isinstance(payload, list):
@@ -114,13 +95,13 @@ class RipplingScraper(BaseScraper):
             if self.include_descriptions and jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
-                    self._enrich_detail(client, sem, j) for j in jobs
+                    self._enrich_detail(fetch, sem, j) for j in jobs
                 ))
         return jobs
 
     async def _enrich_detail(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         job: Job,
     ) -> None:
@@ -129,10 +110,10 @@ class RipplingScraper(BaseScraper):
         url = DETAIL_TEMPLATE.format(slug=self.company_slug, id=job.ats_id)
         async with sem:
             try:
-                response = await client.get(
-                    url, headers={"Accept": "application/json"},
+                response = await fetch.request(
+                    "GET", url, handled=_DETAIL_HANDLED,
                 )
-            except httpx.HTTPError:
+            except ScraperError:
                 return
         if response.status_code != 200:
             return
@@ -175,7 +156,7 @@ class RipplingScraper(BaseScraper):
             posted_at=_parse_iso(
                 item.get("createdAt") or item.get("created_at")
             ),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

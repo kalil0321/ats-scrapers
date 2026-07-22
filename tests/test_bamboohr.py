@@ -27,13 +27,6 @@ from ats_scrapers.scrapers import BambooHRScraper, ScraperRegistry, get_scraper
 # --- module-level ------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.bamboohr as bh
-    monkeypatch.setattr(bh, "MAX_RETRIES", 1)
-    monkeypatch.setattr(bh, "RETRY_BASE_DELAY", 0.0)
-
-
 WIDGET_URL = "https://acme.bamboohr.com/jobs/embed2.php"
 
 # The scraper always issues per-job ``/careers/{id}/detail`` calls after
@@ -273,16 +266,16 @@ def test_404_does_not_retry(monkeypatch, httpx_mock) -> None:
     """404 means "this tenant doesn't exist" — retrying wastes time. We only
     register ONE 404 response; if a retry fires, the second request 500s
     against the empty mock queue."""
-    import ats_scrapers.scrapers.bamboohr as bh
-    monkeypatch.setattr(bh, "MAX_RETRIES", 3)
+    import ats_scrapers.fetch
+    monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 3)
     httpx_mock.add_response(url=WIDGET_URL, status_code=404)
     with pytest.raises(CompanyNotFoundError):
         BambooHRScraper("acme").fetch()
 
 
 def test_retries_on_5xx_then_succeeds(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.bamboohr as bh
-    monkeypatch.setattr(bh, "MAX_RETRIES", 3)
+    import ats_scrapers.fetch
+    monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 3)
     httpx_mock.add_response(url=WIDGET_URL, status_code=503)
     httpx_mock.add_response(url=WIDGET_URL, text=_widget_html([
         {"id": 1, "name": "Eng", "jobs": [{"id": 1, "title": "X", "location": "Y"}]},
@@ -292,8 +285,8 @@ def test_retries_on_5xx_then_succeeds(monkeypatch, httpx_mock) -> None:
 
 
 def test_retries_on_429_then_succeeds(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.bamboohr as bh
-    monkeypatch.setattr(bh, "MAX_RETRIES", 3)
+    import ats_scrapers.fetch
+    monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 3)
     httpx_mock.add_response(url=WIDGET_URL, status_code=429)
     httpx_mock.add_response(url=WIDGET_URL, text=_widget_html([
         {"id": 1, "name": "Eng", "jobs": [{"id": 1, "title": "X", "location": "Y"}]},
@@ -303,8 +296,8 @@ def test_retries_on_429_then_succeeds(monkeypatch, httpx_mock) -> None:
 
 
 def test_429_with_retry_after_is_honored(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.bamboohr as bh
-    monkeypatch.setattr(bh, "MAX_RETRIES", 3)
+    import ats_scrapers.fetch
+    monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 3)
 
     sleeps: list[float] = []
     async def fake_sleep(seconds: float) -> None:
@@ -322,16 +315,16 @@ def test_429_with_retry_after_is_honored(monkeypatch, httpx_mock) -> None:
 
 
 def test_5xx_exhausts_and_raises(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.bamboohr as bh
-    monkeypatch.setattr(bh, "MAX_RETRIES", 3)
+    import ats_scrapers.fetch
+    monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 3)
     httpx_mock.add_response(url=WIDGET_URL, status_code=502, is_reusable=True)
     with pytest.raises(ScraperError, match="502"):
         BambooHRScraper("acme").fetch()
 
 
 def test_network_error_raises_after_retries(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.bamboohr as bh
-    monkeypatch.setattr(bh, "MAX_RETRIES", 2)
+    import ats_scrapers.fetch
+    monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 2)
     httpx_mock.add_exception(
         httpx.ConnectError("DNS lookup failed"),
         url=WIDGET_URL,

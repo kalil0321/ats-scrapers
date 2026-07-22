@@ -16,14 +16,6 @@ from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import CornerstoneScraper, ScraperRegistry
 
-
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.cornerstone as cs
-    monkeypatch.setattr(cs, "MAX_RETRIES", 1)
-    monkeypatch.setattr(cs, "RETRY_BASE_DELAY", 0.0)
-
-
 CAREER_URL = "https://acme.csod.com/ux/ats/careersite/1/home?c=acme"
 API_URL = "https://eu-fra.api.csod.com/rec-job-search/external/jobs"
 
@@ -213,8 +205,8 @@ def test_no_pagination_when_total_le_page_size(httpx_mock) -> None:
 
 
 def test_search_5xx_retries(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.cornerstone as cs
-    monkeypatch.setattr(cs, "MAX_RETRIES", 3)
+    import ats_scrapers.fetch
+    monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 3)
     httpx_mock.add_response(url=CAREER_URL, text=_site_html())
     httpx_mock.add_response(url=API_URL, status_code=503)
     httpx_mock.add_response(url=API_URL, json=_search_response([_req()], total=1))
@@ -223,8 +215,8 @@ def test_search_5xx_retries(monkeypatch, httpx_mock) -> None:
 
 
 def test_429_with_retry_after_honored(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.cornerstone as cs
-    monkeypatch.setattr(cs, "MAX_RETRIES", 3)
+    import ats_scrapers.fetch
+    monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 3)
 
     sleeps: list[float] = []
     async def fake_sleep(s: float) -> None:

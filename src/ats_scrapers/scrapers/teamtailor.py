@@ -15,17 +15,14 @@ no pagination. Tenants with hundreds of jobs return ~200KB of XML.
 
 from __future__ import annotations
 
-import asyncio
 import html
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 from xml.etree import ElementTree as ET
 
-import httpx
-
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -34,9 +31,6 @@ if TYPE_CHECKING:
 
 RSS_TEMPLATE = "https://{slug}.teamtailor.com/jobs.rss"
 TT_NS = {"tt": "https://teamtailor.com/locations"}
-
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 
 # URL form: `https://{slug}.teamtailor.com/jobs/{numeric_id}-{slug-title}`
 _URL_ID_RE = re.compile(r"/jobs/(\d+)")
@@ -49,57 +43,16 @@ class TeamtailorScraper(BaseScraper):
 
     ats = ATSType.TEAMTAILOR
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/rss+xml, text/xml",
+    }
 
-    async def _fetch_async(self) -> list[Job]:
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
-            xml_text = await self._fetch_rss(client)
-        return self._parse_rss(xml_text)
-
-    async def _fetch_rss(self, client: httpx.AsyncClient) -> str:
+    async def afetch(self) -> list[Job]:
         url = RSS_TEMPLATE.format(slug=self.company_slug)
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(
-                    url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Accept": "application/rss+xml, text/xml",
-                    },
-                )
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Teamtailor fetch failed for {self.company_slug}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 404:
-                raise CompanyNotFoundError(
-                    f"Teamtailor tenant not found: {self.company_slug}"
-                )
-            if response.status_code == 200:
-                return response.text
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Teamtailor ({self.company_slug}) returned "
-                        f"{response.status_code} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Teamtailor ({self.company_slug}) returned {response.status_code}"
-            )
-        raise ScraperError(f"Teamtailor ({self.company_slug}) exhausted retries")
+        async with self.make_fetcher() as fetch:
+            xml_text = await fetch.get_text(url)
+        return self._parse_rss(xml_text)
 
     def _parse_rss(self, xml_text: str) -> list[Job]:
         try:
@@ -154,7 +107,7 @@ class TeamtailorScraper(BaseScraper):
             department=dept or None,
             posted_at=_parse_pubdate(item.findtext("pubDate")),
             description=description,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
         )
 
     def _strip_description(self, raw: str | None) -> str | None:

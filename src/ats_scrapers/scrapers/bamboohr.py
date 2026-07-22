@@ -36,25 +36,26 @@ import asyncio
 import contextlib
 import html
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
-import httpx
-
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    pass
+    from ats_scrapers.fetch import Fetcher
 
 WIDGET_TEMPLATE = "https://{slug}.bamboohr.com/jobs/embed2.php"
 DETAIL_TEMPLATE = "https://{slug}.bamboohr.com/careers/{id}/detail"
 SHARE_URL_TEMPLATE = "https://{slug}.bamboohr.com/careers/{id}"
 
 MAX_CONCURRENCY = 8
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
+
+# Detail enrichment is best-effort: any non-2xx leaves the listing row
+# intact instead of failing the run, so the Fetcher hands every error
+# status back to us unmapped (and un-retried).
+_DETAIL_HANDLED = frozenset(range(300, 600))
 
 # BambooHR's ``employmentStatusLabel`` is freeform but tenants stick to
 # a small set. Map to the shared employment-type enum.
@@ -122,8 +123,7 @@ class BambooHRScraper(BaseScraper):
 
     ats = ATSType.BAMBOOHR
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str]] = {"User-Agent": "Mozilla/5.0"}
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -131,70 +131,22 @@ class BambooHRScraper(BaseScraper):
         copy = job.model_copy()
 
         async def run() -> str | None:
-            async with httpx.AsyncClient(
-                timeout=self.timeout,
-                follow_redirects=True,
-            ) as client:
+            async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
-                await self._enrich_one(client, sem, copy)
+                await self._enrich_one(fetch, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
-        async with httpx.AsyncClient(
-            timeout=self.timeout,
-            follow_redirects=True,
-            limits=httpx.Limits(
-                max_connections=MAX_CONCURRENCY * 2,
-                max_keepalive_connections=MAX_CONCURRENCY,
-            ),
-        ) as client:
-            html = await self._fetch_widget(client)
-            jobs = self._parse_widget(html)
-            if self.include_descriptions and jobs:
-                await self._enrich_from_detail_api(client, jobs)
-            return jobs
-
-    async def _fetch_widget(self, client: httpx.AsyncClient) -> str:
-        url = WIDGET_TEMPLATE.format(slug=self.company_slug)
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(
-                    url, headers={"User-Agent": "Mozilla/5.0"}
-                )
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"BambooHR fetch failed for {self.company_slug}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 404:
-                raise CompanyNotFoundError(
-                    f"BambooHR tenant not found: {self.company_slug}"
-                )
-            if response.status_code == 200:
-                return response.text
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"BambooHR ({self.company_slug}) returned "
-                        f"{response.status_code} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"BambooHR ({self.company_slug}) returned {response.status_code}"
+    async def afetch(self) -> list[Job]:
+        async with self.make_fetcher() as fetch:
+            widget_html = await fetch.get_text(
+                WIDGET_TEMPLATE.format(slug=self.company_slug)
             )
-        raise ScraperError(
-            f"BambooHR ({self.company_slug}) exhausted retries"
-        )
+            jobs = self._parse_widget(widget_html)
+            if self.include_descriptions and jobs:
+                await self._enrich_from_detail_api(fetch, jobs)
+            return jobs
 
     def _parse_widget(self, html: str) -> list[Job]:
         jobs: list[Job] = []
@@ -260,11 +212,11 @@ class BambooHRScraper(BaseScraper):
             location=location,
             department=department,
             posted_at=None,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
         )
 
     async def _enrich_from_detail_api(
-        self, client: httpx.AsyncClient, jobs: list[Job]
+        self, fetch: Fetcher, jobs: list[Job]
     ) -> None:
         """Hydrate each job from `/careers/{id}/detail` JSON.
 
@@ -272,23 +224,24 @@ class BambooHRScraper(BaseScraper):
         listing-derived fields intact rather than crashing the run.
         """
         sem = asyncio.Semaphore(MAX_CONCURRENCY)
-        await asyncio.gather(*(self._enrich_one(client, sem, j) for j in jobs))
+        await asyncio.gather(*(self._enrich_one(fetch, sem, j) for j in jobs))
 
     async def _enrich_one(
-        self, client: httpx.AsyncClient, sem: asyncio.Semaphore, job: Job,
+        self, fetch: Fetcher, sem: asyncio.Semaphore, job: Job,
     ) -> None:
         url = DETAIL_TEMPLATE.format(slug=self.company_slug, id=job.ats_id)
         async with sem:
             try:
-                response = await client.get(
+                response = await fetch.request(
+                    "GET",
                     url,
                     headers={
-                        "User-Agent": "Mozilla/5.0",
                         "Accept": "application/json",
                         "X-Requested-With": "XMLHttpRequest",
                     },
+                    handled=_DETAIL_HANDLED,
                 )
-            except httpx.HTTPError:
+            except ScraperError:
                 return
         if response.status_code != 200:
             return

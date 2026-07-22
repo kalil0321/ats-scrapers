@@ -16,12 +16,10 @@ from __future__ import annotations
 
 import html as html_mod
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
-import httpx
-
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -40,28 +38,12 @@ class RecruiteeScraper(BaseScraper):
 
     ats = ATSType.RECRUITEE
 
-    def fetch(self) -> list[Job]:
-        api_url = self._resolve_api_url()
-        try:
-            response = httpx.get(
-                api_url,
-                timeout=self.timeout,
-                follow_redirects=True,
-                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-            )
-        except httpx.HTTPError as exc:
-            raise ScraperError(
-                f"Recruitee fetch failed for {self.company_slug}: {exc}"
-            ) from exc
-        if response.status_code == 404:
-            raise CompanyNotFoundError(
-                f"Recruitee company not found: {self.company_slug}"
-            )
-        if response.status_code != 200:
-            raise ScraperError(
-                f"Recruitee returned {response.status_code} for {self.company_slug}"
-            )
+    default_headers: ClassVar[dict[str, str]] = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
+    async def afetch(self) -> list[Job]:
+        api_url = self._resolve_api_url()
+        async with self.make_fetcher() as fetch:
+            response = await fetch.request("GET", api_url)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -118,7 +100,7 @@ class RecruiteeScraper(BaseScraper):
             salary_currency=salary_obj.get("currency") if salary_obj else None,
             description=_compose_description(offer),
             posted_at=_parse_iso(offer.get("created_at") or offer.get("published_at")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 
