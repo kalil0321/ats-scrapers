@@ -204,7 +204,7 @@ class WorkdayScraper(BaseScraper):
 
         async def run() -> str | None:
             async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=True,
+                timeout=self.timeout, follow_redirects=True, proxy=self.proxy,
             ) as client:
                 sem = asyncio.Semaphore(1)
                 await self._enrich_details(client, sem, detail_prefix, jobs)
@@ -220,7 +220,7 @@ class WorkdayScraper(BaseScraper):
         detail_prefix: str,
     ) -> list[Job]:
         async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
+            timeout=self.timeout, follow_redirects=True, proxy=self.proxy
         ) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             seen: set[str] = set()
