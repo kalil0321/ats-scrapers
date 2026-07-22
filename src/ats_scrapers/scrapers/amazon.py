@@ -34,25 +34,20 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-import httpx
-
-from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    from typing import Any
+    from typing import Any, ClassVar
 
 FACET_URL = "https://www.amazon.jobs/api/jobs/search"  # POST — facet discovery only
 SEARCH_URL = "https://www.amazon.jobs/en/search.json"   # GET — actual job fetching
 PAGE_SIZE = 100
 PAGINATION_CAP = 10_000  # Amazon stops returning hits past offset+limit = 10K.
 MAX_CONCURRENCY = 6
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 
 
 @ScraperRegistry.register(ATSType.AMAZON)
@@ -61,12 +56,22 @@ class AmazonScraper(BaseScraper):
 
     ats = ATSType.AMAZON
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str]] = {
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Encoding": "identity",
+    }
 
-    async def _fetch_async(self) -> list[Job]:
-        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-            facets_payload = await self._post_facets(client)
+    async def afetch(self) -> list[Job]:
+        async with self.make_fetcher() as fetch:
+            # Single POST call to read the true total and the
+            # businessCategory facet. The POST endpoint's ``filters``
+            # body is broken (returns unfiltered counts), so we never
+            # use it for actual fetching.
+            facets_payload = await fetch.post_json(
+                FACET_URL,
+                json={"searchType": "JOB_SEARCH", "start": 0, "size": 1, "filters": []},
+            )
             total = int(facets_payload.get("found") or 0)
             if total == 0:
                 return []
@@ -89,10 +94,15 @@ class AmazonScraper(BaseScraper):
 
             async def get_page(extra_params: dict[str, str], offset: int) -> None:
                 async with sem:
-                    payload = await self._get(
-                        client,
+                    # 400 means "past the pagination cap" — treat as an
+                    # empty page so the caller stops.
+                    response = await fetch.request(
+                        "GET",
+                        SEARCH_URL,
                         params={**extra_params, "result_limit": PAGE_SIZE, "offset": offset},
+                        handled={400},
                     )
+                payload = {} if response.status_code == 400 else response.json()
                 absorb(payload.get("jobs") or [])
 
             if total <= PAGINATION_CAP:
@@ -123,89 +133,6 @@ class AmazonScraper(BaseScraper):
 
             await asyncio.gather(*(category_bucket(n, c) for n, c in categories))
             return all_jobs
-
-    async def _post_facets(self, client: httpx.AsyncClient) -> dict[str, Any]:
-        """Single POST call to read the true total and the businessCategory
-        facet. The POST endpoint's ``filters`` body is broken (returns
-        unfiltered counts), so we never use it for actual fetching."""
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.post(
-                    FACET_URL,
-                    json={"searchType": "JOB_SEARCH", "start": 0, "size": 1, "filters": []},
-                    headers={
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                        "User-Agent": "Mozilla/5.0",
-                        "Accept-Encoding": "identity",
-                    },
-                )
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(f"Amazon facet POST failed: {exc}") from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                return response.json()
-            if response.status_code in {429} or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Amazon facet POST {response.status_code} after {MAX_RETRIES} retries"
-                    )
-                await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
-                continue
-            raise ScraperError(
-                f"Amazon facet POST {response.status_code}: {response.text[:120]}"
-            )
-        raise ScraperError("Amazon facet POST exhausted retries")
-
-    async def _get(
-        self,
-        client: httpx.AsyncClient,
-        *,
-        params: dict[str, str | int],
-    ) -> dict[str, Any]:
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(
-                    SEARCH_URL,
-                    params=params,
-                    headers={
-                        "Accept": "application/json",
-                        "User-Agent": "Mozilla/5.0",
-                        "Accept-Encoding": "identity",
-                    },
-                )
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Amazon GET failed at {params}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                return response.json()
-            if response.status_code == 400:
-                # Past the cap — return empty so the caller stops.
-                return {"jobs": [], "hits": 0}
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Amazon GET {response.status_code} after {MAX_RETRIES} "
-                        f"retries at {params}"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Amazon GET {response.status_code} at {params}: "
-                f"{response.text[:120]}"
-            )
-        raise ScraperError(f"Amazon GET exhausted retries at {params}")
 
     def _parse_hit(self, hit: dict[str, Any]) -> list[Job]:
         """Yield one ``Job`` per (Amazon job × posted location).
@@ -337,7 +264,7 @@ class AmazonScraper(BaseScraper):
                 requisition_id=req_id or None,
                 apply_url=apply_url if apply_url != url else None,
                 posted_at=posted_at,
-                fetched_at=datetime.now(),
+                fetched_at=datetime.now(UTC),
                 raw=raw or None,
             ))
         return rows

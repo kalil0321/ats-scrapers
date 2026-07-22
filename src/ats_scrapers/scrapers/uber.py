@@ -17,23 +17,19 @@ Field names inside ``params``: ``lineOfBusinessName`` and ``programAndPlatform``
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-import httpx
-
-from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    from typing import Any
+    from typing import Any, ClassVar
+
+    from ats_scrapers.fetch import Fetcher
 
 API_URL = "https://www.uber.com/api/loadSearchJobsResults"
 PAGE_SIZE = 100
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 
 _EMPLOYMENT_TYPE_PATTERNS = {
     "intern": "INTERN",
@@ -62,18 +58,19 @@ class UberScraper(BaseScraper):
 
     ats = ATSType.UBER
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0",
+        "Content-Type": "application/json",
+        "x-csrf-token": "x",  # placeholder — the endpoint accepts any value
+    }
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
         page = 0
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
+        async with self.make_fetcher() as fetch:
             while True:
-                data = await self._fetch_page(client, page=page)
+                data = await self._fetch_page(fetch, page=page)
                 results = data.get("results") or []
                 if not results:
                     break
@@ -89,9 +86,7 @@ class UberScraper(BaseScraper):
                 page += 1
         return all_jobs
 
-    async def _fetch_page(
-        self, client: httpx.AsyncClient, *, page: int
-    ) -> dict[str, Any]:
+    async def _fetch_page(self, fetch: Fetcher, *, page: int) -> dict[str, Any]:
         payload = {
             # `limit` and `page` MUST be at the top level — see module docstring.
             "limit": PAGE_SIZE,
@@ -104,45 +99,10 @@ class UberScraper(BaseScraper):
                 "team": [],
             },
         }
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.post(
-                    API_URL,
-                    params={"localeCode": "en"},
-                    json=payload,
-                    headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Content-Type": "application/json",
-                        "x-csrf-token": "x",
-                    },
-                )
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Uber fetch failed at page={page}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                return response.json().get("data") or {}
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Uber returned {response.status_code} at page={page} "
-                        f"after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Uber returned {response.status_code} at page={page}: "
-                f"{response.text[:120]}"
-            )
-        raise ScraperError(f"Uber exhausted retries at page={page}")
+        data = await fetch.post_json(
+            API_URL, params={"localeCode": "en"}, json=payload
+        )
+        return data.get("data") or {}
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
         ats_id = str(item.get("id") or "")
@@ -210,7 +170,7 @@ class UberScraper(BaseScraper):
                 or item.get("createdDate")
                 or item.get("updatedDate")
             ),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

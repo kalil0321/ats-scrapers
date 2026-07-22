@@ -53,11 +53,11 @@ class MetaScraper(BaseScraper):
 
     ats = ATSType.META
 
-    def fetch(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         if not cb.is_enabled():
             cb.warn_disabled("Meta")
             return []
-        return asyncio.run(self._fetch_via_cloakbrowser())
+        return await self._fetch_via_cloakbrowser()
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -68,7 +68,7 @@ class MetaScraper(BaseScraper):
             await self._enrich_detail_descriptions(jobs)
             return jobs[0].description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
     async def _fetch_via_cloakbrowser(self) -> list[Job]:
         from cloakbrowser import launch_async

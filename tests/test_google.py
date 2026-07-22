@@ -21,13 +21,9 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import GoogleScraper, ScraperRegistry
 
-
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.google as g
-    monkeypatch.setattr(g, "MAX_RETRIES", 1)
-    monkeypatch.setattr(g, "RETRY_BASE_DELAY", 0.0)
-
+# Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture
+# in conftest.py — the shared fetch layer replaced the per-scraper
+# retry constants.
 
 # Per-job detail enrichment fires HTML fetches against the canonical
 # job URL after the listing pass; tests that mock only the listing
@@ -181,9 +177,7 @@ def test_page_1_omits_page_param(httpx_mock) -> None:
 # --- Error handling --------------------------------------------------------
 
 
-def test_5xx_retries(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.google as g
-    monkeypatch.setattr(g, "MAX_RETRIES", 3)
+def test_5xx_retries(httpx_mock) -> None:
     httpx_mock.add_response(url=_page_url(1), status_code=503)
     httpx_mock.add_response(
         url=_page_url(1), text=_page([_job_anchor("1", "Engineer")])
@@ -195,9 +189,6 @@ def test_5xx_retries(monkeypatch, httpx_mock) -> None:
 
 def test_429_with_retry_after_is_honored(monkeypatch, httpx_mock) -> None:
     import asyncio
-
-    import ats_scrapers.scrapers.google as g
-    monkeypatch.setattr(g, "MAX_RETRIES", 3)
 
     sleeps: list[float] = []
     async def fake_sleep(s: float) -> None:
@@ -215,9 +206,7 @@ def test_429_with_retry_after_is_honored(monkeypatch, httpx_mock) -> None:
     assert 12.0 in sleeps
 
 
-def test_5xx_exhausts_retries(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.google as g
-    monkeypatch.setattr(g, "MAX_RETRIES", 3)
+def test_5xx_exhausts_retries(httpx_mock) -> None:
     httpx_mock.add_response(url=_page_url(1), status_code=502, is_reusable=True)
     with pytest.raises(ScraperError, match="502"):
         GoogleScraper("google").fetch()

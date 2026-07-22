@@ -5,7 +5,8 @@ Apple's job board requires a CSRF token before search calls succeed:
     1. GET https://jobs.apple.com/api/v1/CSRFToken     # cookie + header set
     2. POST https://jobs.apple.com/api/v1/jobsTeam     # search payload
 
-The CSRF flow is held in a single httpx.Client session.
+The CSRF flow is held in a single fetcher session (one underlying
+HTTP client, so the CSRF cookie persists across requests).
 
 Description completeness: the search API only exposes ``jobSummary``
 (the intro paragraph, ~500–1000 chars). The full posting body —
@@ -20,8 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
@@ -31,16 +31,19 @@ from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    from typing import Any
+    from typing import Any, ClassVar
 
 BASE_URL = "https://jobs.apple.com"
 CSRF_URL = f"{BASE_URL}/api/v1/CSRFToken"
 SEARCH_URL = f"{BASE_URL}/api/v1/search"
 PAGE_SIZE = 20
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.0
 DETAIL_CONCURRENCY = 25
 DETAIL_TIMEOUT_S = 10.0
+
+# Non-retryable client errors we want surfaced with Apple-specific
+# messages (401 = stale CSRF, 400 = bad payload, …) instead of the
+# Fetcher's generic mapping. 429 stays with the Fetcher's retry logic.
+_HANDLED_4XX = frozenset(range(400, 500)) - {429}
 # Marker we walk forward from to extract the JS string literal passed
 # to ``JSON.parse``. Regex non-greedy ``"(.+?)"`` would truncate any
 # payload containing the byte sequence ``")`` inside an escaped string
@@ -57,29 +60,27 @@ class AppleScraper(BaseScraper):
 
     ats = ATSType.APPLE
 
-    def fetch(self) -> list[Job]:
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+        "Origin": BASE_URL,
+        "Referer": f"{BASE_URL}/en-us/search",
+    }
+
+    async def afetch(self) -> list[Job]:
         all_jobs: list[Job] = []
-        with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
-            client.headers.update(
-                {
-                    "User-Agent": "Mozilla/5.0",
-                    "Accept": "application/json",
-                    "Origin": BASE_URL,
-                    "Referer": f"{BASE_URL}/en-us/search",
-                }
+        async with self.make_fetcher() as fetch:
+            # The CSRF flow needs the cookie set by this GET plus the
+            # token header — both live for the fetcher's lifetime (one
+            # underlying client session).
+            csrf_response = await fetch.request("GET", CSRF_URL)
+            csrf_token = (
+                csrf_response.headers.get("x-apple-csrf-token")
+                or csrf_response.headers.get("X-Apple-CSRF-Token")
             )
-            try:
-                csrf_response = client.get(CSRF_URL)
-            except httpx.HTTPError as exc:
-                raise ScraperError(f"Apple CSRF fetch failed: {exc}") from exc
-            if csrf_response.status_code != 200:
-                raise ScraperError(
-                    f"Apple CSRF endpoint returned {csrf_response.status_code}"
-                )
-            csrf_token = csrf_response.headers.get("x-apple-csrf-token")
             if not csrf_token:
                 raise ScraperError("Apple did not return an x-apple-csrf-token header")
-            client.headers["X-Apple-CSRF-Token"] = csrf_token
+            csrf_headers = {"X-Apple-CSRF-Token": csrf_token}
 
             page = 1
             while True:
@@ -96,33 +97,19 @@ class AppleScraper(BaseScraper):
                 }
                 # Apple's catalog (~5 k jobs / 250 pages) means a single
                 # mid-fetch ``ReadTimeout`` or transient 5xx must not
-                # discard the dozens of pages already accumulated. Retry
-                # transient failures with exponential backoff; if all
-                # retries are exhausted, log a warning and break out
-                # of the pagination loop, returning ``all_jobs`` so far.
-                response: httpx.Response | None = None
-                last_exc: Exception | None = None
-                last_status: int | None = None
-                for attempt in range(1, MAX_RETRIES + 1):
-                    try:
-                        r = client.post(SEARCH_URL, json=payload)
-                    except httpx.HTTPError as exc:
-                        last_exc = exc
-                        if attempt < MAX_RETRIES:
-                            time.sleep(RETRY_BASE_DELAY * (2 ** (attempt - 1)))
-                        continue
-                    if r.status_code == 200:
-                        response = r
-                        break
-                    last_status = r.status_code
-                    if r.status_code == 429 or 500 <= r.status_code < 600:
-                        if attempt < MAX_RETRIES:
-                            time.sleep(RETRY_BASE_DELAY * (2 ** (attempt - 1)))
-                        continue
-                    raise ScraperError(
-                        f"Apple search returned {r.status_code}: {r.text[:120]}"
+                # discard the dozens of pages already accumulated. The
+                # Fetcher retries transient failures; if it gives up,
+                # log a warning and break out of the pagination loop,
+                # returning ``all_jobs`` so far.
+                try:
+                    response = await fetch.request(
+                        "POST",
+                        SEARCH_URL,
+                        json=payload,
+                        headers=csrf_headers,
+                        handled=_HANDLED_4XX,
                     )
-                if response is None:
+                except ScraperError as exc:
                     # When page 1 exhausts retries we have no partial
                     # data — returning ``[]`` would silently masquerade
                     # as a successful zero-result scrape and let cron
@@ -133,18 +120,22 @@ class AppleScraper(BaseScraper):
                     # zero exit code.
                     if not all_jobs:
                         raise ScraperError(
-                            f"Apple search page {page} failed after "
-                            f"{MAX_RETRIES} retries (last_status="
-                            f"{last_status} last_exc={last_exc})"
-                        )
+                            f"Apple search page {page} failed after retries ({exc})"
+                        ) from exc
                     _LOG.warning(
-                        "Apple search page %d failed after %d retries "
-                        "(last_status=%s last_exc=%s); returning %d "
-                        "partial jobs",
-                        page, MAX_RETRIES, last_status, last_exc,
-                        len(all_jobs),
+                        "Apple search page %d failed after retries (%s); "
+                        "returning %d partial jobs",
+                        page, exc, len(all_jobs),
                     )
                     break
+                if response.status_code != 200:
+                    # Non-retryable 4xx (401 = stale CSRF, 400 = bad
+                    # payload) — retrying won't help, and silently
+                    # breaking would mask an integration bug.
+                    raise ScraperError(
+                        f"Apple search returned {response.status_code}: "
+                        f"{response.text[:120]}"
+                    )
                 data = response.json()
                 postings = (data.get("res") or {}).get("searchResults") or []
                 if not postings:
@@ -162,7 +153,7 @@ class AppleScraper(BaseScraper):
         # listing-level ``jobSummary`` instead.
         if self.include_descriptions and all_jobs:
             try:
-                asyncio.run(_enrich_apple_details(all_jobs, self.timeout))
+                await _enrich_apple_details(all_jobs, self.timeout)
             except Exception as exc:  # pragma: no cover - defensive
                 _LOG.warning("Apple detail enrichment failed: %s", exc)
 
@@ -263,7 +254,7 @@ class AppleScraper(BaseScraper):
                 commitment=commitment,
                 requisition_id=req_id or position_id or None,
                 posted_at=posted_at,
-                fetched_at=datetime.now(),
+                fetched_at=datetime.now(UTC),
                 raw=raw or None,
             ))
         return rows

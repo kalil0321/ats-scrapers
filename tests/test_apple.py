@@ -14,24 +14,27 @@ import httpx
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.fetch import DEFAULT_RETRIES
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import AppleScraper, ScraperRegistry
-from ats_scrapers.scrapers.apple import MAX_RETRIES
 
 _CSRF_URL = "https://jobs.apple.com/api/v1/CSRFToken"
 _SEARCH_URL = "https://jobs.apple.com/api/v1/search"
 
 
+# Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture
+# in conftest.py — the shared fetch layer replaced the per-scraper
+# retry constants.
+
+
 @pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Drop sleep delay so retry tests run in <1 s instead of seconds,
-    and stub out the per-job detail-page enrichment so retry tests
+def _no_detail_enrichment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub out the per-job detail-page enrichment so retry tests
     that mock only the search API don't have to also mock every
     job's detail URL. Tests that specifically exercise the detail
     enrichment can override this with their own _enrich_apple_details.
     """
     import ats_scrapers.scrapers.apple as m
-    monkeypatch.setattr(m, "RETRY_BASE_DELAY", 0.0)
 
     async def _no_enrich(jobs, timeout_s):
         return
@@ -107,9 +110,9 @@ def test_retry_exhaustion_after_partial_returns_those_jobs(httpx_mock) -> None:
     # tells the loop more pages exist).
     page1 = [_posting(str(i)) for i in range(20)]
     httpx_mock.add_response(url=_SEARCH_URL, json=_envelope(page1, total=40))
-    # Page 2: timeout MAX_RETRIES times in a row. Use the constant so
+    # Page 2: timeout DEFAULT_RETRIES times in a row. Use the constant so
     # this test does not drift if the retry budget changes.
-    for _ in range(MAX_RETRIES):
+    for _ in range(DEFAULT_RETRIES):
         httpx_mock.add_exception(httpx.ReadTimeout("page 2 down"), url=_SEARCH_URL)
 
     jobs = AppleScraper("apple").fetch()
@@ -123,10 +126,10 @@ def test_page_1_exhaustion_raises_instead_of_masking_outage(httpx_mock) -> None:
     outage as "Apple has no jobs today." Raise so the failure surfaces
     as a non-zero exit code."""
     _csrf_mock(httpx_mock)
-    for _ in range(MAX_RETRIES):
+    for _ in range(DEFAULT_RETRIES):
         httpx_mock.add_exception(httpx.ReadTimeout("apple down"), url=_SEARCH_URL)
 
-    with pytest.raises(ScraperError, match=r"page 1 failed after \d+ retries"):
+    with pytest.raises(ScraperError, match=r"page 1 failed"):
         AppleScraper("apple").fetch()
 
 
@@ -134,10 +137,10 @@ def test_page_1_exhaustion_with_5xx_raises(httpx_mock) -> None:
     """Same invariant via 5xx exhaustion path rather than exception
     path — both must funnel to the same raise."""
     _csrf_mock(httpx_mock)
-    for _ in range(MAX_RETRIES):
+    for _ in range(DEFAULT_RETRIES):
         httpx_mock.add_response(url=_SEARCH_URL, status_code=503, text="upstream")
 
-    with pytest.raises(ScraperError, match=r"page 1 failed after \d+ retries"):
+    with pytest.raises(ScraperError, match=r"page 1 failed"):
         AppleScraper("apple").fetch()
 
 

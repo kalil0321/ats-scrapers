@@ -15,17 +15,14 @@ and pull ``job_category.en_name`` as the department.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-import httpx
-
-from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    from typing import Any
+    from typing import Any, ClassVar
 
 API_URL = "https://api.lifeattiktok.com/api/v1/public/supplier/search/job/posts"
 PAGE_SIZE = 100
@@ -63,10 +60,12 @@ class TikTokScraper(BaseScraper):
 
     ats = ATSType.TIKTOK
 
-    def fetch(self) -> list[Job]:
+    default_headers: ClassVar[dict[str, str]] = HEADERS
+
+    async def afetch(self) -> list[Job]:
         all_jobs: list[Job] = []
         offset = 0
-        with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
+        async with self.make_fetcher() as fetch:
             while True:
                 payload = {
                     "limit": PAGE_SIZE,
@@ -77,13 +76,9 @@ class TikTokScraper(BaseScraper):
                     "location_code_list": [],
                     "job_function_id_list": [],
                 }
-                try:
-                    response = client.post(API_URL, json=payload, headers=HEADERS)
-                except httpx.HTTPError as exc:
-                    raise ScraperError(f"TikTok fetch failed: {exc}") from exc
-                if response.status_code != 200:
-                    raise ScraperError(f"TikTok returned {response.status_code}: {response.text[:120]}")
-                payload_data = response.json().get("data") or {}
+                payload_data = (
+                    await fetch.post_json(API_URL, json=payload)
+                ).get("data") or {}
                 jobs = payload_data.get("job_post_list") or []
                 if not jobs:
                     break
@@ -148,7 +143,7 @@ class TikTokScraper(BaseScraper):
             salary_max=_to_float(post_info.get("max_salary")),
             salary_currency=post_info.get("currency"),
             posted_at=_parse_ts(item.get("publish_time") or item.get("post_time")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 
