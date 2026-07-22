@@ -162,6 +162,9 @@ def get_scraper_for_url(url: str, **kwargs: object) -> BaseScraper:
             f"platform, use get_scraper(ats, slug), or look the company up "
             f"with find_company()."
         )
-    from ats_scrapers.scrapers.base import ScraperRegistry
+    # Import the scrapers package (not just .base): importing it runs
+    # every @ScraperRegistry.register decorator, so the registry is
+    # populated even when the caller only imported the package root.
+    from ats_scrapers.scrapers import get_scraper
 
-    return ScraperRegistry.get(resolved.ats)(resolved.slug, **kwargs)  # type: ignore[arg-type]
+    return get_scraper(resolved.ats, resolved.slug, **kwargs)

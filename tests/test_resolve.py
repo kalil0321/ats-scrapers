@@ -113,3 +113,22 @@ def test_get_scraper_for_url_builds_scraper() -> None:
 def test_get_scraper_for_url_raises_with_guidance() -> None:
     with pytest.raises(ScraperError, match="Could not recognize"):
         get_scraper_for_url("https://careers.example.com/jobs")
+
+
+def test_get_scraper_for_url_from_fresh_interpreter() -> None:
+    """Root-level import alone must suffice — the registry has to be
+    populated by the call itself, not by earlier scraper imports in
+    the calling process (regression for the empty-registry bug)."""
+    import subprocess
+    import sys
+
+    code = (
+        "from ats_scrapers import get_scraper_for_url; "
+        "s = get_scraper_for_url('https://jobs.ashbyhq.com/openai'); "
+        "print(type(s).__name__, s.company_slug)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "AshbyScraper openai"
