@@ -11,11 +11,9 @@ from ats_scrapers.scrapers import LeverScraper, ScraperRegistry
 API = "https://api.lever.co/v0/postings/acme?mode=json"
 
 
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.lever as lev
-    monkeypatch.setattr(lev, "MAX_RETRIES", 1)
-    monkeypatch.setattr(lev, "RETRY_BASE_DELAY", 0.0)
+# Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture
+# in conftest.py — the shared fetch layer replaced per-scraper retry
+# constants.
 
 
 def _job(jid: str = "x1", text: str = "SWE",
@@ -55,9 +53,7 @@ def test_404_company_not_found(httpx_mock) -> None:
         LeverScraper("acme").fetch()
 
 
-def test_5xx_retries(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.lever as lev
-    monkeypatch.setattr(lev, "MAX_RETRIES", 3)
+def test_5xx_retries(httpx_mock) -> None:
     httpx_mock.add_response(url=API, status_code=502)
     httpx_mock.add_response(url=API, json=[_job()])
     assert len(LeverScraper("acme").fetch()) == 1

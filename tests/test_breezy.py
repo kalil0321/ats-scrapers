@@ -10,12 +10,13 @@ from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import BreezyScraper, ScraperRegistry
 
+# Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture
+# in conftest.py — the shared fetch layer replaced per-scraper retry
+# constants.
+
 
 @pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.breezy as br
-    monkeypatch.setattr(br, "MAX_RETRIES", 1)
-    monkeypatch.setattr(br, "RETRY_BASE_DELAY", 0.0)
+def _detail_pages(httpx_mock) -> None:
     httpx_mock.add_response(
         url=re.compile(r"^https://acme\.breezy\.hr/p/"),
         text="<html><body><div class='description'>Build useful products.</div></body></html>",
@@ -178,9 +179,7 @@ def test_404_raises_company_not_found(httpx_mock) -> None:
 # --- Retry / errors --------------------------------------------------------
 
 
-def test_5xx_retries(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.breezy as br
-    monkeypatch.setattr(br, "MAX_RETRIES", 3)
+def test_5xx_retries(httpx_mock) -> None:
     httpx_mock.add_response(url=URL, status_code=503)
     httpx_mock.add_response(url=URL, json=[_position()])
     jobs = BreezyScraper("acme").fetch()
@@ -188,8 +187,8 @@ def test_5xx_retries(monkeypatch, httpx_mock) -> None:
 
 
 def test_5xx_exhausts_retries(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.breezy as br
-    monkeypatch.setattr(br, "MAX_RETRIES", 2)
+    from ats_scrapers import fetch as fetch_module
+    monkeypatch.setattr(fetch_module, "DEFAULT_RETRIES", 2)
     httpx_mock.add_response(url=URL, status_code=502, is_reusable=True)
     with pytest.raises(ScraperError, match="502"):
         BreezyScraper("acme").fetch()

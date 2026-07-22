@@ -25,29 +25,31 @@ when a detail request is rate-limited or unavailable.
 
 from __future__ import annotations
 
+import asyncio
 import re
-import time
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
-import httpx
-
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 API_TEMPLATE = "https://apply.workable.com/api/v1/widget/accounts/{slug}"
 MARKDOWN_TEMPLATE = (
     "https://apply.workable.com/{slug}/jobs/view/{shortcode}.md"
 )
-MAX_RETRIES = 4
-RETRY_BASE_DELAY = 1.5
 USER_AGENT = "Mozilla/5.0 (compatible; ats-scrapers/1.0)"
 DETAIL_CONCURRENCY = 4  # rate-limit-safe pool size for per-job .md fetches
+
+# Per-job Markdown fetches are best-effort — the listing row survives a
+# rate-limited or unavailable detail page, so error statuses come back
+# unmapped instead of raising.
+_DETAIL_HANDLED = frozenset(range(400, 600))
 
 _EMPLOYMENT_TYPE_PATTERNS = {
     "intern": "INTERN",
@@ -77,57 +79,21 @@ _HEADER_RE = re.compile(r"^#+\s+", re.MULTILINE)
 class WorkableScraper(BaseScraper):
     ats = ATSType.WORKABLE
 
-    def fetch(self) -> list[Job]:
+    default_headers: ClassVar[dict[str, str] | None] = {"User-Agent": USER_AGENT}
+
+    async def afetch(self) -> list[Job]:
         url = API_TEMPLATE.format(slug=self.company_slug)
-        response = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = httpx.get(
-                    url,
-                    timeout=self.timeout,
-                    follow_redirects=True,
-                    headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-                )
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Workable fetch failed for {self.company_slug}: {exc}"
-                    ) from exc
-                time.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 404:
-                raise CompanyNotFoundError(
-                    f"Workable account not found: {self.company_slug}"
-                )
-            if response.status_code == 200:
-                break
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Workable returned {response.status_code} for "
-                        f"{self.company_slug} after {MAX_RETRIES} attempts"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after)
-                    if retry_after and retry_after.replace(".", "").isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                time.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Workable returned {response.status_code} for {self.company_slug}"
+        async with self.make_fetcher() as fetch:
+            payload = await fetch.get_json(
+                url, headers={"Accept": "application/json"},
             )
-        if response is None or response.status_code != 200:
-            raise ScraperError(
-                f"Workable exhausted retries for {self.company_slug}"
-            )
+            jobs = [self._parse_job(item) for item in payload.get("jobs", [])]
 
-        payload = response.json()
-        jobs = [self._parse_job(item) for item in payload.get("jobs", [])]
-
-        if self.include_descriptions and jobs:
-            self._enrich_descriptions(jobs)
+            if self.include_descriptions and jobs:
+                sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+                await asyncio.gather(*(
+                    self._enrich_description(fetch, sem, j) for j in jobs
+                ))
         return jobs
 
     def get_description(self, job: Job) -> str | None:
@@ -135,32 +101,42 @@ class WorkableScraper(BaseScraper):
             return job.description
         if not job.ats_id:
             return None
-        url = MARKDOWN_TEMPLATE.format(slug=self.company_slug, shortcode=job.ats_id)
+
+        async def run() -> str | None:
+            async with self.make_fetcher() as fetch:
+                return await self._fetch_markdown(fetch, job.ats_id)
+
+        return self._run_sync(run())
+
+    async def _fetch_markdown(self, fetch: Fetcher, shortcode: str) -> str | None:
+        """Pull the Markdown body from ``/{slug}/jobs/view/{shortcode}.md``."""
+        url = MARKDOWN_TEMPLATE.format(slug=self.company_slug, shortcode=shortcode)
         try:
-            with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
-                response = client.get(
-                    url,
-                    headers={"User-Agent": USER_AGENT, "Accept": "text/markdown"},
-                )
-        except httpx.HTTPError:
+            response = await fetch.request(
+                "GET",
+                url,
+                headers={"Accept": "text/markdown"},
+                handled=_DETAIL_HANDLED,
+            )
+        except ScraperError:
             return None
         if response.status_code != 200:
             return None
         text = response.text.strip()
         return text[:25_000] if text else None
 
-    def _enrich_descriptions(self, jobs: list[Job]) -> None:
-        """Pull the Markdown body for each job from
-        ``/{slug}/jobs/view/{shortcode}.md``. Runs in a thread pool with
-        a low cap (4) so we stay below the per-tenant rate limit."""
-
-        def fetch_one(job: Job) -> None:
-            description = self.get_description(job)
-            if description and not job.description:
-                job.description = description
-
-        with ThreadPoolExecutor(max_workers=DETAIL_CONCURRENCY) as pool:
-            list(pool.map(fetch_one, jobs))
+    async def _enrich_description(
+        self,
+        fetch: Fetcher,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        if job.description or not job.ats_id:
+            return
+        async with sem:
+            description = await self._fetch_markdown(fetch, job.ats_id)
+        if description:
+            job.description = description
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
         url = item.get("url") or item.get("application_url")
@@ -208,7 +184,7 @@ class WorkableScraper(BaseScraper):
             commitment=commitment,
             apply_url=apply_url if isinstance(apply_url, str) and apply_url != url else None,
             posted_at=_parse_iso(item.get("published_on") or item.get("created_at")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

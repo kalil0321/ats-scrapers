@@ -21,17 +21,17 @@ from __future__ import annotations
 import asyncio
 import html as html_mod
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-import httpx
-
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
+
+    from ats_scrapers.fetch import Fetcher
 
 API_TEMPLATE = "https://api.smartrecruiters.com/v1/companies/{slug}/postings"
 DETAIL_TEMPLATE = (
@@ -39,6 +39,10 @@ DETAIL_TEMPLATE = (
 )
 PAGE_LIMIT = 100
 DETAIL_CONCURRENCY = 8
+
+# Detail enrichment is best-effort: any 4xx/5xx just skips the job, so
+# hand every error status back unmapped instead of retrying/raising.
+_DETAIL_HANDLED = frozenset(range(400, 600))
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -71,50 +75,28 @@ _EMPLOYMENT_TYPE_MAP = {
 class SmartRecruitersScraper(BaseScraper):
     ats = ATSType.SMARTRECRUITERS
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
         copy = job.model_copy()
 
         async def run() -> str | None:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=True,
-            ) as client:
+            async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
-                await self._enrich_detail(client, sem, copy)
+                await self._enrich_detail(fetch, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         url = API_TEMPLATE.format(slug=self.company_slug)
         all_jobs: list[Job] = []
         offset = 0
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True,
-        ) as client:
+        async with self.make_fetcher() as fetch:
             while True:
-                try:
-                    response = await client.get(
-                        url, params={"limit": PAGE_LIMIT, "offset": offset},
-                    )
-                except httpx.HTTPError as exc:
-                    raise ScraperError(
-                        f"SmartRecruiters fetch failed for {self.company_slug}: {exc}"
-                    ) from exc
-                if response.status_code == 404:
-                    raise CompanyNotFoundError(
-                        f"SmartRecruiters company not found: {self.company_slug}"
-                    )
-                if response.status_code != 200:
-                    raise ScraperError(
-                        f"SmartRecruiters returned {response.status_code} for "
-                        f"{self.company_slug}"
-                    )
-                payload = response.json()
+                payload = await fetch.get_json(
+                    url, params={"limit": PAGE_LIMIT, "offset": offset},
+                )
                 content = payload.get("content", [])
                 all_jobs.extend(self._parse_job(item) for item in content)
                 if len(content) < PAGE_LIMIT:
@@ -124,13 +106,13 @@ class SmartRecruitersScraper(BaseScraper):
             if self.include_descriptions and all_jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
-                    self._enrich_detail(client, sem, j) for j in all_jobs
+                    self._enrich_detail(fetch, sem, j) for j in all_jobs
                 ))
         return all_jobs
 
     async def _enrich_detail(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         job: Job,
     ) -> None:
@@ -139,8 +121,8 @@ class SmartRecruitersScraper(BaseScraper):
         url = DETAIL_TEMPLATE.format(slug=self.company_slug, id=job.ats_id)
         async with sem:
             try:
-                response = await client.get(url)
-            except httpx.HTTPError:
+                response = await fetch.request("GET", url, handled=_DETAIL_HANDLED)
+            except ScraperError:
                 return
         if response.status_code != 200:
             return
@@ -217,7 +199,7 @@ class SmartRecruitersScraper(BaseScraper):
             commitment=commitment,
             requisition_id=item.get("refNumber") or None,
             posted_at=_parse_iso(item.get("releasedDate")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

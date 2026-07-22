@@ -8,13 +8,9 @@ The compensation field, when present, is rich (range + currency + interval).
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-import httpx
-
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -22,9 +18,6 @@ if TYPE_CHECKING:
     from typing import Any
 
 API_TEMPLATE = "https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true"
-
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 
 _INTERVAL_MAP = {
     "HOURLY": "HOUR",
@@ -57,53 +50,11 @@ _EMPLOYMENT_TYPE_MAP = {
 class AshbyScraper(BaseScraper):
     ats = ATSType.ASHBY
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         url = API_TEMPLATE.format(slug=self.company_slug)
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
-            payload = await self._fetch_with_retry(client, url)
+        async with self.make_fetcher() as fetch:
+            payload = await fetch.get_json(url)
         return [self._parse_job(item) for item in payload.get("jobs", [])]
-
-    async def _fetch_with_retry(
-        self, client: httpx.AsyncClient, url: str
-    ) -> dict[str, Any]:
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(url)
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Ashby fetch failed for {self.company_slug}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                return response.json()
-            if response.status_code == 404:
-                raise CompanyNotFoundError(
-                    f"Ashby board not found: {self.company_slug}"
-                )
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Ashby ({self.company_slug}) returned "
-                        f"{response.status_code} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Ashby returned {response.status_code} for {self.company_slug}"
-            )
-        raise ScraperError(f"Ashby ({self.company_slug}) exhausted retries")
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
         comp = item.get("compensation") or {}
@@ -181,7 +132,7 @@ class AshbyScraper(BaseScraper):
             salary_min=salary_min,
             salary_max=salary_max,
             posted_at=_parse_iso(item.get("publishedAt")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 
