@@ -1,0 +1,32 @@
+name: live-e2e
+
+# Nightly canary against real ATS endpoints. ATS APIs drift without
+# notice; this catches a broken scraper within a day instead of when a
+# user reports it. Deliberately NOT part of PR CI — third-party
+# endpoints flake and must never block unrelated changes.
+#
+# Also the manual pre-release gate: trigger via workflow_dispatch and
+# require green before publishing to PyPI.
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: pip install uv
+      - name: Install package
+        run: uv pip install --system -e ".[dev]"
+      - name: Live end-to-end tests
+        env:
+          ATS_SCRAPERS_LIVE_E2E: "1"
+        run: pytest tests/e2e -m live -q
