@@ -34,7 +34,7 @@ import asyncio
 import html
 import os
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
@@ -53,6 +53,11 @@ API_ROOT = "https://programathor.com.br"
 # stale roles. Cap at 200 by default → ~3,000 most-recent active jobs.
 DEFAULT_MAX_PAGES = 200
 MAX_CONCURRENCY = 4
+# The transport deliberately stays on a hand-rolled httpx client rather
+# than the shared Fetcher: when a residential proxy is configured the
+# client must run with ``verify=False`` (some providers terminate TLS
+# with a CA chain outside the system trust store), which the Fetcher
+# does not expose. These retry knobs therefore remain module-local.
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2.0
 DETAIL_CONCURRENCY = 4
@@ -136,17 +141,23 @@ class ProgramathorScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         proxy_url: str | None = None,
         max_pages: int = DEFAULT_MAX_PAGES,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
-        self.proxy_url = _resolve_proxy_url(proxy_url) or _resolve_proxy_url(
-            os.environ.get("PROXY")
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
+        self.proxy_url = (
+            _resolve_proxy_url(proxy_url)
+            or _resolve_proxy_url(proxy)
+            or _resolve_proxy_url(os.environ.get("PROXY"))
         )
         self.max_pages = max_pages
-
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -166,9 +177,9 @@ class ProgramathorScraper(BaseScraper):
                 await self._enrich_description(client, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         seen_ids: set[str] = set()
         jobs: list[Job] = []
         lock = asyncio.Lock()
@@ -362,7 +373,7 @@ class ProgramathorScraper(BaseScraper):
             salary_max=salary_max,
             employment_type=employment_type,
             commitment=commitment,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

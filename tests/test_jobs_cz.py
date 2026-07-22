@@ -24,12 +24,9 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import JobsCzScraper, ScraperRegistry, get_scraper
 
-
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.jobs_cz as j
-    monkeypatch.setattr(j, "MAX_RETRIES", 1)
-    monkeypatch.setattr(j, "RETRY_BASE_DELAY", 0.0)
+# Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture
+# in conftest.py — the shared fetch layer replaced the per-scraper
+# retry constants.
 
 
 def _card(

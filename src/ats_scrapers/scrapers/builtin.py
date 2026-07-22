@@ -23,10 +23,8 @@ import html
 import json
 import logging
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
-
-import httpx
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -37,9 +35,14 @@ log = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 API_ROOT = "https://builtin.com"
 DEFAULT_MAX_PAGES = 200
 MAX_CONCURRENCY_LISTING = 4
+# Retry knobs for the httpcloak fallback path only — the plain-httpx
+# path now goes through the shared Fetcher, which owns its own retry
+# policy (ats_scrapers.fetch.DEFAULT_RETRIES).
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
 
@@ -65,24 +68,35 @@ class BuiltInScraper(BaseScraper):
 
     ats = ATSType.BUILTIN
 
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,*/*",
+    }
+
     def __init__(
         self,
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         max_pages: int = DEFAULT_MAX_PAGES,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.max_pages = max_pages
         # Flipped to True the first time the direct ``httpx`` path
         # returns 403; subsequent requests in this scraper instance
         # then go through ``httpcloak``. Reset by re-instantiating.
         self._use_httpcloak = False
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         jobs: list[Job] = []
         lock = asyncio.Lock()
@@ -95,15 +109,13 @@ class BuiltInScraper(BaseScraper):
                     seen.add(j.ats_id)
                     jobs.append(j)
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True,
-        ) as client:
+        async with self.make_fetcher() as fetcher:
             sem = asyncio.Semaphore(MAX_CONCURRENCY_LISTING)
             consecutive_empty = 0
             page = 1
             while page <= self.max_pages and consecutive_empty < 3:
                 try:
-                    page_jobs = await self._fetch_listing_page(client, sem, page)
+                    page_jobs = await self._fetch_listing_page(fetcher, sem, page)
                 except ScraperError as exc:
                     # Cloudflare and httpcloak both rate-limit deep
                     # pagination — once we hit a hard wall we keep what
@@ -128,12 +140,12 @@ class BuiltInScraper(BaseScraper):
 
     async def _fetch_listing_page(
         self,
-        client: httpx.AsyncClient,
+        fetcher: Fetcher,
         sem: asyncio.Semaphore,
         page: int,
     ) -> list[Job]:
         url = f"{API_ROOT}/jobs?page={page}"
-        text = await self._request_html(client, sem, url)
+        text = await self._request_html(fetcher, sem, url)
         return self._parse_listing(text)
 
     def _parse_listing(self, text: str) -> list[Job]:
@@ -181,12 +193,12 @@ class BuiltInScraper(BaseScraper):
             ats_type=ATSType.BUILTIN,
             ats_id=ats_id,
             description=description,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
         )
 
     async def _request_html(
         self,
-        client: httpx.AsyncClient,
+        fetcher: Fetcher,
         sem: asyncio.Semaphore,
         url: str,
     ) -> str:
@@ -195,57 +207,22 @@ class BuiltInScraper(BaseScraper):
         if self._use_httpcloak:
             return await self._request_via_httpcloak(url)
 
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
-                    response = await client.get(
-                        url, headers={
-                            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
-                                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                          "Chrome/120.0.0.0 Safari/537.36",
-                            "Accept": "text/html,*/*",
-                        },
-                    )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"Built In fetch failed for {url}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
-            if response.status_code == 200:
-                return response.text
-            if response.status_code == 403:
-                # Cloudflare-style block on the bare httpx fingerprint.
-                # Flip the scraper into httpcloak mode and retry; every
-                # subsequent page in this fetch reuses the cheap path.
-                log.info(
-                    "Built In: 403 on %s — switching to httpcloak fallback",
-                    url,
-                )
-                self._use_httpcloak = True
-                return await self._request_via_httpcloak(url)
-            if response.status_code in (429,) or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Built In returned {response.status_code} for "
-                        f"{url} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Built In returned {response.status_code} for {url}"
+        # The shared Fetcher owns retries/backoff and 429/5xx handling.
+        # 403 is a Cloudflare block signal, not an error — handle it
+        # here so we can flip to the httpcloak fallback.
+        async with sem:
+            response = await fetcher.request("GET", url, handled={403})
+        if response.status_code == 403:
+            # Cloudflare-style block on the bare httpx fingerprint.
+            # Flip the scraper into httpcloak mode and retry; every
+            # subsequent page in this fetch reuses the cheap path.
+            log.info(
+                "Built In: 403 on %s — switching to httpcloak fallback",
+                url,
             )
-        raise ScraperError(
-            f"Built In exhausted retries for {url}: {last_exc}"
-        )
+            self._use_httpcloak = True
+            return await self._request_via_httpcloak(url)
+        return response.text
 
     async def _request_via_httpcloak(self, url: str) -> str:
         """TLS+h2 impersonation fallback used when builtin.com 403's
@@ -255,7 +232,7 @@ class BuiltInScraper(BaseScraper):
         Cloudflare also rate-limits deep pagination via httpcloak — the
         first 403 here is treated as transient (retry with backoff) and
         only escalates to a hard ``ScraperError`` if it survives every
-        retry. The caller in :meth:`_fetch_async` then keeps the jobs
+        retry. The caller in :meth:`afetch` then keeps the jobs
         collected so far rather than throwing them away.
         """
         from importlib.util import find_spec

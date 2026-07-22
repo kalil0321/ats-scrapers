@@ -41,9 +41,7 @@ import asyncio
 import logging
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
-
-import httpx
+from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -52,14 +50,14 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://www.jobs.cz"
 LISTING_TEMPLATE = "https://www.jobs.cz/prace/{seed}/"
 PER_PAGE = 30  # cards rendered per listing page (server-side constant)
 MAX_CONCURRENCY = 4
-MAX_RETRIES = 4
-RETRY_BASE_DELAY = 1.5
 # The listing pager silently clamps deep page numbers to the last
 # available page. ~45 is the observed cap for any single locality seed
 # (2026-05-12), but use a slightly higher cap so smaller seeds with
@@ -128,15 +126,28 @@ class JobsCzScraper(BaseScraper):
 
     ats = ATSType.JOBSCZ
 
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "cs-CZ,cs;q=0.9,en;q=0.5",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+
     def __init__(
         self,
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         max_pages: int = DEFAULT_MAX_PAGES,
         location_seeds: tuple[str, ...] | None = None,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.max_pages = max(1, max_pages)
         # ``None`` keeps the production default (full seed list); pass
         # ``()`` to disable seeding entirely for tests.
@@ -144,21 +155,16 @@ class JobsCzScraper(BaseScraper):
             _LOCATION_SEEDS if location_seeds is None else tuple(location_seeds)
         )
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
         seeds = self.location_seeds
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
+        async with self.make_fetcher() as fetcher:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             for seed in seeds:
                 try:
-                    slice_jobs = await self._run_seed(client, sem, seed)
+                    slice_jobs = await self._run_seed(fetcher, sem, seed)
                 except ScraperError as exc:
                     # Per-seed failures should not blow up the whole run —
                     # the next seed still contributes its rows.
@@ -180,7 +186,7 @@ class JobsCzScraper(BaseScraper):
 
     async def _run_seed(
         self,
-        client: httpx.AsyncClient,
+        fetcher: Fetcher,
         sem: asyncio.Semaphore,
         seed: str,
     ) -> list[Job]:
@@ -197,7 +203,7 @@ class JobsCzScraper(BaseScraper):
         for page in range(1, self.max_pages + 1):
             url = LISTING_TEMPLATE.format(seed=seed)
             params = {"page": page} if page > 1 else None
-            html = await self._fetch_page(client, sem, url, params)
+            html = await self._fetch_page(fetcher, sem, url, params)
             page_jobs = list(_parse_listing(html))
             if not page_jobs:
                 break
@@ -217,60 +223,22 @@ class JobsCzScraper(BaseScraper):
 
     async def _fetch_page(
         self,
-        client: httpx.AsyncClient,
+        fetcher: Fetcher,
         sem: asyncio.Semaphore,
         url: str,
         params: dict[str, int] | None,
     ) -> str:
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                async with sem:
-                    response = await client.get(
-                        url,
-                        params=params,
-                        headers={
-                            "User-Agent": "Mozilla/5.0",
-                            "Accept-Language": "cs-CZ,cs;q=0.9,en;q=0.5",
-                            "Accept": "text/html,application/xhtml+xml",
-                        },
-                    )
-            except httpx.HTTPError as exc:
-                last_exc = exc
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"jobs.cz fetch failed for {url} "
-                        f"params={params}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                return response.text
-            if response.status_code == 404:
-                # A seed that no longer exists — treat as empty.
-                return ""
-            if response.status_code in (429,) or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"jobs.cz returned {response.status_code} for "
-                        f"{url} params={params} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after)
-                    if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"jobs.cz returned {response.status_code} for {url} "
-                f"params={params}"
+        # The shared Fetcher owns retries/backoff for 429/5xx and
+        # network errors. 404 is a provider quirk — a seed slug that no
+        # longer exists — and means "empty seed", not "company gone".
+        async with sem:
+            response = await fetcher.request(
+                "GET", url, params=params, handled={404}
             )
-        raise ScraperError(
-            f"jobs.cz exhausted retries for {url} params={params}: "
-            f"{last_exc}"
-        )
+        if response.status_code == 404:
+            # A seed that no longer exists — treat as empty.
+            return ""
+        return response.text
 
 
 def _parse_listing(html: str) -> list[Job]:
