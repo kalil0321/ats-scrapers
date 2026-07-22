@@ -145,7 +145,7 @@ class JazzHRScraper(BaseScraper):
 
         async def run() -> str | None:
             async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=True,
+                timeout=self.timeout, follow_redirects=True, proxy=self.proxy,
             ) as client:
                 sem = asyncio.Semaphore(1)
                 await self._enrich_detail(client, sem, copy)
@@ -179,7 +179,7 @@ class JazzHRScraper(BaseScraper):
         # Best-effort: errors fall through silently.
         if self.include_descriptions and jobs:
             async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=True,
+                timeout=self.timeout, follow_redirects=True, proxy=self.proxy,
             ) as client:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
@@ -233,11 +233,15 @@ class JazzHRScraper(BaseScraper):
         import httpcloak
 
         url = LISTING_TEMPLATE.format(slug=self.company_slug)
+        kwargs: dict[str, str] = {}
+        if self.proxy:
+            kwargs["proxy"] = self.proxy
         try:
             response = httpcloak.get(
                 url,
                 headers={"User-Agent": "Mozilla/5.0"},
                 timeout=self.timeout,
+                **kwargs,
             )
         except Exception as exc:
             raise ScraperError(

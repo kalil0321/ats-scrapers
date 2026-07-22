@@ -259,14 +259,16 @@ class BuiltInScraper(BaseScraper):
             f"{url} after {MAX_RETRIES} retries"
         )
 
-    @staticmethod
-    def _httpcloak_get_sync(url: str) -> str | int:
+    def _httpcloak_get_sync(self, url: str) -> str | int:
         """Sync fetch via httpcloak. Returns the page text on 200, the
         bare status int otherwise so the async caller can decide
         retry/escalate without raising for transient blocks."""
         import httpcloak
 
-        r = httpcloak.get(url, timeout=30)
+        kwargs: dict[str, str] = {}
+        if self.proxy:
+            kwargs["proxy"] = self.proxy
+        r = httpcloak.get(url, timeout=self.timeout, **kwargs)
         if r.status_code != 200:
             return int(r.status_code)
         content = r.content

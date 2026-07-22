@@ -152,8 +152,13 @@ class AppleScraper(BaseScraper):
         # state. Best-effort — a failed detail fetch keeps the job's
         # listing-level ``jobSummary`` instead.
         if self.include_descriptions and all_jobs:
+            # ``proxy`` passed conditionally so test stubs with the
+            # historical two-arg signature keep working.
+            detail_kwargs: dict[str, Any] = {}
+            if self.proxy:
+                detail_kwargs["proxy"] = self.proxy
             try:
-                await _enrich_apple_details(all_jobs, self.timeout)
+                await _enrich_apple_details(all_jobs, self.timeout, **detail_kwargs)
             except Exception as exc:  # pragma: no cover - defensive
                 _LOG.warning("Apple detail enrichment failed: %s", exc)
 
@@ -313,7 +318,9 @@ def _parse_iso(value: str | None) -> datetime | None:
 # ---------------------------------------------------------------------------
 
 
-async def _enrich_apple_details(jobs: list[Job], timeout_s: float) -> None:
+async def _enrich_apple_details(
+    jobs: list[Job], timeout_s: float, proxy: str | None = None
+) -> None:
     """Concurrent fetch of each job's detail page, replacing ``description``
     with the full body assembled from the React loader state.
 
@@ -341,6 +348,7 @@ async def _enrich_apple_details(jobs: list[Job], timeout_s: float) -> None:
         timeout=httpx.Timeout(DETAIL_TIMEOUT_S, connect=4.0),
         follow_redirects=True,
         headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html"},
+        proxy=proxy,
     ) as client:
 
         async def hydrate(job: Job) -> None:

@@ -152,7 +152,7 @@ class JobsChScraper(BaseScraper):
         if job.description:
             return job.description
         copy = job.model_copy()
-        proxy_url = proxy_url_from_env()
+        proxy_url = self.proxy or proxy_url_from_env()
 
         async def run() -> str | None:
             client_kwargs: dict[str, Any] = {
