@@ -164,7 +164,7 @@ class PhenomScraper(BaseScraper):
         response = await fetch.request("GET", search_url, headers=_BASE_HEADERS)
         # Cookie-based csrf is the canonical path; some tenants only embed
         # the token in the page HTML.
-        for cookie in fetch._httpx_client().cookies.jar:
+        for cookie in fetch.cookies.jar:
             if "csrf" in cookie.name.lower():
                 return cookie.value
         match = _CSRF_RE.search(response.text)
