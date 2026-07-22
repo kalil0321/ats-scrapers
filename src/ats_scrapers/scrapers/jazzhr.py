@@ -44,6 +44,7 @@ import httpx
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._slug import require_host_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -136,6 +137,7 @@ class JazzHRScraper(BaseScraper):
             include_descriptions=include_descriptions,
             proxy=proxy,
         )
+        self.company_slug = require_host_label(company_slug, provider="JazzHRScraper")
         self.client_kind: ClientKind = client_kind
 
     def get_description(self, job: Job) -> str | None:

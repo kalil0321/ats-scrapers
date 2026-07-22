@@ -42,6 +42,7 @@ import httpx
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -138,6 +139,26 @@ class AvatureScraper(BaseScraper):
     for tenants on custom domains (``"https://careers.ibm.com/en_US"``)."""
 
     ats = ATSType.AVATURE
+
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
+    ) -> None:
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
+        slug = company_slug.strip()
+        if slug.startswith(("http://", "https://")):
+            self.company_slug = require_http_url(slug, provider="AvatureScraper")
+        else:
+            self.company_slug = require_host_label(slug, provider="AvatureScraper")
 
     def get_description(self, job: Job) -> str | None:
         if job.description:

@@ -6,10 +6,10 @@ Recruitee exposes a clean public JSON API per tenant:
 
 Returns a single payload with every active offer — no pagination, full
 description and requirements inline. Custom domains are also supported by
-passing the bare hostname or full URL as `company_slug`.
+passing the full careers URL as `company_slug`.
 
     >>> RecruiteeScraper("monzo").fetch()
-    >>> RecruiteeScraper("careers.acme.com").fetch()
+    >>> RecruiteeScraper("https://careers.acme.com").fetch()
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -39,6 +40,26 @@ class RecruiteeScraper(BaseScraper):
     ats = ATSType.RECRUITEE
 
     default_headers: ClassVar[dict[str, str]] = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
+    ) -> None:
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
+        slug = company_slug.strip()
+        if slug.startswith(("http://", "https://")):
+            self.company_slug = require_http_url(slug, provider="RecruiteeScraper")
+        else:
+            self.company_slug = require_host_label(slug, provider="RecruiteeScraper")
 
     async def afetch(self) -> list[Job]:
         api_url = self._resolve_api_url()

@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -147,7 +148,12 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
             include_descriptions=include_descriptions,
             proxy=proxy,
         )
-        self.base_url = self._resolve_base_url(company_slug)
+        slug = company_slug.strip()
+        if slug.startswith(("http://", "https://")):
+            self.company_slug = require_http_url(slug, provider="iCIMSScraper")
+        else:
+            self.company_slug = require_host_label(slug, provider="iCIMSScraper")
+        self.base_url = self._resolve_base_url(self.company_slug)
 
     def get_description(self, job: Job) -> str | None:
         if job.description:

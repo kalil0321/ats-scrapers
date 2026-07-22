@@ -34,6 +34,7 @@ import httpx
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -88,6 +89,10 @@ class EightfoldScraper(BaseScraper):
             include_descriptions=include_descriptions,
             proxy=proxy,
         )
+        company_slug = require_host_label(company_slug, provider="EightfoldScraper")
+        self.company_slug = company_slug
+        if base_url is not None:
+            base_url = require_http_url(base_url, provider="EightfoldScraper")
         self.base_url = (base_url or f"https://{company_slug}.eightfold.ai").rstrip("/")
         self.domain = domain or f"{company_slug}.com"
         self.company_name = company_name or company_slug.replace("-", " ").title()

@@ -24,6 +24,7 @@ from xml.etree import ElementTree as ET
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._slug import require_host_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -47,6 +48,24 @@ class TeamtailorScraper(BaseScraper):
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/rss+xml, text/xml",
     }
+
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
+    ) -> None:
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
+        self.company_slug = require_host_label(
+            company_slug, provider="TeamtailorScraper"
+        )
 
     async def afetch(self) -> list[Job]:
         url = RSS_TEMPLATE.format(slug=self.company_slug)
