@@ -21,6 +21,7 @@ clear message instead of producing a request to the wrong host.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from urllib.parse import urlparse
 
@@ -49,12 +50,22 @@ def require_host_label(slug: str, *, provider: str) -> str:
 
 
 def require_http_url(url: str, *, provider: str) -> str:
-    """Return ``url`` stripped, or raise if it isn't a plain http(s) URL.
+    """Return ``url`` stripped, or raise if it isn't a public http(s) URL.
 
     For scrapers whose slug contract accepts a full careers URL
     (custom-domain tenants). Enforces scheme and the presence of a
-    hostname; rejects embedded credentials, which are a classic
-    URL-confusion vector.
+    hostname, rejects embedded credentials (a classic URL-confusion
+    vector), and refuses targets that statically identify internal
+    infrastructure: literal non-public IPs (loopback, RFC-1918,
+    link-local incl. 169.254.169.254 cloud metadata, reserved),
+    obfuscated numeric hosts, ``localhost``, single-label internal
+    hostnames, and ``.internal`` / ``.local`` names.
+
+    DNS-based checks (a public hostname *resolving* to a private IP —
+    rebinding) are out of scope for a client library: they'd require
+    resolution at validation time and are only meaningfully enforced
+    at connect time. Operators feeding untrusted tenant lists into a
+    privileged network position should additionally sandbox egress.
     """
     cleaned = url.strip()
     parsed = urlparse(cleaned)
@@ -67,4 +78,33 @@ def require_http_url(url: str, *, provider: str) -> str:
         raise ScraperError(
             f"{provider}: careers URL {url!r} must not contain credentials."
         )
+    reason = _disallowed_host(parsed.hostname.lower())
+    if reason:
+        raise ScraperError(
+            f"{provider}: careers URL {url!r} refused — {reason}. Only "
+            f"public hostnames are valid scrape targets."
+        )
     return cleaned
+
+
+def _disallowed_host(host: str) -> str | None:
+    """Return a refusal reason for hosts that identify internal targets."""
+    bare = host.rstrip(".")
+    if bare == "localhost" or bare.endswith(".localhost"):
+        return "localhost is not a public host"
+    if bare.endswith((".internal", ".local")):
+        return f"{bare!r} is an internal-network name"
+    try:
+        ip = ipaddress.ip_address(bare)
+    except ValueError:
+        # Not a well-formed IP literal. Hosts made only of digits/dots/
+        # colons/hex markers (e.g. "0177.0.0.1", "2130706433") are IP
+        # obfuscations that inet_aton-style resolvers still parse.
+        if re.fullmatch(r"[0-9xX.:]+", bare):
+            return f"{bare!r} looks like an obfuscated IP address"
+        if "." not in bare:
+            return f"single-label hostname {bare!r} is not a public name"
+        return None
+    if not ip.is_global:
+        return f"IP {bare} is not publicly routable"
+    return None

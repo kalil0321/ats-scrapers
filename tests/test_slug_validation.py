@@ -119,6 +119,36 @@ def test_http_url_rejects_bad_urls(url: str) -> None:
         require_http_url(url, provider="X")
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8080/admin",          # loopback
+        "http://[::1]/",                        # IPv6 loopback
+        "http://169.254.169.254/latest/meta-data/",  # cloud metadata
+        "http://10.0.0.5/",                     # RFC-1918
+        "http://172.16.3.4/",                   # RFC-1918
+        "http://192.168.1.1/",                  # RFC-1918
+        "http://0.0.0.0/",                      # unspecified
+        "http://localhost/x",                   # localhost by name
+        "http://foo.localhost/",                # .localhost suffix
+        "http://metadata.google.internal/",     # .internal name
+        "http://printer.local/",                # .local name
+        "http://intranet/",                     # single-label host
+        "http://0177.0.0.1/",                   # octal-obfuscated 127.0.0.1
+        "http://2130706433/",                   # decimal-obfuscated 127.0.0.1
+    ],
+)
+def test_http_url_rejects_internal_targets(url: str) -> None:
+    """GH-181's explicit ask: private ranges and metadata endpoints
+    must not be reachable through the full-URL slug contract."""
+    with pytest.raises(ScraperError, match="refused"):
+        require_http_url(url, provider="X")
+
+
+def test_http_url_accepts_public_ip_literal() -> None:
+    assert require_http_url("https://8.8.8.8/jobs", provider="X")
+
+
 # --- construction-time enforcement per scraper -------------------------------
 
 
