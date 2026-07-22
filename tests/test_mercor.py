@@ -29,14 +29,6 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import MercorScraper, ScraperRegistry, get_scraper
 
-
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.mercor as mr
-    monkeypatch.setattr(mr, "MAX_RETRIES", 1)
-    monkeypatch.setattr(mr, "RETRY_BASE_DELAY", 0.0)
-
-
 URL = "https://aws.api.mercor.com/work/listings-explore-page"
 
 
@@ -267,8 +259,8 @@ def test_sends_required_auth_and_origin_headers(httpx_mock) -> None:
 
 
 def test_retries_on_5xx(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.mercor as mr
-    monkeypatch.setattr(mr, "MAX_RETRIES", 3)
+    import ats_scrapers.fetch
+    monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 3)
     httpx_mock.add_response(url=URL, status_code=503)
     httpx_mock.add_response(url=URL, json={"listings": [_listing()]})
     jobs = MercorScraper("any").fetch()
@@ -276,8 +268,8 @@ def test_retries_on_5xx(monkeypatch, httpx_mock) -> None:
 
 
 def test_429_with_retry_after_is_honored(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.mercor as mr
-    monkeypatch.setattr(mr, "MAX_RETRIES", 3)
+    import ats_scrapers.fetch
+    monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 3)
 
     sleeps: list[float] = []
     async def fake_sleep(s: float) -> None:
@@ -293,16 +285,16 @@ def test_429_with_retry_after_is_honored(monkeypatch, httpx_mock) -> None:
 
 
 def test_5xx_exhausts_retries(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.mercor as mr
-    monkeypatch.setattr(mr, "MAX_RETRIES", 3)
+    import ats_scrapers.fetch
+    monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 3)
     httpx_mock.add_response(url=URL, status_code=502, is_reusable=True)
     with pytest.raises(ScraperError, match="502"):
         MercorScraper("any").fetch()
 
 
 def test_network_error_raises(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.mercor as mr
-    monkeypatch.setattr(mr, "MAX_RETRIES", 2)
+    import ats_scrapers.fetch
+    monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 2)
     httpx_mock.add_exception(
         httpx.ConnectError("DNS failed"), url=URL, is_reusable=True
     )

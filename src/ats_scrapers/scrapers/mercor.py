@@ -18,12 +18,9 @@ headers are required (the API checks them).
 
 from __future__ import annotations
 
-import asyncio
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
-
-import httpx
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -34,9 +31,6 @@ if TYPE_CHECKING:
 
 API_URL = "https://aws.api.mercor.com/work/listings-explore-page"
 WORK_BASE_URL = "https://work.mercor.com"
-
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 
 _HEADERS = {
     "Accept": "application/json, text/plain, */*",
@@ -72,14 +66,15 @@ class MercorScraper(BaseScraper):
 
     ats = ATSType.MERCOR
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str]] = _HEADERS
 
-    async def _fetch_async(self) -> list[Job]:
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
-            payload = await self._fetch_with_retry(client)
+    async def afetch(self) -> list[Job]:
+        async with self.make_fetcher() as fetch:
+            response = await fetch.request("GET", API_URL)
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ScraperError(f"Mercor returned malformed JSON: {exc}") from exc
         listings = payload.get("listings") or []
         seen: set[str] = set()
         jobs: list[Job] = []
@@ -92,39 +87,6 @@ class MercorScraper(BaseScraper):
             seen.add(job.ats_id)
             jobs.append(job)
         return jobs
-
-    async def _fetch_with_retry(
-        self, client: httpx.AsyncClient
-    ) -> dict[str, Any]:
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(API_URL, headers=_HEADERS)
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(f"Mercor fetch failed: {exc}") from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    raise ScraperError(f"Mercor returned malformed JSON: {exc}") from exc
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Mercor returned {response.status_code} after "
-                        f"{MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(f"Mercor returned {response.status_code}")
-        raise ScraperError("Mercor exhausted retries")
-
 
 def _parse_listing(item: dict[str, Any]) -> Job | None:
     listing_id = str(item.get("listingId") or "").strip()
@@ -201,7 +163,7 @@ def _parse_listing(item: dict[str, Any]) -> Job | None:
         commitment=commitment,
         description=description,
         posted_at=_parse_iso(item.get("postedAt")),
-        fetched_at=datetime.now(),
+        fetched_at=datetime.now(UTC),
         raw=raw or None,
     )
 

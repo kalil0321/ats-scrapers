@@ -18,12 +18,9 @@ Tenants without an active Pinpoint careers site return 404. Locale variants
 
 from __future__ import annotations
 
-import asyncio
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
-
-import httpx
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -33,8 +30,10 @@ if TYPE_CHECKING:
     from typing import Any
 
 API_TEMPLATE = "https://{slug}.pinpointhq.com/postings.json"
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
+# Tenants without an active careers site 3xx-redirect to the marketing
+# site — that's a "not found", not an error, so the shared Fetcher hands
+# these statuses back to us unmapped.
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 WHITESPACE_RE = re.compile(r"\s+")
 MAX_DESCRIPTION_LEN = 25_000
@@ -80,14 +79,25 @@ class PinpointScraper(BaseScraper):
 
     ats = ATSType.PINPOINT
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+    }
 
-    async def _fetch_async(self) -> list[Job]:
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=False
-        ) as client:
-            payload = await self._fetch_with_retry(client)
+    async def afetch(self) -> list[Job]:
+        url = API_TEMPLATE.format(slug=self.company_slug)
+        async with self.make_fetcher(follow_redirects=False) as fetch:
+            response = await fetch.request("GET", url, handled=_REDIRECT_STATUSES)
+        if response.status_code in _REDIRECT_STATUSES:
+            raise CompanyNotFoundError(
+                f"Pinpoint tenant has no active careers site: {self.company_slug}"
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ScraperError(
+                f"Pinpoint returned malformed JSON for {self.company_slug}: {exc}"
+            ) from exc
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list):
             raise ScraperError(
@@ -104,59 +114,6 @@ class PinpointScraper(BaseScraper):
             seen.add(job.ats_id)
             jobs.append(job)
         return jobs
-
-    async def _fetch_with_retry(
-        self, client: httpx.AsyncClient
-    ) -> dict[str, Any]:
-        url = API_TEMPLATE.format(slug=self.company_slug)
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(
-                    url,
-                    headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Accept": "application/json",
-                    },
-                )
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Pinpoint fetch failed for {self.company_slug}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code in (301, 302, 303, 307, 308):
-                raise CompanyNotFoundError(
-                    f"Pinpoint tenant has no active careers site: {self.company_slug}"
-                )
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"Pinpoint returned malformed JSON for {self.company_slug}: {exc}"
-                    ) from exc
-            if response.status_code == 404:
-                raise CompanyNotFoundError(
-                    f"Pinpoint tenant not found: {self.company_slug}"
-                )
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Pinpoint returned {response.status_code} for "
-                        f"{self.company_slug} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Pinpoint returned {response.status_code} for {self.company_slug}"
-            )
-        raise ScraperError(f"Pinpoint exhausted retries for {self.company_slug}")
 
     def _parse_posting(self, item: dict[str, Any]) -> Job | None:
         ats_id = str(item.get("id") or "").strip()
@@ -210,7 +167,7 @@ class PinpointScraper(BaseScraper):
             salary_max=comp_max,
             salary_period=comp_period,
             posted_at=_parse_iso(item.get("first_published_at")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

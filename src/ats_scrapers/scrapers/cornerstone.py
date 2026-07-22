@@ -24,23 +24,21 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlparse
 
-import httpx
-
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 PAGE_SIZE = 25
 MAX_CONCURRENCY = 4  # Cornerstone rate-limits ~60 req/min
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 
 _TOKEN_RE = re.compile(
     r'csod\.context\.token\s*=\s*[\'"]([^\'"]+)[\'"]'
@@ -70,8 +68,15 @@ class CornerstoneScraper(BaseScraper):
         timeout: float = 30.0,
         site_id: int = 1,
         company_name: str | None = None,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         # Full URLs containing a career-site ID take precedence over site_id.
         self.career_url, self.slug, resolved_site_id = _resolve_career_url(
             company_slug, site_id
@@ -83,17 +88,14 @@ class CornerstoneScraper(BaseScraper):
             else self.slug
         )
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str]] = {"User-Agent": "Mozilla/5.0"}
 
-    async def _fetch_async(self) -> list[Job]:
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
-            token, api_host = await self._init_session(client)
+    async def afetch(self) -> list[Job]:
+        async with self.make_fetcher() as fetch:
+            token, api_host = await self._init_session(fetch)
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             first = await self._search(
-                client, sem, token=token, api_host=api_host, page=1
+                fetch, sem, token=token, api_host=api_host, page=1
             )
             data = first.get("data") or {}
             total = int(data.get("totalCount") or 0)
@@ -118,7 +120,7 @@ class CornerstoneScraper(BaseScraper):
 
                 async def task(page: int) -> None:
                     payload = await self._search(
-                        client, sem, token=token, api_host=api_host, page=page
+                        fetch, sem, token=token, api_host=api_host, page=page
                     )
                     absorb((payload.get("data") or {}).get("requisitions") or [])
 
@@ -127,26 +129,8 @@ class CornerstoneScraper(BaseScraper):
                 )
         return all_jobs
 
-    async def _init_session(
-        self, client: httpx.AsyncClient
-    ) -> tuple[str, str]:
-        try:
-            response = await client.get(
-                self.career_url, headers={"User-Agent": "Mozilla/5.0"}
-            )
-        except httpx.HTTPError as exc:
-            raise ScraperError(
-                f"Cornerstone init failed for {self.career_url}: {exc}"
-            ) from exc
-        if response.status_code == 404:
-            raise CompanyNotFoundError(
-                f"Cornerstone career site not found: {self.career_url}"
-            )
-        if response.status_code != 200:
-            raise ScraperError(
-                f"Cornerstone init returned {response.status_code} for {self.career_url}"
-            )
-        text = response.text
+    async def _init_session(self, fetch: Fetcher) -> tuple[str, str]:
+        text = await fetch.get_text(self.career_url)
         match = _TOKEN_RE.search(text) or _TOKEN_FALLBACK_RE.search(text)
         if not match:
             raise ScraperError(
@@ -160,7 +144,7 @@ class CornerstoneScraper(BaseScraper):
 
     async def _search(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         *,
         token: str,
@@ -178,49 +162,20 @@ class CornerstoneScraper(BaseScraper):
         }
         career_origin = f"https://{urlparse(self.career_url).hostname}"
         headers = {
-            "User-Agent": "Mozilla/5.0",
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
             "Origin": career_origin,
             "Referer": career_origin + "/",
         }
-        for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
-                    response = await client.post(url, json=body, headers=headers)
-                except httpx.HTTPError as exc:
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"Cornerstone search failed at page={page}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"Cornerstone returned malformed JSON at page={page}: {exc}"
-                    ) from exc
-            if response.status_code in (429, 502, 503, 504):
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Cornerstone returned {response.status_code} at "
-                        f"page={page} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
+        async with sem:
+            response = await fetch.request("POST", url, json=body, headers=headers)
+        try:
+            return response.json()
+        except ValueError as exc:
             raise ScraperError(
-                f"Cornerstone returned {response.status_code} at page={page}: "
-                f"{response.text[:120]}"
-            )
-        raise ScraperError(f"Cornerstone exhausted retries at page={page}")
+                f"Cornerstone returned malformed JSON at page={page}: {exc}"
+            ) from exc
 
     def _parse_requisition(self, item: dict[str, Any]) -> Job | None:
         ats_id = str(item.get("requisitionId") or "")
@@ -251,7 +206,7 @@ class CornerstoneScraper(BaseScraper):
             requisition_id=ats_id if ats_id else None,
             description=_clean_description(item.get("externalDescription")),
             posted_at=_parse_iso(item.get("postingEffectiveDate")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 
