@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import html as html_mod
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ats_scrapers.models import ATSType, Job
@@ -104,7 +104,7 @@ class GreenhouseScraper(BaseScraper):
             description=description,
             requisition_id=requisition_id,
             posted_at=posted_at,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 
