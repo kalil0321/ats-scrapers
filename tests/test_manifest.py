@@ -16,8 +16,8 @@ from ats_scrapers.models import ATSType
 def test_manifest_parses_full_payload(sample_manifest_dict: dict[str, Any]) -> None:
     m = Manifest.model_validate(sample_manifest_dict)
     assert m.stats.total_jobs == 1000
-    assert ATSType.GREENHOUSE in m.by_ats
-    assert m.by_ats[ATSType.LEVER].parquet is None
+    assert "greenhouse" in m.by_ats
+    assert m.by_ats["lever"].parquet is None
     assert "2026-05-03" in m.by_date
 
 
@@ -47,6 +47,18 @@ def test_url_for_unknown_ats_raises(sample_manifest_dict: dict[str, Any]) -> Non
     m = Manifest.model_validate(sample_manifest_dict)
     with pytest.raises(ManifestError, match="not present"):
         m.url_for_ats(ATSType.WORKDAY)
+
+
+def test_manifest_accepts_source_without_local_scraper_enum(
+    sample_manifest_dict: dict[str, Any],
+) -> None:
+    sample_manifest_dict["by_ats"]["beisen"] = {
+        "csv": "https://example.com/beisen.csv",
+        "rows": 10,
+        "size_bytes": 100,
+    }
+    m = Manifest.model_validate(sample_manifest_dict)
+    assert m.url_for_ats("beisen") == "https://example.com/beisen.csv"
 
 
 def test_url_for_all_returns_parquet_by_default(sample_manifest_dict: dict[str, Any]) -> None:

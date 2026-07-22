@@ -48,6 +48,30 @@ def test_publish_writes_per_ats_and_full_snapshot(ats_csv_dir, fake_r2) -> None:
         assert f"jobhive/v1/{ats}/jobs.parquet" in fake_r2.uploads
 
 
+def test_publish_keeps_hosted_source_without_scraper_adapter(
+    ats_csv_dir, fake_r2
+) -> None:
+    beisen_dir = ats_csv_dir / "beisen"
+    beisen_dir.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "url": "https://example.com/beisen/1",
+                "title": "Engineer",
+                "company": "Acme",
+                "ats_id": "beisen-1",
+            }
+        ]
+    ).to_csv(beisen_dir / "jobs.csv", index=False)
+
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    result = publisher.publish_from_directory(ats_csv_dir)
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+
+    assert result.ats_count == 4
+    assert "beisen" in manifest["by_ats"]
+
+
 def test_publisher_does_not_write_companies_anywhere(ats_csv_dir, fake_r2) -> None:
     """Companies are CI-owned. The publisher must never write them."""
     publisher = DatasetPublisher(fake_r2, write_parquet=True)

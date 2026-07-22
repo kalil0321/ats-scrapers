@@ -58,7 +58,11 @@ class Manifest(BaseModel):
     generated_at: datetime
     stats: ManifestStats
     all: FileEntry
-    by_ats: dict[ATSType, FileEntry] = Field(default_factory=dict)
+    # Manifest sources are intentionally keyed by plain strings instead of
+    # ATSType. The hosted dataset can add a source before this package ships a
+    # matching scraper adapter; treating keys as an enum would make the entire
+    # manifest (and every dataset query) fail validation in that window.
+    by_ats: dict[str, FileEntry] = Field(default_factory=dict)
     by_date: dict[str, FileEntry] = Field(default_factory=dict)
     companies: FileEntry | None = None
 
@@ -85,11 +89,14 @@ class Manifest(BaseModel):
             if owns_client:
                 client.close()
 
-    def url_for_ats(self, ats: ATSType, *, prefer_parquet: bool = True) -> str:
+    def url_for_ats(
+        self, ats: ATSType | str, *, prefer_parquet: bool = True
+    ) -> str:
         """Return the best download URL for a given ATS slice."""
-        entry = self.by_ats.get(ats)
+        source = ats.value if isinstance(ats, ATSType) else ats
+        entry = self.by_ats.get(source)
         if entry is None:
-            raise ManifestError(f"ATS {ats} is not present in manifest")
+            raise ManifestError(f"Source {source} is not present in manifest")
         return _pick_url(entry, prefer_parquet=prefer_parquet)
 
     def url_for_all(self, *, prefer_parquet: bool = True) -> str:

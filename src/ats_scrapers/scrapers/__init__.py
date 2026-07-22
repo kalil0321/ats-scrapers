@@ -5,7 +5,7 @@ Each scraper is a thin, dependency-light fetch+parse layer that returns
 kept outside the public scraper API so each scraper stays usable on its own.
 
 >>> from ats_scrapers.scrapers import GreenhouseScraper
->>> jobs = GreenhouseScraper("openai").fetch()
+>>> jobs = GreenhouseScraper("anthropic").fetch()
 """
 
 from ats_scrapers.scrapers.amazon import AmazonScraper

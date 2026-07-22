@@ -10,9 +10,13 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ats_scrapers._version import __version__
 from ats_scrapers.exceptions import ATSScrapersError
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     p_scrape = subparsers.add_parser("scrape", help="Scrape one company from one ATS")
-    p_scrape.add_argument("ats", help="ATS platform (greenhouse, lever, ashby, ...)")
+    p_scrape.add_argument("ats", help="Source adapter (greenhouse, lever, ashby, ...)")
     p_scrape.add_argument("company", help="Company slug on the ATS")
     p_scrape.add_argument("--format", choices=["table", "csv", "json"], default="table")
 
@@ -58,16 +62,11 @@ def main(argv: list[str] | None = None) -> int:
         default="{ats}/jobs.csv",
         help="Path template under source_dir (default: {ats}/jobs.csv)",
     )
-    p_publish.add_argument("--companies-csv", help="Optional companies.csv path")
-    p_publish.add_argument(
-        "--dated-glob",
-        help="Optional glob (relative to source_dir) for dated daily snapshots",
-    )
     p_publish.add_argument(
         "--no-parquet", action="store_true", help="Skip parquet writes (CSV only)"
     )
 
-    subparsers.add_parser("list-ats", help="List ATS platforms with available data")
+    subparsers.add_parser("list-ats", help="List sources with available data")
 
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -127,19 +126,17 @@ def _cmd_publish(args: argparse.Namespace) -> int:
     r2 = R2Client(config)
     publisher = DatasetPublisher(r2, write_parquet=not args.no_parquet)
 
-    dated: list[Path] = []
-    if args.dated_glob:
-        dated = sorted(source.glob(args.dated_glob))
-
-    companies = Path(args.companies_csv) if args.companies_csv else None
     result = publisher.publish_from_directory(
         source_dir=source,
         ats_csv_pattern=args.pattern,
-        dated_snapshots=dated,
-        companies_csv=companies,
     )
 
-    print(f"✓ Published {result.total_jobs:,} jobs from {result.total_companies:,} companies")
+    print(
+        f"✓ Published {result.total_jobs:,} jobs across "
+        f"{result.ats_count} sources"
+    )
+    if result.total_jobs_raw != result.total_jobs:
+        print(f"  Raw jobs: {result.total_jobs_raw:,} before cross-source deduplication")
     print(f"  Manifest: {result.manifest_key}")
     print(f"  Files:    {len(result.files)}")
     print(f"  Duration: {result.duration_seconds:.1f}s")
@@ -151,19 +148,35 @@ def _cmd_list_ats() -> int:
 
     manifest = _default_client().manifest
     for ats, entry in sorted(manifest.by_ats.items()):
-        print(f"{ats.value:20s} {entry.rows:>10,} jobs")
-    print(f"\nTotal: {manifest.stats.total_jobs:,} jobs across {manifest.stats.ats_count} ATSes")
+        print(f"{ats:20s} {entry.rows:>10,} jobs")
+    print(
+        f"\nTotal: {manifest.stats.total_jobs:,} jobs across "
+        f"{manifest.stats.ats_count} sources"
+    )
     return 0
 
 
-def _emit(df, fmt: str) -> None:
+def _emit(df: pd.DataFrame, fmt: str) -> None:
     if fmt == "csv":
         df.to_csv(sys.stdout, index=False)
     elif fmt == "json":
         df.to_json(sys.stdout, orient="records", indent=2)
         print()
     else:
-        print(df.to_string(index=False))
+        summary_columns = [
+            column
+            for column in (
+                "title",
+                "company",
+                "location",
+                "salary_summary",
+                "apply_url",
+                "url",
+            )
+            if column in df.columns
+        ]
+        table = df[summary_columns] if summary_columns else df
+        print(table.to_string(index=False))
 
 
 if __name__ == "__main__":

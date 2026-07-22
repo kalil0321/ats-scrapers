@@ -26,15 +26,16 @@ log = logging.getLogger(__name__)
 
 
 class ATSType(StrEnum):
-    """Supported applicant tracking systems.
+    """Known job-source identifiers.
 
-    A company belongs to exactly one ATS. The ATS determines which
-    scraper knows how to fetch its jobs and how the careers page is
-    structured.
+    Most values identify an ATS or job source with a registered scraper.
+    ``CUSTOM`` is reserved for user-defined sources. Hosted-manifest keys are
+    strings so newly published sources do not break older clients.
     """
 
     ASHBY = "ashby"
     AVATURE = "avature"
+    BEISEN = "beisen"
     CORNERSTONE = "cornerstone"
     EIGHTFOLD = "eightfold"
     GEM = "gem"
@@ -237,8 +238,8 @@ class Job(BaseModel):
         ...,
         alias="ats_type",
         description=(
-            "Which ATS platform serves this posting. Determines the "
-            "scraper that produced the row and the format of "
+            "Which ATS platform or job source serves this posting. "
+            "Determines the adapter that produced the row and the format of "
             "``ats_id``."
         ),
     )

@@ -71,6 +71,20 @@ def test_search_remote_only(stub_client: Client) -> None:
     assert set(df["company"]) == {"Stripe", "Notion"}
 
 
+def test_search_non_remote_only(stub_client: Client) -> None:
+    df = stub_client.search(remote=False)
+    assert set(df["company"]) == {"OpenAI", "Anthropic"}
+
+
+def test_search_remote_falls_back_to_location_when_flag_is_absent(
+    stub_client: Client,
+) -> None:
+    original_download = stub_client._download
+    stub_client._download = lambda url: original_download(url).drop(columns="is_remote")  # type: ignore[method-assign]
+    df = stub_client.search(remote=True)
+    assert set(df["company"]) == {"Stripe", "Notion"}
+
+
 def test_search_salary_min_filters_by_max_column(stub_client: Client) -> None:
     df = stub_client.search(salary_min=200_000)
     assert "Junior Backend Engineer" not in set(df["title"])
@@ -150,6 +164,20 @@ def test_load_accepts_ats_as_string_or_enum(stub_client: Client) -> None:
     df1 = stub_client.load(ats="greenhouse")
     df2 = stub_client.load(ats=ATSType.GREENHOUSE)
     pd.testing.assert_frame_equal(df1, df2)
+
+
+def test_load_accepts_manifest_source_not_in_local_enum(
+    stub_client: Client,
+) -> None:
+    stub_client._manifest = stub_client.manifest.model_copy(
+        update={
+            "by_ats": {
+                **stub_client.manifest.by_ats,
+                "beisen": stub_client.manifest.by_ats["greenhouse"],
+            }
+        }
+    )
+    assert len(stub_client.load(ats="beisen")) == 4
 
 
 def test_client_defaults_to_csv_without_parquet_engine(
@@ -259,7 +287,7 @@ def test_list_ats_returns_manifest_keys(
     fake._manifest = Manifest.model_validate(sample_manifest_dict)
     monkeypatch.setattr(client_module, "_default_client", lambda: fake)
 
-    assert ATSType.GREENHOUSE in list_ats()
+    assert "greenhouse" in list_ats()
 
 
 # --- context manager ---------------------------------------------------------

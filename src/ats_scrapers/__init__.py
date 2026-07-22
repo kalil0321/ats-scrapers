@@ -4,11 +4,11 @@ Three layers of progressive disclosure:
 
 1. Dataset client (zero config):
    >>> from ats_scrapers import search
-   >>> df = search(query="ml engineer", location="Paris")
+   >>> df = search(query="ml engineer", location="Paris", ats="greenhouse")
 
 2. Per-ATS scrapers (BYO companies):
    >>> from ats_scrapers.scrapers import GreenhouseScraper
-   >>> jobs = GreenhouseScraper("openai").fetch()
+   >>> jobs = GreenhouseScraper("anthropic").fetch()
 
 3. Publishing and orchestration helpers:
    >>> from ats_scrapers.storage import DatasetPublisher

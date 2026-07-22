@@ -17,7 +17,7 @@ from ats_scrapers.models import ATSType, Company, Job, Salary
 def test_ats_type_includes_every_supported_platform() -> None:
     expected = {
         # Multi-tenant ATS systems
-        "ashby", "avature", "cornerstone", "eightfold", "gem", "greenhouse",
+        "ashby", "avature", "beisen", "cornerstone", "eightfold", "gem", "greenhouse",
         "icims", "join_com", "lever", "mercor", "oracle", "personio", "phenom",
         "pinpoint", "recruiterbox", "rippling", "smartrecruiters",
         "successfactors", "workable", "workday",
@@ -84,20 +84,20 @@ def test_salary_is_frozen() -> None:
 # --- Company -----------------------------------------------------------------
 
 def test_company_minimal() -> None:
-    c = Company(slug="openai", name="OpenAI", ats=ATSType.GREENHOUSE)
-    assert c.slug == "openai"
+    c = Company(slug="acme", name="Acme", ats=ATSType.GREENHOUSE)
+    assert c.slug == "acme"
     assert c.careers_url is None
 
 
 def test_company_with_urls() -> None:
     c = Company(
-        slug="openai",
-        name="OpenAI",
+        slug="acme",
+        name="Acme",
         ats=ATSType.GREENHOUSE,
-        careers_url="https://openai.com/careers",
-        website="https://openai.com",
+        careers_url="https://acme.example/careers",
+        website="https://acme.example",
     )
-    assert str(c.careers_url).startswith("https://openai.com/careers")
+    assert str(c.careers_url).startswith("https://acme.example/careers")
 
 
 def test_company_rejects_invalid_url() -> None:

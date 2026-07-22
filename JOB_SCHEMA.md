@@ -83,9 +83,9 @@ matching.
 
 ### `ats_type` &nbsp;`ATSType` &nbsp;*(required)*
 
-Which ATS platform serves this posting. Determines which scraper
-produced the row and what shape `ats_id` takes. See the `ATSType` enum
-in `src/ats_scrapers/models.py` for the full list (~50 values).
+Which ATS platform or job source serves this posting. Determines which
+adapter produced the row and what shape `ats_id` takes. See the `ATSType`
+enum in `src/ats_scrapers/models.py` for the known library sources.
 
 ### `ats_id` &nbsp;`str | None` &nbsp;*(optional, defensive)*
 

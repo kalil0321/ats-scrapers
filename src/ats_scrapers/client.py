@@ -5,8 +5,8 @@ This is the path almost every user will take — `from ats_scrapers import searc
 
 Implementation notes:
 - Caches manifest + downloaded snapshot in memory for the process lifetime.
-- Filters happen client-side on the loaded DataFrame; the dataset is small
-  enough (~50-500 MB compressed) that this is faster than a server roundtrip.
+- Filters happen client-side on the loaded DataFrame. Per-source slices are
+  relatively small; the full cross-source snapshot is multi-gigabyte.
 - For large-scale or real-time use, swap `Client` for the per-ATS scrapers.
 """
 
@@ -32,7 +32,7 @@ class Client:
     """Read-side client for the public ats-scrapers dataset.
 
     >>> client = Client()
-    >>> df = client.search(query="rust", remote=True)
+    >>> df = client.search(query="rust", remote=True, ats="greenhouse")
 
     Pass a custom `manifest_url` to point at a fork or staging environment.
     """
@@ -84,8 +84,7 @@ class Client:
             raise ValueError("Pass either `ats` or `date`, not both")
 
         if ats is not None:
-            ats_enum = ATSType(ats) if isinstance(ats, str) else ats
-            url = self.manifest.url_for_ats(ats_enum, prefer_parquet=self._prefer_parquet)
+            url = self.manifest.url_for_ats(ats, prefer_parquet=self._prefer_parquet)
             return self._download(url)
 
         if date is not None:
@@ -123,8 +122,25 @@ class Client:
             df = df[df["location"].fillna("").str.contains(location, case=False, na=False)]
         if company:
             df = df[df["company"].str.contains(company, case=False, na=False)]
-        if remote is True and "location" in df.columns:
-            df = df[df["location"].fillna("").str.contains("remote", case=False, na=False)]
+        if remote is not None:
+            location_remote = (
+                df["location"].fillna("").str.contains("remote", case=False, na=False)
+                if "location" in df.columns
+                else pd.Series(False, index=df.index)
+            )
+            if "is_remote" in df.columns:
+                known_remote = df["is_remote"].eq(remote).fillna(False)
+                if remote:
+                    # Fall back to the location text only when the structured
+                    # flag is unknown; an explicit False remains authoritative.
+                    unknown_remote = df["is_remote"].isna() & location_remote
+                    df = df[known_remote | unknown_remote]
+                else:
+                    df = df[known_remote]
+            elif remote:
+                df = df[location_remote]
+            else:
+                df = df[~location_remote]
         if salary_min is not None and "salary_max" in df.columns:
             df = df[df["salary_max"].fillna(0) >= salary_min]
         if salary_max is not None and "salary_min" in df.columns:
@@ -195,6 +211,6 @@ def search(
     )
 
 
-def list_ats() -> Iterable[ATSType]:
-    """Return the ATS platforms with data in the current manifest."""
+def list_ats() -> Iterable[str]:
+    """Return source names present in the current hosted manifest."""
     return _default_client().manifest.by_ats.keys()

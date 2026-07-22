@@ -120,6 +120,27 @@ def test_search_format_json(
     assert "X" in out
 
 
+def test_table_format_omits_large_payload_columns(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "title": "Engineer",
+                "company": "Acme",
+                "location": "Paris",
+                "description": "very large description",
+                "raw": {"large": "payload"},
+            }
+        ]
+    )
+    cli_module._emit(df, "table")
+    out = capsys.readouterr().out
+    assert "Engineer" in out
+    assert "very large description" not in out
+    assert "payload" not in out
+
+
 def test_scrape_command_invokes_registered_scraper(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -146,7 +167,7 @@ def test_scrape_command_invokes_registered_scraper(
         "ats_scrapers.scrapers.get_scraper",
         lambda ats, company: FakeScraper(company),
     )
-    rc = cli_module.main(["scrape", "greenhouse", "openai"])
+    rc = cli_module.main(["scrape", "greenhouse", "acme"])
     assert rc == 0
     assert "Backend" in capsys.readouterr().out
 
@@ -162,7 +183,7 @@ def test_publish_invokes_publisher(
         def __init__(self, r2_client, *, write_parquet: bool) -> None:
             captured["write_parquet"] = write_parquet
 
-        def publish_from_directory(self, *, source_dir, ats_csv_pattern, dated_snapshots, companies_csv):
+        def publish_from_directory(self, source_dir, *, ats_csv_pattern):
             captured["source_dir"] = source_dir
             captured["pattern"] = ats_csv_pattern
             from types import SimpleNamespace
@@ -171,7 +192,8 @@ def test_publish_invokes_publisher(
                 manifest_key="jobhive/v1/manifest.json",
                 files=["a", "b"],
                 total_jobs=42,
-                total_companies=7,
+                total_jobs_raw=45,
+                ats_count=7,
                 duration_seconds=1.5,
             )
 
@@ -205,15 +227,17 @@ def test_publish_accepts_custom_pattern(
         def __init__(self, *args, **kwargs) -> None:
             pass
 
-        def publish_from_directory(self, *, ats_csv_pattern, **kwargs):
+        def publish_from_directory(self, source_dir, *, ats_csv_pattern):
             from types import SimpleNamespace
 
+            captured["source_dir"] = source_dir
             captured["pattern"] = ats_csv_pattern
             return SimpleNamespace(
                 manifest_key="x",
                 files=[],
                 total_jobs=0,
-                total_companies=0,
+                total_jobs_raw=0,
+                ats_count=0,
                 duration_seconds=0.0,
             )
 

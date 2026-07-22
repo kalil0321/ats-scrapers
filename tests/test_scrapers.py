@@ -46,9 +46,9 @@ def test_registry_keys_are_valid_ats_types() -> None:
         assert isinstance(ats, ATSType)
 
 
-def test_public_ats_types_are_registered() -> None:
+def test_sources_without_scraper_adapters_are_explicit() -> None:
     registered = set(ScraperRegistry.all())
-    assert set(ATSType) - {ATSType.CUSTOM} == registered
+    assert set(ATSType) - registered == {ATSType.BEISEN, ATSType.CUSTOM}
 
 
 def test_registry_covers_core_atses() -> None:
@@ -67,19 +67,19 @@ def test_registry_covers_core_atses() -> None:
 
 
 def test_get_scraper_returns_instance() -> None:
-    scraper = get_scraper("greenhouse", "openai")
+    scraper = get_scraper("greenhouse", "acme")
     assert isinstance(scraper, GreenhouseScraper)
-    assert scraper.company_slug == "openai"
+    assert scraper.company_slug == "acme"
 
 
 def test_get_scraper_accepts_enum_too() -> None:
-    scraper = get_scraper(ATSType.LEVER, "anthropic")
+    scraper = get_scraper(ATSType.LEVER, "acme")
     assert isinstance(scraper, LeverScraper)
 
 
 def test_get_scraper_unknown_ats_raises() -> None:
     with pytest.raises(ScraperError):
-        get_scraper("custom", "openai")
+        get_scraper("custom", "acme")
 
 
 def test_registry_returns_copy_so_external_mutation_is_safe() -> None:
@@ -105,8 +105,8 @@ def test_register_decorator_adds_new_scraper() -> None:
 # --- BaseScraper -------------------------------------------------------------
 
 def test_base_scraper_repr() -> None:
-    scraper = GreenhouseScraper("openai")
-    assert repr(scraper) == "GreenhouseScraper('openai')"
+    scraper = GreenhouseScraper("acme")
+    assert repr(scraper) == "GreenhouseScraper('acme')"
 
 
 def test_base_scraper_cannot_be_instantiated_directly() -> None:
@@ -115,12 +115,12 @@ def test_base_scraper_cannot_be_instantiated_directly() -> None:
 
 
 def test_base_scraper_default_timeout() -> None:
-    scraper = GreenhouseScraper("openai")
+    scraper = GreenhouseScraper("acme")
     assert scraper.timeout == 30.0
 
 
 def test_base_scraper_custom_timeout() -> None:
-    scraper = GreenhouseScraper("openai", timeout=5.0)
+    scraper = GreenhouseScraper("acme", timeout=5.0)
     assert scraper.timeout == 5.0
 
 
@@ -130,14 +130,14 @@ GH_SAMPLE = {
     "jobs": [
         {
             "id": 4567,
-            "absolute_url": "https://boards.greenhouse.io/openai/jobs/4567",
+            "absolute_url": "https://boards.greenhouse.io/acme/jobs/4567",
             "title": "Software Engineer",
             "location": {"name": "San Francisco"},
             "updated_at": "2026-04-01T12:00:00Z",
         },
         {
             "id": 4568,
-            "absolute_url": "https://boards.greenhouse.io/openai/jobs/4568",
+            "absolute_url": "https://boards.greenhouse.io/acme/jobs/4568",
             "title": "Research Scientist",
             "location": None,
             "updated_at": None,
@@ -148,10 +148,10 @@ GH_SAMPLE = {
 
 def test_greenhouse_parses_jobs(httpx_mock) -> None:
     httpx_mock.add_response(
-        url="https://boards-api.greenhouse.io/v1/boards/openai/jobs?content=true",
+        url="https://boards-api.greenhouse.io/v1/boards/acme/jobs?content=true",
         json=GH_SAMPLE,
     )
-    jobs = GreenhouseScraper("openai").fetch()
+    jobs = GreenhouseScraper("acme").fetch()
     assert len(jobs) == 2
     assert jobs[0].title == "Software Engineer"
     assert jobs[0].location == "San Francisco"
@@ -204,14 +204,14 @@ def test_greenhouse_handles_empty_jobs_list(httpx_mock) -> None:
 LEVER_SAMPLE = [
     {
         "id": "abc-123",
-        "hostedUrl": "https://jobs.lever.co/anthropic/abc-123",
+        "hostedUrl": "https://jobs.lever.co/acme/abc-123",
         "text": "Backend Engineer",
         "categories": {"location": "Remote"},
         "createdAt": 1735689600000,  # 2025-01-01
     },
     {
         "id": "def-456",
-        "hostedUrl": "https://jobs.lever.co/anthropic/def-456",
+        "hostedUrl": "https://jobs.lever.co/acme/def-456",
         "text": "Designer",
         "categories": None,
         "createdAt": None,
@@ -221,10 +221,10 @@ LEVER_SAMPLE = [
 
 def test_lever_parses_jobs(httpx_mock) -> None:
     httpx_mock.add_response(
-        url="https://api.lever.co/v0/postings/anthropic?mode=json",
+        url="https://api.lever.co/v0/postings/acme?mode=json",
         json=LEVER_SAMPLE,
     )
-    jobs = LeverScraper("anthropic").fetch()
+    jobs = LeverScraper("acme").fetch()
     assert len(jobs) == 2
     assert jobs[0].title == "Backend Engineer"
     assert jobs[0].location == "Remote"
