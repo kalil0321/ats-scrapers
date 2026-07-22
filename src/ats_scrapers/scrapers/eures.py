@@ -437,7 +437,7 @@ class EuresScraper(BaseScraper):
                     float(retry_after)
                     if retry_after and retry_after.isdigit()
                     else min(
-                        fetch_mod.DEFAULT_RETRY_BASE_DELAY * (2 ** attempt),
+                        fetch_mod.DEFAULT_RETRY_BASE_DELAY * (2 ** (attempt - 1)),
                         fetch_mod.DEFAULT_MAX_RETRY_DELAY,
                     )
                 )

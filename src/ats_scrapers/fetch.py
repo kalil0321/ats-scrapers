@@ -58,6 +58,16 @@ log = logging.getLogger(__name__)
 
 Engine = Literal["httpx", "cloak"]
 
+
+class MalformedJSONError(ScraperError, ValueError):
+    """A 2xx response whose body is not valid JSON (WAF/maintenance HTML).
+
+    Subclasses both :class:`ScraperError` (the documented scraper
+    exception hierarchy) and ``ValueError`` (what ``json.loads`` and
+    httpx's ``.json()`` historically raised), so best-effort wrappers
+    written against either contract keep working.
+    """
+
 # Total attempts per request (first try included). Module-level so the
 # suite-wide conftest fixture can dial them down in one place; a
 # Fetcher constructed with explicit values ignores these.
@@ -66,10 +76,11 @@ DEFAULT_RETRY_BASE_DELAY = 1.5
 DEFAULT_MAX_RETRY_DELAY = 30.0
 DEFAULT_TIMEOUT = 30.0
 
-# Statuses that mean "try again": rate limits and transient server
-# errors. 403/406 are *not* here — they either escalate (when enabled)
-# or fail loudly so a newly-blocking ATS is noticed.
-_RETRYABLE_STATUSES = frozenset({429}) | frozenset(range(500, 600))
+# Statuses that mean "try again": request timeouts, rate limits, and
+# transient server errors. 403/406 are *not* here — they either
+# escalate (when enabled) or fail loudly so a newly-blocking ATS is
+# noticed.
+_RETRYABLE_STATUSES = frozenset({408, 429}) | frozenset(range(500, 600))
 _BLOCKED_STATUSES = frozenset({403, 406})
 
 
@@ -97,17 +108,35 @@ def proxy_url_from_env() -> str | None:
 
 
 class FetchResponse:
-    """Engine-independent response: status, text, headers, ``.json()``."""
+    """Engine-independent response: status, text, headers, ``.json()``.
 
-    __slots__ = ("headers", "status_code", "text")
+    ``json()`` raises :class:`ScraperError` (not a bare
+    ``JSONDecodeError``) on malformed bodies, so a 200 that turns out
+    to be a WAF/maintenance HTML page stays inside the scraper
+    exception hierarchy callers are documented to handle.
+    """
 
-    def __init__(self, status_code: int, text: str, headers: dict[str, str]) -> None:
+    __slots__ = ("_context", "headers", "status_code", "text")
+
+    def __init__(
+        self,
+        status_code: int,
+        text: str,
+        headers: dict[str, str],
+        context: str | None = None,
+    ) -> None:
         self.status_code = status_code
         self.text = text
         self.headers = headers
+        self._context = context
 
     def json(self) -> Any:
-        return json_mod.loads(self.text)
+        try:
+            return json_mod.loads(self.text)
+        except ValueError as exc:
+            raise MalformedJSONError(
+                f"{self._context or 'fetch'}: response is not valid JSON: {exc}"
+            ) from exc
 
 
 class Fetcher:
@@ -282,7 +311,18 @@ class Fetcher:
                         self.label, url, status,
                     )
                     self.engine = "cloak"
-                    continue  # retry this attempt through the cloak engine
+                    # Restart the logical request with a fresh attempt
+                    # budget: the cloak retry is promised regardless of
+                    # how many httpx attempts were already spent (e.g.
+                    # retries=1 blocked on the only attempt).
+                    return await self.request(
+                        method,
+                        url,
+                        params=params,
+                        headers=headers,
+                        json=json,
+                        handled=handled,
+                    )
                 raise ScraperError(
                     f"{self.label}: {url} returned {status} — the load "
                     f"balancer is blocking plain HTTP clients"
@@ -332,7 +372,10 @@ class Fetcher:
             method, url, params=params, headers=headers, json=json
         )
         return FetchResponse(
-            response.status_code, response.text, dict(response.headers)
+            response.status_code,
+            response.text,
+            dict(response.headers),
+            context=f"{self.label}: {url}",
         )
 
     def _cloak_request_sync(
@@ -365,6 +408,7 @@ class Fetcher:
             response.status_code,
             response.text,
             dict(getattr(response, "headers", {}) or {}),
+            context=f"{self.label}: {url}",
         )
 
 

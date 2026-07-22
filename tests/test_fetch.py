@@ -116,6 +116,28 @@ async def test_retries_config_is_respected(httpx_mock) -> None:
     assert len(httpx_mock.get_requests()) == 1
 
 
+async def test_408_is_retried(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL, status_code=408)
+    httpx_mock.add_response(url=URL, json={"ok": True})
+    async with _fetcher() as fetch:
+        assert await fetch.get_json(URL) == {"ok": True}
+    assert len(httpx_mock.get_requests()) == 2
+
+
+async def test_malformed_json_raises_scraper_error(httpx_mock) -> None:
+    from ats_scrapers.fetch import MalformedJSONError
+
+    httpx_mock.add_response(url=URL, text="<html>WAF page</html>")
+    async with _fetcher() as fetch:
+        with pytest.raises(ScraperError, match="not valid JSON") as excinfo:
+            await fetch.get_json(URL)
+    # Subclasses ValueError too, so pre-existing best-effort wrappers
+    # (`except ValueError`) keep catching it.
+    assert isinstance(excinfo.value, ValueError)
+    assert isinstance(excinfo.value, MalformedJSONError)
+    assert URL in str(excinfo.value)
+
+
 # --- escalation -------------------------------------------------------------
 
 
@@ -154,6 +176,16 @@ async def test_403_escalates_to_cloak_when_enabled(httpx_mock, monkeypatch) -> N
     async with asyncio.timeout(5):
         await fetch.get_json(URL)
     assert len(calls) == 2
+
+
+async def test_escalation_gets_fresh_attempt_budget(httpx_mock, monkeypatch) -> None:
+    """A 403 on the FINAL httpx attempt (retries=1) must still escalate."""
+    calls: list[dict[str, Any]] = []
+    _install_fake_httpcloak(monkeypatch, calls, _FakeCloakResponse(text='{"ok": 1}'))
+    httpx_mock.add_response(url=URL, status_code=403)
+    async with _fetcher(escalate=True, retries=1) as fetch:
+        assert await fetch.get_json(URL) == {"ok": 1}
+    assert len(calls) == 1
 
 
 async def test_403_without_escalate_raises(httpx_mock) -> None:
