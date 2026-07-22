@@ -75,6 +75,16 @@ def test_wttj_per_org_parses_full_payload(httpx_mock) -> None:
     assert job.description and "Build models" in job.description
 
 
+def test_wttj_honors_include_descriptions_false(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=MAIN_URL,
+        json={"hits": [SAMPLE_HIT], "nbHits": 1, "nbPages": 1},
+    )
+    jobs = WTTJScraper("openai", include_descriptions=False).fetch()
+    assert len(jobs) == 1
+    assert jobs[0].description is None
+
+
 def test_wttj_handles_fractional_experience(httpx_mock) -> None:
     """Regression: WTTJ returns experience as floats like 0.5."""
     hit = {**SAMPLE_HIT, "experience_level_minimum": 0.5}

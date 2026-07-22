@@ -33,8 +33,12 @@ BASE_URL = "https://jobs.gem.com"
 GRAPHQL_URL = f"{BASE_URL}/api/public/graphql/batch"
 
 # Detail-batch fetches are best-effort: a failed batch keeps the
-# listing-derived rows, so error statuses come back unmapped.
-_DETAIL_HANDLED = frozenset(range(400, 600))
+# listing-derived rows, so client-error statuses come back unmapped.
+# Transient statuses (408/429/5xx) are deliberately NOT handled — they
+# flow into the Fetcher's retry logic first; if they still fail, the
+# resulting ScraperError is caught at the call site and the batch is
+# skipped like before.
+_DETAIL_HANDLED = frozenset(range(400, 500)) - {408, 429}
 
 # Pack this many ``ExternalJobPostingQuery`` ops into a single POST.
 # Gem's batch endpoint comfortably handles 25; cap conservatively to

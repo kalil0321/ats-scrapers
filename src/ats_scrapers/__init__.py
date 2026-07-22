@@ -23,7 +23,7 @@ from ats_scrapers.exceptions import (
     ScraperError,
     StorageError,
 )
-from ats_scrapers.fetch import Fetcher, FetchResponse
+from ats_scrapers.fetch import Fetcher, FetchResponse, MalformedJSONError
 from ats_scrapers.manifest import Manifest
 from ats_scrapers.models import ATSType, Company, EmploymentType, Job, Salary, SalaryPeriod
 
@@ -37,6 +37,7 @@ __all__ = [
     "FetchResponse",
     "Fetcher",
     "Job",
+    "MalformedJSONError",
     "Manifest",
     "ManifestError",
     "Salary",

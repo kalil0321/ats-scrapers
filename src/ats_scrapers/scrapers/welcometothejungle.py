@@ -247,7 +247,7 @@ class WTTJScraper(BaseScraper):
             department=department,
             commitment=hit.get("contract_type") if isinstance(hit.get("contract_type"), str) else None,
             requisition_id=hit.get("reference") if isinstance(hit.get("reference"), str) else None,
-            description=_compose_description(hit),
+            description=_compose_description(hit) if self.include_descriptions else None,
             posted_at=_parse_iso(hit.get("published_at")),
             fetched_at=datetime.now(UTC),
             raw=raw or None,

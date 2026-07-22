@@ -39,9 +39,11 @@ DETAIL_CONCURRENCY = 8
 
 # Endpoint fallback (listing) and per-job detail fetches are both
 # scraper-driven: a 404 means "try the next endpoint" / "skip this
-# job", never CompanyNotFoundError, so error statuses come back
-# unmapped for the scraper to branch on.
-_HANDLED_STATUSES = frozenset(range(400, 600))
+# job", never CompanyNotFoundError, so it comes back unmapped for the
+# scraper to branch on. Everything else goes through the Fetcher's
+# normal mapping — transient 429/5xx get retried before this scraper
+# falls back to the next endpoint (or skips the description).
+_HANDLED_STATUSES = frozenset({404})
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _DESC_CLASS_RE = re.compile(r"page_jobDescription", re.IGNORECASE)
