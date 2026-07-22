@@ -63,6 +63,10 @@ if TYPE_CHECKING:
 API_ROOT = "https://www.infojobs.net"
 LISTING_URL = f"{API_ROOT}/ofertas-trabajo"
 DEFAULT_MAX_PAGES = 3500  # ~66k offers / 22 per page = ~3000 pages
+# Retry knobs for the httpcloak transport. This scraper deliberately
+# does NOT use the shared Fetcher's cloak engine: InfoJobs treats 403
+# as *transient* (Distil challenges deep pagination and backs off),
+# which the Fetcher never retries in cloak mode.
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
 
@@ -128,17 +132,21 @@ class InfoJobsSpainScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         max_pages: int = DEFAULT_MAX_PAGES,
         listing_url: str = LISTING_URL,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.max_pages = max(1, max_pages)
         self.listing_url = listing_url
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         # httpcloak is the only viable transport — bare httpx is gated
         # by Distil + Geetest. Surface a clear install hint when the
         # optional extra is missing rather than crashing mid-fetch.

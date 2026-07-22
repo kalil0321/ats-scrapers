@@ -20,11 +20,11 @@ from ats_scrapers.scrapers import JobsChScraper, ScraperRegistry
 _API_RE = re.compile(r"^https://www\.jobs\.ch/api/v1/public/search")
 
 
+# Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture
+# in conftest.py — the shared fetch layer replaced the per-scraper
+# retry constants.
 @pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.jobsch as j
-    monkeypatch.setattr(j, "MAX_RETRIES", 1)
-    monkeypatch.setattr(j, "RETRY_BASE_DELAY", 0.0)
+def _detail_page_stub(httpx_mock) -> None:
     httpx_mock.add_response(
         url=re.compile(r"^https://www\.jobs\.ch/(?:de/stellenangebote|en/vacancies)/detail/"),
         text="<html><body><div class='vacancy-description'>Build Swiss products.</div></body></html>",

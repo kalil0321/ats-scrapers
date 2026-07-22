@@ -42,14 +42,14 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
-import os
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
 import httpx
 
 from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.fetch import Fetcher, proxy_url_from_env
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -61,8 +61,6 @@ log = logging.getLogger(__name__)
 API_URL = "https://www.jobs.ch/api/v1/public/search"
 PER_PAGE = 20  # API hard-caps ``rows`` at 20 (>20 → 422).
 MAX_CONCURRENCY = 4
-MAX_RETRIES = 4
-RETRY_BASE_DELAY = 1.5
 DETAIL_CONCURRENCY = 4
 # The API hard-caps deep pagination at start=2000 (==page 100). Any
 # per-query fetch therefore tops out at 2 000 rows.
@@ -124,15 +122,24 @@ class JobsChScraper(BaseScraper):
 
     ats = ATSType.JOBSCH
 
+    default_headers: ClassVar[dict[str, str]] = {"User-Agent": "Mozilla/5.0"}
+
     def __init__(
         self,
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         max_pages: int = DEFAULT_MAX_PAGES,
         query_seeds: tuple[str, ...] | None = None,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.max_pages = max_pages
         # ``None`` keeps the production default (full seed list); pass
         # ``()`` to disable seed-segmentation entirely (unit tests, or
@@ -141,14 +148,11 @@ class JobsChScraper(BaseScraper):
             _QUERY_SEEDS if query_seeds is None else tuple(query_seeds)
         )
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
         copy = job.model_copy()
-        proxy_url = _evomi_proxy_url_from_env()
+        proxy_url = proxy_url_from_env()
 
         async def run() -> str | None:
             client_kwargs: dict[str, Any] = {
@@ -162,9 +166,9 @@ class JobsChScraper(BaseScraper):
                 await self._enrich_description(client, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         # Probe IP routing on the empty query: if the datacenter IP is
         # 403-blocked, the same probe-then-proxy escalation runs once,
         # and every subsequent seed reuses the resulting proxy_url.
@@ -173,7 +177,7 @@ class JobsChScraper(BaseScraper):
         except _BlockedError:
             pass
 
-        proxy_url = _evomi_proxy_url_from_env()
+        proxy_url = proxy_url_from_env()
         if proxy_url is None:
             raise ScraperError(
                 "jobs.ch returned 403 (likely datacenter IP block) and "
@@ -260,17 +264,17 @@ class JobsChScraper(BaseScraper):
                     seen.add(job.ats_id)
                     jobs.append(job)
 
-        client_kwargs: dict[str, Any] = {
-            "timeout": self.timeout,
-            "follow_redirects": True,
-        }
-        if proxy_url is not None:
-            client_kwargs["proxy"] = proxy_url
+        fetcher = self.make_fetcher(proxy=proxy_url)
+        # ``proxy_url=None`` means the direct-IP probe — it must NOT
+        # fall back to the env proxy (the Fetcher's default when proxy
+        # is None), because the residential proxy is reserved for the
+        # explicit 403 escalation path in :meth:`afetch`.
+        fetcher.proxy = proxy_url if proxy_url is not None else self.proxy
 
-        async with httpx.AsyncClient(**client_kwargs) as client:
+        async with fetcher:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
-            first = await self._fetch_page(client, sem, start=0, query=query)
+            first = await self._fetch_page(fetcher, sem, start=0, query=query)
             total = int(first.get("total_hits") or 0)
             await absorb(first.get("documents") or [])
 
@@ -286,7 +290,7 @@ class JobsChScraper(BaseScraper):
             async def one(offset: int) -> None:
                 try:
                     payload = await self._fetch_page(
-                        client, sem, start=offset, query=query
+                        fetcher, sem, start=offset, query=query
                     )
                 except _BlockedError:
                     if not already_in_proxy_mode:
@@ -335,7 +339,7 @@ class JobsChScraper(BaseScraper):
 
     async def _fetch_page(
         self,
-        client: httpx.AsyncClient,
+        fetcher: Fetcher,
         sem: asyncio.Semaphore,
         *,
         start: int,
@@ -344,61 +348,35 @@ class JobsChScraper(BaseScraper):
         params: dict[str, Any] = {"start": start, "rows": PER_PAGE}
         if query:
             params["query"] = query
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
-                    response = await client.get(
-                        API_URL, params=params, headers={
-                            "User-Agent": "Mozilla/5.0",
-                            "Accept": "application/json",
-                        },
-                    )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"jobs.ch fetch failed at start={start}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"jobs.ch returned non-JSON at start={start}: {exc}"
-                    ) from exc
-            if response.status_code == 403:
-                # Datacenter IP block — escalate to ``_fetch_async`` so
-                # it can retry the whole fetch through the residential
-                # proxy. Don't burn retries here.
-                raise _BlockedError(
-                    f"jobs.ch returned 403 at start={start}"
-                )
-            if response.status_code == 422:
-                # Past the search-engine cap (rare; API caps deep
-                # pagination differently per query). Treat as exhausted.
-                return {"documents": [], "total_hits": 0}
-            if response.status_code in (429,) or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"jobs.ch returned {response.status_code} at "
-                        f"start={start} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"jobs.ch returned {response.status_code} at start={start}"
+        # The shared Fetcher owns retries/backoff for 429/5xx and
+        # network errors. 403 (datacenter IP block → proxy escalation)
+        # and 422 (past the deep-pagination cap → exhausted) are
+        # provider quirks handled here.
+        async with sem:
+            response = await fetcher.request(
+                "GET",
+                API_URL,
+                params=params,
+                headers={"Accept": "application/json"},
+                handled={403, 422},
             )
-        raise ScraperError(
-            f"jobs.ch exhausted retries at start={start}: {last_exc}"
-        )
+        if response.status_code == 403:
+            # Datacenter IP block — escalate to ``afetch`` so it can
+            # retry the whole fetch through the residential proxy.
+            # Don't burn retries here.
+            raise _BlockedError(
+                f"jobs.ch returned 403 at start={start}"
+            )
+        if response.status_code == 422:
+            # Past the search-engine cap (rare; API caps deep
+            # pagination differently per query). Treat as exhausted.
+            return {"documents": [], "total_hits": 0}
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise ScraperError(
+                f"jobs.ch returned non-JSON at start={start}: {exc}"
+            ) from exc
 
     def _parse(self, item: dict[str, Any]) -> Job | None:
         ats_id = str(item.get("job_id") or "")
@@ -451,7 +429,7 @@ class JobsChScraper(BaseScraper):
             location=location,
             employment_type=employment_type,
             posted_at=posted_at,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 
@@ -512,26 +490,3 @@ def _strip_html(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _evomi_proxy_url_from_env() -> str | None:
-    """Parse the ``PROXY`` env var into an httpx-compatible proxy URL.
-
-    Evomi ships ``PROXY`` in the 4-colon
-    ``http://host:port:user:pass`` shape (same shape the
-    ``_browserbase`` helper consumes for patchright). We rebuild it
-    into the standard ``http://user:pass@host:port`` form that httpx
-    accepts. Returns ``None`` when no env var is set so the caller can
-    surface a clear error instead of silently no-op'ing.
-    """
-    raw = os.getenv("PROXY")
-    if not raw:
-        return None
-    rest = raw.replace("http://", "").replace("https://", "")
-    parts = rest.split(":")
-    if len(parts) != 4:
-        log.warning(
-            "PROXY env var doesn't match host:port:user:pass shape; "
-            "skipping jobs.ch fallback."
-        )
-        return None
-    host, port, user, password = parts
-    return f"http://{user}:{password}@{host}:{port}"
