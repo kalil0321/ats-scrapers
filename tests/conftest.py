@@ -242,6 +242,19 @@ def jobs_dataframe() -> pd.DataFrame:
 
 
 @pytest.fixture(autouse=True)
+def _no_retry_delays(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Zero the shared fetch layer's backoff delays for the whole suite.
+
+    `Fetcher` reads the module-level defaults at request time, so this
+    replaces the per-scraper `_fast_retries` fixtures the old
+    hand-rolled retry loops needed."""
+    from ats_scrapers import fetch as fetch_module
+
+    monkeypatch.setattr(fetch_module, "DEFAULT_RETRY_BASE_DELAY", 0.0)
+    monkeypatch.setattr(fetch_module, "DEFAULT_MAX_RETRY_DELAY", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_default_client_cache() -> Iterator[None]:
     """Reset the lru_cache on `_default_client` between tests so monkeypatched
     clients don't bleed across test modules."""
