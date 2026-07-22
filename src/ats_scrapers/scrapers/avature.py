@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
@@ -139,9 +139,6 @@ class AvatureScraper(BaseScraper):
 
     ats = ATSType.AVATURE
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
@@ -158,9 +155,9 @@ class AvatureScraper(BaseScraper):
                 await self._enrich_with_detail_via_httpcloak(sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         base = self._resolve_base_url()
         company = _company_from_base(base) or self.company_slug
 
@@ -660,7 +657,7 @@ def _parse_job_element(
         location=location,
         department=department,
         posted_at=None,
-        fetched_at=datetime.now(),
+        fetched_at=datetime.now(UTC),
     )
 
 

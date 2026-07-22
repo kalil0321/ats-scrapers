@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import html as html_mod
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
 import httpx
@@ -74,13 +74,20 @@ class EightfoldScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         base_url: str | None = None,
         domain: str | None = None,
         company_name: str | None = None,
         job_url_host: str | None = None,
         client_kind: ClientKind = "auto",
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.base_url = (base_url or f"https://{company_slug}.eightfold.ai").rstrip("/")
         self.domain = domain or f"{company_slug}.com"
         self.company_name = company_name or company_slug.replace("-", " ").title()
@@ -88,9 +95,6 @@ class EightfoldScraper(BaseScraper):
         # render job URLs on a different one. Default to the API host.
         self.job_url_host = (job_url_host or self.base_url).rstrip("/")
         self.client_kind: ClientKind = client_kind
-
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -107,11 +111,11 @@ class EightfoldScraper(BaseScraper):
                 await self._enrich_position_details(client, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
     # --- async pipeline -------------------------------------------------
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
 
@@ -532,7 +536,7 @@ class EightfoldScraper(BaseScraper):
                 or item.get("t_create")
                 or item.get("t_update")
             ),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 
