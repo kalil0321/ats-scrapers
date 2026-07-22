@@ -85,6 +85,11 @@ from ats_scrapers.scrapers import GreenhouseScraper
 jobs = GreenhouseScraper("anthropic").fetch()
 ```
 
+Scrapers are async-first — in async code (or for concurrency) use
+`await scraper.afetch()` instead. The sync `fetch()` also works from
+inside a running event loop (Jupyter, FastAPI): it transparently runs
+on a worker thread.
+
 Scraper adapters include:
 
 - Major ATS platforms: Greenhouse, Lever, Ashby, Workday, SmartRecruiters,
@@ -101,6 +106,11 @@ sources currently present in the hosted dataset.
 Contributions can add a source, improve an existing scraper, or add companies
 to the CSV inventories in
 [`ats-companies/`](https://github.com/kalil0321/ats-scrapers/tree/main/ats-companies).
+The scraper API is intentionally tiny: subclass `BaseScraper`, set `ats`, and
+implement `async def afetch()` using `self.make_fetcher()` for HTTP — retries,
+backoff, and error mapping come for free. See
+`src/ats_scrapers/scrapers/greenhouse.py` for a compact reference and the `Job`
+model in `src/ats_scrapers/models.py` for the schema you populate.
 
 ```bash
 git clone https://github.com/kalil0321/ats-scrapers
