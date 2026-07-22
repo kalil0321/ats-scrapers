@@ -21,13 +21,6 @@ _FEED_RE = re.compile(
 )
 
 
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.weworkremotely as wwr
-    monkeypatch.setattr(wwr, "MAX_RETRIES", 1)
-    monkeypatch.setattr(wwr, "RETRY_BASE_DELAY", 0.0)
-
-
 def _empty_feed() -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'

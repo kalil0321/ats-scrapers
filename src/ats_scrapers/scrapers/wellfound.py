@@ -28,23 +28,19 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
-
-import httpx
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    pass
+    from ats_scrapers.fetch import Fetcher
 
 WELLFOUND_BASE = "https://wellfound.com"
 FIRECRAWL_BASE = "https://api.firecrawl.dev"
 MAX_CONCURRENCY = 4
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 2.0
 
 # Wellfound role slugs we want to enumerate. The platform exposes
 # ``/role/{slug}`` for each. The list is intentionally biased toward
@@ -133,24 +129,21 @@ class WellfoundScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = 120.0,  # Firecrawl can take ~30-60s per page.
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         firecrawl_api_key: str | None = None,
         role_slugs: tuple[str, ...] | list[str] = DEFAULT_ROLE_SLUGS,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.firecrawl_api_key = (
             firecrawl_api_key or os.environ.get("FIRECRAWL_API_KEY") or None
         )
         self.role_slugs = tuple(role_slugs)
-
-    def fetch(self) -> list[Job]:
-        if not self.firecrawl_api_key:
-            raise ScraperError(
-                "Wellfound requires a Firecrawl API key — the site is gated "
-                "behind Akamai and won't respond to direct httpx requests. "
-                "Pass firecrawl_api_key=… to the scraper or set the "
-                "FIRECRAWL_API_KEY env variable."
-            )
-        return asyncio.run(self._fetch_async())
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -160,14 +153,21 @@ class WellfoundScraper(BaseScraper):
         copy = job.model_copy()
 
         async def run() -> str | None:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
-                await self._enrich_description(client, sem, copy)
+                await self._enrich_description(fetch, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
+        if not self.firecrawl_api_key:
+            raise ScraperError(
+                "Wellfound requires a Firecrawl API key — the site is gated "
+                "behind Akamai and won't respond to direct httpx requests. "
+                "Pass firecrawl_api_key=… to the scraper or set the "
+                "FIRECRAWL_API_KEY env variable."
+            )
         seen: set[str] = set()
         jobs: list[Job] = []
         lock = asyncio.Lock()
@@ -180,36 +180,36 @@ class WellfoundScraper(BaseScraper):
                     seen.add(j.ats_id)
                     jobs.append(j)
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self.make_fetcher() as fetch:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
             async def per_role(slug: str) -> None:
-                page_jobs = await self._fetch_role(client, sem, slug)
+                page_jobs = await self._fetch_role(fetch, sem, slug)
                 await absorb(page_jobs)
 
             # Always include the bare ``/jobs`` URL — gives ~50
             # newest-overall jobs that may not surface in any specific
             # role page yet.
             async def fetch_overall() -> None:
-                page_jobs = await self._fetch_url(client, sem, f"{WELLFOUND_BASE}/jobs")
+                page_jobs = await self._fetch_url(fetch, sem, f"{WELLFOUND_BASE}/jobs")
                 await absorb(page_jobs)
 
             tasks = [fetch_overall()] + [per_role(s) for s in self.role_slugs]
             await asyncio.gather(*tasks)
             if self.include_descriptions and jobs:
                 await asyncio.gather(*(
-                    self._enrich_description(client, sem, job) for job in jobs
+                    self._enrich_description(fetch, sem, job) for job in jobs
                 ))
         return jobs
 
     async def _enrich_description(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         job: Job,
     ) -> None:
         try:
-            markdown = await self._firecrawl_scrape(client, sem, str(job.url))
+            markdown = await self._firecrawl_scrape(fetch, sem, str(job.url))
         except ScraperError:
             return
         if not markdown:
@@ -220,70 +220,65 @@ class WellfoundScraper(BaseScraper):
 
     async def _fetch_role(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         slug: str,
     ) -> list[Job]:
-        return await self._fetch_url(client, sem, f"{WELLFOUND_BASE}/role/{slug}")
+        return await self._fetch_url(fetch, sem, f"{WELLFOUND_BASE}/role/{slug}")
 
     async def _fetch_url(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         url: str,
     ) -> list[Job]:
         """Render ``url`` via Firecrawl and parse its markdown for jobs."""
-        markdown = await self._firecrawl_scrape(client, sem, url)
+        markdown = await self._firecrawl_scrape(fetch, sem, url)
         if not markdown:
             return []
         return list(_parse_markdown(markdown))
 
     async def _firecrawl_scrape(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         url: str,
     ) -> str:
         """Single Firecrawl ``/v1/scrape`` call returning rendered
-        markdown. Soft-fails (returns ``""``) on any error so a single
-        bad role doesn't sink the whole run."""
+        markdown. Soft-fails (returns ``""``) on transient errors so a
+        single bad role doesn't sink the whole run; auth/quota statuses
+        (401/402/403/404) raise so the user notices a bad key."""
         body = {"url": url, "formats": ["markdown"]}
         headers = {
             "Authorization": f"Bearer {self.firecrawl_api_key}",
             "Content-Type": "application/json",
         }
-        for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
-                    response = await client.post(
-                        f"{FIRECRAWL_BASE}/v1/scrape",
-                        json=body, headers=headers,
-                    )
-                except httpx.HTTPError:
-                    if attempt == MAX_RETRIES:
-                        return ""
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
-            if response.status_code == 200:
-                try:
-                    payload = response.json()
-                except ValueError:
-                    return ""
-                return (payload.get("data") or {}).get("markdown") or ""
-            if response.status_code in (408, 429) or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    return ""
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            # Other status (401, 402, 403): permanent failure. Surface
-            # as a hard error so the user knows their key is invalid /
-            # quota'd, rather than silently returning [] for the whole
-            # board.
+        async with sem:
+            try:
+                response = await fetch.request(
+                    "POST",
+                    f"{FIRECRAWL_BASE}/v1/scrape",
+                    json=body,
+                    headers=headers,
+                    handled={401, 402, 403, 404},
+                )
+            except ScraperError:
+                # Transient failures (429/5xx/network) exhausted the
+                # Fetcher's retries — soft-fail for this URL.
+                return ""
+        if response.status_code != 200:
+            # Permanent failure (bad key, quota exhausted). Surface as
+            # a hard error so the user knows, rather than silently
+            # returning [] for the whole board.
             raise ScraperError(
                 f"Firecrawl returned {response.status_code} for {url}: "
                 f"{response.text[:200]}"
             )
-        return ""
+        try:
+            payload = response.json()
+        except ValueError:
+            return ""
+        return (payload.get("data") or {}).get("markdown") or ""
 
 
 # --- markdown parser --------------------------------------------------------
@@ -359,7 +354,7 @@ def _parse_markdown(md: str):
             salary_max=salary_max,
             experience=experience,
             posted_at=posted,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
         )
 
 

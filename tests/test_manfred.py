@@ -16,13 +16,6 @@ from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import ManfredScraper, ScraperRegistry
 
 
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.manfred as m
-    monkeypatch.setattr(m, "MAX_RETRIES", 1)
-    monkeypatch.setattr(m, "RETRY_BASE_DELAY", 0.0)
-
-
 def _offer(
     *,
     slug: str = "acme-data-scientist",

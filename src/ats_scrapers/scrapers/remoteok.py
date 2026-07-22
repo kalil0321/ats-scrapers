@@ -16,13 +16,10 @@ Single-source scraper: ``company_slug`` is informational and ignored
 
 from __future__ import annotations
 
-import asyncio
 import html
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
-
-import httpx
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -32,8 +29,6 @@ if TYPE_CHECKING:
     from typing import Any
 
 API_URL = "https://remoteok.com/api"
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 
 _TAG_RE = re.compile(r"<[^>]+>")
 # Remote OK injects an anti-bot reminder line into many descriptions —
@@ -55,15 +50,19 @@ class RemoteOKScraper(BaseScraper):
     """
 
     ats = ATSType.REMOTEOK
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+    }
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
-    async def _fetch_async(self) -> list[Job]:
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
-            payload = await self._fetch_with_retry(client)
+    async def afetch(self) -> list[Job]:
+        async with self.make_fetcher() as fetch:
+            payload = await fetch.get_json(API_URL)
+        if not isinstance(payload, list):
+            raise ScraperError(
+                f"Remote OK API shape changed — expected a list, "
+                f"got {type(payload).__name__}"
+            )
         # The response is a list whose first entry is API metadata
         # (a ``last_updated`` epoch + legal-notice text) followed by the
         # actual job entries. Every real job has an ``id``.
@@ -78,57 +77,6 @@ class RemoteOKScraper(BaseScraper):
             seen.add(job.ats_id)
             jobs.append(job)
         return jobs
-
-    async def _fetch_with_retry(
-        self, client: httpx.AsyncClient
-    ) -> list[dict[str, Any]]:
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(
-                    API_URL, headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Accept": "application/json",
-                    },
-                )
-            except httpx.HTTPError as exc:
-                last_exc = exc
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Remote OK fetch failed: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"Remote OK returned non-JSON: {exc}"
-                    ) from exc
-                if not isinstance(data, list):
-                    raise ScraperError(
-                        f"Remote OK API shape changed — expected a list, "
-                        f"got {type(data).__name__}"
-                    )
-                return data
-            if response.status_code in (429,) or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Remote OK returned {response.status_code} after "
-                        f"{MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Remote OK returned {response.status_code}"
-            )
-        raise ScraperError(f"Remote OK exhausted retries: {last_exc}")
 
     def _parse_job(self, item: dict[str, Any]) -> Job | None:
         ats_id = str(item.get("id") or "")
@@ -175,7 +123,7 @@ class RemoteOKScraper(BaseScraper):
             apply_url=item.get("apply_url"),
             description=description,
             posted_at=posted_at,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

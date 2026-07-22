@@ -25,10 +25,8 @@ cross-ATS dedup still works.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
-from typing import TYPE_CHECKING
-
-import httpx
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -37,13 +35,13 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 API_ROOT = "https://www.wanted.co.kr"
 JOBS_PATH = "/api/v4/jobs"
 DETAIL_PATH_TEMPLATE = "/api/v4/jobs/{job_id}"
 PER_PAGE = 100  # API hard-caps limit at 100 (>100 → 422).
 MAX_CONCURRENCY = 4
-MAX_RETRIES = 4
-RETRY_BASE_DELAY = 1.5
 
 # Countries the v4 jobs endpoint accepts. The API returns 422 for codes
 # outside this set (probed: sg/tw/hk/vn/my/th/id/cn/us/gb all 422 or 0).
@@ -62,19 +60,27 @@ class WantedScraper(BaseScraper):
     """
 
     ats = ATSType.WANTED
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+    }
 
     def __init__(
         self,
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         country_codes: tuple[str, ...] | list[str] = _DEFAULT_COUNTRIES,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.country_codes = tuple(country_codes)
-
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -82,16 +88,14 @@ class WantedScraper(BaseScraper):
         copy = job.model_copy()
 
         async def run() -> str | None:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=True,
-            ) as client:
+            async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
-                await self._enrich_description(client, sem, copy)
+                await self._enrich_description(fetch, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         jobs: list[Job] = []
         lock = asyncio.Lock()
@@ -105,9 +109,7 @@ class WantedScraper(BaseScraper):
                     seen.add(job.ats_id)
                     jobs.append(job)
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
+        async with self.make_fetcher() as fetch:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
             async def per_country(cc: str) -> None:
@@ -118,7 +120,7 @@ class WantedScraper(BaseScraper):
                     f"&limit={PER_PAGE}&offset=0"
                 )
                 while url:
-                    payload = await self._request_json(client, sem, url)
+                    payload = await self._request_json(fetch, sem, url)
                     items = payload.get("data") or []
                     if not items:
                         return
@@ -133,12 +135,12 @@ class WantedScraper(BaseScraper):
 
             await asyncio.gather(*(per_country(cc) for cc in self.country_codes))
             if self.include_descriptions and jobs:
-                await asyncio.gather(*(self._enrich_description(client, sem, j) for j in jobs))
+                await asyncio.gather(*(self._enrich_description(fetch, sem, j) for j in jobs))
         return jobs
 
     async def _enrich_description(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         job: Job,
     ) -> None:
@@ -146,7 +148,7 @@ class WantedScraper(BaseScraper):
             return
         url = f"{API_ROOT}{DETAIL_PATH_TEMPLATE.format(job_id=job.ats_id)}"
         try:
-            payload = await self._request_json(client, sem, url)
+            payload = await self._request_json(fetch, sem, url)
         except ScraperError:
             return
         detail = ((payload.get("job") or {}).get("detail") or {})
@@ -158,58 +160,17 @@ class WantedScraper(BaseScraper):
 
     async def _request_json(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         url: str,
     ) -> dict[str, Any]:
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
-                    response = await client.get(
-                        url, headers={
-                            "User-Agent": "Mozilla/5.0",
-                            "Accept": "application/json",
-                        },
-                    )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"Wanted fetch failed for {url}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"Wanted returned non-JSON for {url}: {exc}"
-                    ) from exc
-            if response.status_code == 422:
-                # API rejected the params (unsupported country, oversize
-                # limit). Treat as "this slice has no data".
-                return {"data": [], "links": {}}
-            if response.status_code in (429,) or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Wanted returned {response.status_code} for "
-                        f"{url} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Wanted returned {response.status_code} for {url}"
-            )
-        raise ScraperError(
-            f"Wanted exhausted retries for {url}: {last_exc}"
-        )
+        async with sem:
+            # 422 = API rejected the params (unsupported country,
+            # oversize limit). Treat as "this slice has no data".
+            response = await fetch.request("GET", url, handled={422})
+        if response.status_code == 422:
+            return {"data": [], "links": {}}
+        return response.json()
 
     # --- parsing ------------------------------------------------------------
 
@@ -268,7 +229,7 @@ class WantedScraper(BaseScraper):
             ats_id=ats_id,
             location=location,
             experience=experience,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

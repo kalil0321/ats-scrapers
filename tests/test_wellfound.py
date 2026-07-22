@@ -34,13 +34,6 @@ from ats_scrapers.scrapers.wellfound import (
 _FIRECRAWL_RE = re.compile(r"^https://api\.firecrawl\.dev/v1/scrape$")
 
 
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.wellfound as w
-    monkeypatch.setattr(w, "MAX_RETRIES", 1)
-    monkeypatch.setattr(w, "RETRY_BASE_DELAY", 0.0)
-
-
 def _markdown_with_jobs(jobs: list[dict], company: str = "Acme") -> str:
     """Build a Wellfound-shaped markdown blob with N job cards under
     a single company header — the exact layout the live site emits.

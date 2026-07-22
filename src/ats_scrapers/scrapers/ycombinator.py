@@ -20,17 +20,16 @@ import asyncio
 import html
 import json
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
-import httpx
-
-from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
+
+    from ats_scrapers.fetch import Fetcher
 
 API_HOST = "https://api.ycombinator.com"
 WEB_HOST = "https://www.ycombinator.com"
@@ -39,8 +38,6 @@ COMPANY_PAGE_TEMPLATE = f"{WEB_HOST}/companies/{{slug}}"
 PER_PAGE = 25  # YC's company API ignores ``per_page``; pagination is
                 # always 25 / page so we just walk pages.
 MAX_CONCURRENCY = 4
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 
 
 @ScraperRegistry.register(ATSType.YCOMBINATOR)
@@ -56,21 +53,26 @@ class YCombinatorScraper(BaseScraper):
     """
 
     ats = ATSType.YCOMBINATOR
+    default_headers: ClassVar[dict[str, str]] = {"User-Agent": "Mozilla/5.0"}
 
     def __init__(
         self,
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         max_company_pages: int = 50,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.max_company_pages = max_company_pages
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         jobs: list[Job] = []
         lock = asyncio.Lock()
@@ -83,14 +85,12 @@ class YCombinatorScraper(BaseScraper):
                     seen.add(j.ats_id)
                     jobs.append(j)
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True,
-        ) as client:
+        async with self.make_fetcher() as fetch:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
-            slugs = await self._list_hiring_company_slugs(client, sem)
+            slugs = await self._list_hiring_company_slugs(fetch, sem)
 
             async def per_company(slug: str) -> None:
-                co_jobs = await self._fetch_company_jobs(client, sem, slug)
+                co_jobs = await self._fetch_company_jobs(fetch, sem, slug)
                 await absorb(co_jobs)
 
             await asyncio.gather(*(per_company(s) for s in slugs))
@@ -100,7 +100,7 @@ class YCombinatorScraper(BaseScraper):
 
     async def _list_hiring_company_slugs(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
     ) -> list[str]:
         """Walk the YC public companies API with ``isHiring=true``,
@@ -110,7 +110,7 @@ class YCombinatorScraper(BaseScraper):
         page = 1
         while page <= self.max_company_pages:
             params = {"isHiring": "true", "page": page}
-            payload = await self._request_json(client, sem, COMPANIES_API, params=params)
+            payload = await self._request_json(fetch, sem, COMPANIES_API, params=params)
             companies = payload.get("companies") or []
             if not companies:
                 break
@@ -134,14 +134,14 @@ class YCombinatorScraper(BaseScraper):
 
     async def _fetch_company_jobs(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         slug: str,
     ) -> list[Job]:
         """Fetch the YC company page, extract its embedded
         ``jobPostings`` JSON, and parse out Job rows."""
         url = COMPANY_PAGE_TEMPLATE.format(slug=slug)
-        text = await self._request_html(client, sem, url)
+        text = await self._request_html(fetch, sem, url)
         # Decoded once — entire page so the array search works on
         # human-readable JSON.
         decoded = html.unescape(text)
@@ -221,7 +221,7 @@ class YCombinatorScraper(BaseScraper):
             apply_url=apply_url,
             description=description,
             posted_at=posted_at,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 
@@ -229,104 +229,32 @@ class YCombinatorScraper(BaseScraper):
 
     async def _request_json(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         url: str,
         *,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
-                    response = await client.get(
-                        url, params=params, headers={
-                            "User-Agent": "Mozilla/5.0",
-                            "Accept": "application/json",
-                        },
-                    )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"YC api fetch failed for {url}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"YC api returned non-JSON for {url}: {exc}"
-                    ) from exc
-            if response.status_code in (429,) or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"YC api returned {response.status_code} for "
-                        f"{url} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"YC api returned {response.status_code} for {url}"
+        async with sem:
+            return await fetch.get_json(
+                url, params=params, headers={"Accept": "application/json"},
             )
-        raise ScraperError(f"YC api exhausted retries for {url}: {last_exc}")
 
     async def _request_html(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         url: str,
     ) -> str:
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
-                    response = await client.get(
-                        url, headers={
-                            "User-Agent": "Mozilla/5.0",
-                            "Accept": "text/html,*/*",
-                        },
-                    )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"YC company page fetch failed for {url}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
-            if response.status_code == 200:
-                return response.text
-            if response.status_code == 404:
-                # Company page might have been removed since we discovered
-                # them; treat as 'no jobs' rather than crashing the run.
-                return ""
-            if response.status_code in (429,) or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"YC company returned {response.status_code} for "
-                        f"{url} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"YC company returned {response.status_code} for {url}"
+        async with sem:
+            # 404 = company page removed since we discovered it; treat
+            # as 'no jobs' rather than crashing the run.
+            response = await fetch.request(
+                "GET", url, headers={"Accept": "text/html,*/*"}, handled={404},
             )
-        raise ScraperError(
-            f"YC company exhausted retries for {url}: {last_exc}"
-        )
+        if response.status_code == 404:
+            return ""
+        return response.text
 
 
 # --- module helpers ---------------------------------------------------------

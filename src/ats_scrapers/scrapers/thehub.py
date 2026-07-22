@@ -18,24 +18,21 @@ from __future__ import annotations
 import asyncio
 import html
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
-import httpx
-
-from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 API_URL = "https://thehub.io/api/jobs"
 JOB_URL_TEMPLATE = "https://thehub.io/jobs/{job_id}"
 PER_PAGE = 15  # Hard-coded by the API; ?limit=… is ignored.
 MAX_CONCURRENCY = 4
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -53,21 +50,29 @@ class TheHubScraper(BaseScraper):
     """
 
     ats = ATSType.THEHUB
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+    }
 
     def __init__(
         self,
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         max_pages: int = 200,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.max_pages = max_pages
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         jobs: list[Job] = []
         lock = asyncio.Lock()
@@ -81,13 +86,11 @@ class TheHubScraper(BaseScraper):
                     seen.add(job.ats_id)
                     jobs.append(job)
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True,
-        ) as client:
+        async with self.make_fetcher() as fetch:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
             # Probe page 1 to learn ``pages`` count.
-            first = await self._fetch_page(client, sem, page=1)
+            first = await self._fetch_page(fetch, sem, page=1)
             pages_total = int(first.get("pages") or 1)
             await absorb(first.get("docs") or [])
 
@@ -96,7 +99,7 @@ class TheHubScraper(BaseScraper):
                 return jobs
 
             async def one(page: int) -> None:
-                payload = await self._fetch_page(client, sem, page=page)
+                payload = await self._fetch_page(fetch, sem, page=page)
                 await absorb(payload.get("docs") or [])
 
             await asyncio.gather(*(one(p) for p in range(2, page_count + 1)))
@@ -104,55 +107,13 @@ class TheHubScraper(BaseScraper):
 
     async def _fetch_page(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         *,
         page: int,
     ) -> dict[str, Any]:
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
-                    response = await client.get(
-                        API_URL, params={"page": page}, headers={
-                            "User-Agent": "Mozilla/5.0",
-                            "Accept": "application/json",
-                        },
-                    )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"The Hub fetch failed at page={page}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"The Hub returned non-JSON at page={page}: {exc}"
-                    ) from exc
-            if response.status_code in (429,) or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"The Hub returned {response.status_code} at "
-                        f"page={page} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"The Hub returned {response.status_code} at page={page}"
-            )
-        raise ScraperError(
-            f"The Hub exhausted retries at page={page}: {last_exc}"
-        )
+        async with sem:
+            return await fetch.get_json(API_URL, params={"page": page})
 
     def _parse(self, item: dict[str, Any]) -> Job | None:
         ats_id = (item.get("id") or item.get("_id") or "").strip()
@@ -228,7 +189,7 @@ class TheHubScraper(BaseScraper):
             apply_url=apply_url,
             description=description,
             posted_at=posted_at,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

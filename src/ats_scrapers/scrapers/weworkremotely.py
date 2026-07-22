@@ -19,12 +19,10 @@ from __future__ import annotations
 import asyncio
 import html
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 from xml.etree import ElementTree as ET
-
-import httpx
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -34,8 +32,6 @@ if TYPE_CHECKING:
     from typing import Any
 
 API_ROOT = "https://weworkremotely.com"
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 
 # WWR splits postings into 10 stable category feeds. We scrape all of
 # them in parallel and dedupe on the per-item ``<guid>``. The set is
@@ -73,11 +69,12 @@ class WeWorkRemotelyScraper(BaseScraper):
     """
 
     ats = ATSType.WEWORKREMOTELY
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/rss+xml, application/xml, text/xml",
+    }
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         jobs: list[Job] = []
         lock = asyncio.Lock()
@@ -91,57 +88,15 @@ class WeWorkRemotelyScraper(BaseScraper):
                     seen.add(job.ats_id)
                     jobs.append(job)
 
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
+        async with self.make_fetcher() as fetch:
             async def per_category(slug: str) -> None:
-                xml_text = await self._fetch_feed(client, slug)
+                url = f"{API_ROOT}/categories/{slug}.rss"
+                xml_text = await fetch.get_text(url)
                 items = _parse_feed(xml_text)
                 await absorb(items)
 
             await asyncio.gather(*(per_category(c) for c in _CATEGORY_FEEDS))
         return jobs
-
-    async def _fetch_feed(
-        self, client: httpx.AsyncClient, category_slug: str
-    ) -> str:
-        url = f"{API_ROOT}/categories/{category_slug}.rss"
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(
-                    url, headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Accept": "application/rss+xml, application/xml, text/xml",
-                    },
-                )
-            except httpx.HTTPError as exc:
-                last_exc = exc
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"WWR fetch failed for {url}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                return response.text
-            if response.status_code in (429,) or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"WWR returned {response.status_code} for {url} "
-                        f"after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"WWR returned {response.status_code} for {url}"
-            )
-        raise ScraperError(f"WWR exhausted retries for {url}: {last_exc}")
 
     def _parse_item(self, item: ET.Element) -> Job | None:
         guid = (item.findtext("guid") or "").strip()
@@ -186,7 +141,7 @@ class WeWorkRemotelyScraper(BaseScraper):
             commitment=commitment,
             description=description,
             posted_at=posted_at,
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 
