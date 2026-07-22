@@ -55,6 +55,21 @@ def test_search_by_title_substring_case_insensitive(stub_client: Client) -> None
     assert set(df["title"]) == {"Senior ML Engineer", "Staff ML Researcher"}
 
 
+def test_search_treats_query_as_literal_text_not_regex(stub_client: Client) -> None:
+    """Regex metacharacters are matched literally (GH-182: user input
+    must never reach pandas' regex engine — ReDoS + crash vector)."""
+    # An invalid regex must not raise — it's just text that matches nothing.
+    assert stub_client.search(query="c++").empty
+    assert stub_client.search(query="(unclosed").empty
+    # Alternation must not act as alternation.
+    assert stub_client.search(query="ML|Sales").empty
+    # A catastrophic-backtracking pattern is inert as literal text.
+    assert stub_client.search(query="(a+)+$" * 5, location="(x)*y").empty
+    # Same for location and company filters.
+    assert stub_client.search(location=".*").empty
+    assert stub_client.search(company="open.i").empty
+
+
 def test_search_by_location(stub_client: Client) -> None:
     df = stub_client.search(location="Paris")
     assert len(df) == 1

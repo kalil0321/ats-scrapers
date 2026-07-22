@@ -117,15 +117,25 @@ class Client:
         """
         df = self.load(ats=ats)
 
+        # regex=False everywhere: the documented contract is literal
+        # substring matching, and regex mode on user input is both a
+        # ReDoS vector (catastrophic backtracking) and a correctness
+        # bug — search("c++") would die on an invalid pattern.
         if query:
-            df = df[df["title"].str.contains(query, case=False, na=False)]
+            df = df[df["title"].str.contains(query, case=False, na=False, regex=False)]
         if location:
-            df = df[df["location"].fillna("").str.contains(location, case=False, na=False)]
+            df = df[
+                df["location"].fillna("").str.contains(
+                    location, case=False, na=False, regex=False
+                )
+            ]
         if company:
-            df = df[df["company"].str.contains(company, case=False, na=False)]
+            df = df[df["company"].str.contains(company, case=False, na=False, regex=False)]
         if remote is not None:
             location_remote = (
-                df["location"].fillna("").str.contains("remote", case=False, na=False)
+                df["location"]
+                .fillna("")
+                .str.contains("remote", case=False, na=False, regex=False)
                 if "location" in df.columns
                 else pd.Series(False, index=df.index)
             )
