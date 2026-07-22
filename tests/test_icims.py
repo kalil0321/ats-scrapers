@@ -13,12 +13,8 @@ from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import ScraperRegistry, iCIMSScraper
 
-
-@pytest.fixture(autouse=True)
-def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import ats_scrapers.scrapers.icims as ic
-    monkeypatch.setattr(ic, "MAX_RETRIES", 1)
-    monkeypatch.setattr(ic, "RETRY_BASE_DELAY", 0.0)
+# Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture in
+# conftest.py — the shared fetch layer replaced per-scraper retry constants.
 
 
 # Per-job detail enrichment fires JSON-LD fetches against
@@ -239,9 +235,7 @@ def test_raises_company_not_found_on_404(httpx_mock) -> None:
         iCIMSScraper("missing").fetch()
 
 
-def test_5xx_retries(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.icims as ic
-    monkeypatch.setattr(ic, "MAX_RETRIES", 3)
+def test_5xx_retries(httpx_mock) -> None:
     httpx_mock.add_response(url=_page_url("acme", 0), status_code=503)
     httpx_mock.add_response(
         url=_page_url("acme", 0),
@@ -252,9 +246,7 @@ def test_5xx_retries(monkeypatch, httpx_mock) -> None:
     assert len(jobs) == 1
 
 
-def test_5xx_exhausts_retries(monkeypatch, httpx_mock) -> None:
-    import ats_scrapers.scrapers.icims as ic
-    monkeypatch.setattr(ic, "MAX_RETRIES", 3)
+def test_5xx_exhausts_retries(httpx_mock) -> None:
     httpx_mock.add_response(url=_page_url("acme", 0), status_code=502, is_reusable=True)
     with pytest.raises(ScraperError, match="502"):
         iCIMSScraper("acme").fetch()

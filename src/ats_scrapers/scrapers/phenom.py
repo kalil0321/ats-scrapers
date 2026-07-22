@@ -24,23 +24,21 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-import httpx
-
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 PAGE_SIZE = 100  # Phenom accepts up to 100 per page.
 MAX_CONCURRENCY = 8
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 
 _CSRF_RE = re.compile(r'"csrfToken"\s*:\s*"([^"]+)"')
 
@@ -97,8 +95,15 @@ class PhenomScraper(BaseScraper):
         timeout: float = 30.0,
         locale: str = "en_us",
         country: str = "us",
+        include_descriptions: bool = True,
+        proxy: str | None = None,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         if not company_slug.startswith(("http://", "https://")):
             raise ScraperError(
                 f"Phenom slug must be a full URL (e.g. https://jobs.bell.ca), "
@@ -110,15 +115,10 @@ class PhenomScraper(BaseScraper):
         host = urlparse(self.base_url).hostname or company_slug
         self.company_name = host
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
-
-    async def _fetch_async(self) -> list[Job]:
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
-            csrf = await self._init_session(client)
-            first = await self._search(client, csrf, start=0)
+    async def afetch(self) -> list[Job]:
+        async with self.make_fetcher() as fetch:
+            csrf = await self._init_session(fetch)
+            first = await self._search(fetch, csrf, start=0)
             jobs_first = self._extract_jobs(first)
             total = self._extract_total(first)
 
@@ -139,7 +139,7 @@ class PhenomScraper(BaseScraper):
 
             async def task(offset: int) -> None:
                 async with sem:
-                    payload = await self._search(client, csrf, start=offset)
+                    payload = await self._search(fetch, csrf, start=offset)
                     for item in self._extract_jobs(payload):
                         job = self._parse_job(item)
                         if job is None or job.ats_id in seen:
@@ -152,28 +152,19 @@ class PhenomScraper(BaseScraper):
 
     # --- session / csrf -------------------------------------------------
 
-    async def _init_session(self, client: httpx.AsyncClient) -> str | None:
+    async def _init_session(self, fetch: Fetcher) -> str | None:
         """Seed cookies + extract CSRF token. The POST /widgets endpoint
-        requires both — without them it returns 403."""
+        requires both — without them it returns 403.
+
+        The Fetcher's persistent httpx client keeps the seeded cookies and
+        replays them on the subsequent POSTs automatically; we only reach
+        into its cookie jar to read the CSRF token's *value* for the
+        ``x-csrf-token`` header."""
         search_url = self._search_results_url()
-        try:
-            response = await client.get(search_url, headers=_BASE_HEADERS)
-        except httpx.HTTPError as exc:
-            raise ScraperError(
-                f"Phenom session init failed for {self.base_url}: {exc}"
-            ) from exc
-        if response.status_code == 404:
-            raise CompanyNotFoundError(
-                f"Phenom careers site not found: {self.base_url}"
-            )
-        if response.status_code != 200:
-            raise ScraperError(
-                f"Phenom session init returned {response.status_code} for "
-                f"{self.base_url}"
-            )
+        response = await fetch.request("GET", search_url, headers=_BASE_HEADERS)
         # Cookie-based csrf is the canonical path; some tenants only embed
         # the token in the page HTML.
-        for cookie in client.cookies.jar:
+        for cookie in fetch._httpx_client().cookies.jar:
             if "csrf" in cookie.name.lower():
                 return cookie.value
         match = _CSRF_RE.search(response.text)
@@ -189,7 +180,7 @@ class PhenomScraper(BaseScraper):
 
     async def _search(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         csrf: str | None,
         *,
         start: int,
@@ -230,49 +221,18 @@ class PhenomScraper(BaseScraper):
         if csrf:
             headers["x-csrf-token"] = csrf
 
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.post(
-                    f"{self.base_url}/widgets",
-                    json=payload,
-                    headers=headers,
-                )
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Phenom POST /widgets failed for {self.base_url} at "
-                        f"start={start}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"Phenom returned malformed JSON for {self.base_url}: {exc}"
-                    ) from exc
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Phenom ({self.base_url}) returned "
-                        f"{response.status_code} at start={start} after "
-                        f"{MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Phenom returned {response.status_code} at start={start} "
-                f"for {self.base_url}"
-            )
-        raise ScraperError(
-            f"Phenom ({self.base_url}) exhausted retries at start={start}"
+        response = await fetch.request(
+            "POST",
+            f"{self.base_url}/widgets",
+            json=payload,
+            headers=headers,
         )
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise ScraperError(
+                f"Phenom returned malformed JSON for {self.base_url}: {exc}"
+            ) from exc
 
     # --- extraction ----------------------------------------------------
 
@@ -377,7 +337,7 @@ class PhenomScraper(BaseScraper):
             # silently truncating each posting to a fraction of its real body.
             description=_clean_description(item.get("description") or item.get("descriptionTeaser")),
             posted_at=_parse_iso(item.get("postedDate") or item.get("dateCreated") or item.get("createdAt")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

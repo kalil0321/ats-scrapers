@@ -30,7 +30,7 @@ import asyncio
 import html as html_mod
 import re
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import httpx
@@ -122,8 +122,15 @@ class WorkdayScraper(BaseScraper):
         timeout: float = 30.0,
         max_fetch_seconds: float | None = None,
         company_name: str | None = None,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.max_fetch_seconds = max_fetch_seconds
         self.company_name = (
             company_name.strip()
@@ -132,7 +139,24 @@ class WorkdayScraper(BaseScraper):
         )
         self._deadline: float | None = None
 
-    def fetch(self) -> list[Job]:
+    @classmethod
+    def from_url(cls, url: str, **kwargs: Any) -> WorkdayScraper:
+        """Build a scraper from the full public careers URL.
+
+        Workday has no bare-slug addressing: ``url`` must be the complete
+        careers URL in the shape
+        ``https://{company}.{instance}.myworkdayjobs.com/{site}`` (e.g.
+        ``https://accenture.wd103.myworkdayjobs.com/accenturecareers``) —
+        the tenant, ``wdN`` instance, and site name are all load-bearing
+        and are parsed back out of the URL at fetch time. This constructor
+        makes that contract explicit; it simply delegates to the normal
+        constructor (``company_slug`` *is* the URL), and ``kwargs`` are
+        forwarded unchanged (``timeout``, ``max_fetch_seconds``,
+        ``company_name``, ``include_descriptions``, ``proxy``).
+        """
+        return cls(url, **kwargs)
+
+    async def afetch(self) -> list[Job]:
         match = URL_PATTERN.match(self.company_slug.rstrip("/"))
         if not match:
             raise ScraperError(
@@ -155,7 +179,7 @@ class WorkdayScraper(BaseScraper):
             else None
         )
         try:
-            return asyncio.run(self._fetch_async(api, base, display_company, detail_prefix))
+            return await self._fetch_all(api, base, display_company, detail_prefix)
         finally:
             self._deadline = None
 
@@ -186,9 +210,9 @@ class WorkdayScraper(BaseScraper):
                 await self._enrich_details(client, sem, detail_prefix, jobs)
             return jobs[0].description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(
+    async def _fetch_all(
         self,
         api: str,
         base: str,
@@ -512,7 +536,7 @@ class WorkdayScraper(BaseScraper):
             department=department,
             requisition_id=requisition_id,
             posted_at=_parse_workday_date(item.get("postedOn")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

@@ -44,21 +44,17 @@ import contextlib
 import html
 import json
 import re
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
-import httpx
-
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    pass
+    from ats_scrapers.fetch import Fetcher
 
 MAX_PAGES = 200  # Safety bound; iCIMS tenants rarely exceed 5K jobs.
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 DETAIL_CONCURRENCY = 8  # per-tenant cap on detail-page fetches
 
 _EMPLOYMENT_TYPE_MAP = {
@@ -135,17 +131,23 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
 
     ats = ATSType.ICIMS
 
+    default_headers: ClassVar[dict[str, str]] = {"User-Agent": "Mozilla/5.0"}
+
     def __init__(
         self,
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.base_url = self._resolve_base_url(company_slug)
-
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -153,23 +155,19 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
         copy = job.model_copy()
 
         async def run() -> str | None:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=True,
-            ) as client:
+            async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
-                await self._enrich_detail(client, sem, copy)
+                await self._enrich_detail(fetch, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
+        async with self.make_fetcher() as fetch:
             for page_num in range(MAX_PAGES):
-                html_text = await self._fetch_page(client, page=page_num)
+                html_text = await self._fetch_page(fetch, page=page_num)
                 page_jobs = self._parse_page(html_text)
                 new = [j for j in page_jobs if j.ats_id not in seen]
                 if not new:
@@ -184,26 +182,23 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
             if self.include_descriptions and all_jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
-                    self._enrich_detail(client, sem, j) for j in all_jobs
+                    self._enrich_detail(fetch, sem, j) for j in all_jobs
                 ))
         return all_jobs
 
     async def _enrich_detail(
         self,
-        client: httpx.AsyncClient,
+        fetch: Fetcher,
         sem: asyncio.Semaphore,
         job: Job,
     ) -> None:
+        # Best-effort: any fetch failure keeps the listing-derived row
+        # (CompanyNotFoundError subclasses ScraperError).
         async with sem:
             try:
-                response = await client.get(
-                    str(job.url),
-                    headers={"User-Agent": "Mozilla/5.0"},
-                )
-            except httpx.HTTPError:
+                response = await fetch.request("GET", str(job.url))
+            except ScraperError:
                 return
-        if response.status_code != 200:
-            return
         _apply_jsonld_to_job(job, response.text)
 
     def _resolve_base_url(self, slug: str) -> str:
@@ -211,51 +206,10 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
             return slug.rstrip("/")
         return f"https://careers-{slug}.icims.com"
 
-    async def _fetch_page(
-        self, client: httpx.AsyncClient, *, page: int
-    ) -> str:
+    async def _fetch_page(self, fetch: Fetcher, *, page: int) -> str:
         url = f"{self.base_url}/jobs/search"
         params = {"ss": "1", "pr": page, "in_iframe": "1"}
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(
-                    url,
-                    params=params,
-                    headers={"User-Agent": "Mozilla/5.0"},
-                )
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"iCIMS fetch failed for {self.base_url} at page={page}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 404:
-                raise CompanyNotFoundError(
-                    f"iCIMS site not found: {self.base_url}"
-                )
-            if response.status_code == 200:
-                return response.text
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"iCIMS returned {response.status_code} for "
-                        f"{self.base_url} at page={page} after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"iCIMS returned {response.status_code} for {self.base_url} "
-                f"at page={page}"
-            )
-        raise ScraperError(
-            f"iCIMS exhausted retries for {self.base_url} at page={page}"
-        )
+        return await fetch.get_text(url, params=params)
 
     def _parse_page(self, html_text: str) -> list[Job]:
         jobs: list[Job] = []
@@ -291,7 +245,7 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
                     description=_extract_description(body),
                     requisition_id=_extract_requisition_id(body),
                     department=_extract_header_value(body, "Category"),
-                    fetched_at=datetime.now(),
+                    fetched_at=datetime.now(UTC),
                 )
             )
         return jobs
