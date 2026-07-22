@@ -68,7 +68,7 @@ def test_base_get_description_returns_existing_description() -> None:
     class DummyScraper(BaseScraper):
         ats = ATSType.CUSTOM
 
-        def fetch(self) -> list[Job]:
+        async def afetch(self) -> list[Job]:
             return []
 
     job = _job(ats_type=ATSType.CUSTOM, description="Already known.")
@@ -80,7 +80,7 @@ def test_base_enrich_descriptions_uses_get_description() -> None:
     class DummyScraper(BaseScraper):
         ats = ATSType.CUSTOM
 
-        def fetch(self) -> list[Job]:
+        async def afetch(self) -> list[Job]:
             return []
 
         def get_description(self, job: Job) -> str | None:
