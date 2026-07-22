@@ -17,14 +17,14 @@ from __future__ import annotations
 
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import GoogleScraper, ScraperRegistry
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import GoogleScraper, ScraperRegistry
 
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.google as g
+    import ats_scrapers.scrapers.google as g
     monkeypatch.setattr(g, "MAX_RETRIES", 1)
     monkeypatch.setattr(g, "RETRY_BASE_DELAY", 0.0)
 
@@ -182,7 +182,7 @@ def test_page_1_omits_page_param(httpx_mock) -> None:
 
 
 def test_5xx_retries(monkeypatch, httpx_mock) -> None:
-    import jobhive.scrapers.google as g
+    import ats_scrapers.scrapers.google as g
     monkeypatch.setattr(g, "MAX_RETRIES", 3)
     httpx_mock.add_response(url=_page_url(1), status_code=503)
     httpx_mock.add_response(
@@ -196,7 +196,7 @@ def test_5xx_retries(monkeypatch, httpx_mock) -> None:
 def test_429_with_retry_after_is_honored(monkeypatch, httpx_mock) -> None:
     import asyncio
 
-    import jobhive.scrapers.google as g
+    import ats_scrapers.scrapers.google as g
     monkeypatch.setattr(g, "MAX_RETRIES", 3)
 
     sleeps: list[float] = []
@@ -216,7 +216,7 @@ def test_429_with_retry_after_is_honored(monkeypatch, httpx_mock) -> None:
 
 
 def test_5xx_exhausts_retries(monkeypatch, httpx_mock) -> None:
-    import jobhive.scrapers.google as g
+    import ats_scrapers.scrapers.google as g
     monkeypatch.setattr(g, "MAX_RETRIES", 3)
     httpx_mock.add_response(url=_page_url(1), status_code=502, is_reusable=True)
     with pytest.raises(ScraperError, match="502"):

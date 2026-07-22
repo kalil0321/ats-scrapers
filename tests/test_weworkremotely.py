@@ -12,9 +12,9 @@ import re
 
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import ScraperRegistry, WeWorkRemotelyScraper
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import ScraperRegistry, WeWorkRemotelyScraper
 
 _FEED_RE = re.compile(
     r"^https://weworkremotely\.com/categories/[a-z0-9-]+\.rss$"
@@ -23,7 +23,7 @@ _FEED_RE = re.compile(
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.weworkremotely as wwr
+    import ats_scrapers.scrapers.weworkremotely as wwr
     monkeypatch.setattr(wwr, "MAX_RETRIES", 1)
     monkeypatch.setattr(wwr, "RETRY_BASE_DELAY", 0.0)
 

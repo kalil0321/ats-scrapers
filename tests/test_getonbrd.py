@@ -12,9 +12,9 @@ import re
 
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import GetOnBrdScraper, ScraperRegistry
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import GetOnBrdScraper, ScraperRegistry
 
 _API = "https://www.getonbrd.com/api/v0"
 _API_RE = re.compile(r"^https://www\.getonbrd\.com/api/v0/")
@@ -22,7 +22,7 @@ _API_RE = re.compile(r"^https://www\.getonbrd\.com/api/v0/")
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.getonbrd as gob
+    import ats_scrapers.scrapers.getonbrd as gob
     monkeypatch.setattr(gob, "MAX_RETRIES", 1)
     monkeypatch.setattr(gob, "RETRY_BASE_DELAY", 0.0)
 

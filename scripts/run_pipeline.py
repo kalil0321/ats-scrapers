@@ -2,11 +2,11 @@
 """Generic pipeline runner: scrape every tenant of an ATS and write one CSV.
 
 Used by ``full_pipeline.sh`` for ATSes that don't have a legacy
-``data/{ats}/main.py`` — scrapers that live only in jobhive.
+``data/{ats}/main.py`` — scrapers that live only in ats-scrapers.
 
 Reads ``ats-companies/{ats}.csv`` (the canonical tenant list — single
 source of truth, columns ``name,url``), scrapes each tenant via the
-appropriate jobhive class, dedupes, and writes a flat
+appropriate ats-scrapers scraper class, dedupes, and writes a flat
 ``data/{ats}/jobs.csv``.
 
 Usage:
@@ -34,9 +34,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from jobhive.exceptions import CompanyNotFoundError
-from jobhive.models import Job
-from jobhive.scrapers import (
+from ats_scrapers.exceptions import CompanyNotFoundError
+from ats_scrapers.models import Job
+from ats_scrapers.scrapers import (
     AmazonScraper,
     AppleScraper,
     ArbetsformedlingenScraper,
@@ -87,7 +87,7 @@ from jobhive.scrapers import (
     YCombinatorScraper,
     iCIMSScraper,
 )
-from jobhive.scrapers.base import BaseScraper
+from ats_scrapers.scrapers.base import BaseScraper
 
 
 def _slug_col(row: dict[str, Any]) -> str | None:
@@ -301,7 +301,7 @@ def _icims_slug(row: dict[str, Any]) -> str | None:
 
 
 # Per-ATS config:
-# - scraper: the jobhive class
+# - scraper: the ats-scrapers class
 # - slug: callable turning a CSV row into `company_slug`
 # - kwargs (optional): callable returning additional kwargs for the scraper
 #   (used by Phenom which needs `locale` and `country` per tenant)
@@ -400,7 +400,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: (r.get("url") or "").strip() or None,
         "kwargs": lambda r: {
             "max_fetch_seconds": float(
-                os.environ.get("JOBHIVE_WORKDAY_TENANT_TIMEOUT", "900")
+                os.environ.get("ATS_SCRAPERS_WORKDAY_TENANT_TIMEOUT", "900")
             ),
             "company_name": (r.get("name") or "").strip() or None,
         },
@@ -716,7 +716,7 @@ def _pipeline_lock(ats: str):
     publish while that temp output exists, so overlapping runs can block
     deployment for days. `flock` releases automatically if the process dies.
     """
-    lock_path = Path(tempfile.gettempdir()) / f"jobhive-run-pipeline-{ats}.lock"
+    lock_path = Path(tempfile.gettempdir()) / f"ats-scrapers-run-pipeline-{ats}.lock"
     with lock_path.open("a+") as fh:
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -776,7 +776,7 @@ class DescriptionCache:
 
         if path is None:
             with tempfile.NamedTemporaryFile(
-                prefix="jobhive-description-cache-",
+                prefix="ats-scrapers-description-cache-",
                 suffix=".sqlite3",
                 delete=False,
             ) as tmp:
@@ -1434,9 +1434,9 @@ def _normalize_output(ats: str, jobs_csv: Path) -> None:
     # Upper-bound the normalize step so a hung worker can't wedge the
     # whole daily pipeline. EURES (~2.7M rows) is the largest single
     # CSV we feed in; even at ~500 rows/sec/worker that's ~30 min, so
-    # 2 h leaves a generous margin. ``JOBHIVE_NORMALIZE_TIMEOUT_S``
+    # 2 h leaves a generous margin. ``ATS_SCRAPERS_NORMALIZE_TIMEOUT_S``
     # tunes it for ATSes that grow past that envelope.
-    timeout_s = int(os.environ.get("JOBHIVE_NORMALIZE_TIMEOUT_S", "7200"))
+    timeout_s = int(os.environ.get("ATS_SCRAPERS_NORMALIZE_TIMEOUT_S", "7200"))
     try:
         result = subprocess.run(
             cmd,

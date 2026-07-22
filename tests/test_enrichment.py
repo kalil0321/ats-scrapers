@@ -7,7 +7,7 @@ import math
 import pandas as pd
 import pytest
 
-from jobhive.enrichment.derived import (
+from ats_scrapers.enrichment.derived import (
     infer_is_remote,
     parse_salary_range,
 )

@@ -3,9 +3,9 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
-from jobhive.models import ATSType, Job
-from jobhive.scrapers import BreezyScraper, SmartRecruitersScraper, WorkableScraper
-from jobhive.scrapers.base import BaseScraper, ScraperRegistry
+from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers import BreezyScraper, SmartRecruitersScraper, WorkableScraper
+from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 TWO_STEP_PROVIDERS = {
     ATSType.AVATURE,

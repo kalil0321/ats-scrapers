@@ -14,7 +14,7 @@ import logging
 
 import pytest
 
-from jobhive.scrapers.eures import _gather_tolerant
+from ats_scrapers.scrapers.eures import _gather_tolerant
 
 
 @pytest.mark.asyncio

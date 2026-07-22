@@ -12,7 +12,7 @@ import logging
 
 import pytest
 
-from jobhive.scrapers.meta import MetaScraper, _description_from_detail_html
+from ats_scrapers.scrapers.meta import MetaScraper, _description_from_detail_html
 
 
 def test_returns_empty_with_warning_when_cloakbrowser_missing(
@@ -21,7 +21,7 @@ def test_returns_empty_with_warning_when_cloakbrowser_missing(
     """When ``cloakbrowser`` isn't installed, the scraper degrades
     gracefully — logs a warning and returns ``[]`` so a publish run
     keeps moving."""
-    from jobhive.scrapers import _cloakbrowser
+    from ats_scrapers.scrapers import _cloakbrowser
 
     monkeypatch.setattr(_cloakbrowser, "is_enabled", lambda: False)
     with caplog.at_level(logging.WARNING):

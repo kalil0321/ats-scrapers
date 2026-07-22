@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Normalize the `description` column of a jobhive jobs.csv in place,
+"""Normalize the `description` column of a ats-scrapers jobs.csv in place,
 streaming chunk-by-chunk so memory stays bounded.
 
 Workflow:

@@ -12,7 +12,7 @@ import logging
 
 import pytest
 
-from jobhive.scrapers.tesla import (
+from ats_scrapers.scrapers.tesla import (
     TeslaScraper,
     _format_description,
     _html_to_text,
@@ -25,7 +25,7 @@ def test_returns_empty_with_warning_when_cloakbrowser_missing(
     """When ``cloakbrowser`` isn't installed, the scraper degrades
     gracefully — logs a warning and returns ``[]`` so a publish run
     keeps moving (per the optional-browser-fallback contract)."""
-    from jobhive.scrapers import _cloakbrowser
+    from ats_scrapers.scrapers import _cloakbrowser
 
     monkeypatch.setattr(_cloakbrowser, "is_enabled", lambda: False)
     with caplog.at_level(logging.WARNING):
@@ -258,7 +258,7 @@ class _FakePage:
 @pytest.fixture(autouse=True)
 def _fast_batches(monkeypatch: pytest.MonkeyPatch) -> None:
     """Drop the inter-batch sleep so detail tests run instantly."""
-    import jobhive.scrapers.tesla as t
+    import ats_scrapers.scrapers.tesla as t
     monkeypatch.setattr(t, "_DETAIL_BATCH_DELAY_S", 0.0)
 
 
@@ -288,7 +288,7 @@ def test_fetch_details_empty_input_no_calls() -> None:
 def test_fetch_details_chunks_by_concurrency_limit() -> None:
     """A larger id list should be split into ``_DETAIL_CONCURRENCY``-sized
     batches so we don't open thousands of in-page parallel requests."""
-    import jobhive.scrapers.tesla as t
+    import ats_scrapers.scrapers.tesla as t
 
     n = t._DETAIL_CONCURRENCY * 2 + 3  # 23 default → 2 full + 1 partial
     ids = [str(i) for i in range(n)]
@@ -307,7 +307,7 @@ def test_fetch_details_passes_path_template_to_js() -> None:
     """The path template lives in Python as a single source of truth;
     the helper hands it to ``page.evaluate`` so JS never hard-codes
     the path. Catches the drift Greptile flagged on PR #65."""
-    import jobhive.scrapers.tesla as t
+    import ats_scrapers.scrapers.tesla as t
 
     page = _FakePage({"1": {"jobDescription": "x"}})
     asyncio.run(TeslaScraper("tesla")._fetch_details(page, ["1"]))
@@ -317,7 +317,7 @@ def test_fetch_details_passes_path_template_to_js() -> None:
 def test_fetch_details_no_trailing_sleep_after_last_batch(monkeypatch) -> None:
     """The inter-batch sleep must fire only between batches, not after
     the final one. Catches the wasted ~300 ms tail Greptile flagged."""
-    import jobhive.scrapers.tesla as t
+    import ats_scrapers.scrapers.tesla as t
 
     sleeps: list[float] = []
     real_sleep = asyncio.sleep
@@ -344,7 +344,7 @@ def test_fetch_details_no_sleep_at_all_for_single_batch(monkeypatch) -> None:
     """Single batch → zero inter-batch sleeps. The last-batch optimization
     matters most when the catalog fits in one batch (small ATSes / mocked
     tests / smoke runs)."""
-    import jobhive.scrapers.tesla as t
+    import ats_scrapers.scrapers.tesla as t
 
     sleeps: list[float] = []
     real_sleep = asyncio.sleep
@@ -366,7 +366,7 @@ def test_fetch_details_swallows_whole_batch_exception(caplog) -> None:
     """If the page itself raises during ``evaluate`` (browser crash,
     cookie wipe, …), the helper must keep going on later batches
     rather than abort the whole description pass."""
-    import jobhive.scrapers.tesla as t
+    import ats_scrapers.scrapers.tesla as t
 
     class _FlakyPage(_FakePage):
         def __init__(self, responses, fail_on_batch_index):

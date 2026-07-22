@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from jobhive.exceptions import CompanyNotFoundError
-from jobhive.models import ATSType
-from jobhive.scrapers import LeverScraper, ScraperRegistry
+from ats_scrapers.exceptions import CompanyNotFoundError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import LeverScraper, ScraperRegistry
 
 API = "https://api.lever.co/v0/postings/acme?mode=json"
 
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.lever as lev
+    import ats_scrapers.scrapers.lever as lev
     monkeypatch.setattr(lev, "MAX_RETRIES", 1)
     monkeypatch.setattr(lev, "RETRY_BASE_DELAY", 0.0)
 
@@ -56,7 +56,7 @@ def test_404_company_not_found(httpx_mock) -> None:
 
 
 def test_5xx_retries(monkeypatch, httpx_mock) -> None:
-    import jobhive.scrapers.lever as lev
+    import ats_scrapers.scrapers.lever as lev
     monkeypatch.setattr(lev, "MAX_RETRIES", 3)
     httpx_mock.add_response(url=API, status_code=502)
     httpx_mock.add_response(url=API, json=[_job()])

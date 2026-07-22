@@ -6,7 +6,7 @@ import csv
 import pytest
 
 import scripts.run_pipeline as runner
-from jobhive.models import ATSType, Job
+from ats_scrapers.models import ATSType, Job
 
 
 def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:

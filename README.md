@@ -1,31 +1,31 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/stapply-ai/ats-scrapers/main/assets/banner.jpeg" alt="jobhive" />
+  <img src="https://raw.githubusercontent.com/stapply-ai/ats-scrapers/main/assets/banner.jpeg" alt="ats-scrapers" />
 </p>
 
-# jobhive
+# ats-scrapers
 
 > **The open dataset and toolkit for global job market data.**
 > 3.2M+ live jobs from 86 000+ companies, scraped directly from the ATS platforms where companies actually post. No LinkedIn, no reposts, no recruiters.
 
-[![PyPI](https://img.shields.io/pypi/v/jobhive-py.svg?color=brightgreen)](https://pypi.org/project/jobhive-py/)
-[![Python](https://img.shields.io/pypi/pyversions/jobhive-py.svg?color=brightgreen)](https://pypi.org/project/jobhive-py/)
+[![PyPI](https://img.shields.io/pypi/v/ats-scrapers.svg?color=brightgreen)](https://pypi.org/project/ats-scrapers/)
+[![Python](https://img.shields.io/pypi/pyversions/ats-scrapers.svg?color=brightgreen)](https://pypi.org/project/ats-scrapers/)
 [![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
 
 ```python
-from jobhive import search
+from ats_scrapers import search
 
 df = search(query="ml engineer", ats="greenhouse", location="Paris")
 ```
 
-No API key, no auth, no rate limits. Install `jobhive-py[parquet]` for
+No API key, no auth, no rate limits. Install `ats-scrapers[parquet]` for
 full-dataset search; the base install can query per-ATS CSV slices.
 
 ---
 
-## Why jobhive
+## Why ats-scrapers
 
 Most job aggregators scrape LinkedIn and Indeed — both full of duplicates,
-ghost listings, and reposts. **jobhive goes one layer down**: directly to
+ghost listings, and reposts. **ats-scrapers goes one layer down**: directly to
 the ATS platforms (Greenhouse, Lever, Ashby, Workday, BambooHR…) where
 companies actually post.
 
@@ -61,24 +61,24 @@ Top 10 by job count:
 
 Counts come from the live manifest at
 `https://storage.stapply.ai/jobhive/v1/manifest.json` — verify any time
-with `jobhive list-ats`.
+with `ats-scrapers list-ats`.
 
 ## Install
 
 ```bash
-pip install jobhive-py
+pip install ats-scrapers
 ```
 
-Distributed as `jobhive-py` on PyPI; the import name is still `jobhive`.
-`pip install jobhive` is a different package name and is not used by this
-project.
+The import name is `ats_scrapers`. Up to 0.1.0 this project was
+published as `jobhive-py` — that name is retired; install
+`ats-scrapers` going forward.
 
 Optional extras:
 
 ```bash
-pip install "jobhive-py[parquet]"     # faster downloads via Apache Parquet
-pip install "jobhive-py[scrapers]"    # build your own pipeline
-pip install "jobhive-py[all]"
+pip install "ats-scrapers[parquet]"     # faster downloads via Apache Parquet
+pip install "ats-scrapers[scrapers]"    # build your own pipeline
+pip install "ats-scrapers[all]"
 ```
 
 ## Two ways to use it
@@ -86,7 +86,7 @@ pip install "jobhive-py[all]"
 ### 1. Query the public dataset
 
 ```python
-from jobhive import search
+from ats_scrapers import search
 
 # Free-text title + location + remote filter
 df = search(query="rust", ats="greenhouse", location="Berlin", remote=True)
@@ -96,7 +96,7 @@ df = search(query="data engineer", ats="ashby")
 
 # Full-dataset search needs the parquet extra because jobhive/v1/all is
 # published as all.parquet.
-#   pip install "jobhive-py[parquet]"
+#   pip install "ats-scrapers[parquet]"
 df = search(query="ml engineer", location="Paris")
 
 # Pandas all the way down
@@ -123,7 +123,7 @@ provider-specific fields the canonical schema doesn't represent.
 ### 2. Scrape your own companies
 
 ```python
-from jobhive.scrapers import GreenhouseScraper, LeverScraper, AshbyScraper
+from ats_scrapers.scrapers import GreenhouseScraper, LeverScraper, AshbyScraper
 
 jobs = GreenhouseScraper("anthropic").fetch()    # → list[Job]
 jobs = LeverScraper("palantir").fetch()
@@ -133,7 +133,7 @@ jobs = AshbyScraper("openai").fetch()
 Or pick by name:
 
 ```python
-from jobhive.scrapers import get_scraper
+from ats_scrapers.scrapers import get_scraper
 
 scraper = get_scraper("ashby", "openai")
 ```
@@ -157,7 +157,7 @@ scraper = get_scraper("ashby", "openai")
 **Hybrid jobboards**: `WelcomeToTheJungle`.
 
 **Browser-required** (run via [Browserbase](https://browserbase.com)
-remote sessions): `Meta`, `Tesla`. Set `JOBHIVE_USE_BROWSERBASE=1`
+remote sessions): `Meta`, `Tesla`. Set `ATS_SCRAPERS_USE_BROWSERBASE=1`
 together with `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` to
 enable; without those env vars the scrapers log a warning and skip.
 Tesla also needs a Browserbase project that bypasses Akamai (default
@@ -166,9 +166,9 @@ sessions are currently 403'd).
 ## CLI
 
 ```bash
-jobhive search "platform engineer" --location Paris --limit 20
-jobhive scrape ashby openai
-jobhive list-ats
+ats-scrapers search "platform engineer" --location Paris --limit 20
+ats-scrapers scrape ashby openai
+ats-scrapers list-ats
 ```
 
 ## Contributing
@@ -180,8 +180,8 @@ it bigger:
 - **Add a new ATS scraper** — every ATS we don't cover yet is a few
   thousand companies missing from the dataset. The scraper API is
   intentionally tiny: subclass `BaseScraper`, set `ats`, implement
-  `fetch()`. See any file under `src/jobhive/scrapers/` for a 50-line
-  reference, and the `Job` model in `src/jobhive/models.py` for the
+  `fetch()`. See any file under `src/ats_scrapers/scrapers/` for a 50-line
+  reference, and the `Job` model in `src/ats_scrapers/models.py` for the
   schema you populate.
 - **Improve coverage on an existing ATS** — many scrapers extract
   description / salary / employment-type only when the ATS surfaces

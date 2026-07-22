@@ -22,8 +22,8 @@ import json
 import pandas as pd
 import pytest
 
-from jobhive.exceptions import StorageError
-from jobhive.storage.publisher import (
+from ats_scrapers.exceptions import StorageError
+from ats_scrapers.storage.publisher import (
     CACHE_CONTROL_LATEST,
     DEFAULT_PREFIX,
     DatasetPublisher,
@@ -88,7 +88,7 @@ def test_manifest_includes_generator_string(ats_csv_dir, fake_r2) -> None:
     publisher = DatasetPublisher(fake_r2, write_parquet=True)
     publisher.publish_from_directory(ats_csv_dir)
     manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
-    assert manifest["generator"].startswith("jobhive/")
+    assert manifest["generator"].startswith("ats-scrapers/")
 
 
 def test_manifest_records_sha256_per_file(ats_csv_dir, fake_r2) -> None:
@@ -760,7 +760,7 @@ def test_phase2_oversize_block_skipped(caplog):
     """
     import polars as pl
 
-    from jobhive.storage.publisher import _decide_dedup_survivors_polars
+    from ats_scrapers.storage.publisher import _decide_dedup_survivors_polars
 
     # 20 + 20 = 40-row block. Each ATS uses a different role family per
     # row so no two rows across slices share the same ``title_core``
@@ -813,7 +813,7 @@ def test_phase2_oversize_block_skipped(caplog):
 
 
 def test_country_iso_extracts_common_eu_patterns():
-    from jobhive.storage.publisher import _country_iso_from_location as f
+    from ats_scrapers.storage.publisher import _country_iso_from_location as f
 
     # Full-text suffixes (Bundesagentur style)
     assert f("Berlin, Berlin, Deutschland") == "DE"
@@ -831,7 +831,7 @@ def test_country_iso_uses_word_boundaries():
     tagged Lausanne jobs as US — cubic #1 on PR #33. The fix
     word-boundary-anchors every needle so the substring no longer
     matches."""
-    from jobhive.storage.publisher import _country_iso_from_location as f
+    from ats_scrapers.storage.publisher import _country_iso_from_location as f
 
     # Lausanne (CH) standalone — no country suffix. The bare city name
     # used to false-positive on US via the ``usa`` substring; now it
@@ -865,7 +865,7 @@ def test_country_iso_uses_word_boundaries():
 
 
 def test_title_core_strips_trailing_parenthesised_tag():
-    from jobhive.storage.publisher import _title_core as f
+    from ats_scrapers.storage.publisher import _title_core as f
 
     # The classic eures pattern: trailing Berufenet code in parens.
     assert (

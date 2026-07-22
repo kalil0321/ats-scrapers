@@ -1,6 +1,6 @@
 """Scrape OpenAI's open positions from Ashby (no auth required)."""
 
-from jobhive.scrapers import AshbyScraper
+from ats_scrapers.scrapers import AshbyScraper
 
 scraper = AshbyScraper("openai")
 jobs = scraper.fetch()

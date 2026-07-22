@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import pytest
 
-from jobhive.exceptions import CompanyNotFoundError, ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import ScraperRegistry, iCIMSScraper
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import ScraperRegistry, iCIMSScraper
 
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.icims as ic
+    import ats_scrapers.scrapers.icims as ic
     monkeypatch.setattr(ic, "MAX_RETRIES", 1)
     monkeypatch.setattr(ic, "RETRY_BASE_DELAY", 0.0)
 
@@ -240,7 +240,7 @@ def test_raises_company_not_found_on_404(httpx_mock) -> None:
 
 
 def test_5xx_retries(monkeypatch, httpx_mock) -> None:
-    import jobhive.scrapers.icims as ic
+    import ats_scrapers.scrapers.icims as ic
     monkeypatch.setattr(ic, "MAX_RETRIES", 3)
     httpx_mock.add_response(url=_page_url("acme", 0), status_code=503)
     httpx_mock.add_response(
@@ -253,7 +253,7 @@ def test_5xx_retries(monkeypatch, httpx_mock) -> None:
 
 
 def test_5xx_exhausts_retries(monkeypatch, httpx_mock) -> None:
-    import jobhive.scrapers.icims as ic
+    import ats_scrapers.scrapers.icims as ic
     monkeypatch.setattr(ic, "MAX_RETRIES", 3)
     httpx_mock.add_response(url=_page_url("acme", 0), status_code=502, is_reusable=True)
     with pytest.raises(ScraperError, match="502"):

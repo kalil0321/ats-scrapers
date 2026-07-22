@@ -21,10 +21,10 @@ import re
 import httpx
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType, Job
-from jobhive.scrapers import ScraperRegistry, WellfoundScraper
-from jobhive.scrapers.wellfound import (
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers import ScraperRegistry, WellfoundScraper
+from ats_scrapers.scrapers.wellfound import (
     DEFAULT_ROLE_SLUGS,
     _parse_job_window,
     _parse_relative,
@@ -36,7 +36,7 @@ _FIRECRAWL_RE = re.compile(r"^https://api\.firecrawl\.dev/v1/scrape$")
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.wellfound as w
+    import ats_scrapers.scrapers.wellfound as w
     monkeypatch.setattr(w, "MAX_RETRIES", 1)
     monkeypatch.setattr(w, "RETRY_BASE_DELAY", 0.0)
 

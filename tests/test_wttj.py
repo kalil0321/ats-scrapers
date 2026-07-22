@@ -6,9 +6,9 @@ import re
 
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import WTTJScraper
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import WTTJScraper
 
 # httpx_mock matches by full URL, so define both variants we hit
 SORTED_URL = re.compile(
@@ -128,6 +128,6 @@ def test_wttj_remote_value_mapping(httpx_mock) -> None:
 
 
 def test_wttj_in_registry() -> None:
-    from jobhive.scrapers import ScraperRegistry
+    from ats_scrapers.scrapers import ScraperRegistry
 
     assert ScraperRegistry.get(ATSType.WELCOMETOTHEJUNGLE) is WTTJScraper

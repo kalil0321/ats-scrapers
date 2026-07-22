@@ -13,10 +13,10 @@ from typing import Any
 import httpx
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import AppleScraper, ScraperRegistry
-from jobhive.scrapers.apple import MAX_RETRIES
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import AppleScraper, ScraperRegistry
+from ats_scrapers.scrapers.apple import MAX_RETRIES
 
 _CSRF_URL = "https://jobs.apple.com/api/v1/CSRFToken"
 _SEARCH_URL = "https://jobs.apple.com/api/v1/search"
@@ -30,7 +30,7 @@ def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     job's detail URL. Tests that specifically exercise the detail
     enrichment can override this with their own _enrich_apple_details.
     """
-    import jobhive.scrapers.apple as m
+    import ats_scrapers.scrapers.apple as m
     monkeypatch.setattr(m, "RETRY_BASE_DELAY", 0.0)
 
     async def _no_enrich(jobs, timeout_s):

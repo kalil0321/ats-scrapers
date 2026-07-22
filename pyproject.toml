@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "jobhive-py"
-version = "0.1.0"
+name = "ats-scrapers"
+version = "0.2.0"
 description = "3.2M+ live jobs from 86 000+ companies, scraped directly from ATS sources. The open dataset and toolkit for job market data."
 readme = "README.md"
 license = { text = "MIT" }
@@ -99,7 +99,7 @@ discovery = [
     "firecrawl-py>=1.0",
 ]
 all = [
-    "jobhive-py[scrapers,parquet,publish,discovery]",
+    "ats-scrapers[scrapers,parquet,publish,discovery]",
 ]
 # Set to run the test suite cleanly. Pulls in every runtime extra
 # (``all``) so ``pytest`` can collect ``test_publisher.py`` (which
@@ -108,13 +108,13 @@ all = [
 # than ``publish`` alone — Kind AI flagged on PR #33 / #34 that the
 # minimal extras left the suite uncollectable.
 test = [
-    "jobhive-py[all]",
+    "ats-scrapers[all]",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-httpx>=0.30",
 ]
 dev = [
-    "jobhive-py[test]",
+    "ats-scrapers[test]",
     "ruff>=0.5",
     "mypy>=1.10",
     "pandas-stubs",
@@ -130,10 +130,10 @@ Changelog = "https://github.com/stapply-ai/ats-scrapers/blob/main/CHANGELOG.md"
 Dataset = "https://storage.stapply.ai/jobhive/v1/manifest.json"
 
 [project.scripts]
-jobhive = "jobhive.cli:main"
+ats-scrapers = "ats_scrapers.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/jobhive"]
+packages = ["src/ats_scrapers"]
 
 [tool.hatch.build.targets.sdist]
 include = [

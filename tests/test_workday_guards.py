@@ -9,8 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 import scripts.run_pipeline as runner
-from jobhive.exceptions import ScraperError
-from jobhive.scrapers.workday import WorkdayScraper
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.scrapers.workday import WorkdayScraper
 
 
 def test_workday_deadline_raises() -> None:
@@ -37,8 +37,8 @@ def test_workday_retry_after_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
                 headers={"Retry-After": "3600"},
             )
 
-    monkeypatch.setattr("jobhive.scrapers.workday.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr("jobhive.scrapers.workday.MAX_RETRY_DELAY", 7.0)
+    monkeypatch.setattr("ats_scrapers.scrapers.workday.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("ats_scrapers.scrapers.workday.MAX_RETRY_DELAY", 7.0)
 
     scraper = WorkdayScraper(
         "https://accenture.wd103.myworkdayjobs.com/accenturecareers",
@@ -60,7 +60,7 @@ def test_workday_retry_after_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_workday_runner_sets_tenant_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("JOBHIVE_WORKDAY_TENANT_TIMEOUT", "123")
+    monkeypatch.setenv("ATS_SCRAPERS_WORKDAY_TENANT_TIMEOUT", "123")
     kwargs = runner.CONFIGS["workday"]["kwargs"]({"name": "Advocate Health"})
 
     assert kwargs == {

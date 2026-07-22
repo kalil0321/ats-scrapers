@@ -6,14 +6,14 @@ import re
 
 import pytest
 
-from jobhive.exceptions import CompanyNotFoundError, ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import BreezyScraper, ScraperRegistry
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import BreezyScraper, ScraperRegistry
 
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch, httpx_mock) -> None:
-    import jobhive.scrapers.breezy as br
+    import ats_scrapers.scrapers.breezy as br
     monkeypatch.setattr(br, "MAX_RETRIES", 1)
     monkeypatch.setattr(br, "RETRY_BASE_DELAY", 0.0)
     httpx_mock.add_response(
@@ -179,7 +179,7 @@ def test_404_raises_company_not_found(httpx_mock) -> None:
 
 
 def test_5xx_retries(monkeypatch, httpx_mock) -> None:
-    import jobhive.scrapers.breezy as br
+    import ats_scrapers.scrapers.breezy as br
     monkeypatch.setattr(br, "MAX_RETRIES", 3)
     httpx_mock.add_response(url=URL, status_code=503)
     httpx_mock.add_response(url=URL, json=[_position()])
@@ -188,7 +188,7 @@ def test_5xx_retries(monkeypatch, httpx_mock) -> None:
 
 
 def test_5xx_exhausts_retries(monkeypatch, httpx_mock) -> None:
-    import jobhive.scrapers.breezy as br
+    import ats_scrapers.scrapers.breezy as br
     monkeypatch.setattr(br, "MAX_RETRIES", 2)
     httpx_mock.add_response(url=URL, status_code=502, is_reusable=True)
     with pytest.raises(ScraperError, match="502"):

@@ -1,6 +1,6 @@
 # ats-companies
 
-Tenant lists per ATS — every company that **jobhive** scrapes lives in
+Tenant lists per ATS — every company that **ats-scrapers** scrapes lives in
 one of the CSVs here. New rows here = new companies in the dataset.
 
 One file per ATS, named `{ats}.csv`. The canonical schema is
@@ -90,7 +90,7 @@ often the fastest way to add a long-tail company.
 
 - These CSVs are currently the source of truth for the public
   pipeline. The scraper code lives in
-  [`src/jobhive/scrapers/`](../src/jobhive/scrapers/).
+  [`src/ats_scrapers/scrapers/`](../src/ats_scrapers/scrapers/).
 - A few ATSes (`tesla`, `meta`) require a real browser and don't ship
   a tenant list — they'll come back here once the optional browser
   backend ships in 0.2.

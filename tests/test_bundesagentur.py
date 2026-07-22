@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from jobhive.scrapers import BundesagenturScraper
+from ats_scrapers.scrapers import BundesagenturScraper
 
 _API_RE = re.compile(
     r"^https://rest\.arbeitsagentur\.de/jobboerse/jobsuche-service/pc/v4/jobs"
@@ -24,7 +24,7 @@ _API_RE = re.compile(
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.bundesagentur as ba
+    import ats_scrapers.scrapers.bundesagentur as ba
     monkeypatch.setattr(ba, "MAX_RETRIES", 2)
     monkeypatch.setattr(ba, "RETRY_BASE_DELAY", 0.0)
     monkeypatch.setattr(ba, "RETRY_JITTER", 0.0)
@@ -65,7 +65,7 @@ def test_root_probe_persistent_403_skips_subtree(httpx_mock, caplog) -> None:
     a wholesale undercount as a successful run. We log loudly and return
     whatever was collected (here: nothing)."""
     httpx_mock.add_response(url=_API_RE, status_code=403, is_reusable=True)
-    with caplog.at_level(logging.WARNING, logger="jobhive.scrapers.bundesagentur"):
+    with caplog.at_level(logging.WARNING, logger="ats_scrapers.scrapers.bundesagentur"):
         jobs = BundesagenturScraper("any").fetch()
     assert jobs == []
     # The warning must say "subtree skipped" so an operator can spot the
@@ -85,7 +85,7 @@ def test_probe_500_after_retries_skips_with_warning(
     """Same pattern for 500 — the previous code returned empty and looked
     like a clean zero-result query. Now the failure is logged."""
     httpx_mock.add_response(url=_API_RE, status_code=500, is_reusable=True)
-    with caplog.at_level(logging.WARNING, logger="jobhive.scrapers.bundesagentur"):
+    with caplog.at_level(logging.WARNING, logger="ats_scrapers.scrapers.bundesagentur"):
         jobs = BundesagenturScraper("any").fetch()
     assert jobs == []
     assert any(
@@ -104,7 +104,7 @@ def test_page_failure_logs_page_skip_not_subtree_skip(
     skip (bounded loss) — not a subtree skip — and must not silently
     look like a clean response.
     """
-    import jobhive.scrapers.bundesagentur as ba
+    import ats_scrapers.scrapers.bundesagentur as ba
     # Tiny page size so a 3-row dataset spans 3 pages and we can exercise
     # the per-page failure path deterministically.
     monkeypatch.setattr(ba, "PAGE_SIZE", 1)
@@ -126,7 +126,7 @@ def test_page_failure_logs_page_skip_not_subtree_skip(
 
     httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
 
-    with caplog.at_level(logging.WARNING, logger="jobhive.scrapers.bundesagentur"):
+    with caplog.at_level(logging.WARNING, logger="ats_scrapers.scrapers.bundesagentur"):
         jobs = BundesagenturScraper("any").fetch()
 
     # Pages 1 and 3 made it through; page 2 was lost. The leaf and the
@@ -161,7 +161,7 @@ def test_root_probe_401_crashes_not_skips(httpx_mock) -> None:
     moved), not a transient WAF block. The scraper must crash so an
     operator notices — silently returning ``[]`` would publish a
     wholesale undercount as a successful run."""
-    from jobhive.exceptions import ScraperError
+    from ats_scrapers.exceptions import ScraperError
     httpx_mock.add_response(url=_API_RE, status_code=401, is_reusable=True)
     with pytest.raises(ScraperError):
         BundesagenturScraper("any").fetch()
@@ -170,7 +170,7 @@ def test_root_probe_401_crashes_not_skips(httpx_mock) -> None:
 def test_root_probe_404_crashes_not_skips(httpx_mock) -> None:
     """Same contract for 404 — endpoint moved / decommissioned should
     crash, not silently produce ``[]``."""
-    from jobhive.exceptions import ScraperError
+    from ats_scrapers.exceptions import ScraperError
     httpx_mock.add_response(url=_API_RE, status_code=404, is_reusable=True)
     with pytest.raises(ScraperError):
         BundesagenturScraper("any").fetch()
@@ -180,7 +180,7 @@ def test_malformed_json_crashes_not_skips(httpx_mock) -> None:
     """A 200 OK with a malformed body is a contract break — the schema
     we're parsing against is unknown — and must crash rather than
     soft-fail to ``[]``."""
-    from jobhive.exceptions import ScraperError
+    from ats_scrapers.exceptions import ScraperError
     httpx_mock.add_response(
         url=_API_RE,
         status_code=200,

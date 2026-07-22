@@ -10,7 +10,7 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from jobhive.models import ATSType, Company, Job, Salary
+from ats_scrapers.models import ATSType, Company, Job, Salary
 
 # --- ATSType -----------------------------------------------------------------
 
@@ -239,7 +239,7 @@ def test_global_id_keeps_special_chars() -> None:
 
 def test_global_id_uuid_when_ats_id_none(caplog) -> None:
     import logging
-    with caplog.at_level(logging.ERROR, logger="jobhive.models"):
+    with caplog.at_level(logging.ERROR, logger="ats_scrapers.models"):
         job = _minimal_job(ats_type=ATSType.LEVER, ats_id=None)
     assert ":" not in job.global_id  # not the formatted shape
     # Standard UUID4 string length is 36 chars (8-4-4-4-12 hex + dashes)
@@ -279,7 +279,7 @@ def test_global_id_uuid_when_ats_id_has_control_chars(
     when present. Trailing whitespace (including \\r\\n) is stripped
     earlier and not counted as malformed."""
     import logging
-    with caplog.at_level(logging.ERROR, logger="jobhive.models"):
+    with caplog.at_level(logging.ERROR, logger="ats_scrapers.models"):
         job = _minimal_job(ats_type=ATSType.LEVER, ats_id=bad)
     assert ":" not in job.global_id
     assert len(job.global_id) == 36

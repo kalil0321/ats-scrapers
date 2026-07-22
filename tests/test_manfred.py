@@ -11,14 +11,14 @@ from typing import Any
 
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import ManfredScraper, ScraperRegistry
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import ManfredScraper, ScraperRegistry
 
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.manfred as m
+    import ats_scrapers.scrapers.manfred as m
     monkeypatch.setattr(m, "MAX_RETRIES", 1)
     monkeypatch.setattr(m, "RETRY_BASE_DELAY", 0.0)
 

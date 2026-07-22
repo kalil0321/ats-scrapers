@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from jobhive.scrapers import _cloakbrowser as cb
+from ats_scrapers.scrapers import _cloakbrowser as cb
 
 
 def test_evomi_proxy_returns_none_when_env_unset(

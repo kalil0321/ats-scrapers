@@ -19,10 +19,10 @@ import re
 
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import ProgramathorScraper, ScraperRegistry
-from jobhive.scrapers.programathor import (
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import ProgramathorScraper, ScraperRegistry
+from ats_scrapers.scrapers.programathor import (
     _parse_brl_amount,
     _parse_salary,
     _resolve_proxy_url,
@@ -33,7 +33,7 @@ _LISTING_RE = re.compile(r"^https://programathor\.com\.br/jobs\?page=\d+$")
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.programathor as p
+    import ats_scrapers.scrapers.programathor as p
     monkeypatch.setattr(p, "MAX_RETRIES", 1)
     monkeypatch.setattr(p, "RETRY_BASE_DELAY", 0.0)
 

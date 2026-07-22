@@ -12,16 +12,16 @@ import re
 
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import BuiltInScraper, ScraperRegistry
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import BuiltInScraper, ScraperRegistry
 
 _LISTING_RE = re.compile(r"^https://builtin\.com/jobs\?page=\d+$")
 
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.builtin as bi
+    import ats_scrapers.scrapers.builtin as bi
     monkeypatch.setattr(bi, "MAX_RETRIES", 1)
     monkeypatch.setattr(bi, "RETRY_BASE_DELAY", 0.0)
 

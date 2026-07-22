@@ -6,7 +6,7 @@ Field names are part of the public contract — renames are a breaking
 change.
 
 This doc mirrors the [`Job` Pydantic model in
-`src/jobhive/models.py`](src/jobhive/models.py). When the two drift,
+`src/ats_scrapers/models.py`](src/ats_scrapers/models.py). When the two drift,
 the Pydantic descriptions are the source of truth; please update both.
 
 ---
@@ -85,7 +85,7 @@ matching.
 
 Which ATS platform serves this posting. Determines which scraper
 produced the row and what shape `ats_id` takes. See the `ATSType` enum
-in `src/jobhive/models.py` for the full list (~50 values).
+in `src/ats_scrapers/models.py` for the full list (~50 values).
 
 ### `ats_id` &nbsp;`str | None` &nbsp;*(optional, defensive)*
 
@@ -154,7 +154,7 @@ Whether the role can be performed remotely.
 - Set by the scraper when the ATS exposes a flag (e.g. Lever's
   `workplaceType`).
 - Otherwise narrowly inferred from the **title** at publish time by
-  `jobhive.enrichment.infer_is_remote` — that heuristic only ever
+  `ats_scrapers.enrichment.infer_is_remote` — that heuristic only ever
   returns `True` (never `False`), since the absence of a remote
   keyword in the title is **not** evidence the role is on-site.
 - `None` means we genuinely don't know. LLM-based enrichment
@@ -169,7 +169,7 @@ Salary fields work together: `salary_currency` + `salary_period` are
 metadata, `salary_min`/`salary_max` are the structured numeric range,
 `salary_summary` is the original string the ATS displays. When the ATS
 ships only the summary string, `salary_min`/`salary_max` are derived
-via `jobhive.enrichment.parse_salary_range` at publish time.
+via `ats_scrapers.enrichment.parse_salary_range` at publish time.
 
 ### `salary_currency` &nbsp;`str | None`
 
@@ -273,7 +273,7 @@ legacy ATSes.
 
 ### `fetched_at` &nbsp;`datetime | None`
 
-When jobhive last saw this posting. UTC.
+When ats-scrapers last saw this posting. UTC.
 
 ### `language` &nbsp;`str | None`
 
@@ -317,7 +317,7 @@ a JSON string in CSV exports, native dict in parquet.
 - `ats_id` is the ATS-platform's internal id (different per platform).
 - `requisition_id` is the *employer's* internal id (same across
   platforms when one job is mirrored on multiple ATSes).
-- `global_id` is jobhive's `{ats_type}:{ats_id}` composite — the unique
+- `global_id` is ats-scrapers's `{ats_type}:{ats_id}` composite — the unique
   identifier for the row in the dataset.
 
 **`employment_type` vs `commitment`** —

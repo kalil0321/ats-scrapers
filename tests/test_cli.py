@@ -1,4 +1,4 @@
-"""Tests for the `jobhive` CLI.
+"""Tests for the `ats-scrapers` CLI.
 
 Argparse and command dispatch — we mock the underlying Client/scrapers so the
 tests don't make network requests.
@@ -11,15 +11,15 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from jobhive import cli as cli_module
+from ats_scrapers import cli as cli_module
 
 
-def test_version_prints_jobhive_version(capsys: pytest.CaptureFixture[str]) -> None:
+def test_version_prints_package_version(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc:
         cli_module.main(["--version"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    assert "jobhive" in out
+    assert "ats-scrapers" in out
 
 
 def test_help_succeeds(capsys: pytest.CaptureFixture[str]) -> None:
@@ -45,7 +45,7 @@ def test_search_command_invokes_search_with_filters(
             captured.update({"query": query, **kwargs})
             return pd.DataFrame([{"title": "X", "company": "Y"}])
 
-    monkeypatch.setattr("jobhive.client.Client", FakeClient)
+    monkeypatch.setattr("ats_scrapers.client.Client", FakeClient)
     rc = cli_module.main(
         [
             "search",
@@ -81,7 +81,7 @@ def test_search_command_can_prefer_csv(
         def search(self, query=None, **_kwargs):
             return pd.DataFrame()
 
-    monkeypatch.setattr("jobhive.client.Client", FakeClient)
+    monkeypatch.setattr("ats_scrapers.client.Client", FakeClient)
     assert cli_module.main(["search", "--csv"]) == 0
     assert captured["prefer_parquet"] is False
 
@@ -96,7 +96,7 @@ def test_search_format_csv(
         def search(self, query=None, **_kwargs):
             return pd.DataFrame([{"title": "X", "company": "Y"}])
 
-    monkeypatch.setattr("jobhive.client.Client", FakeClient)
+    monkeypatch.setattr("ats_scrapers.client.Client", FakeClient)
     cli_module.main(["search", "--format", "csv"])
     out = capsys.readouterr().out
     assert "title,company" in out
@@ -113,7 +113,7 @@ def test_search_format_json(
         def search(self, query=None, **_kwargs):
             return pd.DataFrame([{"title": "X", "company": "Y"}])
 
-    monkeypatch.setattr("jobhive.client.Client", FakeClient)
+    monkeypatch.setattr("ats_scrapers.client.Client", FakeClient)
     cli_module.main(["search", "--format", "json"])
     out = capsys.readouterr().out
     assert '"title"' in out
@@ -123,7 +123,7 @@ def test_search_format_json(
 def test_scrape_command_invokes_registered_scraper(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from jobhive.models import ATSType, Job
+    from ats_scrapers.models import ATSType, Job
 
     sample_jobs = [
         Job(
@@ -143,7 +143,7 @@ def test_scrape_command_invokes_registered_scraper(
             return sample_jobs
 
     monkeypatch.setattr(
-        "jobhive.scrapers.get_scraper",
+        "ats_scrapers.scrapers.get_scraper",
         lambda ats, company: FakeScraper(company),
     )
     rc = cli_module.main(["scrape", "greenhouse", "openai"])
@@ -184,9 +184,9 @@ def test_publish_invokes_publisher(
         def __init__(self, _config) -> None:
             pass
 
-    monkeypatch.setattr("jobhive.storage.DatasetPublisher", FakePublisher)
-    monkeypatch.setattr("jobhive.storage.R2Client", FakeR2Client)
-    monkeypatch.setattr("jobhive.storage.R2Config", FakeR2Config)
+    monkeypatch.setattr("ats_scrapers.storage.DatasetPublisher", FakePublisher)
+    monkeypatch.setattr("ats_scrapers.storage.R2Client", FakeR2Client)
+    monkeypatch.setattr("ats_scrapers.storage.R2Config", FakeR2Config)
 
     rc = cli_module.main(["publish", str(tmp_path), "--no-parquet"])
     assert rc == 0
@@ -222,9 +222,9 @@ def test_publish_accepts_custom_pattern(
         def from_env():
             return object()
 
-    monkeypatch.setattr("jobhive.storage.DatasetPublisher", FakePublisher)
-    monkeypatch.setattr("jobhive.storage.R2Client", lambda _c: None)
-    monkeypatch.setattr("jobhive.storage.R2Config", FakeR2Config)
+    monkeypatch.setattr("ats_scrapers.storage.DatasetPublisher", FakePublisher)
+    monkeypatch.setattr("ats_scrapers.storage.R2Client", lambda _c: None)
+    monkeypatch.setattr("ats_scrapers.storage.R2Config", FakeR2Config)
 
     cli_module.main(
         ["publish", str(tmp_path), "--pattern", "scrapers/{ats}/jobs.csv"]
@@ -235,8 +235,8 @@ def test_publish_accepts_custom_pattern(
 def test_list_ats_command(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from jobhive.client import Client
-    from jobhive.manifest import Manifest
+    from ats_scrapers.client import Client
+    from ats_scrapers.manifest import Manifest
 
     sample_manifest = Manifest.model_validate(
         {
@@ -265,7 +265,7 @@ def test_list_ats_command(
     )
     fake = Client()
     fake._manifest = sample_manifest
-    monkeypatch.setattr("jobhive.client._default_client", lambda: fake)
+    monkeypatch.setattr("ats_scrapers.client._default_client", lambda: fake)
 
     rc = cli_module.main(["list-ats"])
     assert rc == 0
@@ -282,21 +282,21 @@ def test_unknown_command_returns_nonzero(
     assert exc.value.code != 0
 
 
-def test_jobhive_errors_are_clean_one_line(
+def test_package_errors_are_clean_one_line(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from jobhive.exceptions import ScraperError
+    from ats_scrapers.exceptions import ScraperError
 
     class FakeScraper:
         def fetch(self):
             raise ScraperError("browser required")
 
-    monkeypatch.setattr("jobhive.scrapers.get_scraper", lambda *_args: FakeScraper())
+    monkeypatch.setattr("ats_scrapers.scrapers.get_scraper", lambda *_args: FakeScraper())
     rc = cli_module.main(["scrape", "meta", "ignored"])
     captured = capsys.readouterr()
     assert rc == 1
-    assert captured.err.strip() == "jobhive: error: browser required"
+    assert captured.err.strip() == "ats-scrapers: error: browser required"
     assert "Traceback" not in captured.err
 
 

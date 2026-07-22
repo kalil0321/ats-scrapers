@@ -12,16 +12,16 @@ from typing import Any
 
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import ScraperRegistry, WantedScraper
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import ScraperRegistry, WantedScraper
 
 _API_RE = re.compile(r"^https://www\.wanted\.co\.kr/api/v4/jobs(?:\?.*)?$")
 
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch, httpx_mock) -> None:
-    import jobhive.scrapers.wanted as w
+    import ats_scrapers.scrapers.wanted as w
     monkeypatch.setattr(w, "MAX_RETRIES", 1)
     monkeypatch.setattr(w, "RETRY_BASE_DELAY", 0.0)
     httpx_mock.add_response(

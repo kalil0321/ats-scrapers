@@ -241,7 +241,7 @@ def jobs_dataframe() -> pd.DataFrame:
 def _isolate_default_client_cache() -> Iterator[None]:
     """Reset the lru_cache on `_default_client` between tests so monkeypatched
     clients don't bleed across test modules."""
-    from jobhive import client as client_module
+    from ats_scrapers import client as client_module
 
     client_module._default_client.cache_clear()
     yield

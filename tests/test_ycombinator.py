@@ -13,10 +13,10 @@ from typing import Any
 
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import ScraperRegistry, YCombinatorScraper
-from jobhive.scrapers.ycombinator import (
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import ScraperRegistry, YCombinatorScraper
+from ats_scrapers.scrapers.ycombinator import (
     _employment_from_type,
     _extract_balanced_array,
     _parse_min_experience,
@@ -30,7 +30,7 @@ _PAGE_RE = re.compile(r"^https://www\.ycombinator\.com/companies/[a-z0-9-]+$")
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.ycombinator as yc
+    import ats_scrapers.scrapers.ycombinator as yc
     monkeypatch.setattr(yc, "MAX_RETRIES", 1)
     monkeypatch.setattr(yc, "RETRY_BASE_DELAY", 0.0)
 

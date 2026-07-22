@@ -20,14 +20,14 @@ import re
 
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import JobsCzScraper, ScraperRegistry, get_scraper
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import JobsCzScraper, ScraperRegistry, get_scraper
 
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.jobs_cz as j
+    import ats_scrapers.scrapers.jobs_cz as j
     monkeypatch.setattr(j, "MAX_RETRIES", 1)
     monkeypatch.setattr(j, "RETRY_BASE_DELAY", 0.0)
 
@@ -461,10 +461,10 @@ def test_live_e2e_fetches_real_jobs_cz_page() -> None:
     """Opt-in smoke test against the real jobs.cz listing page.
 
     Normal CI keeps this skipped because it depends on the public site.
-    Run with ``JOBHIVE_LIVE_E2E=1`` when reviewing the scraper PR.
+    Run with ``ATS_SCRAPERS_LIVE_E2E=1`` when reviewing the scraper PR.
     """
-    if os.environ.get("JOBHIVE_LIVE_E2E") != "1":
-        pytest.skip("set JOBHIVE_LIVE_E2E=1 to hit the real jobs.cz site")
+    if os.environ.get("ATS_SCRAPERS_LIVE_E2E") != "1":
+        pytest.skip("set ATS_SCRAPERS_LIVE_E2E=1 to hit the real jobs.cz site")
 
     jobs = JobsCzScraper(
         "jobs_cz",
@@ -490,7 +490,7 @@ def test_parse_salary_handles_zwj_and_nbsp() -> None:
     """The live HTML interleaves U+200D (zero-width joiner) and U+00A0
     (non-breaking space) into the salary text. The parser strips both
     before matching."""
-    from jobhive.scrapers.jobs_cz import _normalize_whitespace, _parse_salary
+    from ats_scrapers.scrapers.jobs_cz import _normalize_whitespace, _parse_salary
 
     raw = "60 000 ‍–‍ 70 000 Kč"
     cleaned = _normalize_whitespace(raw)
@@ -517,7 +517,7 @@ def test_missing_bs4_raises_scraper_error(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
-    from jobhive.scrapers.jobs_cz import _parse_listing
+    from ats_scrapers.scrapers.jobs_cz import _parse_listing
 
     with pytest.raises(ScraperError):
         _parse_listing("<html></html>")

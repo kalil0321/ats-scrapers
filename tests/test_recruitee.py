@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from jobhive.exceptions import CompanyNotFoundError, ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import RecruiteeScraper, ScraperRegistry
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import RecruiteeScraper, ScraperRegistry
 
 API = "https://acme.recruitee.com/api/offers"
 

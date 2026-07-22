@@ -1,9 +1,30 @@
 # Changelog
 
-All notable changes to **jobhive** are documented here.
+All notable changes to **ats-scrapers** (formerly **jobhive**) are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.2.0] — 2026-07-22
+
+### Changed — project renamed to `ats-scrapers`
+
+The project is now published on PyPI as **`ats-scrapers`** with import
+name **`ats_scrapers`**, matching the GitHub repository. The old
+`jobhive-py` distribution is retired; its final release points here.
+
+Breaking (mechanical) changes — a find-and-replace upgrade:
+
+- `import jobhive` → `import ats_scrapers` (all submodules keep their
+  paths: `ats_scrapers.scrapers`, `ats_scrapers.client`, …).
+- Base exception `JobHiveError` → `ATSScrapersError`.
+- Environment variables `JOBHIVE_*` → `ATS_SCRAPERS_*`
+  (e.g. `ATS_SCRAPERS_USE_BROWSERBASE`).
+- CLI entry point `jobhive` → `ats-scrapers`.
+
+Not changed: the `Job`/`Company` schema, all scraper class names, and
+the published dataset layout (`storage.stapply.ai/jobhive/v1/…` URLs
+remain valid — the storage prefix is independent of the package name).
 
 ## [0.1.0] — 2026-05-08
 

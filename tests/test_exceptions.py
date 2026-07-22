@@ -6,35 +6,35 @@ type, so renaming or reparenting must be a breaking change.
 
 import pytest
 
-from jobhive.exceptions import (
+from ats_scrapers.exceptions import (
+    ATSScrapersError,
     CompanyNotFoundError,
-    JobHiveError,
     ManifestError,
     ScraperError,
     StorageError,
 )
 
 
-def test_jobhive_error_is_subclass_of_exception() -> None:
-    assert issubclass(JobHiveError, Exception)
+def test_ats_scrapers_error_is_subclass_of_exception() -> None:
+    assert issubclass(ATSScrapersError, Exception)
 
 
 @pytest.mark.parametrize(
     "exc",
     [ManifestError, StorageError, ScraperError],
 )
-def test_top_level_errors_inherit_from_jobhive_error(exc: type) -> None:
-    assert issubclass(exc, JobHiveError)
+def test_top_level_errors_inherit_from_ats_scrapers_error(exc: type) -> None:
+    assert issubclass(exc, ATSScrapersError)
 
 
 def test_company_not_found_is_a_scraper_error() -> None:
     assert issubclass(CompanyNotFoundError, ScraperError)
-    assert issubclass(CompanyNotFoundError, JobHiveError)
+    assert issubclass(CompanyNotFoundError, ATSScrapersError)
 
 
-def test_can_catch_all_with_jobhive_error() -> None:
+def test_can_catch_all_with_ats_scrapers_error() -> None:
     for exc in [ManifestError, StorageError, ScraperError, CompanyNotFoundError]:
-        with pytest.raises(JobHiveError):
+        with pytest.raises(ATSScrapersError):
             raise exc("boom")
 
 

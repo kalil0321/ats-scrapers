@@ -12,10 +12,10 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from jobhive import client as client_module
-from jobhive.client import Client, list_ats, search
-from jobhive.exceptions import ManifestError, StorageError
-from jobhive.models import ATSType
+from ats_scrapers import client as client_module
+from ats_scrapers.client import Client, list_ats, search
+from ats_scrapers.exceptions import ManifestError, StorageError
+from ats_scrapers.models import ATSType
 
 
 @pytest.fixture
@@ -29,7 +29,7 @@ def stub_client(
     Calls to `_download` return our fixture DataFrame; manifest is preloaded
     so no HTTP happens.
     """
-    from jobhive.manifest import Manifest
+    from ats_scrapers.manifest import Manifest
 
     instance = Client(prefer_parquet=False)
     instance._manifest = Manifest.model_validate(sample_manifest_dict)
@@ -114,7 +114,7 @@ def test_load_caches_full_snapshot(
     sample_manifest_dict: dict[str, Any],
     jobs_dataframe: pd.DataFrame,
 ) -> None:
-    from jobhive.manifest import Manifest
+    from ats_scrapers.manifest import Manifest
 
     instance = Client()
     instance._manifest = Manifest.model_validate(sample_manifest_dict)
@@ -164,7 +164,7 @@ def test_load_date_reuses_manifest_url_picker(
     sample_manifest_dict: dict[str, Any],
     jobs_dataframe: pd.DataFrame,
 ) -> None:
-    from jobhive.manifest import Manifest
+    from ats_scrapers.manifest import Manifest
 
     sample_manifest_dict["by_date"]["2026-05-04"] = {
         "parquet": "https://example.com/2026-05-04.parquet",
@@ -221,7 +221,7 @@ def test_download_parquet_without_engine_raises_storage_error(
 
     monkeypatch.setattr(pd, "read_parquet", fail_read_parquet)
     instance = Client()
-    with pytest.raises(StorageError, match="jobhive-py\\[parquet\\]"):
+    with pytest.raises(StorageError, match="ats-scrapers\\[parquet\\]"):
         instance._download("https://example.com/data.parquet")
 
 
@@ -239,7 +239,7 @@ def test_module_search_uses_default_client(
     sample_manifest_dict: dict[str, Any],
     jobs_dataframe: pd.DataFrame,
 ) -> None:
-    from jobhive.manifest import Manifest
+    from ats_scrapers.manifest import Manifest
 
     fake = Client()
     fake._manifest = Manifest.model_validate(sample_manifest_dict)
@@ -253,7 +253,7 @@ def test_module_search_uses_default_client(
 def test_list_ats_returns_manifest_keys(
     monkeypatch: pytest.MonkeyPatch, sample_manifest_dict: dict[str, Any]
 ) -> None:
-    from jobhive.manifest import Manifest
+    from ats_scrapers.manifest import Manifest
 
     fake = Client()
     fake._manifest = Manifest.model_validate(sample_manifest_dict)

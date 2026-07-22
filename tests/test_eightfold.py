@@ -25,14 +25,14 @@ from typing import Any
 import httpx
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import (
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import (
     EightfoldScraper,
     ScraperRegistry,
     get_scraper,
 )
-from jobhive.scrapers.eightfold import _extract_remote, _format_location, _parse_ts
+from ats_scrapers.scrapers.eightfold import _extract_remote, _format_location, _parse_ts
 
 # Detail enrichment fires per-job ``position_details`` GET calls after
 # the search pass; tests that don't care about description ignore them.
@@ -48,7 +48,7 @@ pytestmark = pytest.mark.httpx_mock(
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     """Retries default to 3 with 1.5s base delay → up to 9s per failing test.
     Tests don't need that. Knock retries down to 1 and skip sleeps."""
-    import jobhive.scrapers.eightfold as ef
+    import ats_scrapers.scrapers.eightfold as ef
     monkeypatch.setattr(ef, "MAX_RETRIES", 1)
     monkeypatch.setattr(ef, "RETRY_BASE_DELAY", 0.0)
 
@@ -724,7 +724,7 @@ def test_fetch_error_on_paginated_page_includes_offset(httpx_mock) -> None:
 def test_retries_on_500_then_succeeds(monkeypatch, httpx_mock) -> None:
     """Transient 500 → retry → succeed. The legacy Microsoft scraper hits
     this path on ~1% of requests; without retries the whole scrape fails."""
-    import jobhive.scrapers.eightfold as ef
+    import ats_scrapers.scrapers.eightfold as ef
     monkeypatch.setattr(ef, "MAX_RETRIES", 3)
 
     httpx_mock.add_response(url=_mock_url(0), status_code=500)
@@ -739,7 +739,7 @@ def test_retries_on_500_then_succeeds(monkeypatch, httpx_mock) -> None:
 
 def test_retries_on_429_then_succeeds(monkeypatch, httpx_mock) -> None:
     """Rate limits should back off and retry, not crash the run."""
-    import jobhive.scrapers.eightfold as ef
+    import ats_scrapers.scrapers.eightfold as ef
     monkeypatch.setattr(ef, "MAX_RETRIES", 3)
 
     httpx_mock.add_response(url=_mock_url(0), status_code=429)
@@ -755,7 +755,7 @@ def test_retries_on_429_then_succeeds(monkeypatch, httpx_mock) -> None:
 def test_429_with_retry_after_header_is_honored(monkeypatch, httpx_mock) -> None:
     """When the server tells us how long to wait, we should honour it
     rather than apply our own backoff."""
-    import jobhive.scrapers.eightfold as ef
+    import ats_scrapers.scrapers.eightfold as ef
     monkeypatch.setattr(ef, "MAX_RETRIES", 3)
 
     sleeps: list[float] = []
@@ -781,7 +781,7 @@ def test_429_with_retry_after_header_is_honored(monkeypatch, httpx_mock) -> None
 
 def test_retries_exhausted_raises(monkeypatch, httpx_mock) -> None:
     """All 3 attempts return 500 → final ScraperError mentions retries."""
-    import jobhive.scrapers.eightfold as ef
+    import ats_scrapers.scrapers.eightfold as ef
     monkeypatch.setattr(ef, "MAX_RETRIES", 3)
 
     httpx_mock.add_response(url=_mock_url(0), status_code=500, is_reusable=True)
@@ -792,7 +792,7 @@ def test_retries_exhausted_raises(monkeypatch, httpx_mock) -> None:
 
 def test_404_does_not_trigger_retries(monkeypatch, httpx_mock) -> None:
     """404 means "this tenant doesn't exist" — retrying is wasted time."""
-    import jobhive.scrapers.eightfold as ef
+    import ats_scrapers.scrapers.eightfold as ef
     monkeypatch.setattr(ef, "MAX_RETRIES", 3)
 
     # Only ONE 404 mock — if we retry, the second request has no mock and the
@@ -906,7 +906,7 @@ def test_client_kind_httpcloak_skips_httpx_probe(monkeypatch) -> None:
     """When pinned to httpcloak, the scraper must NOT call httpx — even once.
     We replace httpx.AsyncClient with a sentinel that would fail the test
     if instantiated, and stub httpcloak with a normal response."""
-    import jobhive.scrapers.eightfold as ef_mod
+    import ats_scrapers.scrapers.eightfold as ef_mod
 
     def boom(*args: object, **kwargs: object) -> object:
         raise AssertionError("httpx must not be called when client_kind=httpcloak")

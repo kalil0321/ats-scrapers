@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from jobhive.exceptions import CompanyNotFoundError, ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import RecruiterboxScraper, ScraperRegistry
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import RecruiterboxScraper, ScraperRegistry
 
 API = "https://jsapi.recruiterbox.com/v1/openings"
 
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.recruiterbox as rb
+    import ats_scrapers.scrapers.recruiterbox as rb
     monkeypatch.setattr(rb, "MAX_RETRIES", 1)
     monkeypatch.setattr(rb, "RETRY_BASE_DELAY", 0.0)
 
@@ -172,7 +172,7 @@ def test_400_invalid_client_name_raises_not_found(httpx_mock) -> None:
 
 
 def test_5xx_retries(monkeypatch, httpx_mock) -> None:
-    import jobhive.scrapers.recruiterbox as rb
+    import ats_scrapers.scrapers.recruiterbox as rb
     monkeypatch.setattr(rb, "MAX_RETRIES", 3)
     httpx_mock.add_response(
         url=f"{API}?client_name=acme&offset=0&limit=100", status_code=503,

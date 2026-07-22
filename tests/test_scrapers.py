@@ -11,7 +11,7 @@ def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     to 9s per failing test. Knock those down to 0 so tests stay fast."""
     for mod_name in ("greenhouse", "lever", "ashby"):
         try:
-            mod = __import__(f"jobhive.scrapers.{mod_name}", fromlist=[""])
+            mod = __import__(f"ats_scrapers.scrapers.{mod_name}", fromlist=[""])
         except ImportError:
             continue
         if hasattr(mod, "MAX_RETRIES"):
@@ -19,9 +19,9 @@ def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
         if hasattr(mod, "RETRY_BASE_DELAY"):
             monkeypatch.setattr(mod, "RETRY_BASE_DELAY", 0.0)
 
-from jobhive.exceptions import CompanyNotFoundError, ScraperError  # noqa: E402
-from jobhive.models import ATSType  # noqa: E402
-from jobhive.scrapers import (  # noqa: E402
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError  # noqa: E402
+from ats_scrapers.models import ATSType  # noqa: E402
+from ats_scrapers.scrapers import (  # noqa: E402
     AshbyScraper,
     BaseScraper,
     GreenhouseScraper,

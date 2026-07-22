@@ -13,16 +13,16 @@ from typing import Any
 
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import JobsChScraper, ScraperRegistry
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import JobsChScraper, ScraperRegistry
 
 _API_RE = re.compile(r"^https://www\.jobs\.ch/api/v1/public/search")
 
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch, httpx_mock) -> None:
-    import jobhive.scrapers.jobsch as j
+    import ats_scrapers.scrapers.jobsch as j
     monkeypatch.setattr(j, "MAX_RETRIES", 1)
     monkeypatch.setattr(j, "RETRY_BASE_DELAY", 0.0)
     httpx_mock.add_response(

@@ -27,10 +27,10 @@ from typing import Any
 
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import InfoJobsSpainScraper, ScraperRegistry
-from jobhive.scrapers.infojobs_es import (
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import InfoJobsSpainScraper, ScraperRegistry
+from ats_scrapers.scrapers.infojobs_es import (
     _absolutize_link,
     _extract_initial_props,
     _fmt_amount,
@@ -47,17 +47,17 @@ def test_live_e2e_fetches_real_infojobs_page() -> None:
     """Opt-in smoke test against the real InfoJobs Spain listing page.
 
     Normal CI keeps this skipped because it depends on the public site and
-    httpcloak. Run with ``JOBHIVE_LIVE_E2E=1`` when reviewing the scraper PR.
+    httpcloak. Run with ``ATS_SCRAPERS_LIVE_E2E=1`` when reviewing the scraper PR.
     """
-    if os.environ.get("JOBHIVE_LIVE_E2E") != "1":
-        pytest.skip("set JOBHIVE_LIVE_E2E=1 to hit the real infojobs.net site")
+    if os.environ.get("ATS_SCRAPERS_LIVE_E2E") != "1":
+        pytest.skip("set ATS_SCRAPERS_LIVE_E2E=1 to hit the real infojobs.net site")
 
     from importlib.util import find_spec
 
     if find_spec("httpcloak") is None:
         pytest.skip("httpcloak is required for live InfoJobs Spain e2e")
 
-    import jobhive.scrapers.infojobs_es as ij
+    import ats_scrapers.scrapers.infojobs_es as ij
 
     ij.MAX_RETRIES = 3
     ij.RETRY_BASE_DELAY = 1.5
@@ -80,7 +80,7 @@ def test_live_e2e_fetches_real_infojobs_page() -> None:
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     """Collapse retry backoff so the timing-sensitive tests stay quick."""
-    import jobhive.scrapers.infojobs_es as ij
+    import ats_scrapers.scrapers.infojobs_es as ij
     monkeypatch.setattr(ij, "MAX_RETRIES", 1)
     monkeypatch.setattr(ij, "RETRY_BASE_DELAY", 0.0)
 
@@ -627,7 +627,7 @@ def test_skips_gracefully_when_httpcloak_missing(
     import sys
     monkeypatch.delitem(sys.modules, "httpcloak", raising=False)
 
-    with caplog.at_level("WARNING", logger="jobhive.scrapers.infojobs_es"):
+    with caplog.at_level("WARNING", logger="ats_scrapers.scrapers.infojobs_es"):
         jobs = InfoJobsSpainScraper("any", max_pages=1).fetch()
     assert jobs == []
     assert any("httpcloak" in r.getMessage() for r in caplog.records)

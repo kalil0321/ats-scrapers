@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 
-from jobhive.scrapers.eures import EuresScraper, _extract_detail_description
+from ats_scrapers.scrapers.eures import EuresScraper, _extract_detail_description
 
 
 def _base_item(**overrides):

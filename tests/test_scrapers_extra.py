@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from jobhive.exceptions import CompanyNotFoundError, ScraperError
-from jobhive.scrapers import (
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.scrapers import (
     GemScraper,
     JoinComScraper,
     OracleScraper,

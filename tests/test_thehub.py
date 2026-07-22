@@ -12,16 +12,16 @@ from typing import Any
 
 import pytest
 
-from jobhive.exceptions import ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import ScraperRegistry, TheHubScraper
+from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import ScraperRegistry, TheHubScraper
 
 _API_RE = re.compile(r"^https://thehub\.io/api/jobs")
 
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.thehub as t
+    import ats_scrapers.scrapers.thehub as t
     monkeypatch.setattr(t, "MAX_RETRIES", 1)
     monkeypatch.setattr(t, "RETRY_BASE_DELAY", 0.0)
 

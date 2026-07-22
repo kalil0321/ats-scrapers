@@ -17,14 +17,14 @@ import asyncio
 import httpx
 import pytest
 
-from jobhive.exceptions import CompanyNotFoundError, ScraperError
-from jobhive.models import ATSType
-from jobhive.scrapers import ScraperRegistry, TeamtailorScraper, get_scraper
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import ScraperRegistry, TeamtailorScraper, get_scraper
 
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.teamtailor as tt
+    import ats_scrapers.scrapers.teamtailor as tt
     monkeypatch.setattr(tt, "MAX_RETRIES", 1)
     monkeypatch.setattr(tt, "RETRY_BASE_DELAY", 0.0)
 
@@ -305,7 +305,7 @@ def test_raises_company_not_found_on_404(httpx_mock) -> None:
 
 
 def test_404_does_not_retry(monkeypatch, httpx_mock) -> None:
-    import jobhive.scrapers.teamtailor as tt
+    import ats_scrapers.scrapers.teamtailor as tt
     monkeypatch.setattr(tt, "MAX_RETRIES", 3)
     httpx_mock.add_response(url=RSS_URL, status_code=404)
     with pytest.raises(CompanyNotFoundError):
@@ -313,7 +313,7 @@ def test_404_does_not_retry(monkeypatch, httpx_mock) -> None:
 
 
 def test_retries_on_5xx_then_succeeds(monkeypatch, httpx_mock) -> None:
-    import jobhive.scrapers.teamtailor as tt
+    import ats_scrapers.scrapers.teamtailor as tt
     monkeypatch.setattr(tt, "MAX_RETRIES", 3)
     httpx_mock.add_response(url=RSS_URL, status_code=503)
     httpx_mock.add_response(url=RSS_URL, text=_rss([_item()]))
@@ -322,7 +322,7 @@ def test_retries_on_5xx_then_succeeds(monkeypatch, httpx_mock) -> None:
 
 
 def test_429_with_retry_after_is_honored(monkeypatch, httpx_mock) -> None:
-    import jobhive.scrapers.teamtailor as tt
+    import ats_scrapers.scrapers.teamtailor as tt
     monkeypatch.setattr(tt, "MAX_RETRIES", 3)
 
     sleeps: list[float] = []
@@ -339,7 +339,7 @@ def test_429_with_retry_after_is_honored(monkeypatch, httpx_mock) -> None:
 
 
 def test_5xx_exhausts_retries(monkeypatch, httpx_mock) -> None:
-    import jobhive.scrapers.teamtailor as tt
+    import ats_scrapers.scrapers.teamtailor as tt
     monkeypatch.setattr(tt, "MAX_RETRIES", 3)
     httpx_mock.add_response(url=RSS_URL, status_code=502, is_reusable=True)
     with pytest.raises(ScraperError, match="502"):
@@ -347,7 +347,7 @@ def test_5xx_exhausts_retries(monkeypatch, httpx_mock) -> None:
 
 
 def test_network_error_raises(monkeypatch, httpx_mock) -> None:
-    import jobhive.scrapers.teamtailor as tt
+    import ats_scrapers.scrapers.teamtailor as tt
     monkeypatch.setattr(tt, "MAX_RETRIES", 2)
     httpx_mock.add_exception(
         httpx.ConnectError("DNS failed"), url=RSS_URL, is_reusable=True

@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from jobhive.exceptions import CompanyNotFoundError
-from jobhive.models import ATSType
-from jobhive.scrapers import AshbyScraper, ScraperRegistry
+from ats_scrapers.exceptions import CompanyNotFoundError
+from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import AshbyScraper, ScraperRegistry
 
 API = "https://api.ashbyhq.com/posting-api/job-board/acme?includeCompensation=true"
 
 
 @pytest.fixture(autouse=True)
 def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
-    import jobhive.scrapers.ashby as ash
+    import ats_scrapers.scrapers.ashby as ash
     monkeypatch.setattr(ash, "MAX_RETRIES", 1)
     monkeypatch.setattr(ash, "RETRY_BASE_DELAY", 0.0)
 
@@ -66,7 +66,7 @@ def test_compensation_summary_passthrough(httpx_mock) -> None:
 
 
 def test_5xx_retries(monkeypatch, httpx_mock) -> None:
-    import jobhive.scrapers.ashby as ash
+    import ats_scrapers.scrapers.ashby as ash
     monkeypatch.setattr(ash, "MAX_RETRIES", 3)
     httpx_mock.add_response(url=API, status_code=503)
     httpx_mock.add_response(url=API, json={"jobs": [_job()]})
