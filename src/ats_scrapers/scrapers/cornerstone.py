@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -219,6 +220,9 @@ def _resolve_career_url(slug_or_url: str, site_id: int) -> tuple[str, str, int]:
     requests instead of silently using the constructor default.
     """
     if slug_or_url.startswith(("http://", "https://")):
+        # Full URL (custom career site): validate the target host before
+        # it becomes a fetch target — bare slugs land in {slug}.csod.com.
+        slug_or_url = require_http_url(slug_or_url, provider="CornerstoneScraper")
         # Try to extract slug from the URL's `?c=` query param or hostname.
         m = re.search(r"[?&]c=([^&#]+)", slug_or_url)
         if m:
@@ -229,7 +233,7 @@ def _resolve_career_url(slug_or_url: str, site_id: int) -> tuple[str, str, int]:
         site_match = re.search(r"/careersite/(\d+)/", slug_or_url)
         resolved_site_id = int(site_match.group(1)) if site_match else site_id
         return slug_or_url, slug, resolved_site_id
-    slug = slug_or_url
+    slug = require_host_label(slug_or_url, provider="CornerstoneScraper")
     return (
         f"https://{slug}.csod.com/ux/ats/careersite/{site_id}/home?c={slug}",
         slug,

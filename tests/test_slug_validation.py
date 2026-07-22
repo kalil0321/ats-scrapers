@@ -15,6 +15,7 @@ from ats_scrapers.scrapers import (
     AvatureScraper,
     BambooHRScraper,
     BreezyScraper,
+    CornerstoneScraper,
     EightfoldScraper,
     JazzHRScraper,
     PersonioScraper,
@@ -38,6 +39,7 @@ SLUG_OR_URL_SCRAPERS = [
     PersonioScraper,
     AvatureScraper,
     iCIMSScraper,
+    CornerstoneScraper,
 ]
 ALL_PATCHED_SCRAPERS = BARE_SLUG_SCRAPERS + SLUG_OR_URL_SCRAPERS
 
