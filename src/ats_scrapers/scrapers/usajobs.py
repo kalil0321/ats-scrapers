@@ -20,13 +20,10 @@ only) and pull the full active dataset on every fetch.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-
-import httpx
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -35,10 +32,10 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
 API_URL = "https://data.usajobs.gov/api/Search"
 PAGE_SIZE = 500  # API hard-caps at 500 per page.
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 ENV_API_KEY = "USAJOBS_API_KEY"
 ENV_USER_AGENT = "USAJOBS_USER_AGENT"  # Optional override; defaults to identifier below.
 DEFAULT_USER_AGENT = "ats-scrapers (open-source jobs dataset)"
@@ -70,7 +67,7 @@ class USAJobsScraper(BaseScraper):
 
     ats = ATSType.USAJOBS
 
-    def fetch(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         api_key = os.environ.get(ENV_API_KEY, "").strip()
         if not api_key:
             raise ScraperError(
@@ -78,17 +75,18 @@ class USAJobsScraper(BaseScraper):
                 f"Register at https://developer.usajobs.gov to get a free key."
             )
         user_agent = os.environ.get(ENV_USER_AGENT, DEFAULT_USER_AGENT)
-        return asyncio.run(self._fetch_async(api_key, user_agent))
-
-    async def _fetch_async(self, api_key: str, user_agent: str) -> list[Job]:
+        headers = {
+            "Host": "data.usajobs.gov",
+            "User-Agent": user_agent,
+            "Authorization-Key": api_key,
+            "Accept": "application/json",
+        }
         seen: set[str] = set()
         jobs: list[Job] = []
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
+        async with self.make_fetcher(headers=headers) as fetch:
             page = 1
             while True:
-                payload = await self._fetch_page(client, api_key, user_agent, page)
+                payload = await self._fetch_page(fetch, page)
                 result = payload.get("SearchResult") if isinstance(payload, dict) else {}
                 if not isinstance(result, dict):
                     break
@@ -113,58 +111,21 @@ class USAJobsScraper(BaseScraper):
                 page += 1
         return jobs
 
-    async def _fetch_page(
-        self,
-        client: httpx.AsyncClient,
-        api_key: str,
-        user_agent: str,
-        page: int,
-    ) -> dict[str, Any]:
-        headers = {
-            "Host": "data.usajobs.gov",
-            "User-Agent": user_agent,
-            "Authorization-Key": api_key,
-            "Accept": "application/json",
-        }
+    async def _fetch_page(self, fetch: Fetcher, page: int) -> dict[str, Any]:
         params = {"ResultsPerPage": PAGE_SIZE, "Page": page}
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(API_URL, params=params, headers=headers)
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"USAJOBS fetch failed at page={page}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"USAJOBS returned malformed JSON at page={page}: {exc}"
-                    ) from exc
-            if response.status_code == 401:
-                raise ScraperError(
-                    f"USAJOBS rejected the API key (401). Check {ENV_API_KEY}."
-                )
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"USAJOBS returned {response.status_code} at page={page} "
-                        f"after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
+        # 401 is handled here (not by the shared status mapping) so the
+        # error message points at the API-key env var.
+        response = await fetch.request("GET", API_URL, params=params, handled={401})
+        if response.status_code == 401:
             raise ScraperError(
-                f"USAJOBS returned {response.status_code} at page={page}"
+                f"USAJOBS rejected the API key (401). Check {ENV_API_KEY}."
             )
-        raise ScraperError(f"USAJOBS exhausted retries at page={page}")
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise ScraperError(
+                f"USAJOBS returned malformed JSON at page={page}: {exc}"
+            ) from exc
 
     def _parse_item(self, item: dict[str, Any]) -> Job | None:
         descriptor = (
@@ -260,7 +221,7 @@ class USAJobsScraper(BaseScraper):
             salary_currency=salary_currency if salary_min or salary_max else None,
             salary_period=salary_period if salary_min or salary_max else None,
             posted_at=_parse_iso(descriptor.get("PublicationStartDate")),
-            fetched_at=datetime.now(),
+            fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
 

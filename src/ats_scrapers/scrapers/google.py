@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import html as html_mod
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -37,14 +37,14 @@ from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    pass
+    from typing import ClassVar
+
+    from ats_scrapers.fetch import Fetcher
 
 LISTING_URL = "https://www.google.com/about/careers/applications/jobs/results"
 APPLICATIONS_BASE = "https://www.google.com/about/careers/applications/"
 
 MAX_PAGES = 500  # Defensive ceiling. Google currently exposes ~180 pages (~3,600 jobs) and we stop on a no-new-ids page; 100 was hard-capping us at exactly 2,000.
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
 DETAIL_CONCURRENCY = 8  # cap per-tenant concurrent detail fetches
 
 _HEADERS = {
@@ -71,8 +71,7 @@ class GoogleScraper(BaseScraper):
 
     ats = ATSType.GOOGLE
 
-    def fetch(self) -> list[Job]:
-        return asyncio.run(self._fetch_async())
+    default_headers: ClassVar[dict[str, str]] = _HEADERS
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -87,16 +86,14 @@ class GoogleScraper(BaseScraper):
                 await self._enrich_detail(client, sem, copy)
             return copy.description
 
-        return asyncio.run(run())
+        return self._run_sync(run())
 
-    async def _fetch_async(self) -> list[Job]:
+    async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
-        ) as client:
+        async with self.make_fetcher() as fetch:
             for page_num in range(1, MAX_PAGES + 1):
-                html_text = await self._fetch_page(client, page_num)
+                html_text = await self._fetch_page(fetch, page_num)
                 page_jobs = self._parse_page(html_text)
                 new = [j for j in page_jobs if j.ats_id not in seen]
                 if not new:
@@ -106,9 +103,14 @@ class GoogleScraper(BaseScraper):
                     seen.add(j.ats_id)
                 all_jobs.extend(new)
 
-            # Per-job detail enrichment: pull description, location, team
-            # from each job's HTML detail page. Best-effort.
-            if self.include_descriptions and all_jobs:
+        # Per-job detail enrichment: pull description, location, team
+        # from each job's HTML detail page. Best-effort — errors and
+        # non-200s are swallowed per job, so this stays on a plain
+        # httpx client rather than the raising/retrying fetch layer.
+        if self.include_descriptions and all_jobs:
+            async with httpx.AsyncClient(
+                timeout=self.timeout, follow_redirects=True
+            ) as client:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
                     self._enrich_detail(client, sem, j) for j in all_jobs
@@ -130,41 +132,11 @@ class GoogleScraper(BaseScraper):
             return
         _apply_detail_to_job(job, response.text)
 
-    async def _fetch_page(self, client: httpx.AsyncClient, page: int) -> str:
+    async def _fetch_page(self, fetch: Fetcher, page: int) -> str:
         params: dict[str, str | int] = {"hl": "en_US"}
         if page > 1:
             params["page"] = page
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = await client.get(
-                    LISTING_URL, params=params, headers=_HEADERS
-                )
-            except httpx.HTTPError as exc:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Google fetch failed at page={page}: {exc}"
-                    ) from exc
-                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                continue
-            if response.status_code == 200:
-                return response.text
-            if response.status_code == 429 or 500 <= response.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        f"Google returned {response.status_code} at page={page} "
-                        f"after {MAX_RETRIES} retries"
-                    )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
-                continue
-            raise ScraperError(
-                f"Google returned {response.status_code} at page={page}"
-            )
-        raise ScraperError(f"Google exhausted retries at page={page}")
+        return await fetch.get_text(LISTING_URL, params=params)
 
     def _parse_page(self, html_text: str) -> list[Job]:
         try:
@@ -202,7 +174,7 @@ class GoogleScraper(BaseScraper):
                     ats_id=ats_id,
                     location=None,
                     posted_at=None,
-                    fetched_at=datetime.now(),
+                    fetched_at=datetime.now(UTC),
                 )
             )
         return jobs
