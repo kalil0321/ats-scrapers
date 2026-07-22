@@ -19,6 +19,13 @@ remove the need to know the `(ats, slug)` pair:
   the hosted companies directory (`Client.companies()`, cached
   in-process; exact matches rank first).
 
+### Added — `ScraperRegistry.has_scraper(ats)`
+
+Skip dataset sources this package can't scrape yet without catching
+`ScraperError` (GH-185). The hosted dataset can list a source before a
+matching scraper ships — `search()` already tolerates that; this makes
+the scraper side symmetric.
+
 ## [0.1.0] — 2026-07-22
 
 Initial release of `ats-scrapers`:

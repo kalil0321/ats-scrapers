@@ -88,6 +88,16 @@ def test_registry_returns_copy_so_external_mutation_is_safe() -> None:
     assert ATSType.GREENHOUSE in ScraperRegistry.all()
 
 
+def test_has_scraper() -> None:
+    assert ScraperRegistry.has_scraper("greenhouse") is True
+    assert ScraperRegistry.has_scraper(ATSType.GREENHOUSE) is True
+    # A dataset source with no scraper yet (GH-185): known enum member
+    # but unregistered.
+    assert ScraperRegistry.has_scraper("beisen") is False
+    # A source name not even in the enum must not raise.
+    assert ScraperRegistry.has_scraper("futuristic_ats_9000") is False
+
+
 def test_register_decorator_adds_new_scraper() -> None:
     @ScraperRegistry.register(ATSType.CUSTOM)
     class TempScraper(BaseScraper):

@@ -213,6 +213,34 @@ def test_load_uses_uuid_for_invalid_legacy_ats_id(stub_client: Client) -> None:
     assert str(UUID(value)) == value
 
 
+# A source name the installed package's ATSType enum does NOT contain.
+# The hosted manifest can list a source before this package ships a
+# matching scraper; that must never break the dataset client (GH-185).
+_UNKNOWN_SOURCE = "futuristic_ats_9000"
+
+
+def test_manifest_validates_with_unknown_source() -> None:
+    """The exact step that crashed in GH-185: validating a live manifest
+    whose ``by_ats`` carries a source the local enum has never heard of."""
+    from ats_scrapers.manifest import Manifest
+    from ats_scrapers.models import ATSType
+
+    assert _UNKNOWN_SOURCE not in {a.value for a in ATSType}
+    manifest = Manifest.model_validate(
+        {
+            "version": "1.0",
+            "generated_at": "2026-07-22T00:00:00+00:00",
+            "stats": {"total_jobs": 1, "total_companies": 1, "ats_count": 1},
+            "all": {"csv": "https://x/all.csv", "rows": 1, "size_bytes": 1},
+            "by_ats": {
+                _UNKNOWN_SOURCE: {"csv": "https://x/f.csv", "rows": 1, "size_bytes": 1},
+            },
+        }
+    )
+    assert _UNKNOWN_SOURCE in manifest.by_ats
+    assert manifest.url_for_ats(_UNKNOWN_SOURCE, prefer_parquet=False) == "https://x/f.csv"
+
+
 def test_load_accepts_manifest_source_not_in_local_enum(
     stub_client: Client,
 ) -> None:
@@ -220,11 +248,26 @@ def test_load_accepts_manifest_source_not_in_local_enum(
         update={
             "by_ats": {
                 **stub_client.manifest.by_ats,
-                "beisen": stub_client.manifest.by_ats["greenhouse"],
+                _UNKNOWN_SOURCE: stub_client.manifest.by_ats["greenhouse"],
             }
         }
     )
-    assert len(stub_client.load(ats="beisen")) == 4
+    assert len(stub_client.load(ats=_UNKNOWN_SOURCE)) == 4
+
+
+def test_search_full_snapshot_tolerates_unknown_ats_rows(stub_client: Client) -> None:
+    """search() over the full snapshot must not choke on rows whose
+    ats_type isn't a known enum member — the beginner's default path."""
+    original = stub_client._download
+
+    def download_with_unknown(url: str) -> pd.DataFrame:
+        df = original(url)
+        df.loc[0, "ats_type"] = _UNKNOWN_SOURCE
+        return df
+
+    stub_client._download = download_with_unknown  # type: ignore[method-assign]
+    result = stub_client.search(query="engineer")
+    assert not result.empty
 
 
 def test_client_defaults_to_csv_without_parquet_engine(

@@ -184,6 +184,22 @@ class ScraperRegistry:
     def all(cls) -> dict[ATSType, type[BaseScraper]]:
         return dict(cls._scrapers)
 
+    @classmethod
+    def has_scraper(cls, ats: ATSType | str) -> bool:
+        """Whether a scraper is registered for ``ats``.
+
+        Lets callers skip dataset sources this package can't scrape yet
+        (the hosted dataset can list a source before a scraper ships)
+        instead of catching :class:`ScraperError` from ``get``:
+
+        >>> ats = [a for a in list_ats() if ScraperRegistry.has_scraper(a)]
+        """
+        try:
+            ats_enum = ATSType(ats) if isinstance(ats, str) else ats
+        except ValueError:
+            return False
+        return ats_enum in cls._scrapers
+
 
 def get_scraper(ats: ATSType | str, company_slug: str, **kwargs: object) -> BaseScraper:
     """Convenience: lookup + instantiate in one step."""

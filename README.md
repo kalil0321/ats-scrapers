@@ -112,7 +112,17 @@ Scraper adapters include:
   Welcome to the Jungle, and others.
 
 Run `python -c "from ats_scrapers import list_ats; print(*list_ats())"` for the
-sources currently present in the hosted dataset.
+sources currently present in the hosted dataset. The dataset can list a source
+before this package ships a scraper for it — `search()` still returns those
+rows; only building your own scraper needs one. To skip sources without a
+scraper:
+
+```python
+from ats_scrapers import list_ats
+from ats_scrapers.scrapers import ScraperRegistry, get_scraper
+
+scrapeable = [a for a in list_ats() if ScraperRegistry.has_scraper(a)]
+```
 
 ## Contributing
 
