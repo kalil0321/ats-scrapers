@@ -62,6 +62,8 @@ scrapers = [
     # Browserbase Sessions). cloakbrowser ships its own binary and
     # caches under ~/.cache/cloakbrowser, no separate playwright install.
     "cloakbrowser>=0.3",
+    # Moka encrypts some job-list responses with AES-CBC.
+    "pycryptodome>=3.20",
 ]
 parquet = [
     "pyarrow>=15.0",

@@ -116,6 +116,24 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             return ResolvedCareersUrl(ATSType.JOIN_COM, segments[1])
         return None
 
+    if host in {"app.mokahr.com", "hire-r1.mokahr.com"}:
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            len(segments) >= 3
+            and segments[0] in {"social-recruitment", "campus-recruitment"}
+            and _SLUG_RE.match(segments[1])
+            and segments[2].isdigit()
+        ):
+            prefix = "hire-r1/" if host == "hire-r1.mokahr.com" else ""
+            recruitment_type = (
+                "/campus" if segments[0] == "campus-recruitment" else ""
+            )
+            return ResolvedCareersUrl(
+                ATSType.MOKA,
+                f"{prefix}{segments[1]}/{segments[2]}{recruitment_type}",
+            )
+        return None
+
     for suffix, ats in _SUBDOMAIN_SUFFIXES.items():
         if host.endswith(suffix):
             slug = host.removesuffix(suffix)

@@ -43,6 +43,7 @@ Acme Corp,acme,https://acme.greenhouse.io
 | join_com | `https://join.com/companies/<slug>` |
 | lever | `https://jobs.lever.co/<slug>` |
 | mercor | seed file only — Mercor exposes no per-company endpoint |
+| moka | `https://app.mokahr.com/social-recruitment/<slug>/<site_id>` |
 | oracle | `https://<host>/hcmUI/CandidateExperience/...` |
 | personio | `https://<slug>.jobs.personio.com` |
 | pinpoint | `https://<slug>.pinpointhq.com` |

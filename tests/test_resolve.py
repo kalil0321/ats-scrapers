@@ -11,6 +11,7 @@ from ats_scrapers.scrapers import (
     AshbyScraper,
     GreenhouseScraper,
     GupyScraper,
+    MokaScraper,
     WorkdayScraper,
 )
 
@@ -28,6 +29,16 @@ RESOLVES = [
     ("https://jobs.gem.com/accel", ATSType.GEM, "accel"),
     ("https://ats.rippling.com/acme/jobs", ATSType.RIPPLING, "acme"),
     ("https://join.com/companies/acme", ATSType.JOIN_COM, "acme"),
+    (
+        "https://app.mokahr.com/social-recruitment/trip/70415/job/123",
+        ATSType.MOKA,
+        "trip/70415",
+    ),
+    (
+        "https://hire-r1.mokahr.com/campus-recruitment/klook/100008011",
+        ATSType.MOKA,
+        "hire-r1/klook/100008011/campus",
+    ),
     # Subdomain tenants
     ("https://12build.recruitee.com", ATSType.RECRUITEE, "12build"),
     ("https://1komma5.teamtailor.com/jobs", ATSType.TEAMTAILOR, "1komma5"),
@@ -107,6 +118,12 @@ def test_get_scraper_for_url_builds_scraper() -> None:
         GreenhouseScraper,
     )
     assert isinstance(get_scraper_for_url("https://petz.gupy.io"), GupyScraper)
+    assert isinstance(
+        get_scraper_for_url(
+            "https://app.mokahr.com/social-recruitment/trip/70415"
+        ),
+        MokaScraper,
+    )
     workday = get_scraper_for_url(
         "https://2020companies.wd1.myworkdayjobs.com/external_careers"
     )

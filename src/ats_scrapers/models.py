@@ -45,6 +45,7 @@ class ATSType(StrEnum):
     JOIN_COM = "join_com"
     LEVER = "lever"
     MERCOR = "mercor"
+    MOKA = "moka"
     ORACLE = "oracle"
     PERSONIO = "personio"
     PHENOM = "phenom"
