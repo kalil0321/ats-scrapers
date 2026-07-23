@@ -53,6 +53,7 @@ from ats_scrapers.scrapers import (
     GetOnBrdScraper,
     GoogleScraper,
     GreenhouseScraper,
+    GupyScraper,
     InfoJobsSpainScraper,
     JazzHRScraper,
     JobsChScraper,
@@ -465,6 +466,15 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": _greenhouse_slug,
         "csv": "ats-companies/greenhouse.csv",
         "output": "greenhouse/jobs.csv",
+    },
+    "gupy": {
+        "scraper": GupyScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "csv": "ats-companies/gupy.csv",
+        "output": "gupy/jobs.csv",
+        "defer_descriptions_to_cache": True,
+        "description_cache_path": "gupy/descriptions.sqlite3",
+        "description_cache_compress": True,
     },
     "workable": {
         "scraper": WorkableScraper,

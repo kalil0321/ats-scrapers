@@ -40,6 +40,7 @@ class ATSType(StrEnum):
     EIGHTFOLD = "eightfold"
     GEM = "gem"
     GREENHOUSE = "greenhouse"
+    GUPY = "gupy"
     ICIMS = "icims"
     JOIN_COM = "join_com"
     LEVER = "lever"

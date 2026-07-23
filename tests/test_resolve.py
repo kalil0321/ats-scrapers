@@ -10,6 +10,7 @@ from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import (
     AshbyScraper,
     GreenhouseScraper,
+    GupyScraper,
     WorkdayScraper,
 )
 
@@ -37,6 +38,7 @@ RESOLVES = [
     ("https://acme.applytojob.com/apply", ATSType.JAZZHR, "acme"),
     ("https://bloomberg.avature.net/careers", ATSType.AVATURE, "bloomberg"),
     ("https://nvidia.eightfold.ai/careers", ATSType.EIGHTFOLD, "nvidia"),
+    ("https://petz.gupy.io/jobs/123", ATSType.GUPY, "petz"),
     # Scheme-less input is tolerated
     ("jobs.ashbyhq.com/openai", ATSType.ASHBY, "openai"),
     ("www.jobs.lever.co/acme", ATSType.LEVER, "acme"),
@@ -104,6 +106,7 @@ def test_get_scraper_for_url_builds_scraper() -> None:
         get_scraper_for_url("https://boards.greenhouse.io/anthropic"),
         GreenhouseScraper,
     )
+    assert isinstance(get_scraper_for_url("https://petz.gupy.io"), GupyScraper)
     workday = get_scraper_for_url(
         "https://2020companies.wd1.myworkdayjobs.com/external_careers"
     )
