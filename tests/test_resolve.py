@@ -9,6 +9,7 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import (
     AshbyScraper,
+    BeisenLegacyScraper,
     BeisenScraper,
     DarwinboxScraper,
     GreenhouseScraper,
@@ -52,6 +53,9 @@ RESOLVES = [
         "pwc.com",
     ),
     ("https://mengniu.zhiye.com/social/jobs", ATSType.BEISEN, "mengniu"),
+    ("https://amer.zhiye.com/Social/?PageIndex=1", ATSType.BEISEN_LEGACY, "amer"),
+    ("https://amer.zhiye.com/zpdetail/123", ATSType.BEISEN_LEGACY, "amer"),
+    ("https://newhope.zhiye.com/index", ATSType.BEISEN_LEGACY, "newhope"),
     # Subdomain tenants
     ("https://12build.recruitee.com", ATSType.RECRUITEE, "12build"),
     ("https://1komma5.teamtailor.com/jobs", ATSType.TEAMTAILOR, "1komma5"),
@@ -151,6 +155,10 @@ def test_get_scraper_for_url_builds_scraper() -> None:
     assert isinstance(
         get_scraper_for_url("https://mengniu.zhiye.com/social/jobs"),
         BeisenScraper,
+    )
+    assert isinstance(
+        get_scraper_for_url("https://amer.zhiye.com/Social/?PageIndex=1"),
+        BeisenLegacyScraper,
     )
     workday = get_scraper_for_url(
         "https://2020companies.wd1.myworkdayjobs.com/external_careers"

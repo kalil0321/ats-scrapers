@@ -17,7 +17,7 @@ from ats_scrapers.models import ATSType, Company, Job, Salary
 def test_ats_type_includes_every_supported_platform() -> None:
     expected = {
         # Multi-tenant ATS systems
-        "ashby", "avature", "beisen", "cornerstone", "darwinbox", "eightfold", "gem", "greenhouse", "gupy",
+            "ashby", "avature", "beisen", "beisen_legacy", "cornerstone", "darwinbox", "eightfold", "gem", "greenhouse", "gupy",
         "icims", "join_com", "lever", "mercor", "moka", "oracle", "personio", "phenom",
         "pinpoint", "recruiterbox", "rippling", "smartrecruiters",
         "successfactors", "workable", "workday",

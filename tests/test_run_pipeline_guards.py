@@ -57,6 +57,22 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
     assert runner.CONFIGS["beisen"]["slug"](beisen_row) == "mengniu"
     assert runner.CONFIGS["beisen"]["output"] == "beisen/jobs.csv"
 
+    legacy_row = {
+        "name": "Amer Sports China",
+        "slug": "amer",
+        "url": "https://amer.zhiye.com/Social",
+    }
+    assert runner.CONFIGS["beisen_legacy"]["scraper"] is runner.BeisenLegacyScraper
+    assert runner.CONFIGS["beisen_legacy"]["slug"](legacy_row) == "amer"
+    assert runner.CONFIGS["beisen_legacy"]["kwargs"](legacy_row) == {
+        "company_name": "Amer Sports China"
+    }
+    assert runner.CONFIGS["beisen_legacy"]["output"] == "beisen_legacy/jobs.csv"
+    assert runner.CONFIGS["beisen_legacy"]["defer_descriptions_to_cache"] is True
+    assert runner.CONFIGS["beisen_legacy"]["description_cache_path"] == (
+        "beisen_legacy/descriptions.sqlite3"
+    )
+
     eightfold_row = {
         "name": "Amdocs",
         "slug": "amdocs",

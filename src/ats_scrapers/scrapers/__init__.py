@@ -16,6 +16,7 @@ from ats_scrapers.scrapers.avature import AvatureScraper
 from ats_scrapers.scrapers.bamboohr import BambooHRScraper
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry, get_scraper
 from ats_scrapers.scrapers.beisen import BeisenScraper
+from ats_scrapers.scrapers.beisen_legacy import BeisenLegacyScraper
 from ats_scrapers.scrapers.breezy import BreezyScraper
 from ats_scrapers.scrapers.builtin import BuiltInScraper
 from ats_scrapers.scrapers.bundesagentur import BundesagenturScraper
@@ -73,6 +74,7 @@ __all__ = [
     "AvatureScraper",
     "BambooHRScraper",
     "BaseScraper",
+    "BeisenLegacyScraper",
     "BeisenScraper",
     "BreezyScraper",
     "BuiltInScraper",

@@ -36,6 +36,7 @@ class ATSType(StrEnum):
     ASHBY = "ashby"
     AVATURE = "avature"
     BEISEN = "beisen"
+    BEISEN_LEGACY = "beisen_legacy"
     CORNERSTONE = "cornerstone"
     DARWINBOX = "darwinbox"
     EIGHTFOLD = "eightfold"

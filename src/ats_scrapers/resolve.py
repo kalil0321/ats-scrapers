@@ -146,7 +146,22 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
     if host.endswith(".zhiye.com"):
         tenant = host.removesuffix(".zhiye.com")
         if _DNS_LABEL_RE.fullmatch(tenant):
-            return ResolvedCareersUrl(ATSType.BEISEN, tenant)
+            segments = [segment for segment in parsed.path.split("/") if segment]
+            is_legacy = bool(
+                segments
+                and (
+                    segments[0].casefold() in {"index", "zpdetail", "zwxq"}
+                    or (
+                        segments[0].casefold() in {"social", "campus", "intern"}
+                        and not (
+                            len(segments) > 1
+                            and segments[1].casefold() == "jobs"
+                        )
+                    )
+                )
+            )
+            ats = ATSType.BEISEN_LEGACY if is_legacy else ATSType.BEISEN
+            return ResolvedCareersUrl(ats, tenant)
         return None
 
     for suffix, ats in _SUBDOMAIN_SUFFIXES.items():
