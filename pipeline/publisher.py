@@ -535,6 +535,7 @@ class DatasetPublisher:
 ATS_DEDUP_PRIORITY: dict[str, int] = {
     # Direct employer ATSes
     "ashby": 1, "avature": 1, "bamboohr": 1, "beisen": 1, "breezy": 1, "cornerstone": 1,
+    "darwinbox": 1,
     "greenhouse": 1, "gupy": 1, "icims": 1, "jazzhr": 1, "join_com": 1, "lever": 1,
     "moka": 1, "oracle": 1, "personio": 1, "phenom": 1, "pinpoint": 1, "recruitee": 1,
     "recruiterbox": 1, "rippling": 1, "smartrecruiters": 1,

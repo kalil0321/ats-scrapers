@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 # escape the intended host when a scraper interpolates the slug into
 # an f-string URL.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._\-]*$", re.IGNORECASE)
+_DNS_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
 
 
 class ResolvedCareersUrl(NamedTuple):
@@ -133,6 +134,14 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
                 f"{prefix}{segments[1]}/{segments[2]}{recruitment_type}",
             )
         return None
+
+    for suffix, tld in ((".darwinbox.in", "in"), (".darwinbox.com", "com")):
+        if host.endswith(suffix):
+            tenant = host.removesuffix(suffix)
+            if _DNS_LABEL_RE.fullmatch(tenant):
+                slug = tenant if tld == "in" else f"{tenant}.com"
+                return ResolvedCareersUrl(ATSType.DARWINBOX, slug)
+            return None
 
     for suffix, ats in _SUBDOMAIN_SUFFIXES.items():
         if host.endswith(suffix):

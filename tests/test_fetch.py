@@ -99,6 +99,28 @@ async def test_429_respects_numeric_retry_after(httpx_mock, monkeypatch) -> None
     assert sleeps == [7.0]
 
 
+async def test_retry_after_non_string_falls_back_without_crashing(monkeypatch) -> None:
+    responses = iter(
+        [
+            FetchResponse(429, "", {"Retry-After": ["1"]}),  # type: ignore[dict-item]
+            FetchResponse(200, "{}", {}),
+        ]
+    )
+    sleeps: list[float] = []
+
+    async def fake_perform(*args: Any, **kwargs: Any) -> FetchResponse:
+        return next(responses)
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    async with _fetcher(retry_base_delay=1.5, max_retry_delay=30.0) as fetch:
+        monkeypatch.setattr(fetch, "_perform", fake_perform)
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        assert await fetch.get_json(URL) == {}
+    assert sleeps == [1.5]
+
+
 async def test_network_errors_retry(httpx_mock) -> None:
     import httpx
 
@@ -142,10 +164,15 @@ async def test_malformed_json_raises_scraper_error(httpx_mock) -> None:
 
 
 class _FakeCloakResponse:
-    def __init__(self, status_code: int = 200, text: str = "{}") -> None:
+    def __init__(
+        self,
+        status_code: int = 200,
+        text: str = "{}",
+        headers: dict[str, Any] | None = None,
+    ) -> None:
         self.status_code = status_code
         self.text = text
-        self.headers: dict[str, str] = {}
+        self.headers = headers or {}
 
 
 def _install_fake_httpcloak(
@@ -201,6 +228,7 @@ async def test_pinned_cloak_engine_never_touches_httpx(monkeypatch) -> None:
     async with _fetcher(engine="cloak") as fetch:
         assert await fetch.get_json(URL) == [1]
     assert len(calls) == 1
+    assert calls[0]["timeout"] == 30_000
 
 
 # --- proxy config -----------------------------------------------------------

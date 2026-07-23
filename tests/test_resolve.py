@@ -9,6 +9,7 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import (
     AshbyScraper,
+    DarwinboxScraper,
     GreenhouseScraper,
     GupyScraper,
     MokaScraper,
@@ -38,6 +39,16 @@ RESOLVES = [
         "https://hire-r1.mokahr.com/campus-recruitment/klook/100008011",
         ATSType.MOKA,
         "hire-r1/klook/100008011/campus",
+    ),
+    (
+        "https://airtel.darwinbox.in/ms/candidate/careers",
+        ATSType.DARWINBOX,
+        "airtel",
+    ),
+    (
+        "https://pwc.darwinbox.com/ms/candidate/careers",
+        ATSType.DARWINBOX,
+        "pwc.com",
     ),
     # Subdomain tenants
     ("https://12build.recruitee.com", ATSType.RECRUITEE, "12build"),
@@ -98,6 +109,9 @@ def test_icims_nonstandard_prefix_keeps_full_url() -> None:
         "https://jobs.ashbyhq.com",               # no slug in path
         "https://join.com/about",                 # join.com non-company path
         "https://evil.recruitee.com.attacker.io", # suffix-spoofing host
+        "https://bad_slug.darwinbox.in/ms/candidate/careers",
+        f"https://{'a' * 64}.darwinbox.com/ms/candidate/careers",
+        "https://trailing-.darwinbox.in/ms/candidate/careers",
         "not a url at all",
     ],
 )
@@ -123,6 +137,12 @@ def test_get_scraper_for_url_builds_scraper() -> None:
             "https://app.mokahr.com/social-recruitment/trip/70415"
         ),
         MokaScraper,
+    )
+    assert isinstance(
+        get_scraper_for_url(
+            "https://airtel.darwinbox.in/ms/candidate/careers"
+        ),
+        DarwinboxScraper,
     )
     workday = get_scraper_for_url(
         "https://2020companies.wd1.myworkdayjobs.com/external_careers"

@@ -19,6 +19,7 @@ from ats_scrapers.scrapers.breezy import BreezyScraper
 from ats_scrapers.scrapers.builtin import BuiltInScraper
 from ats_scrapers.scrapers.bundesagentur import BundesagenturScraper
 from ats_scrapers.scrapers.cornerstone import CornerstoneScraper
+from ats_scrapers.scrapers.darwinbox import DarwinboxScraper
 from ats_scrapers.scrapers.eightfold import EightfoldScraper
 from ats_scrapers.scrapers.eures import EuresScraper
 from ats_scrapers.scrapers.gem import GemScraper
@@ -75,6 +76,7 @@ __all__ = [
     "BuiltInScraper",
     "BundesagenturScraper",
     "CornerstoneScraper",
+    "DarwinboxScraper",
     "EightfoldScraper",
     "EuresScraper",
     "GemScraper",

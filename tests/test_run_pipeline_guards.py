@@ -39,6 +39,15 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
         "company_name": "AAK"
     }
 
+    darwinbox_row = {
+        "name": "PwC Asia",
+        "slug": "pwc.com",
+        "url": "https://pwc.darwinbox.com/ms/candidate/careers",
+    }
+    assert runner.CONFIGS["darwinbox"]["scraper"] is runner.DarwinboxScraper
+    assert runner.CONFIGS["darwinbox"]["slug"](darwinbox_row) == "pwc.com"
+    assert runner.CONFIGS["darwinbox"]["output"] == "darwinbox/jobs.csv"
+
     eightfold_row = {
         "name": "Amdocs",
         "slug": "amdocs",

@@ -35,6 +35,7 @@ Acme Corp,acme,https://acme.greenhouse.io
 | bamboohr | `https://<slug>.bamboohr.com/careers` |
 | breezy | `https://<slug>.breezy.hr` |
 | cornerstone | `https://<slug>.csod.com` |
+| darwinbox | `https://<slug>.darwinbox.{in,com}/ms/candidate/careers` |
 | eightfold | `https://<slug>.eightfold.ai/careers` |
 | gem | `https://jobs.gem.com/<slug>` |
 | greenhouse | `https://job-boards.greenhouse.io/<slug>` |

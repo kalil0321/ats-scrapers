@@ -344,7 +344,7 @@ class Fetcher:
                 )
                 delay = (
                     float(retry_after)
-                    if retry_after and retry_after.isdigit()
+                    if isinstance(retry_after, str) and retry_after.isdigit()
                     else min(base_delay * 2 ** (attempt - 1), max_delay)
                 )
                 await asyncio.sleep(delay)
@@ -386,13 +386,14 @@ class Fetcher:
         headers: dict[str, str] | None,
         json: Any,
     ) -> FetchResponse:
-        import httpcloak
+        import httpcloak  # type: ignore[import-untyped]
 
         merged_headers = {**self.headers, **(headers or {})}
         kwargs: dict[str, Any] = {
             "params": params,
             "headers": merged_headers or None,
-            "timeout": self.timeout,
+            # Fetcher exposes seconds like httpx; httpcloak expects ms.
+            "timeout": int(self.timeout * 1000),
         }
         if self.proxy:
             kwargs["proxy"] = self.proxy

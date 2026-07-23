@@ -37,6 +37,7 @@ class ATSType(StrEnum):
     AVATURE = "avature"
     BEISEN = "beisen"
     CORNERSTONE = "cornerstone"
+    DARWINBOX = "darwinbox"
     EIGHTFOLD = "eightfold"
     GEM = "gem"
     GREENHOUSE = "greenhouse"

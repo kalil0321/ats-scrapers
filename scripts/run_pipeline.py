@@ -47,6 +47,7 @@ from ats_scrapers.scrapers import (
     BuiltInScraper,
     BundesagenturScraper,
     CornerstoneScraper,
+    DarwinboxScraper,
     EightfoldScraper,
     EuresScraper,
     GemScraper,
@@ -475,6 +476,12 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "defer_descriptions_to_cache": True,
         "description_cache_path": "gupy/descriptions.sqlite3",
         "description_cache_compress": True,
+    },
+    "darwinbox": {
+        "scraper": DarwinboxScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "csv": "ats-companies/darwinbox.csv",
+        "output": "darwinbox/jobs.csv",
     },
     "workable": {
         "scraper": WorkableScraper,
