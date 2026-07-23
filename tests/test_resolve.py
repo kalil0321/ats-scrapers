@@ -9,6 +9,7 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import (
     AshbyScraper,
+    BeisenScraper,
     DarwinboxScraper,
     GreenhouseScraper,
     GupyScraper,
@@ -50,6 +51,7 @@ RESOLVES = [
         ATSType.DARWINBOX,
         "pwc.com",
     ),
+    ("https://mengniu.zhiye.com/social/jobs", ATSType.BEISEN, "mengniu"),
     # Subdomain tenants
     ("https://12build.recruitee.com", ATSType.RECRUITEE, "12build"),
     ("https://1komma5.teamtailor.com/jobs", ATSType.TEAMTAILOR, "1komma5"),
@@ -112,6 +114,8 @@ def test_icims_nonstandard_prefix_keeps_full_url() -> None:
         "https://bad_slug.darwinbox.in/ms/candidate/careers",
         f"https://{'a' * 64}.darwinbox.com/ms/candidate/careers",
         "https://trailing-.darwinbox.in/ms/candidate/careers",
+        "https://bad_slug.zhiye.com/social/jobs",
+        f"https://{'a' * 64}.zhiye.com/social/jobs",
         "not a url at all",
     ],
 )
@@ -143,6 +147,10 @@ def test_get_scraper_for_url_builds_scraper() -> None:
             "https://airtel.darwinbox.in/ms/candidate/careers"
         ),
         DarwinboxScraper,
+    )
+    assert isinstance(
+        get_scraper_for_url("https://mengniu.zhiye.com/social/jobs"),
+        BeisenScraper,
     )
     workday = get_scraper_for_url(
         "https://2020companies.wd1.myworkdayjobs.com/external_careers"

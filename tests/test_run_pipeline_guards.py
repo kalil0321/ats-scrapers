@@ -48,6 +48,15 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
     assert runner.CONFIGS["darwinbox"]["slug"](darwinbox_row) == "pwc.com"
     assert runner.CONFIGS["darwinbox"]["output"] == "darwinbox/jobs.csv"
 
+    beisen_row = {
+        "name": "Mengniu Dairy",
+        "slug": "mengniu",
+        "url": "https://mengniu.zhiye.com",
+    }
+    assert runner.CONFIGS["beisen"]["scraper"] is runner.BeisenScraper
+    assert runner.CONFIGS["beisen"]["slug"](beisen_row) == "mengniu"
+    assert runner.CONFIGS["beisen"]["output"] == "beisen/jobs.csv"
+
     eightfold_row = {
         "name": "Amdocs",
         "slug": "amdocs",

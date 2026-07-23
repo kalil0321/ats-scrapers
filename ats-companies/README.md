@@ -33,6 +33,7 @@ Acme Corp,acme,https://acme.greenhouse.io
 | ashby | `https://jobs.ashbyhq.com/<slug>` |
 | avature | `https://<slug>.avature.net` |
 | bamboohr | `https://<slug>.bamboohr.com/careers` |
+| beisen | `https://<slug>.zhiye.com` |
 | breezy | `https://<slug>.breezy.hr` |
 | cornerstone | `https://<slug>.csod.com` |
 | darwinbox | `https://<slug>.darwinbox.{in,com}/ms/candidate/careers` |

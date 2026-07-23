@@ -143,6 +143,12 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
                 return ResolvedCareersUrl(ATSType.DARWINBOX, slug)
             return None
 
+    if host.endswith(".zhiye.com"):
+        tenant = host.removesuffix(".zhiye.com")
+        if _DNS_LABEL_RE.fullmatch(tenant):
+            return ResolvedCareersUrl(ATSType.BEISEN, tenant)
+        return None
+
     for suffix, ats in _SUBDOMAIN_SUFFIXES.items():
         if host.endswith(suffix):
             slug = host.removesuffix(suffix)

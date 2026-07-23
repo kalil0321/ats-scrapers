@@ -43,6 +43,7 @@ from ats_scrapers.scrapers import (
     AshbyScraper,
     AvatureScraper,
     BambooHRScraper,
+    BeisenScraper,
     BreezyScraper,
     BuiltInScraper,
     BundesagenturScraper,
@@ -482,6 +483,12 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
         "csv": "ats-companies/darwinbox.csv",
         "output": "darwinbox/jobs.csv",
+    },
+    "beisen": {
+        "scraper": BeisenScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "csv": "ats-companies/beisen.csv",
+        "output": "beisen/jobs.csv",
     },
     "workable": {
         "scraper": WorkableScraper,
