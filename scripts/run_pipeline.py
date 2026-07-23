@@ -66,6 +66,7 @@ from ats_scrapers.scrapers import (
     ManfredScraper,
     MercorScraper,
     MetaScraper,
+    MokaScraper,
     OracleScraper,
     PersonioScraper,
     PhenomScraper,
@@ -251,6 +252,28 @@ def _ashby_slug(row: dict[str, Any]) -> str | None:
             return m.group(1).lower()
     name = (row.get("name") or "").strip()
     return name or None
+
+
+def _moka_slug(row: dict[str, Any]) -> str | None:
+    if (slug := _slug_col(row)):
+        return slug
+    raw = (row.get("url") or "").strip()
+    if raw:
+        parsed = urlparse(raw)
+        host = parsed.netloc.casefold()
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            host in {"app.mokahr.com", "hire-r1.mokahr.com"}
+            and len(segments) >= 3
+            and segments[0] in {"social-recruitment", "campus-recruitment"}
+            and segments[2].isdigit()
+        ):
+            prefix = "hire-r1/" if host == "hire-r1.mokahr.com" else ""
+            recruitment_type = (
+                "/campus" if segments[0] == "campus-recruitment" else ""
+            )
+            return f"{prefix}{segments[1]}/{segments[2]}{recruitment_type}"
+    return (row.get("name") or "").strip() or None
 
 
 def _oracle_slug(row: dict[str, Any]) -> str | None:
@@ -478,6 +501,12 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "defer_descriptions_to_cache": True,
         "description_cache_path": "gupy/descriptions.sqlite3",
         "description_cache_compress": True,
+    },
+    "moka": {
+        "scraper": MokaScraper,
+        "slug": _moka_slug,
+        "csv": "ats-companies/moka.csv",
+        "output": "moka/jobs.csv",
     },
     "darwinbox": {
         "scraper": DarwinboxScraper,

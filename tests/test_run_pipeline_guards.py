@@ -48,6 +48,24 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
     assert runner.CONFIGS["darwinbox"]["slug"](darwinbox_row) == "pwc.com"
     assert runner.CONFIGS["darwinbox"]["output"] == "darwinbox/jobs.csv"
 
+    moka_row = {
+        "name": "Trip.com Group",
+        "slug": "trip/70415",
+        "url": "https://app.mokahr.com/social-recruitment/trip/70415",
+    }
+    assert runner.CONFIGS["moka"]["scraper"] is runner.MokaScraper
+    assert runner.CONFIGS["moka"]["slug"](moka_row) == "trip/70415"
+    assert runner.CONFIGS["moka"]["output"] == "moka/jobs.csv"
+    assert runner.CONFIGS["moka"]["slug"](
+        {
+            "name": "Klook",
+            "url": (
+                "https://hire-r1.mokahr.com/"
+                "campus-recruitment/klook/100008011/jobs"
+            ),
+        }
+    ) == "hire-r1/klook/100008011/campus"
+
     beisen_row = {
         "name": "Mengniu Dairy",
         "slug": "mengniu",
