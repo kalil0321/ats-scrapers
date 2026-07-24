@@ -547,7 +547,6 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "tiktok": 1, "uber": 1,
     # Hybrid jobboards
     "welcometothejungle": 3, "mercor": 3, "gem": 3,
-    "seek": 4,
     # Sourcing/matching layer that mirrors others
     "eightfold": 5,
     # National public-sector aggregators — government-curated but the

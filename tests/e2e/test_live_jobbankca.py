@@ -1,4 +1,4 @@
-"""Live smoke tests for SEEK and Job Bank Canada."""
+"""Live smoke test for Job Bank Canada."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import pytest
 
 from ats_scrapers.models import Job
-from ats_scrapers.scrapers import JobBankCAScraper, SeekScraper
+from ats_scrapers.scrapers import JobBankCAScraper
 from ats_scrapers.scrapers.base import BaseScraper
 
 pytestmark = [
@@ -27,7 +27,6 @@ CASES: list[tuple[str, Callable[[], BaseScraper], str]] = [
         lambda: JobBankCAScraper("jobbankca", max_pages=1),
         "jobbank.gc.ca",
     ),
-    ("seek-au", lambda: SeekScraper("au", max_pages=1), "seek.com"),
 ]
 
 
