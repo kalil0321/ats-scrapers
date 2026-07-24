@@ -1489,6 +1489,22 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
         )
 
         failure_threshold = max(1, (len(targets) + 1) // 2)
+        streaming_failure = uses_streaming and counts["error"] > 0
+        if streaming_failure:
+            tmp_output_path.unlink(missing_ok=True)
+            if output_path.exists():
+                print(
+                    f"[{ats}] ACTION keep_previous: streaming scrape failed "
+                    f"after {counts['jobs']:,} jobs; preserved {output_path} "
+                    "instead of publishing a partial dataset."
+                )
+            else:
+                print(
+                    f"[{ats}] ACTION retry: streaming scrape failed after "
+                    f"{counts['jobs']:,} jobs and no previous jobs.csv exists."
+                )
+            return 1
+
         catastrophic_failure = (
             bool(targets)
             and counts["jobs"] == 0

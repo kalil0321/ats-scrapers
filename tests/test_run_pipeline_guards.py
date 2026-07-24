@@ -736,6 +736,50 @@ def test_streaming_pipeline_reuses_sqlite_description_cache(
     assert rows[0]["description"] == "cached"
 
 
+def test_streaming_failure_preserves_previous_jobs_csv(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "stream"
+    out_dir.mkdir()
+    out_path = out_dir / "jobs.csv"
+    previous = (
+        "url,title,company,ats_type,ats_id\n"
+        "https://example.com/jobs/old,Old,Acme,custom,old\n"
+    )
+    out_path.write_text(previous, encoding="utf-8")
+
+    class PartiallyFailingStreamingScraper:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def fetch_stream(self):
+            yield Job(
+                url="https://example.com/jobs/new",
+                title="New",
+                company="Acme",
+                ats_type=ATSType.CUSTOM,
+                ats_id="new",
+            )
+            raise RuntimeError("page 2 failed")
+
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "stream",
+        {
+            "scraper": PartiallyFailingStreamingScraper,
+            "singleton": True,
+            "output": "stream/jobs.csv",
+        },
+    )
+
+    rc = asyncio.run(runner.run("stream", concurrency=1, max_tenants=None, timeout=1))
+
+    assert rc == 1
+    assert out_path.read_text(encoding="utf-8") == previous
+    assert not (out_dir / ".jobs.csv.tmp").exists()
+
+
 def test_streaming_pipeline_skips_capped_description_cache(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
