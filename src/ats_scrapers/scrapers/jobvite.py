@@ -357,6 +357,9 @@ def _apply_detail(job: Job, html_text: str) -> None:
             not job.location or _GENERIC_LOCATION_RE.match(job.location)
         ):
             job.location = structured_location
+            job.is_remote = (
+                True if "remote" in structured_location.lower() else None
+            )
 
         _apply_salary(job, posting.get("baseSalary"))
 
@@ -365,6 +368,7 @@ def _apply_detail(job: Job, html_text: str) -> None:
         job.department = department
     if location and (not job.location or _GENERIC_LOCATION_RE.match(job.location)):
         job.location = location
+        job.is_remote = True if "remote" in location.lower() else None
 
     apply_link = soup.select_one("a.jv-button-apply[href]")
     if apply_link is not None:
@@ -404,7 +408,7 @@ def _find_job_posting(soup: BeautifulSoup) -> dict[str, Any] | None:
         if not raw:
             continue
         with contextlib.suppress(json.JSONDecodeError):
-            payload = json.loads(html.unescape(raw))
+            payload = json.loads(raw)
             for item in _jsonld_items(payload):
                 if item.get("@type") == "JobPosting":
                     return item

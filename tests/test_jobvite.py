@@ -550,6 +550,63 @@ def test_detail_dom_fallback_populates_description() -> None:
     assert job.location == "Paris, France"
 
 
+def test_jsonld_entities_are_decoded_after_json_parsing() -> None:
+    job = Job(
+        url="https://jobs.jobvite.com/acme/job/a1",
+        title="Engineer",
+        company="Acme",
+        ats_type=ATSType.JOBVITE,
+        ats_id="a1",
+    )
+    posting = {
+        "@context": "https://schema.org",
+        "@type": "JobPosting",
+        "description": "<p>Use &quot;safe&quot; APIs.</p>",
+    }
+
+    _apply_detail(
+        job,
+        (
+            '<script type="application/ld+json">'
+            f"{json.dumps(posting)}"
+            "</script>"
+        ),
+    )
+
+    assert job.description == 'Use "safe" APIs.'
+
+
+def test_structured_remote_location_updates_remote_status() -> None:
+    job = Job(
+        url="https://jobs.jobvite.com/acme/job/a1",
+        title="Engineer",
+        company="Acme",
+        ats_type=ATSType.JOBVITE,
+        ats_id="a1",
+        location="2 Locations",
+    )
+
+    _apply_detail(
+        job,
+        _detail(
+            "a1",
+            locations=[
+                {
+                    "@type": "Place",
+                    "address": {
+                        "@type": "PostalAddress",
+                        "addressLocality": "Remote",
+                        "addressCountry": "France",
+                    },
+                }
+            ],
+        ),
+    )
+
+    assert job.location == "Remote, France"
+    assert job.is_remote is True
+
+
 def test_get_description_uses_detail_page(httpx_mock) -> None:
     scraper = JobviteScraper("acme")
     job = Job(
