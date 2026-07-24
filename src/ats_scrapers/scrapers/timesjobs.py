@@ -159,7 +159,6 @@ class TimesJobsScraper(BaseScraper):
     ) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
-        raw_rows = 0
         lock = asyncio.Lock()
 
         async def absorb(
@@ -167,7 +166,6 @@ class TimesJobsScraper(BaseScraper):
             *,
             page: int,
         ) -> None:
-            nonlocal raw_rows
             parsed = [self._parse(item) for item in items]
             if self._full_catalogue and any(job is None for job in parsed):
                 raise ScraperError(
@@ -191,7 +189,6 @@ class TimesJobsScraper(BaseScraper):
                     raise ScraperError(
                         f"TimesJobs page={page} repeated an earlier result page"
                     )
-                raw_rows += len(items)
             if on_job is not None:
                 for job in new_jobs:
                     await on_job(job)
@@ -259,10 +256,10 @@ class TimesJobsScraper(BaseScraper):
             raise ScraperError(
                 "TimesJobs full-catalogue scrape returned no jobs"
             )
-        if self._full_catalogue and raw_rows < reported_total:
+        if self._full_catalogue and len(seen) < reported_total:
             raise ScraperError(
                 "TimesJobs catalogue ended before the reported total "
-                f"({raw_rows}/{reported_total})"
+                f"({len(seen)}/{reported_total} unique jobs)"
             )
         return all_jobs
 
@@ -426,6 +423,11 @@ class TimesJobsScraper(BaseScraper):
             language="en",
             is_remote=is_remote,
             salary_currency=salary_currency,
+            salary_period=(
+                "YEAR"
+                if salary_min is not None or salary_max is not None
+                else None
+            ),
             salary_min=salary_min,
             salary_max=salary_max,
             experience=experience,

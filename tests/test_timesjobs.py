@@ -159,6 +159,7 @@ def test_dedupes_repeated_job_ids(httpx_mock) -> None:
         url=API_URL,
         json=_response(
             [_job(job_id="1"), _job(job_id="1"), _job(job_id="2")],
+            total=2,
         ),
     )
     jobs = TimesJobsScraper("any").fetch()
@@ -189,6 +190,30 @@ def test_full_catalogue_rejects_repeated_result_page(httpx_mock) -> None:
         TimesJobsScraper("any").fetch()
 
 
+def test_full_catalogue_rejects_partial_page_overlap(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=API_URL,
+        json=_response(
+            [_job(job_id="1"), _job(job_id="2")],
+            page=1,
+            total_pages=2,
+            total=4,
+        ),
+    )
+    httpx_mock.add_response(
+        url=API_URL,
+        json=_response(
+            [_job(job_id="2"), _job(job_id="3")],
+            page=2,
+            total_pages=2,
+            total=4,
+        ),
+    )
+
+    with pytest.raises(ScraperError, match=r"3/4 unique jobs"):
+        TimesJobsScraper("any").fetch()
+
+
 # --- field extraction -------------------------------------------------------
 
 
@@ -216,6 +241,7 @@ def test_real_salary_range_is_preserved(httpx_mock) -> None:
     assert j.salary_min == 800_000
     assert j.salary_max == 1_500_000
     assert j.salary_currency == "INR"
+    assert j.salary_period == "YEAR"
 
 
 def test_currency_alias_rs_is_normalized_to_inr(httpx_mock) -> None:
@@ -453,7 +479,9 @@ def test_full_catalogue_rejects_fewer_rows_than_reported(
         json=_response([_job()], total=2),
     )
 
-    with pytest.raises(ScraperError, match=r"reported total \(1/2\)"):
+    with pytest.raises(
+        ScraperError, match=r"reported total \(1/2 unique jobs\)"
+    ):
         TimesJobsScraper("any").fetch()
 
 
