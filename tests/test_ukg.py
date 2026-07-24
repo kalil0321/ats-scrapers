@@ -198,6 +198,17 @@ def test_reported_total_mismatch_fails_closed(httpx_mock) -> None:
         UKGProScraper(BOARD, include_descriptions=False).fetch()
 
 
+def test_explicit_zero_result_catalogue_returns_empty(httpx_mock) -> None:
+    httpx_mock.add_response(url=BOARD, text=_board_page())
+    httpx_mock.add_response(
+        method="POST",
+        url=LOAD_URL,
+        json={"opportunities": [], "totalCount": 0},
+    )
+
+    assert UKGProScraper(BOARD).fetch() == []
+
+
 def test_closed_job_between_listing_and_detail_is_dropped(httpx_mock) -> None:
     ids = [
         "aaaaaaaa-1111-2222-3333-444444444444",
@@ -223,7 +234,7 @@ def test_closed_job_between_listing_and_detail_is_dropped(httpx_mock) -> None:
     assert [job.ats_id for job in jobs] == [ids[0]]
 
 
-def test_systemic_detail_request_failure_fails_closed(httpx_mock) -> None:
+def test_detail_request_failure_keeps_listing_job(httpx_mock) -> None:
     job_id = "aaaaaaaa-1111-2222-3333-444444444444"
     httpx_mock.add_response(url=BOARD, text=_board_page())
     httpx_mock.add_response(
@@ -237,8 +248,59 @@ def test_systemic_detail_request_failure_fails_closed(httpx_mock) -> None:
         is_reusable=True,
     )
 
-    with pytest.raises(ScraperError, match="returned 500"):
-        UKGProScraper(BOARD).fetch()
+    jobs = UKGProScraper(BOARD).fetch()
+
+    assert [job.ats_id for job in jobs] == [job_id]
+    assert jobs[0].description is None
+
+
+def test_malformed_detail_keeps_listing_job(httpx_mock) -> None:
+    ids = [
+        "aaaaaaaa-1111-2222-3333-444444444444",
+        "bbbbbbbb-1111-2222-3333-444444444444",
+    ]
+    httpx_mock.add_response(url=BOARD, text=_board_page())
+    httpx_mock.add_response(
+        method="POST",
+        url=LOAD_URL,
+        json={
+            "opportunities": [_listing(job_id) for job_id in ids],
+            "totalCount": 2,
+        },
+    )
+    httpx_mock.add_response(
+        url=f"{INTERNAL_BASE}/OpportunityDetail?opportunityId={ids[0]}",
+        text=_detail(ids[0]),
+    )
+    httpx_mock.add_response(
+        url=f"{INTERNAL_BASE}/OpportunityDetail?opportunityId={ids[1]}",
+        text="<html><body>Malformed detail</body></html>",
+    )
+
+    jobs = UKGProScraper(BOARD).fetch()
+
+    assert [job.ats_id for job in jobs] == ids
+    assert jobs[0].description == "Build systems."
+    assert jobs[1].description is None
+
+
+def test_empty_description_keeps_listing_job(httpx_mock) -> None:
+    job_id = "aaaaaaaa-1111-2222-3333-444444444444"
+    httpx_mock.add_response(url=BOARD, text=_board_page())
+    httpx_mock.add_response(
+        method="POST",
+        url=LOAD_URL,
+        json={"opportunities": [_listing(job_id)], "totalCount": 1},
+    )
+    httpx_mock.add_response(
+        url=f"{INTERNAL_BASE}/OpportunityDetail?opportunityId={job_id}",
+        text=_detail(job_id, description=""),
+    )
+
+    jobs = UKGProScraper(BOARD).fetch()
+
+    assert [job.ats_id for job in jobs] == [job_id]
+    assert jobs[0].description is None
 
 
 @pytest.mark.parametrize(

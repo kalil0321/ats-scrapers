@@ -16,6 +16,7 @@ def test_ukg_pipeline_contract() -> None:
     assert config["csv"] == "ats-companies/ukg.csv"
     assert config["output"] == "ukg/jobs.csv"
     assert config["fail_closed_on_any_error"] is True
+    assert config["fail_closed_on_not_found"] is True
     assert config["fail_closed_on_empty"] is True
     assert config["kwargs"]({"name": "Acme"}) == {"company_name": "Acme"}
 

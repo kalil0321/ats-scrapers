@@ -189,29 +189,36 @@ class UKGProScraper(BaseScraper):
         semaphore: asyncio.Semaphore,
         job: Job,
     ) -> Job | None:
-        async with semaphore:
-            response = await fetch.request(
-                "GET",
-                str(job.url),
-                handled={404, 410},
+        try:
+            async with semaphore:
+                response = await fetch.request(
+                    "GET",
+                    str(job.url),
+                    handled={404, 410},
+                )
+            if response.status_code in {404, 410}:
+                return None
+            detail = _extract_detail_payload(response.text)
+            if detail.get("OpportunityIsClosed") is True:
+                return None
+            if detail.get("Id") != job.ats_id:
+                raise ScraperError(
+                    f"UKG detail id did not match listing id {job.ats_id}"
+                )
+            _apply_detail(job, detail)
+        except ScraperError as exc:
+            logger.warning(
+                "Keeping UKG listing job %s after optional detail failure: %s",
+                job.ats_id,
+                exc,
             )
-        if response.status_code in {404, 410}:
-            return None
-        detail = _extract_detail_payload(response.text)
-        if detail.get("OpportunityIsClosed") is True:
-            return None
-        if detail.get("Id") != job.ats_id:
-            raise ScraperError(
-                f"UKG detail id did not match listing id {job.ats_id}"
-            )
-        _apply_detail(job, detail)
+            return job
         if not job.description:
             logger.warning(
-                "Dropping UKG job %s because its detail page omitted "
+                "Keeping UKG job %s although its detail page omitted "
                 "a description",
                 job.ats_id,
             )
-            return None
         return job
 
     def _parse_internal_base(self, html_text: str) -> str:

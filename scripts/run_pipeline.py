@@ -467,6 +467,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/ukg.csv",
         "output": "ukg/jobs.csv",
         "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
     },
     "jazzhr": {
@@ -1498,13 +1499,25 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                 )
             return 1
 
+        required_not_found = (
+            counts["not_found"]
+            if cfg.get("fail_closed_on_not_found")
+            else 0
+        )
         sharded_failure = (
-            bool(cfg.get("fail_closed_on_any_error"))
-            and (counts["error"] > 0 or omitted_required_shards > 0)
+            (
+                bool(cfg.get("fail_closed_on_any_error"))
+                and (counts["error"] > 0 or omitted_required_shards > 0)
+            )
+            or required_not_found > 0
         )
         if sharded_failure:
             tmp_output_path.unlink(missing_ok=True)
-            required_failures = counts["error"] + omitted_required_shards
+            required_failures = (
+                counts["error"]
+                + omitted_required_shards
+                + required_not_found
+            )
             if output_path.exists():
                 print(
                     f"[{ats}] ACTION keep_previous: {required_failures}/"
