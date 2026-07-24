@@ -63,7 +63,7 @@ def test_disabled_seek_company_delete_failure_is_fatal() -> None:
         module.delete_disabled_sources(client, "test-bucket")
 
 
-def test_disabled_delete_failure_prevents_manifest_rewrite(
+def test_disabled_delete_failure_happens_after_manifest_rewrite(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -113,6 +113,14 @@ def test_disabled_delete_failure_prevents_manifest_rewrite(
     with pytest.raises(RuntimeError, match="seek delete failed"):
         module.main()
 
-    assert f"{module.PREFIX}/manifest.json" not in uploaded_keys
-    assert uploaded_keys == []
-    assert operations == ["fetch_manifest", "delete_disabled"]
+    assert uploaded_keys == [
+        f"{module.PREFIX}/greenhouse/companies.csv",
+        f"{module.PREFIX}/companies.csv",
+        f"{module.PREFIX}/companies.parquet",
+        f"{module.PREFIX}/manifest.json",
+    ]
+    assert operations == [
+        "fetch_manifest",
+        *(f"upload:{key}" for key in uploaded_keys),
+        "delete_disabled",
+    ]

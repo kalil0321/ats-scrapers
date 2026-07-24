@@ -174,9 +174,6 @@ class DatasetPublisher:
             ats_csv_pattern=ats_csv_pattern,
             existing_manifest=existing_manifest,
         )
-        deleted = self.prune_disabled_job_sources()
-        if deleted:
-            logger.info("Deleted %d disabled-source keys", deleted)
 
         # ExitStack owns every per-ATS CSV temp: Pass 1 streams each
         # enriched per-ATS slice into one of these, then Pass 3
@@ -285,6 +282,15 @@ class DatasetPublisher:
                 existing_manifest=existing_manifest,
             )
             files_uploaded.append(manifest_key)
+
+            # Stable data keys and the manifest cannot be updated in one R2
+            # transaction. Cleanup therefore runs only after the canonical
+            # manifest and enabled snapshots are internally consistent. A
+            # delete failure leaves an unadvertised orphan for the next run
+            # to retry instead of leaving enabled objects with stale metadata.
+            deleted = self.prune_disabled_job_sources()
+            if deleted:
+                logger.info("Deleted %d disabled-source keys", deleted)
 
             deleted = self.prune_legacy_paths()
             if deleted:

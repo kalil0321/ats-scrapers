@@ -124,7 +124,7 @@ def test_publisher_excludes_and_deletes_stale_seek_slice(
     assert "jobhive/v1/seek/jobs.parquet" in fake_r2.deleted
 
 
-def test_disabled_seek_delete_failure_does_not_rewrite_manifest(
+def test_disabled_seek_delete_failure_leaves_consistent_manifest(
     ats_csv_dir, fake_r2, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest_key = "jobhive/v1/manifest.json"
@@ -155,15 +155,12 @@ def test_disabled_seek_delete_failure_does_not_rewrite_manifest(
             ats_csv_dir
         )
 
-    assert fake_r2.uploads[manifest_key]["data"] == original_manifest
-    assert not any(
-        key in fake_r2.uploads
-        for key in (
-            "jobhive/v1/all.csv",
-            "jobhive/v1/all.parquet",
-            "jobhive/v1/greenhouse/jobs.csv",
-        )
-    )
+    manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
+    assert "seek" not in manifest["by_ats"]
+    assert manifest["stats"]["total_jobs"] == 9
+    assert "jobhive/v1/all.csv" in fake_r2.uploads
+    assert "jobhive/v1/all.parquet" in fake_r2.uploads
+    assert "jobhive/v1/greenhouse/jobs.csv" in fake_r2.uploads
 
 
 # --- Manifest ---------------------------------------------------------------
