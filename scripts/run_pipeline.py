@@ -52,6 +52,7 @@ from ats_scrapers.scrapers import (
     DarwinboxScraper,
     EightfoldScraper,
     EuresScraper,
+    FounditScraper,
     GemScraper,
     GetOnBrdScraper,
     GoogleScraper,
@@ -83,6 +84,7 @@ from ats_scrapers.scrapers import (
     TeslaScraper,
     TheHubScraper,
     TikTokScraper,
+    TimesJobsScraper,
     UberScraper,
     WantedScraper,
     WellfoundScraper,
@@ -664,6 +666,20 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # InfoJobs Spain - Spanish direct-posting job board. ~70k live.
         "scraper": InfoJobsSpainScraper, "singleton": True,
         "output": "infojobs_es/jobs.csv",
+    },
+    "foundit": {
+        "scraper": FounditScraper,
+        "slug": lambda r: _slug_col(r) or None,
+        "kwargs": lambda r: {"bucket_strategy": "keyword"},
+        "csv": "ats-companies/foundit.csv",
+        "output": "foundit/jobs.csv",
+        "fail_closed_on_any_error": True,
+        "skip_description_enrichment": True,
+    },
+    "timesjobs": {
+        "scraper": TimesJobsScraper, "singleton": True,
+        "output": "timesjobs/jobs.csv",
+        "fail_closed_on_empty": True,
     },
     "jobs_cz": {
         # jobs.cz - Czech Republic's largest direct-posting board. ~10k live via seeded search.
@@ -1441,6 +1457,47 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                 print(
                     f"[{ats}] ACTION retry: streaming scrape failed after "
                     f"{counts['jobs']:,} jobs and no previous jobs.csv exists."
+                )
+            return 1
+
+        empty_output_failure = (
+            bool(cfg.get("fail_closed_on_empty"))
+            and bool(targets)
+            and counts["jobs"] == 0
+        )
+        if empty_output_failure:
+            tmp_output_path.unlink(missing_ok=True)
+            if output_path.exists():
+                print(
+                    f"[{ats}] ACTION keep_previous: required scrape returned "
+                    f"0 jobs; preserved {output_path} instead of publishing "
+                    "an empty dataset."
+                )
+            else:
+                print(
+                    f"[{ats}] ACTION retry: required scrape returned 0 jobs "
+                    "and no previous jobs.csv exists."
+                )
+            return 1
+
+        sharded_failure = (
+            bool(cfg.get("fail_closed_on_any_error"))
+            and counts["error"] > 0
+        )
+        if sharded_failure:
+            tmp_output_path.unlink(missing_ok=True)
+            if output_path.exists():
+                print(
+                    f"[{ats}] ACTION keep_previous: {counts['error']}/"
+                    f"{len(targets)} required shards failed after "
+                    f"{counts['jobs']:,} jobs; preserved {output_path} "
+                    "instead of publishing a partial dataset."
+                )
+            else:
+                print(
+                    f"[{ats}] ACTION retry: {counts['error']}/"
+                    f"{len(targets)} required shards failed and no previous "
+                    "jobs.csv exists."
                 )
             return 1
 

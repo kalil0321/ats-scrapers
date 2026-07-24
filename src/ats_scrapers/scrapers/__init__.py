@@ -24,6 +24,7 @@ from ats_scrapers.scrapers.cornerstone import CornerstoneScraper
 from ats_scrapers.scrapers.darwinbox import DarwinboxScraper
 from ats_scrapers.scrapers.eightfold import EightfoldScraper
 from ats_scrapers.scrapers.eures import EuresScraper
+from ats_scrapers.scrapers.foundit import FounditScraper
 from ats_scrapers.scrapers.gem import GemScraper
 from ats_scrapers.scrapers.getonbrd import GetOnBrdScraper
 from ats_scrapers.scrapers.google import GoogleScraper
@@ -56,6 +57,7 @@ from ats_scrapers.scrapers.teamtailor import TeamtailorScraper
 from ats_scrapers.scrapers.tesla import TeslaScraper
 from ats_scrapers.scrapers.thehub import TheHubScraper
 from ats_scrapers.scrapers.tiktok import TikTokScraper
+from ats_scrapers.scrapers.timesjobs import TimesJobsScraper
 from ats_scrapers.scrapers.uber import UberScraper
 from ats_scrapers.scrapers.usajobs import USAJobsScraper
 from ats_scrapers.scrapers.wanted import WantedScraper
@@ -83,6 +85,7 @@ __all__ = [
     "DarwinboxScraper",
     "EightfoldScraper",
     "EuresScraper",
+    "FounditScraper",
     "GemScraper",
     "GetOnBrdScraper",
     "GoogleScraper",
@@ -115,6 +118,7 @@ __all__ = [
     "TeslaScraper",
     "TheHubScraper",
     "TikTokScraper",
+    "TimesJobsScraper",
     "USAJobsScraper",
     "UberScraper",
     "WTTJScraper",
