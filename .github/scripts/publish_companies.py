@@ -58,6 +58,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ATS_COMPANIES_DIR = REPO_ROOT / "ats-companies"
 PREFIX = "jobhive/v1"
 DISABLED_ATS = frozenset({"seek"})
+DISABLED_CLEANUP_GRACE_SECONDS = 300
 # Lowest manifest version this script knows how to write. Treat as a
 # floor: bump existing manifests up to it, never down. If the
 # jobs-side publisher independently moves the manifest to a newer
@@ -213,14 +214,53 @@ def delete_legacy(client, bucket: str) -> None:
             delete_objects_checked(client, bucket, chunk)
 
 
-def delete_disabled_sources(client, bucket: str) -> None:
-    """Delete stable per-ATS company artifacts for disabled sources."""
+def delete_disabled_sources(
+    client,
+    bucket: str,
+    *,
+    existing_manifest: dict[str, Any],
+    now: datetime | None = None,
+) -> None:
+    """Delete disabled artifacts after cached old manifests have expired."""
+    current_time = now or datetime.now(tz=UTC)
     objects = [
         {"Key": f"{PREFIX}/{ats}/companies.csv"}
         for ats in sorted(DISABLED_ATS)
+        if _disabled_cleanup_ready(
+            existing_manifest,
+            section="by_ats_companies",
+            source=ats,
+            now=current_time,
+        )
     ]
     if objects:
         delete_objects_checked(client, bucket, objects)
+
+
+def _disabled_cleanup_ready(
+    manifest: dict[str, Any],
+    *,
+    section: str,
+    source: str,
+    now: datetime,
+) -> bool:
+    entries = manifest.get(section)
+    if not isinstance(entries, dict) or source in entries:
+        return False
+    timestamp_value = manifest.get("updated_at") or manifest.get("generated_at")
+    if not isinstance(timestamp_value, str):
+        return False
+    try:
+        timestamp = datetime.fromisoformat(
+            timestamp_value.strip().replace("Z", "+00:00")
+        )
+    except ValueError:
+        return False
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return (
+        now.astimezone(UTC) - timestamp.astimezone(UTC)
+    ).total_seconds() >= DISABLED_CLEANUP_GRACE_SECONDS
 
 
 def _parse_version(value: object) -> tuple[int, ...]:
@@ -289,7 +329,8 @@ def main() -> None:
     csv_key = f"{PREFIX}/companies.csv"
     parquet_key = f"{PREFIX}/companies.parquet"
 
-    manifest = fetch_existing_manifest(client, bucket)
+    manifest_before_update = fetch_existing_manifest(client, bucket)
+    manifest = {**manifest_before_update}
 
     print(f"== Step 1: upload {len(csvs)} per-ATS companies.csv files")
     for ats, data in ats_files.items():
@@ -348,7 +389,11 @@ def main() -> None:
     # and object deletion. Publish the canonical manifest first so cleanup
     # failures can only leave an unadvertised orphan that the next run retries.
     print("\n== Step 4: cleanup disabled and legacy paths")
-    delete_disabled_sources(client, bucket)
+    delete_disabled_sources(
+        client,
+        bucket,
+        existing_manifest=manifest_before_update,
+    )
     delete_legacy(client, bucket)
 
     print(

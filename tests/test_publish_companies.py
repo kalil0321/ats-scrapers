@@ -40,9 +40,34 @@ def test_disabled_seek_company_artifact_is_deleted() -> None:
     module = _load_publish_companies()
     client = _Client()
 
-    module.delete_disabled_sources(client, "test-bucket")
+    module.delete_disabled_sources(
+        client,
+        "test-bucket",
+        existing_manifest={
+            "by_ats_companies": {},
+            "updated_at": "2000-01-01T00:00:00Z",
+        },
+    )
 
     assert client.deleted == ["jobhive/v1/seek/companies.csv"]
+
+
+def test_disabled_seek_company_cleanup_waits_for_manifest_grace() -> None:
+    module = _load_publish_companies()
+    client = _Client()
+
+    module.delete_disabled_sources(
+        client,
+        "test-bucket",
+        existing_manifest={
+            "by_ats_companies": {
+                "seek": {"csv": "jobhive/v1/seek/companies.csv"}
+            },
+            "updated_at": "2000-01-01T00:00:00Z",
+        },
+    )
+
+    assert client.deleted == []
 
 
 def test_disabled_seek_company_delete_failure_is_fatal() -> None:
@@ -60,7 +85,14 @@ def test_disabled_seek_company_delete_failure_is_fatal() -> None:
         RuntimeError,
         match=r"seek/companies\.csv: AccessDenied",
     ):
-        module.delete_disabled_sources(client, "test-bucket")
+        module.delete_disabled_sources(
+            client,
+            "test-bucket",
+            existing_manifest={
+                "by_ats_companies": {},
+                "updated_at": "2000-01-01T00:00:00Z",
+            },
+        )
 
 
 def test_disabled_delete_failure_happens_after_manifest_rewrite(
@@ -84,7 +116,11 @@ def test_disabled_delete_failure_happens_after_manifest_rewrite(
         "fetch_existing_manifest",
         lambda _client, _bucket: (
             operations.append("fetch_manifest")
-            or {"stats": {"total_companies": 99}}
+            or {
+                "by_ats_companies": {},
+                "stats": {"total_companies": 99},
+                "updated_at": "2000-01-01T00:00:00Z",
+            }
         ),
     )
 
@@ -98,7 +134,11 @@ def test_disabled_delete_failure_happens_after_manifest_rewrite(
         operations.append(f"upload:{key}")
         uploaded_keys.append(key)
 
-    def fail_disabled_delete(_client: object, _bucket: str) -> None:
+    def fail_disabled_delete(
+        _client: object,
+        _bucket: str,
+        **_kwargs: object,
+    ) -> None:
         operations.append("delete_disabled")
         raise RuntimeError("seek delete failed")
 

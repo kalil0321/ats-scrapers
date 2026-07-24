@@ -93,6 +93,15 @@ def test_publisher_does_not_write_by_date(ats_csv_dir, fake_r2) -> None:
 def test_publisher_excludes_and_deletes_stale_seek_slice(
     ats_csv_dir, fake_r2
 ) -> None:
+    fake_r2.upload_bytes(
+        json.dumps(
+            {
+                "by_ats": {},
+                "updated_at": "2000-01-01T00:00:00Z",
+            }
+        ).encode(),
+        "jobhive/v1/manifest.json",
+    )
     seek_dir = ats_csv_dir / "seek"
     seek_dir.mkdir()
     pd.DataFrame(
@@ -124,18 +133,46 @@ def test_publisher_excludes_and_deletes_stale_seek_slice(
     assert "jobhive/v1/seek/jobs.parquet" in fake_r2.deleted
 
 
+def test_disabled_seek_cleanup_waits_for_cached_manifest_grace(
+    ats_csv_dir,
+    fake_r2,
+) -> None:
+    manifest_key = "jobhive/v1/manifest.json"
+    seek_key = "jobhive/v1/seek/jobs.csv"
+    fake_r2.upload_bytes(
+        json.dumps(
+            {
+                "by_ats": {
+                    "seek": {
+                        "csv": seek_key,
+                        "rows": 1,
+                    }
+                },
+                "updated_at": "2000-01-01T00:00:00Z",
+            }
+        ).encode(),
+        manifest_key,
+    )
+    fake_r2.upload_bytes(b"stale", seek_key)
+
+    DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
+
+    manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
+    assert "seek" not in manifest["by_ats"]
+    assert seek_key in fake_r2.uploads
+    assert seek_key not in fake_r2.deleted
+
+
 def test_disabled_seek_delete_failure_leaves_consistent_manifest(
     ats_csv_dir, fake_r2, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest_key = "jobhive/v1/manifest.json"
     original_manifest = json.dumps(
         {
-            "by_ats": {
-                "seek": {
-                    "csv": "jobhive/v1/seek/jobs.csv",
-                    "rows": 1,
-                }
-            }
+            "by_ats": {},
+            "updated_at": "2000-01-01T00:00:00Z",
         }
     ).encode()
     fake_r2.upload_bytes(original_manifest, manifest_key)
