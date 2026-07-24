@@ -57,6 +57,7 @@ class ATSType(StrEnum):
     RIPPLING = "rippling"
     SMARTRECRUITERS = "smartrecruiters"
     SUCCESSFACTORS = "successfactors"
+    UKG = "ukg"
     WORKABLE = "workable"
     WORKDAY = "workday"
     # Big-tech custom careers systems (single-tenant, bespoke APIs)

@@ -91,6 +91,13 @@ _ICIMS_HOST_RE = re.compile(r"^(?P<prefix>[a-z0-9-]+)\.icims\.com$", re.IGNORECA
 _PAGEUP_CLIENT_RE = re.compile(r"^\d+$")
 _PAGEUP_SEGMENT_RE = re.compile(r"^[A-Za-z0-9-]+$")
 _PAGEUP_LOCALE_RE = re.compile(r"^[A-Za-z]{2}(?:-[A-Za-z]{2})?$")
+_UKG_HOST_RE = re.compile(r"^recruiting\d*\.ultipro\.(?:com|ca)$", re.IGNORECASE)
+_UKG_TENANT_RE = re.compile(r"^[A-Za-z0-9]+$")
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
@@ -126,6 +133,20 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             return ResolvedCareersUrl(
                 ATSType.PAGEUP,
                 "/".join(segments[:3]),
+            )
+        return None
+
+    if _UKG_HOST_RE.fullmatch(host):
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            len(segments) >= 3
+            and _UKG_TENANT_RE.fullmatch(segments[0])
+            and segments[1].casefold() == "jobboard"
+            and _UUID_RE.fullmatch(segments[2])
+        ):
+            return ResolvedCareersUrl(
+                ATSType.UKG,
+                f"https://{host}/{segments[0]}/JobBoard/{segments[2]}",
             )
         return None
 
