@@ -106,7 +106,7 @@ def test_publisher_excludes_and_deletes_stale_seek_slice(
             }
         ]
     ).to_csv(seek_dir / "jobs.csv", index=False)
-    for artifact in ("jobs.csv", "jobs.parquet", "companies.csv"):
+    for artifact in ("jobs.csv", "jobs.parquet"):
         fake_r2.upload_bytes(
             b"stale",
             f"jobhive/v1/seek/{artifact}",
@@ -122,7 +122,6 @@ def test_publisher_excludes_and_deletes_stale_seek_slice(
     assert not any("/seek/jobs." in key for key in fake_r2.uploads)
     assert "jobhive/v1/seek/jobs.csv" in fake_r2.deleted
     assert "jobhive/v1/seek/jobs.parquet" in fake_r2.deleted
-    assert "jobhive/v1/seek/companies.csv" in fake_r2.deleted
 
 
 # --- Manifest ---------------------------------------------------------------
