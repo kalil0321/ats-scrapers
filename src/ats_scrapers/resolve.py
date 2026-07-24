@@ -89,6 +89,7 @@ _WORKDAY_HOST_RE = re.compile(r"^[^.]+\.wd\d+\.myworkdayjobs\.com$")
 _TALEO_HOST_RE = re.compile(r"^[^.]+\.tbe\.taleo\.net$")
 _ICIMS_HOST_RE = re.compile(r"^(?P<prefix>[a-z0-9-]+)\.icims\.com$", re.IGNORECASE)
 _UKG_HOST_RE = re.compile(r"^recruiting\d*\.ultipro\.(?:com|ca)$", re.IGNORECASE)
+_UKG_TENANT_RE = re.compile(r"^[A-Za-z0-9]+$")
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
     r"[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -120,7 +121,7 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         segments = [segment for segment in parsed.path.split("/") if segment]
         if (
             len(segments) >= 3
-            and _DNS_LABEL_RE.fullmatch(segments[0])
+            and _UKG_TENANT_RE.fullmatch(segments[0])
             and segments[1].casefold() == "jobboard"
             and _UUID_RE.fullmatch(segments[2])
         ):
