@@ -87,6 +87,7 @@ from ats_scrapers.scrapers import (
     TheHubScraper,
     TikTokScraper,
     UberScraper,
+    UKGProScraper,
     WantedScraper,
     WellfoundScraper,
     WeWorkRemotelyScraper,
@@ -458,6 +459,15 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
         "csv": "ats-companies/teamtailor.csv",
         "output": "teamtailor/jobs.csv",
+    },
+    "ukg": {
+        "scraper": UKGProScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
+        "csv": "ats-companies/ukg.csv",
+        "output": "ukg/jobs.csv",
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_empty": True,
     },
     "jazzhr": {
         "scraper": JazzHRScraper,
