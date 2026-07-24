@@ -477,6 +477,7 @@ def _apply_detail(job: Job, html_text: str) -> None:
                     )
                     or parsed_apply.username is not None
                     or parsed_apply.password is not None
+                    or parsed_apply.port not in (None, 443)
                 ):
                     raise ValueError("unsafe PageUp apply URL")
                 job.apply_url = HttpUrl(apply_url)

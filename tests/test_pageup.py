@@ -397,6 +397,7 @@ def test_descriptionless_detail_is_dropped_without_aborting(httpx_mock) -> None:
         "https://[",
         "https://evil.example/apply",
         "//evil.example/apply",
+        "https://secure.dc2.pageuppeople.com:444/apply",
     ],
 )
 def test_invalid_apply_link_does_not_abort_detail_batch(
