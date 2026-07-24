@@ -164,9 +164,9 @@ class BumeranScraper(BaseScraper):
     - ``proxy`` / ``include_descriptions`` — standard scraper options,
       forwarded to the selected transport and parser respectively.
 
-    The class returns ``[]`` (with a warning log) when ``httpcloak``
-    isn't installed so the publish pipeline doesn't crash on operators
-    that haven't picked up the ``scrapers`` extra.
+    The class raises :class:`ScraperError` when ``httpcloak`` isn't
+    installed so production cannot replace a complete regional dataset
+    with an empty successful run.
     """
 
     ats = ATSType.BUMERAN

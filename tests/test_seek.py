@@ -424,7 +424,7 @@ def test_short_page_stops_scheduling_later_pages(httpx_mock, monkeypatch) -> Non
     assert len(httpx_mock.get_requests()) == 2
 
 
-def test_short_page_does_not_request_later_page(httpx_mock) -> None:
+def test_batch_failure_raises_even_when_earlier_page_is_short(httpx_mock) -> None:
     httpx_mock.add_response(
         url=_search_url("au.seek.com", "AU-Main", 1),
         json=_page([_au_job(id=f"p1-{i}") for i in range(100)], total=300),
@@ -433,11 +433,13 @@ def test_short_page_does_not_request_later_page(httpx_mock) -> None:
         url=_search_url("au.seek.com", "AU-Main", 2),
         json=_page([_au_job(id="p2")], total=300),
     )
-    jobs = SeekScraper("au").fetch()
+    httpx_mock.add_response(
+        url=_search_url("au.seek.com", "AU-Main", 3),
+        status_code=503,
+    )
 
-    assert len(jobs) == 101
-    assert jobs[-1].ats_id == "p2"
-    assert len(httpx_mock.get_requests()) == 2
+    with pytest.raises(ScraperError, match="503"):
+        SeekScraper("au").fetch()
 
 
 def test_fetch_dedupes_cross_region_for_all(httpx_mock) -> None:

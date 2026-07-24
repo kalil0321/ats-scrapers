@@ -1029,12 +1029,23 @@ def _enrich_lazy(lf: pl.LazyFrame) -> pl.LazyFrame:
             .drop("_salary_parsed")
         )
 
-    if "location" in schema_names and "country_iso" not in schema_names:
-        lf = lf.with_columns(
-            pl.col("location")
-            .map_elements(_country_iso_from_location, return_dtype=pl.String)
-            .alias("country_iso")
+    if "location" in schema_names:
+        derived_country = pl.col("location").map_elements(
+            _country_iso_from_location, return_dtype=pl.String
         )
+        if "country_iso" not in schema_names:
+            lf = lf.with_columns(derived_country.alias("country_iso"))
+        else:
+            current_country = pl.col("country_iso").cast(pl.String)
+            lf = lf.with_columns(
+                pl.when(
+                    current_country.is_null()
+                    | (current_country.str.strip_chars().str.len_bytes() == 0)
+                )
+                .then(derived_country)
+                .otherwise(current_country)
+                .alias("country_iso")
+            )
 
     return lf
 

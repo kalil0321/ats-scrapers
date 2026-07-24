@@ -167,6 +167,7 @@ def test_publisher_derives_country_iso_column(ats_csv_dir, fake_r2) -> None:
     gh_csv = ats_csv_dir / "greenhouse" / "jobs.csv"
     df = pd.read_csv(gh_csv)
     df.loc[df["location"] == "Paris", "location"] = "Paris, France"
+    df["country_iso"] = ""
     df.to_csv(gh_csv, index=False)
 
     publisher = DatasetPublisher(fake_r2, write_parquet=True)
