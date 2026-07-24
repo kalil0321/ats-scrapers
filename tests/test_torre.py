@@ -373,3 +373,8 @@ def test_400_response_raises_scraper_error(httpx_mock) -> None:
     with pytest.raises(ScraperError):
         TorreScraper("any").fetch()
 
+
+def test_non_object_json_raises_scraper_error(httpx_mock) -> None:
+    httpx_mock.add_response(url=_SEARCH_RE, json=[])
+    with pytest.raises(ScraperError, match="expected object"):
+        TorreScraper("any").fetch()

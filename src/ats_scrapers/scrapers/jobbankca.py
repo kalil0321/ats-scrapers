@@ -47,7 +47,6 @@ logger = logging.getLogger(__name__)
 SEARCH_URL = "https://www.jobbank.gc.ca/jobsearch/jobsearch"
 POSTING_URL_TEMPLATE = "https://www.jobbank.gc.ca/jobsearch/jobposting/{id}"
 PAGE_SIZE = 25  # Server renders 25 results per page; not configurable.
-PAGE_CAP = 5_000  # Safety stop; full dataset is ~2,500 pages at 25/page.
 MAX_CONCURRENCY = 4
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 1.5
@@ -113,6 +112,12 @@ _MONTHS_EN = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7,
     "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
 }
+_MONTHS_FR = {
+    "janvier": 1, "février": 2, "fevrier": 2, "mars": 3,
+    "avril": 4, "mai": 5, "juin": 6, "juillet": 7, "août": 8,
+    "aout": 8, "septembre": 9, "octobre": 10, "novembre": 11,
+    "décembre": 12, "decembre": 12,
+}
 
 
 @ScraperRegistry.register(ATSType.JOBBANKCA)
@@ -126,7 +131,7 @@ class JobBankCAScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = DEFAULT_TIMEOUT,
-        max_pages: int = PAGE_CAP,
+        max_pages: int | None = None,
         language: str = "en",
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
@@ -143,6 +148,7 @@ class JobBankCAScraper(BaseScraper):
     async def _fetch_async(self) -> list[Job]:
         seen: set[str] = set()
         jobs: list[Job] = []
+        repeated_pages = 0
         sem = asyncio.Semaphore(MAX_CONCURRENCY)
         async with httpx.AsyncClient(
             timeout=self.timeout, follow_redirects=True,
@@ -158,11 +164,15 @@ class JobBankCAScraper(BaseScraper):
             # dominates, but parallel pre-fetching past the unknown last
             # page would just waste work.
             page = 1
-            while page <= self.max_pages:
+            while self.max_pages is None or page <= self.max_pages:
                 html_text = await self._fetch_page(client, sem, page)
                 fetched = datetime.now(tz=UTC)
                 page_jobs = self._parse_page(html_text, fetched_at=fetched)
                 if not page_jobs:
+                    if 'id="results-count"' not in html_text:
+                        raise ScraperError(
+                            f"Job Bank page={page} lacked result markup"
+                        )
                     break
                 added = 0
                 for job in page_jobs:
@@ -175,6 +185,11 @@ class JobBankCAScraper(BaseScraper):
                     "jobbankca page=%d parsed=%d new=%d cumulative=%d",
                     page, len(page_jobs), added, len(jobs),
                 )
+                repeated_pages = repeated_pages + 1 if added == 0 else 0
+                if repeated_pages >= 2:
+                    raise ScraperError(
+                        "Job Bank repeated only known jobs on consecutive pages"
+                    )
                 page += 1
         return jobs
 
@@ -343,27 +358,32 @@ def _capture_text(pattern: re.Pattern[str], chunk: str) -> str | None:
 
 
 def _parse_date(value: str | None) -> datetime | None:
-    """Parse an English Job Bank date like ``May 08, 2026``.
-
-    French dates (``08 mai 2026``) are not handled — they return None
-    and the caller leaves ``posted_at`` empty rather than guessing.
-    """
+    """Parse an English or French Job Bank publication date."""
     if not value:
         return None
     # Some listings include a trailing "Expires..." clause we don't
     # care about for posted_at.
     head = value.split("Expires", 1)[0].strip()
     m = re.search(r"([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})", head)
-    if not m:
+    if m:
+        month = _MONTHS_EN.get(m.group(1).lower())
+        if month is not None:
+            try:
+                return datetime(
+                    int(m.group(3)), month, int(m.group(2)), tzinfo=UTC,
+                )
+            except ValueError:
+                return None
+    french = re.search(r"(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})", head)
+    if not french:
         return None
-    month_name = m.group(1).lower()
-    month = _MONTHS_EN.get(month_name)
+    month = _MONTHS_FR.get(french.group(2).lower())
     if month is None:
         return None
     try:
-        day = int(m.group(2))
-        year = int(m.group(3))
-        return datetime(year, month, day)
+        return datetime(
+            int(french.group(3)), month, int(french.group(1)), tzinfo=UTC,
+        )
     except ValueError:
         return None
 

@@ -151,6 +151,23 @@ def test_unknown_region_raises_company_not_found() -> None:
         BumeranScraper("mx")  # MX isn't in the LATAM Navent footprint
 
 
+def test_common_options_and_client_kind_are_accepted() -> None:
+    scraper = BumeranScraper(
+        "ar",
+        include_descriptions=False,
+        proxy="http://proxy.example:8080",
+        client_kind="httpx",
+    )
+    assert scraper.include_descriptions is False
+    assert scraper.proxy == "http://proxy.example:8080"
+    assert scraper.client_kind == "httpx"
+
+
+def test_invalid_client_kind_is_rejected() -> None:
+    with pytest.raises(ValueError, match="client_kind"):
+        BumeranScraper("ar", client_kind="browser")
+
+
 @pytest.mark.parametrize(
     "slug,base_url,country_iso,site_id",
     [
@@ -263,7 +280,8 @@ def test_parses_full_aviso_payload(patched_scraper) -> None:
     assert j.posted_at is not None
     assert j.posted_at.year == 2026
     assert j.posted_at.month == 5
-    assert j.posted_at.day == 11
+    assert j.posted_at.day == 12
+    assert j.posted_at.tzinfo is not None
 
 
 def test_remoto_modalidad_marks_is_remote_true(patched_scraper) -> None:
@@ -369,6 +387,7 @@ def test_dedupes_overlapping_pages(patched_scraper) -> None:
     )
     scraper = patched_scraper("ar", pages={0: page0, 1: page1})
     jobs = scraper.fetch()
+    assert len(jobs) == 8
     assert len({j.ats_id for j in jobs}) == 8
 
 
@@ -420,12 +439,16 @@ def test_max_pages_caps_pagination(patched_scraper) -> None:
 
         pages = {0: page0, 1: page1}
 
+        requested: list[int] = []
+
         def fake(_s: Any, p: int) -> dict[str, Any]:
+            requested.append(p)
             return pages.get(p, _page_response([], page=p, total=0, size=0))
 
         mp.setattr(scraper, "_search_page", fake)
         jobs = scraper.fetch()
     assert len(jobs) == 4
+    assert requested == [0, 1]
 
 
 # --- defensive parsing ------------------------------------------------------
@@ -471,22 +494,28 @@ def test_clean_description_truncates_at_10k() -> None:
 
 
 def test_parse_datetime_accepts_full_and_date_only() -> None:
-    full = _parse_datetime("11-05-2026 23:43:58")
-    assert full is not None
-    assert (full.year, full.month, full.day) == (2026, 5, 11)
-    assert (full.hour, full.minute, full.second) == (23, 43, 58)
+    from zoneinfo import ZoneInfo
 
-    date_only = _parse_datetime("11-05-2026")
+    timezone = ZoneInfo("America/Argentina/Buenos_Aires")
+    full = _parse_datetime("11-05-2026 23:43:58", timezone=timezone)
+    assert full is not None
+    assert (full.year, full.month, full.day) == (2026, 5, 12)
+    assert (full.hour, full.minute, full.second) == (2, 43, 58)
+
+    date_only = _parse_datetime("11-05-2026", timezone=timezone)
     assert date_only is not None
     assert (date_only.year, date_only.month, date_only.day) == (2026, 5, 11)
-    assert (date_only.hour, date_only.minute, date_only.second) == (0, 0, 0)
+    assert (date_only.hour, date_only.minute, date_only.second) == (3, 0, 0)
 
 
 def test_parse_datetime_returns_none_for_garbage() -> None:
-    assert _parse_datetime("") is None
-    assert _parse_datetime(None) is None
-    assert _parse_datetime("2026-05-11") is None  # wrong format
-    assert _parse_datetime(12345) is None
+    from zoneinfo import ZoneInfo
+
+    timezone = ZoneInfo("America/Lima")
+    assert _parse_datetime("", timezone=timezone) is None
+    assert _parse_datetime(None, timezone=timezone) is None
+    assert _parse_datetime("2026-05-11", timezone=timezone) is None
+    assert _parse_datetime(12345, timezone=timezone) is None
 
 
 # --- error handling ---------------------------------------------------------
@@ -520,3 +549,16 @@ def test_search_page_raises_on_persistent_5xx(monkeypatch) -> None:
     with pytest.raises(ScraperError):
         scraper.fetch()
 
+
+def test_search_page_rejects_non_object_json() -> None:
+    class FakeResponse:
+        status_code = 200
+        text = "[]"
+        content = b"[]"
+
+    class FakeSession:
+        def post(self, *args: Any, **kwargs: Any) -> FakeResponse:
+            return FakeResponse()
+
+    with pytest.raises(ScraperError, match="expected object"):
+        BumeranScraper("ar")._search_page(FakeSession(), 0)

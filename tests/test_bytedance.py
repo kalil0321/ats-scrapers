@@ -8,8 +8,12 @@ and is not exercised here — those tests would re-cover identical code.
 
 from __future__ import annotations
 
+import pytest
+
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers.bytedance import (
+    API_URL,
     BytedanceScraper,
     _compose_description,
     _extract_label,
@@ -178,6 +182,60 @@ def test_ats_type_registered_for_bytedance() -> None:
     assert ScraperRegistry.get(ATSType.BYTEDANCE) is BytedanceScraper
 
 
+def test_fetch_retries_transient_response(httpx_mock, monkeypatch) -> None:
+    import ats_scrapers.scrapers.bytedance as module
+
+    monkeypatch.setattr(module, "MAX_RETRIES", 2)
+    monkeypatch.setattr(module, "RETRY_BASE_DELAY", 0.0)
+    httpx_mock.add_response(url=API_URL, status_code=503)
+    httpx_mock.add_response(
+        url=API_URL,
+        json={
+            "code": 0,
+            "data": {"job_post_list": [_FIXTURE], "count": 1},
+        },
+    )
+    assert [job.ats_id for job in BytedanceScraper("any").fetch()] == [
+        "7607020417963968773"
+    ]
+
+
+def test_fetch_rejects_non_object_json(httpx_mock) -> None:
+    httpx_mock.add_response(url=API_URL, json=[])
+    with pytest.raises(ScraperError, match="non-object"):
+        BytedanceScraper("any").fetch()
+
+
+def test_fetch_forwards_proxy_to_async_client(monkeypatch) -> None:
+    import ats_scrapers.scrapers.bytedance as module
+
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"code": 0, "data": {"job_post_list": [], "count": 0}}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(module.httpx, "AsyncClient", FakeClient)
+    BytedanceScraper("any", proxy="http://proxy.example:8080").fetch()
+    assert captured["proxy"] == "http://proxy.example:8080"
+
+
 # --- Helper-function units --------------------------------------------------
 
 
@@ -236,4 +294,3 @@ def test_extract_location_country_only_walks_parent() -> None:
 
 def test_extract_location_returns_none_when_absent() -> None:
     assert _extract_location({}) is None
-

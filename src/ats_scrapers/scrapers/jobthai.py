@@ -78,20 +78,8 @@ _SEARCH_JOBS_QUERY = (
     "district{id name}"
     "}}}}"
 )
-
-# Job-type IDs surfaced by ``getJobTypeList(version:1)`` at probe time
-# (2026-05-12). Sharding ``searchJobs`` by this list keeps every
-# per-bucket sweep under the ES ``from+size<=10000`` cap (largest type
-# observed was ``4`` at 7.2k entries). The IDs match the ``jobType.id``
-# field returned on each row so a "jobs not in any of these buckets"
-# regression would be visible as a drop in total. New IDs added by
-# JobThai will be missed until this list is refreshed.
-_DEFAULT_JOB_TYPE_IDS: tuple[str, ...] = (
-    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
-    "11", "12", "13", "14", "15", "16", "17", "18", "19", "20",
-    "21", "22", "23", "25", "26", "27", "28", "29", "30",
-    "31", "32", "33", "34", "36", "37", "38", "39", "40",
-    "41", "42", "43", "44", "45", "50",
+_JOB_TYPES_QUERY = (
+    "query getJobTypeList{getJobTypeList(version:1){data{id}}}"
 )
 
 # Salary string → currency hints. JobThai salaries are nearly always
@@ -103,7 +91,9 @@ _NEGOTIABLE_RE = re.compile(r"ตามตกลง|ตามโครงสร�
 # Salary range pattern: numbers, optional commas/dots, separator
 # (hyphen, en-dash, "to", "ถึง"), more numbers. Captures min/max.
 _RANGE_RE = re.compile(
-    r"(?P<min>\d[\d,\.]*)\s*[-–~]\s*(?P<max>\d[\d,\.]*)"
+    r"(?P<min>\d[\d,\.]*)\s*(?:[-–~]|to|ถึง)\s*"
+    r"(?P<max>\d[\d,\.]*)",
+    re.IGNORECASE,
 )
 # Single-value salary pattern (no range), trailing baht / THB.
 _SINGLE_RE = re.compile(r"(?P<val>\d[\d,\.]*)")
@@ -113,6 +103,11 @@ _SINGLE_RE = re.compile(r"(?P<val>\d[\d,\.]*)")
 # ``language="th"``; otherwise ``language="en"`` (rare — most postings
 # are Thai even when the title is partly English).
 _THAI_SCRIPT_RE = re.compile(r"[฀-๿]")
+_SALARY_PERIOD_PATTERNS = (
+    (re.compile(r"เดือน|/\s*month|per\s+month|monthly", re.IGNORECASE), "MONTH"),
+    (re.compile(r"วัน|/\s*day|per\s+day|daily", re.IGNORECASE), "DAY"),
+    (re.compile(r"ชั่วโมง|/\s*hour|per\s+hour|hourly", re.IGNORECASE), "HOUR"),
+)
 
 
 @ScraperRegistry.register(ATSType.JOBTHAI)
@@ -136,12 +131,13 @@ class JobThaiScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = 30.0,
-        job_type_ids: tuple[str, ...] | list[str] = _DEFAULT_JOB_TYPE_IDS,
-        max_pages_per_type: int = MAX_USABLE_PAGES,
+        job_type_ids: tuple[str, ...] | list[str] | None = None,
+        max_pages_per_type: int | None = None,
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
-        self.job_type_ids = tuple(job_type_ids)
-        self.max_pages_per_type = max_pages_per_type
+        self.job_type_ids = tuple(job_type_ids) if job_type_ids is not None else None
+        self.max_pages_per_type = max_pages_per_type or MAX_USABLE_PAGES
+        self._full_catalogue = max_pages_per_type is None
 
     async def afetch(self) -> list[Job]:
         return await self._fetch_async()
@@ -158,12 +154,28 @@ class JobThaiScraper(BaseScraper):
             timeout=self.timeout, follow_redirects=True
         ) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
+            job_type_ids = self.job_type_ids
+            if job_type_ids is None:
+                job_type_ids = await self._discover_job_types(client, sem)
 
             async def per_type(jt: str) -> None:
                 for page in range(1, self.max_pages_per_type + 1):
                     payload = await self._search_page(client, sem, jt, page)
                     data_envelope = (payload.get("searchJobs") or {}).get("data") or {}
                     items = data_envelope.get("data") or []
+                    total = data_envelope.get("total")
+                    if page == 1:
+                        if not isinstance(total, int) or total < 0:
+                            raise ScraperError(
+                                f"JobThai jobtype={jt} omitted a valid total"
+                            )
+                        if self._full_catalogue and total > (
+                            self.max_pages_per_type * PER_PAGE
+                        ):
+                            raise ScraperError(
+                                f"JobThai jobtype={jt} has {total} jobs, above "
+                                "the validated Elasticsearch window"
+                            )
                     if not items:
                         return
                     async with lock:
@@ -179,8 +191,33 @@ class JobThaiScraper(BaseScraper):
                     if len(items) < PER_PAGE:
                         return
 
-            await asyncio.gather(*(per_type(jt) for jt in self.job_type_ids))
+            await asyncio.gather(*(per_type(jt) for jt in job_type_ids))
         return jobs
+
+    async def _discover_job_types(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+    ) -> tuple[str, ...]:
+        payload = await self._graphql(
+            client,
+            sem,
+            operation_name="getJobTypeList",
+            query=_JOB_TYPES_QUERY,
+            variables={},
+        )
+        envelope = payload.get("getJobTypeList")
+        rows = envelope.get("data") if isinstance(envelope, dict) else None
+        if not isinstance(rows, list):
+            raise ScraperError("JobThai job-type discovery returned invalid data")
+        ids = tuple(
+            str(row["id"])
+            for row in rows
+            if isinstance(row, dict) and row.get("id") is not None
+        )
+        if not ids:
+            raise ScraperError("JobThai job-type discovery returned no IDs")
+        return ids
 
     # --- HTTP layer ---------------------------------------------------------
 
@@ -191,10 +228,30 @@ class JobThaiScraper(BaseScraper):
         jobtype: str,
         page: int,
     ) -> dict[str, Any]:
+        return await self._graphql(
+            client,
+            sem,
+            operation_name="searchJobs",
+            query=_SEARCH_JOBS_QUERY,
+            variables={"page": page, "size": PER_PAGE, "jobtype": jobtype},
+            context=f"jobtype={jobtype} page={page}",
+        )
+
+    async def _graphql(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        *,
+        operation_name: str,
+        query: str,
+        variables: dict[str, Any],
+        context: str | None = None,
+    ) -> dict[str, Any]:
+        label = context or operation_name
         body = {
-            "operationName": "searchJobs",
-            "query": _SEARCH_JOBS_QUERY,
-            "variables": {"page": page, "size": PER_PAGE, "jobtype": jobtype},
+            "operationName": operation_name,
+            "query": query,
+            "variables": variables,
         }
         headers = {
             "User-Agent": "Mozilla/5.0",
@@ -204,45 +261,50 @@ class JobThaiScraper(BaseScraper):
             # OR one of these preflight headers. Set both so a future
             # tightening on either side doesn't break us.
             "apollo-require-preflight": "true",
-            "x-apollo-operation-name": "searchJobs",
+            "x-apollo-operation-name": operation_name,
         }
         last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
+            try:
+                async with sem:
                     response = await client.post(
                         GRAPHQL_URL, json=body, headers=headers,
                     )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"JobThai fetch failed (jobtype={jobtype}, "
-                            f"page={page}): {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt == MAX_RETRIES:
+                    raise ScraperError(
+                        f"JobThai fetch failed ({label}): {exc}"
+                    ) from exc
+                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
+                continue
             if response.status_code == 200:
                 try:
                     payload = response.json()
                 except ValueError as exc:
                     raise ScraperError(
-                        f"JobThai returned non-JSON for jobtype={jobtype} "
-                        f"page={page}: {exc}"
+                        f"JobThai returned non-JSON for {label}: {exc}"
                     ) from exc
+                if not isinstance(payload, dict):
+                    raise ScraperError(
+                        f"JobThai returned invalid payload for {label}"
+                    )
                 if payload.get("errors"):
                     # Treat GraphQL errors as fatal — they signal a
                     # schema drift, not a transient failure.
                     raise ScraperError(
-                        f"JobThai GraphQL errors (jobtype={jobtype}, "
-                        f"page={page}): {payload['errors']}"
+                        f"JobThai GraphQL errors ({label}): {payload['errors']}"
                     )
-                return payload.get("data") or {}
+                data = payload.get("data")
+                if not isinstance(data, dict):
+                    raise ScraperError(
+                        f"JobThai returned invalid data for {label}"
+                    )
+                return data
             if response.status_code in (429,) or 500 <= response.status_code < 600:
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
-                        f"JobThai returned {response.status_code} for "
-                        f"jobtype={jobtype} page={page} after "
+                        f"JobThai returned {response.status_code} for {label} after "
                         f"{MAX_RETRIES} retries"
                     )
                 retry_after = response.headers.get("Retry-After")
@@ -253,12 +315,10 @@ class JobThaiScraper(BaseScraper):
                 await asyncio.sleep(delay)
                 continue
             raise ScraperError(
-                f"JobThai returned {response.status_code} for "
-                f"jobtype={jobtype} page={page}"
+                f"JobThai returned {response.status_code} for {label}"
             )
         raise ScraperError(
-            f"JobThai exhausted retries for jobtype={jobtype} "
-            f"page={page}: {last_exc}"
+            f"JobThai exhausted retries for {label}: {last_exc}"
         )
 
     # --- parsing ------------------------------------------------------------
@@ -319,6 +379,9 @@ class JobThaiScraper(BaseScraper):
             raw["tags"] = [t for t in tags if isinstance(t, str)]
         if company_id is not None:
             raw["company_id"] = company_id
+        work_location = item.get("workLocation")
+        if isinstance(work_location, str) and work_location.strip():
+            raw["work_location"] = work_location.strip()
 
         return Job(
             url=JOB_URL_TEMPLATE.format(id=ats_id),
@@ -336,7 +399,7 @@ class JobThaiScraper(BaseScraper):
             salary_summary=salary_summary,
             salary_min=salary_min,
             salary_max=salary_max,
-            salary_period="MONTH" if salary_currency == "THB" else None,
+            salary_period=_salary_period(item.get("salary")),
             fetched_at=datetime.now(tz=UTC),
             raw=raw or None,
         )
@@ -456,9 +519,20 @@ def _to_float(text: str) -> float | None:
     if not isinstance(text, str):
         return None
     cleaned = text.replace(",", "").replace(" ", "")
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+", cleaned):
+        cleaned = cleaned.replace(".", "")
     if not cleaned:
         return None
     try:
         return float(cleaned)
     except ValueError:
         return None
+
+
+def _salary_period(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    for pattern, period in _SALARY_PERIOD_PATTERNS:
+        if pattern.search(value):
+            return period
+    return None

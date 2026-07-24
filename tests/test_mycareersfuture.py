@@ -427,3 +427,26 @@ def test_fetch_raises_on_non_json_response(httpx_mock) -> None:
     )
     with pytest.raises(ScraperError):
         MyCareersFutureScraper("sg").fetch()
+
+
+def test_fetch_raises_when_total_is_missing(httpx_mock) -> None:
+    httpx_mock.add_response(url=_API_RE, json={"results": [_job_record()]})
+    with pytest.raises(ScraperError, match="valid total"):
+        MyCareersFutureScraper("sg").fetch()
+
+
+@pytest.mark.parametrize("payload", [[], None, {"total": 1}, {"results": None, "total": 1}])
+def test_fetch_rejects_invalid_envelopes(httpx_mock, payload) -> None:
+    httpx_mock.add_response(url=_API_RE, json=payload)
+    with pytest.raises(ScraperError, match=r"API shape changed|non-JSON"):
+        MyCareersFutureScraper("sg").fetch()
+
+
+def test_parse_iso_normalizes_naive_and_offset_values_to_utc() -> None:
+    from ats_scrapers.scrapers.mycareersfuture import _parse_iso
+
+    naive = _parse_iso("2026-05-10")
+    offset = _parse_iso("2026-05-10T03:00:00+03:00")
+    assert naive is not None and naive.tzinfo is not None
+    assert offset is not None and offset.utcoffset().total_seconds() == 0
+    assert offset.hour == 0

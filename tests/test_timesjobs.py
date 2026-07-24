@@ -380,3 +380,34 @@ def test_400_on_subsequent_page_terminates_cleanly(httpx_mock) -> None:
     jobs = TimesJobsScraper("any").fetch()
     assert [j.ats_id for j in jobs] == ["1"]
 
+
+def test_400_on_first_page_raises(httpx_mock) -> None:
+    httpx_mock.add_response(url=API_URL, status_code=400)
+    with pytest.raises(ScraperError, match="returned 400"):
+        TimesJobsScraper("any").fetch()
+
+
+def test_missing_total_pages_raises(httpx_mock) -> None:
+    payload = _response([_job()])
+    payload.pop("totalPages")
+    httpx_mock.add_response(url=API_URL, json=payload)
+    with pytest.raises(ScraperError, match="totalPages"):
+        TimesJobsScraper("any").fetch()
+
+
+def test_failed_later_page_raises_instead_of_returning_partial(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=API_URL,
+        json=_response([_job(job_id="1")], total_pages=2, total=2),
+    )
+    httpx_mock.add_response(url=API_URL, status_code=500)
+    with pytest.raises(ScraperError, match="page=2"):
+        TimesJobsScraper("any").fetch()
+
+
+def test_country_iso_accepts_india_suffix(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=API_URL,
+        json=_response([_job(location="Bengaluru, Karnataka, India")]),
+    )
+    assert TimesJobsScraper("any").fetch()[0].country_iso == "IN"

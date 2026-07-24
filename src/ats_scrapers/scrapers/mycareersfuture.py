@@ -118,8 +118,13 @@ class MyCareersFutureScraper(BaseScraper):
         ) as client:
             # First page: discover ``total`` so we can plan pagination.
             first = await self._fetch_page(client, user_agent, offset=0)
-            self._absorb(first.get("results") or [], seen, jobs)
-            total = int(first.get("total") or 0)
+            self._absorb(first["results"], seen, jobs)
+            total_raw = first.get("total")
+            if not isinstance(total_raw, int) or total_raw < 0:
+                raise ScraperError(
+                    "MyCareersFuture response omitted a valid total"
+                )
+            total = total_raw
             if total <= PAGE_SIZE:
                 return jobs
 
@@ -135,7 +140,7 @@ class MyCareersFutureScraper(BaseScraper):
                     payload = await self._fetch_page(
                         client, user_agent, offset=offset
                     )
-                return payload.get("results") or []
+                return payload["results"]
 
             for start in range(0, len(offsets), MAX_CONCURRENCY):
                 offset_batch = offsets[start : start + MAX_CONCURRENCY]
@@ -185,11 +190,22 @@ class MyCareersFutureScraper(BaseScraper):
                 continue
             if response.status_code == 200:
                 try:
-                    return response.json()
+                    payload = response.json()
                 except ValueError as exc:
                     raise ScraperError(
                         f"MyCareersFuture returned non-JSON at offset={offset}: {exc}"
                     ) from exc
+                if not isinstance(payload, dict):
+                    raise ScraperError(
+                        "MyCareersFuture API shape changed: expected object, "
+                        f"got {type(payload).__name__}"
+                    )
+                results = payload.get("results")
+                if not isinstance(results, list):
+                    raise ScraperError(
+                        "MyCareersFuture API shape changed: results is not a list"
+                    )
+                return payload
             if response.status_code == 429 or 500 <= response.status_code < 600:
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
@@ -509,6 +525,9 @@ def _parse_iso(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)

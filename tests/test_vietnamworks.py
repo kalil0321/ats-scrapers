@@ -190,6 +190,7 @@ def test_parses_full_payload_with_visible_salary() -> None:
     assert "<p>" not in job.description
     assert "Navigos Search" in job.description
     assert job.posted_at is not None
+    assert job.posted_at.tzinfo is not None
     assert job.fetched_at is not None
     assert job.global_id == "vietnamworks:2043697"
     assert job.raw is not None
@@ -292,14 +293,14 @@ def test_empty_first_page_returns_no_jobs(httpx_mock) -> None:
     assert VietnamWorksScraper("any").fetch() == []
 
 
-def test_out_of_range_page_with_null_payload(httpx_mock) -> None:
+def test_null_first_page_fails_without_pagination_metadata(httpx_mock) -> None:
     """Out-of-range pages echo back ``{"meta": null, "data": null}``.
-    The scraper should normalise that to an empty result without
-    crashing the run."""
+    On page one that shape is not a trustworthy empty catalogue."""
     httpx_mock.add_response(
         url=_API_RE, method="POST", json={"meta": None, "data": None},
     )
-    assert VietnamWorksScraper("any").fetch() == []
+    with pytest.raises(ScraperError, match="pagination metadata"):
+        VietnamWorksScraper("any").fetch()
 
 
 # --- error handling ----------------------------------------------------------
@@ -313,3 +314,8 @@ def test_persistent_500_raises(httpx_mock) -> None:
     with pytest.raises(ScraperError):
         VietnamWorksScraper("any").fetch()
 
+
+def test_non_object_json_raises(httpx_mock) -> None:
+    httpx_mock.add_response(url=_API_RE, method="POST", json=[])
+    with pytest.raises(ScraperError, match="expected object"):
+        VietnamWorksScraper("any").fetch()

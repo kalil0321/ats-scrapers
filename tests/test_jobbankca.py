@@ -301,6 +301,12 @@ def test_persistent_500_raises(httpx_mock) -> None:
         JobBankCAScraper("any").fetch()
 
 
+def test_block_page_with_no_result_marker_raises(httpx_mock) -> None:
+    httpx_mock.add_response(url=_SEARCH_RE, html="<html>blocked</html>")
+    with pytest.raises(ScraperError, match="lacked result markup"):
+        JobBankCAScraper("any").fetch()
+
+
 # --- module-level helpers ---------------------------------------------------
 
 
@@ -319,10 +325,17 @@ def test_parse_date_handles_english_formats(
 
 
 @pytest.mark.parametrize("text", [
-    None, "", "garbage", "08 mai 2026",  # French not supported in this helper.
+    None, "", "garbage",
 ])
 def test_parse_date_returns_none_for_unparseable(text: str | None) -> None:
     assert _parse_date(text) is None
+
+
+def test_parse_date_handles_french_format() -> None:
+    parsed = _parse_date("08 mai 2026")
+    assert parsed is not None
+    assert (parsed.year, parsed.month, parsed.day) == (2026, 5, 8)
+    assert parsed.tzinfo is not None
 
 
 def test_infer_is_remote_explicit_telework() -> None:
@@ -343,4 +356,3 @@ def test_infer_is_remote_explicit_telework() -> None:
 ])
 def test_infer_country_iso(location: str | None, expected: str) -> None:
     assert _infer_country_iso(location) == expected
-

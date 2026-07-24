@@ -180,6 +180,15 @@ def test_parses_full_listing_card(httpx_mock) -> None:
     assert j.raw["contract_type"] == "Prestacion de Servicios"
 
 
+def test_card_class_with_live_trailing_space_parses(httpx_mock) -> None:
+    card = _card(offer_id="123", title="Trailing Space").replace(
+        'bg-white"', 'bg-white "', 1,
+    )
+    httpx_mock.add_response(url=_LISTING_RE, text=_listing([card]))
+    jobs = ElempleoScraper("any", max_pages=1).fetch()
+    assert [job.ats_id for job in jobs] == ["123"]
+
+
 def test_remote_modality_sets_is_remote(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://www.elempleo.com/co/ofertas-empleo?Page=1",
@@ -442,4 +451,3 @@ def test_unexpected_status_raises(httpx_mock) -> None:
     )
     with pytest.raises(ScraperError, match="403"):
         ElempleoScraper("any").fetch()
-

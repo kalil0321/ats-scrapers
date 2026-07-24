@@ -172,9 +172,12 @@ def test_parse_iso8601_handles_z_suffix() -> None:
 
 
 def test_parse_iso8601_handles_offset() -> None:
-    dt = _parse_iso8601("2026-04-29T00:23:37+00:00")
-    assert dt is not None
-    assert dt.year == 2026
+    dt = _parse_iso8601("2026-04-29T03:23:37+03:00")
+    assert dt == datetime(2026, 4, 29, 0, 23, 37, tzinfo=UTC)
+
+
+def test_parse_iso8601_rejects_naive_timestamp() -> None:
+    assert _parse_iso8601("2026-04-29T00:23:37") is None
 
 
 def test_parse_iso8601_returns_none_for_garbage() -> None:
@@ -303,6 +306,21 @@ def test_parse_job_uses_location_country_when_present() -> None:
     assert job.salary_currency == "NZD"
 
 
+def test_parse_job_overseas_country_does_not_claim_asia() -> None:
+    scraper = SeekScraper("sg")
+    payload = _sg_job(
+        locations=[{"label": "London", "countryCode": "GB"}],
+    )
+    job = scraper._parse_job(
+        payload,
+        host="sg.jobstreet.com",
+        country_iso="SG",
+    )
+    assert job is not None
+    assert job.country_iso == "GB"
+    assert job.region is None
+
+
 def test_parse_job_returns_none_for_empty_id() -> None:
     scraper = SeekScraper("au")
     assert scraper._parse_job(
@@ -344,6 +362,17 @@ def test_parse_job_description_handles_missing_teaser() -> None:
     assert job.description.startswith("- ")
 
 
+def test_description_uses_canonical_25k_cap() -> None:
+    scraper = SeekScraper("au")
+    job = scraper._parse_job(
+        _au_job(teaser="x" * 30_000, bulletPoints=[]),
+        host="au.seek.com",
+        country_iso="AU",
+    )
+    assert job is not None and job.description is not None
+    assert len(job.description) == 25_000
+
+
 # --- end-to-end pagination via httpx_mock -----------------------------------
 
 
@@ -378,6 +407,23 @@ def test_fetch_paginates_until_total_reached(httpx_mock) -> None:
     assert "p1-0" in ids and "p2-49" in ids
 
 
+def test_short_page_stops_scheduling_later_pages(httpx_mock, monkeypatch) -> None:
+    import ats_scrapers.scrapers.seek as module
+
+    monkeypatch.setattr(module, "MAX_CONCURRENCY", 1)
+    httpx_mock.add_response(
+        url=_search_url("au.seek.com", "AU-Main", 1),
+        json=_page([_au_job(id=f"p1-{i}") for i in range(100)], total=300),
+    )
+    httpx_mock.add_response(
+        url=_search_url("au.seek.com", "AU-Main", 2),
+        json=_page([_au_job(id="p2")], total=300),
+    )
+    jobs = SeekScraper("au").fetch()
+    assert len(jobs) == 101
+    assert len(httpx_mock.get_requests()) == 2
+
+
 def test_fetch_dedupes_cross_region_for_all(httpx_mock) -> None:
     """Two regions both return job id=999 — only one survives the
     cross-region dedup in ``_fetch_async``."""
@@ -392,4 +438,3 @@ def test_fetch_dedupes_cross_region_for_all(httpx_mock) -> None:
     # All 8 regions returned the same row → only one in the final list.
     assert len(jobs) == 1
     assert jobs[0].ats_id == "999"
-

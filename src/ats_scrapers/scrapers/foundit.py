@@ -378,8 +378,6 @@ class FounditScraper(BaseScraper):
             if start > MAX_USABLE_OFFSET:
                 break
             payload = self._fetch_page(client, start, query=query)
-            if payload is None:
-                break
             rows = list(_iter_job_rows(payload))
             if not rows:
                 break
@@ -405,10 +403,8 @@ class FounditScraper(BaseScraper):
 
     def _fetch_page(
         self, client: httpx.Client, start: int, *, query: str = "",
-    ) -> dict[str, Any] | None:
-        """GET one search page with retry on 429 / 5xx. Returns the
-        decoded ``jobSearchResponse`` dict or ``None`` to break the
-        pagination loop on terminal failure.
+    ) -> dict[str, Any]:
+        """GET one search page with retry on transient failures.
 
         ``query`` is the ``query=`` filter — empty for the unrestricted
         walk, non-empty for keyword bucketing.
@@ -430,12 +426,10 @@ class FounditScraper(BaseScraper):
             except httpx.HTTPError as exc:
                 last_exc = exc
                 if attempt == MAX_RETRIES:
-                    log.warning(
-                        "Foundit %s start=%d transport error after %d "
-                        "retries: %s",
-                        self.country_slug, start, MAX_RETRIES, exc,
-                    )
-                    return None
+                    raise ScraperError(
+                        f"Foundit {self.country_slug} start={start} "
+                        f"transport failed after {MAX_RETRIES} retries: {exc}"
+                    ) from exc
                 _sleep_backoff(attempt)
                 continue
 
@@ -443,43 +437,45 @@ class FounditScraper(BaseScraper):
             if status == 200:
                 try:
                     body = response.json()
-                except ValueError:
-                    log.warning(
-                        "Foundit %s start=%d: 200 but non-JSON body — stopping",
-                        self.country_slug, start,
+                except ValueError as exc:
+                    raise ScraperError(
+                        f"Foundit {self.country_slug} start={start} returned "
+                        "non-JSON"
+                    ) from exc
+                if not isinstance(body, dict):
+                    raise ScraperError(
+                        f"Foundit {self.country_slug} start={start} returned "
+                        f"{type(body).__name__}, expected object"
                     )
-                    return None
                 if body.get("jobSearchStatus") != 200:
-                    log.info(
-                        "Foundit %s start=%d: API status=%s (%s) — stopping",
-                        self.country_slug, start,
-                        body.get("jobSearchStatus"),
-                        body.get("jobSearchStatusText"),
+                    raise ScraperError(
+                        f"Foundit {self.country_slug} start={start} API status="
+                        f"{body.get('jobSearchStatus')} "
+                        f"({body.get('jobSearchStatusText')})"
                     )
-                    return None
-                return body.get("jobSearchResponse") or {}
-            if status in (429,) or 500 <= status < 600:
+                response_body = body.get("jobSearchResponse")
+                if not isinstance(response_body, dict):
+                    raise ScraperError(
+                        f"Foundit {self.country_slug} start={start} omitted "
+                        "jobSearchResponse"
+                    )
+                return response_body
+            if status in (403, 429) or 500 <= status < 600:
                 if attempt == MAX_RETRIES:
-                    log.warning(
-                        "Foundit %s start=%d returned %d after %d "
-                        "retries — stopping pagination",
-                        self.country_slug, start, status, MAX_RETRIES,
+                    raise ScraperError(
+                        f"Foundit {self.country_slug} start={start} returned "
+                        f"{status} after {MAX_RETRIES} retries"
                     )
-                    return None
                 _sleep_backoff(attempt)
                 continue
             # Some other 4xx — surface so an operator notices.
-            log.warning(
-                "Foundit %s start=%d returned unexpected status %d — stopping",
-                self.country_slug, start, status,
+            raise ScraperError(
+                f"Foundit {self.country_slug} start={start} returned {status}"
             )
-            return None
-
-        log.warning(
-            "Foundit %s start=%d exhausted retries: %s",
-            self.country_slug, start, last_exc,
+        raise ScraperError(
+            f"Foundit {self.country_slug} start={start} exhausted retries: "
+            f"{last_exc}"
         )
-        return None
 
     # ----- single-row parser ------------------------------------------
 

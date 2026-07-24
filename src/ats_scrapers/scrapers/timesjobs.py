@@ -170,11 +170,21 @@ class TimesJobsScraper(BaseScraper):
             first = await self._search(client, page=1)
             await absorb(first.get("jobs") or [])
 
-            total_pages_raw = first.get("totalPages") or 0
+            total_pages_raw = first.get("totalPages")
+            if total_pages_raw is None:
+                raise ScraperError(
+                    "TimesJobs response omitted required totalPages"
+                )
             try:
                 total_pages = int(total_pages_raw)
-            except (TypeError, ValueError):
-                total_pages = 0
+            except (TypeError, ValueError) as exc:
+                raise ScraperError(
+                    f"TimesJobs returned invalid totalPages={total_pages_raw!r}"
+                ) from exc
+            if total_pages < 1:
+                raise ScraperError(
+                    f"TimesJobs returned invalid totalPages={total_pages}"
+                )
             if self.max_pages is not None:
                 total_pages = min(total_pages, self.max_pages)
             elif total_pages > MAX_PAGES:
@@ -193,13 +203,9 @@ class TimesJobsScraper(BaseScraper):
                     payload = await self._search(client, page=page)
                 await absorb(payload.get("jobs") or [])
 
-            results = await asyncio.gather(
+            await asyncio.gather(
                 *(one(p) for p in range(2, total_pages + 1)),
-                return_exceptions=True,
             )
-            for r in results:
-                if isinstance(r, BaseException):
-                    log.warning("TimesJobs page fetch failed: %s", r)
 
         return all_jobs
 
@@ -239,8 +245,8 @@ class TimesJobsScraper(BaseScraper):
                     )
                 return data
 
-            if r.status_code == 400:
-                # Past the last page or filter rejected — treat as exhausted.
+            if r.status_code == 400 and page > 1:
+                # The API uses 400 for page numbers beyond the result set.
                 return {"jobs": [], "totalPages": 0, "total": 0}
 
             if r.status_code in (429,) or 500 <= r.status_code < 600:
@@ -386,6 +392,16 @@ _INDIAN_CITIES = frozenset(
     }
 )
 
+_INDIAN_REGIONS = frozenset({
+    "andhra pradesh", "arunachal pradesh", "assam", "bihar",
+    "chhattisgarh", "goa", "gujarat", "haryana", "himachal pradesh",
+    "jharkhand", "karnataka", "kerala", "madhya pradesh",
+    "maharashtra", "manipur", "meghalaya", "mizoram", "nagaland",
+    "odisha", "punjab", "rajasthan", "sikkim", "tamil nadu",
+    "telangana", "tripura", "uttar pradesh", "uttarakhand",
+    "west bengal", "delhi", "india", "in",
+})
+
 
 def _infer_in_country_iso(location: str | None) -> str | None:
     """Return ``"IN"`` when the location string is unambiguously
@@ -400,7 +416,9 @@ def _infer_in_country_iso(location: str | None) -> str | None:
     parts = [p.strip().lower() for p in location.split(",") if p.strip()]
     if not parts:
         return None
-    if all(p in _INDIAN_CITIES for p in parts):
+    if parts[-1] in {"india", "in"}:
+        return "IN"
+    if all(p in _INDIAN_CITIES or p in _INDIAN_REGIONS for p in parts):
         return "IN"
     return None
 

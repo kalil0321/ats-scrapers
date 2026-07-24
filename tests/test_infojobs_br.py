@@ -270,6 +270,7 @@ def test_parse_brl_amount_handles_brazilian_thousand_separator() -> None:
         "A partir de R$ 8.000,00",
         (8000.0, None, "BRL", "A partir de R$ 8.000,00"),
     ),
+    ("R$ 3.500,00", (3500.0, 3500.0, "BRL", "R$ 3.500,00")),
 ])
 def test_parse_salary_shapes(raw, expected) -> None:
     assert _parse_salary(raw) == expected
@@ -293,7 +294,8 @@ def test_parse_brazilian_date_full_timestamp() -> None:
     parse it directly, don't try to derive from 'Hoje' / 'Ontem'."""
     dt = _parse_brazilian_date("2026/05/12 12:03:00")
     assert dt is not None
-    assert (dt.year, dt.month, dt.day, dt.hour) == (2026, 5, 12, 12)
+    assert (dt.year, dt.month, dt.day, dt.hour) == (2026, 5, 12, 15)
+    assert dt.tzinfo is not None
 
 
 def test_parse_brazilian_date_dd_mm_yyyy() -> None:
@@ -461,4 +463,3 @@ def test_fragment_url_carries_listing_with_page_param(httpx_mock) -> None:
     inner_params = urllib.parse.parse_qs(inner_parsed.query)
     assert inner_parsed.path == "/empregos-em-rio-de-janeiro.aspx"
     assert inner_params["page"] == ["1"]
-

@@ -117,9 +117,9 @@ def test_parses_full_search_payload(httpx_mock) -> None:
     assert j.language == "th"
     # Location is district-first, then province (both in Thai)
     assert j.location == "วัฒนา, กรุงเทพมหานคร"
-    # Salary parses to THB / MONTH and pulls min/max from the range
+    # Salary parses to THB without inventing a period absent from source.
     assert j.salary_currency == "THB"
-    assert j.salary_period == "MONTH"
+    assert j.salary_period is None
     assert j.salary_min == 15000
     assert j.salary_max == 20000
     assert j.salary_summary == "15,000 - 20,000 บาท"
@@ -201,6 +201,8 @@ def test_empty_first_page_short_circuits(httpx_mock) -> None:
         ("35,000 - 50,000 บาท", 35000, 50000, "THB"),
         # En-dash separator also seen on the API.
         ("18,000 – 22,000 บาท", 18000, 22000, "THB"),
+        ("15,000 ถึง 20,000 บาท", 15000, 20000, "THB"),
+        ("15.000 - 20.000 บาท", 15000, 20000, "THB"),
         # Single value with trailing baht marker → min == max.
         ("25,000 บาท", 25000, 25000, "THB"),
         # "Negotiable" phrases — currency stays None.
@@ -224,6 +226,36 @@ def test_salary_parser(
     assert jobs[0].salary_min == expected_min
     assert jobs[0].salary_max == expected_max
     assert jobs[0].salary_currency == expected_currency
+
+
+def test_salary_period_requires_explicit_unit(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_URL,
+        json=_envelope([_row(salary="20,000 บาท ต่อเดือน")]),
+    )
+    job = JobThaiScraper("any", job_type_ids=("17",)).fetch()[0]
+    assert job.salary_period == "MONTH"
+
+
+def test_default_discovers_current_job_types(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_URL,
+        json={"data": {"getJobTypeList": {"data": [{"id": 17}]}}},
+    )
+    httpx_mock.add_response(url=_API_URL, json=_envelope([_row()]))
+
+    jobs = JobThaiScraper("any").fetch()
+
+    assert [job.ats_id for job in jobs] == ["1900404"]
+
+
+def test_full_catalogue_rejects_bucket_above_es_window(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_URL,
+        json=_envelope([_row()], total=10_001),
+    )
+    with pytest.raises(ScraperError, match="Elasticsearch window"):
+        JobThaiScraper("any", job_type_ids=("4",)).fetch()
 
 
 # --- location handling ------------------------------------------------------
@@ -317,4 +349,3 @@ def test_persistent_500_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=_API_URL, status_code=500, is_reusable=True)
     with pytest.raises(ScraperError):
         JobThaiScraper("any", job_type_ids=("4",)).fetch()
-

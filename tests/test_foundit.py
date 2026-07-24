@@ -555,12 +555,26 @@ def test_retries_on_429_then_succeeds(httpx_mock: Any) -> None:
     assert [j.ats_id for j in jobs] == ["1"]
 
 
-def test_stops_pagination_after_exhausted_retries(
+def test_retries_on_transient_403_then_succeeds(httpx_mock: Any) -> None:
+    httpx_mock.add_response(url=_INDIA_RE, status_code=403)
+    httpx_mock.add_response(
+        url=_INDIA_RE,
+        json=_make_page([_make_row(job_id="1")]),
+    )
+    httpx_mock.add_response(url=_INDIA_RE, json=_make_page([]))
+    assert [job.ats_id for job in FounditScraper("in").fetch()] == ["1"]
+
+
+def test_non_object_json_fails_closed(httpx_mock: Any) -> None:
+    httpx_mock.add_response(url=_INDIA_RE, json=[])
+    with pytest.raises(ScraperError, match="expected object"):
+        FounditScraper("in").fetch()
+
+
+def test_fails_pagination_after_exhausted_retries(
     httpx_mock: Any,
 ) -> None:
-    """When the per-page retry budget is exhausted on a transient
-    failure, the scraper stops pagination but returns whatever it
-    already had — partial > nothing."""
+    """A failed page cannot return a silently partial catalogue."""
     httpx_mock.add_response(
         url=_INDIA_RE,
         json=_make_page([_make_row(job_id="1")]),
@@ -569,28 +583,25 @@ def test_stops_pagination_after_exhausted_retries(
     httpx_mock.add_response(url=_INDIA_RE, status_code=502)
     httpx_mock.add_response(url=_INDIA_RE, status_code=502)
 
-    jobs = FounditScraper("in", max_pages=5).fetch()
-    assert [j.ats_id for j in jobs] == ["1"]
+    with pytest.raises(ScraperError, match="returned 502"):
+        FounditScraper("in", max_pages=5).fetch()
 
 
-def test_4xx_other_than_429_stops_immediately(httpx_mock: Any) -> None:
-    """A 400 / 404 isn't transient — surface a stop, don't retry."""
+def test_4xx_other_than_429_fails_immediately(httpx_mock: Any) -> None:
     httpx_mock.add_response(url=_INDIA_RE, status_code=400, text="bad request")
 
-    jobs = FounditScraper("in", max_pages=5).fetch()
-    assert jobs == []
+    with pytest.raises(ScraperError, match="returned 400"):
+        FounditScraper("in", max_pages=5).fetch()
 
 
-def test_non_json_200_stops_pagination(httpx_mock: Any) -> None:
-    """A 200 that doesn't parse as JSON shouldn't crash the scraper —
-    log a warning, stop walking, return what we have."""
+def test_non_json_200_fails_pagination(httpx_mock: Any) -> None:
     httpx_mock.add_response(url=_INDIA_RE, status_code=200, text="<html>oops</html>")
 
-    jobs = FounditScraper("in", max_pages=5).fetch()
-    assert jobs == []
+    with pytest.raises(ScraperError, match="non-JSON"):
+        FounditScraper("in", max_pages=5).fetch()
 
 
-def test_api_level_error_status_stops_pagination(httpx_mock: Any) -> None:
+def test_api_level_error_status_fails_pagination(httpx_mock: Any) -> None:
     """The envelope's own ``jobSearchStatus != 200`` signals an
     application-level error (e.g. a bad ``country`` token). Stop and
     return what we have."""
@@ -603,8 +614,8 @@ def test_api_level_error_status_stops_pagination(httpx_mock: Any) -> None:
         },
     )
 
-    jobs = FounditScraper("in", max_pages=5).fetch()
-    assert jobs == []
+    with pytest.raises(ScraperError, match="API status=400"):
+        FounditScraper("in", max_pages=5).fetch()
 
 
 # --- request shape ---------------------------------------------------

@@ -31,6 +31,8 @@ if TYPE_CHECKING:
 
 API_URL = "https://jobs.bytedance.com/api/v1/public/supplier/search/job/posts"
 PAGE_SIZE = 100
+MAX_RETRIES = 4
+RETRY_BASE_DELAY = 1.0
 
 _EMPLOYMENT_TYPE_PATTERNS = {
     "intern": "INTERN",
@@ -66,12 +68,13 @@ class BytedanceScraper(BaseScraper):
     ats = ATSType.BYTEDANCE
 
     async def afetch(self) -> list[Job]:
-        return await asyncio.to_thread(self.fetch)
-
-    def fetch(self) -> list[Job]:
         all_jobs: list[Job] = []
         offset = 0
-        with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=self.timeout,
+            follow_redirects=True,
+            proxy=self.proxy,
+        ) as client:
             while True:
                 payload = {
                     "limit": PAGE_SIZE,
@@ -82,24 +85,11 @@ class BytedanceScraper(BaseScraper):
                     "location_code_list": [],
                     "job_function_id_list": [],
                 }
-                try:
-                    response = client.post(API_URL, json=payload, headers=HEADERS)
-                except httpx.HTTPError as exc:
-                    raise ScraperError(f"ByteDance fetch failed: {exc}") from exc
-                if response.status_code != 200:
-                    raise ScraperError(
-                        f"ByteDance returned {response.status_code}: {response.text[:120]}"
-                    )
-                try:
-                    body = response.json()
-                except ValueError as exc:
-                    raise ScraperError(
-                        f"ByteDance returned non-JSON: {response.text[:120]}"
-                    ) from exc
+                body = await self._post_page(client, payload)
                 code = body.get("code")
                 if code:
                     raise ScraperError(
-                        f"ByteDance API error code {code}: {body.get('message') or response.text[:120]}"
+                        f"ByteDance API error code {code}: {body.get('message')}"
                     )
                 payload_data = body.get("data") or {}
                 jobs = payload_data.get("job_post_list") or []
@@ -111,6 +101,56 @@ class BytedanceScraper(BaseScraper):
                 if offset >= total or len(jobs) < PAGE_SIZE:
                     break
         return all_jobs
+
+    def fetch(self) -> list[Job]:
+        return self._run_sync(self.afetch())
+
+    async def _post_page(
+        self,
+        client: httpx.AsyncClient,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        last_exc: Exception | None = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = await client.post(
+                    API_URL,
+                    json=payload,
+                    headers=HEADERS,
+                )
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt == MAX_RETRIES:
+                    raise ScraperError(
+                        f"ByteDance fetch failed: {exc}"
+                    ) from exc
+                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
+                continue
+            if response.status_code == 200:
+                try:
+                    body = response.json()
+                except ValueError as exc:
+                    raise ScraperError(
+                        f"ByteDance returned non-JSON: {response.text[:120]}"
+                    ) from exc
+                if not isinstance(body, dict):
+                    raise ScraperError(
+                        "ByteDance returned a non-object JSON response"
+                    )
+                return body
+            if response.status_code == 429 or 500 <= response.status_code < 600:
+                if attempt == MAX_RETRIES:
+                    raise ScraperError(
+                        f"ByteDance returned {response.status_code} after "
+                        f"{MAX_RETRIES} retries"
+                    )
+                await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+                continue
+            raise ScraperError(
+                f"ByteDance returned {response.status_code}: "
+                f"{response.text[:120]}"
+            )
+        raise ScraperError(f"ByteDance exhausted retries: {last_exc}")
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
         ats_id = str(item.get("id") or "")

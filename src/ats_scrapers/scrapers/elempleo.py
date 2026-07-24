@@ -41,6 +41,7 @@ import html
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -66,8 +67,8 @@ RETRY_BASE_DELAY = 2.0
 # URL but extracting it from a dedicated attribute is more robust
 # than re-parsing the URL.
 _CARD_RE = re.compile(
-    r'<div class="col-md-12 result-item mb-3 bg-white"(?P<body>.*?)'
-    r'(?=<div class="col-md-12 result-item mb-3 bg-white"|<div class="text-center pt-3"|<footer)',
+    r'<div class="col-md-12 result-item mb-3 bg-white\s*"(?P<body>.*?)'
+    r'(?=<div class="col-md-12 result-item mb-3 bg-white\s*"|<div class="text-center pt-3"|<footer)',
     re.DOTALL,
 )
 _OFFER_ID_RE = re.compile(r'data-offer-id="(?P<id>\d+)"')
@@ -354,9 +355,9 @@ class ElempleoScraper(BaseScraper):
         if date_match:
             label = html.unescape(date_match.group("v")).strip()
             if _strip_accents(label).lower() == "hoy":
-                posted_at = datetime.now(tz=UTC).replace(
+                posted_at = datetime.now(tz=ZoneInfo("America/Bogota")).replace(
                     hour=0, minute=0, second=0, microsecond=0
-                )
+                ).astimezone(UTC)
 
         # Description — pulled from the share modal's data attribute
         # so listings already carry the body. Keep this defensive:

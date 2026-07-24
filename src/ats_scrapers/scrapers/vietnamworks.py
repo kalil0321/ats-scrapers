@@ -129,8 +129,14 @@ class VietnamWorksScraper(BaseScraper):
             self._absorb_page(first, seen, jobs)
 
             meta = first.get("meta") or {}
-            nb_hits = _to_int(meta.get("nbHits")) or 0
-            nb_pages = _to_int(meta.get("nbPages")) or 0
+            nb_hits_value = _to_int(meta.get("nbHits"))
+            nb_pages_value = _to_int(meta.get("nbPages"))
+            if nb_hits_value is None and nb_pages_value is None:
+                raise ScraperError(
+                    "VietnamWorks response omitted pagination metadata"
+                )
+            nb_hits = nb_hits_value or 0
+            nb_pages = nb_pages_value or 0
             served = len(first.get("data") or [])
             if served == 0:
                 return jobs
@@ -197,8 +203,8 @@ class VietnamWorksScraper(BaseScraper):
         body = {"keyword": "", "page": page, "size": PER_PAGE}
         last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
+            try:
+                async with sem:
                     response = await client.post(
                         API_URL,
                         json=body,
@@ -208,14 +214,14 @@ class VietnamWorksScraper(BaseScraper):
                             "Content-Type": "application/json",
                         },
                     )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"VietnamWorks fetch failed for page {page}: {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt == MAX_RETRIES:
+                    raise ScraperError(
+                        f"VietnamWorks fetch failed for page {page}: {exc}"
+                    ) from exc
+                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
+                continue
             if response.status_code == 200:
                 try:
                     data = response.json()
@@ -226,7 +232,10 @@ class VietnamWorksScraper(BaseScraper):
                 # Out-of-range pages echo back ``{"meta": null, "data": null}``.
                 # Normalise so callers can iterate cleanly.
                 if not isinstance(data, dict):
-                    return {"data": [], "meta": {}}
+                    raise ScraperError(
+                        "VietnamWorks API shape changed: expected object, "
+                        f"got {type(data).__name__}"
+                    )
                 if data.get("data") is None:
                     data["data"] = []
                 if data.get("meta") is None:
@@ -427,9 +436,7 @@ def _strip_html(text: str) -> str:
 def _parse_iso(value: object) -> datetime | None:
     """VietnamWorks emits ISO-8601 with a ``+07:00`` offset
     (e.g. ``2026-04-21T17:25:42+07:00``). Python's ``fromisoformat``
-    handles that natively since 3.11; we drop the tzinfo so the
-    resulting datetime is comparable with the ``fetched_at`` field
-    (naive UTC-ish, matching the rest of the codebase)."""
+    handles that natively since 3.11 and we normalize it to UTC."""
     if not isinstance(value, str) or not value:
         return None
     try:
@@ -437,10 +444,8 @@ def _parse_iso(value: object) -> datetime | None:
     except ValueError:
         return None
     if dt.tzinfo is not None:
-        # Convert to UTC then drop tzinfo to keep parity with the other
-        # scrapers' naive datetimes.
-        dt = dt.astimezone(UTC).replace(tzinfo=None)
-    return dt
+        return dt.astimezone(UTC)
+    return dt.replace(tzinfo=UTC)
 
 
 def _coerce_str(value: object) -> str | None:

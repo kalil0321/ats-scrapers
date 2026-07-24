@@ -198,18 +198,24 @@ class SeekScraper(BaseScraper):
 
         results: list[list[Job]] = [jobs]
 
-        async def one_page(page: int) -> list[Job]:
+        async def one_page(page: int) -> tuple[list[Job], int]:
             payload = await self._search(client, sem, host=host,
                                          site_key=site_key, page=page)
             items = payload.get("data") or []
-            return [
-                self._parse_job(it, host=host, country_iso=country_iso)
-                for it in items
-            ]
+            return (
+                [
+                    self._parse_job(it, host=host, country_iso=country_iso)
+                    for it in items
+                ],
+                len(items),
+            )
 
         for start in range(2, last_page + 1, MAX_CONCURRENCY):
             pages = range(start, min(start + MAX_CONCURRENCY, last_page + 1))
-            results.extend(await asyncio.gather(*(one_page(page) for page in pages)))
+            batches = await asyncio.gather(*(one_page(page) for page in pages))
+            results.extend(batch for batch, _count in batches)
+            if any(count < PAGE_SIZE for _batch, count in batches):
+                break
 
         flat: list[Job] = []
         for batch in results:
@@ -317,7 +323,7 @@ class SeekScraper(BaseScraper):
         # Description — search response is summary-only. We concatenate
         # the teaser with the bullet points (when both are present) so
         # downstream consumers have *something* searchable; the canonical
-        # 10kB cap from the model docs is preserved.
+        # canonical 25kB cap from the model is preserved.
         teaser = (item.get("teaser") or "").strip()
         bullets = [
             b.strip() for b in (item.get("bulletPoints") or [])
@@ -329,8 +335,8 @@ class SeekScraper(BaseScraper):
             description = "- " + "\n- ".join(bullets)
         else:
             description = teaser or None
-        if description is not None and len(description) > 10_000:
-            description = description[:10_000]
+        if description is not None and len(description) > 25_000:
+            description = description[:25_000]
 
         # Classification — ``classifications[0].classification.description``
         # is the high-level category (e.g. "Information & Communication
@@ -388,7 +394,11 @@ class SeekScraper(BaseScraper):
             ats_id=ats_id,
             location=location,
             country_iso=country,
-            region="Oceania" if country in ("AU", "NZ") else "Asia",
+            region=(
+                "Oceania" if country in ("AU", "NZ")
+                else "Asia" if country in {"HK", "TH", "MY", "ID", "PH", "SG"}
+                else None
+            ),
             salary_currency=salary_currency,
             salary_period=salary_period,
             salary_summary=salary_label,
@@ -437,6 +447,9 @@ def _parse_iso8601(value: object) -> datetime | None:
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(s)
+        parsed = datetime.fromisoformat(s)
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)

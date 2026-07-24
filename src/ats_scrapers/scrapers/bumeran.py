@@ -54,6 +54,9 @@ import re
 from datetime import UTC, datetime
 from importlib.util import find_spec
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
+
+import httpx
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -79,6 +82,16 @@ REGIONS: dict[str, tuple[str, str, str, str, str]] = {
     # multitrabajos shares the BMEC site-id with bumeran.com.ec — same
     # backend tenant, different brand surface.
     "ec-multitrabajos": ("https://www.multitrabajos.com", "BMEC", "EC", "es", "USD"),
+}
+REGION_TIMEZONES = {
+    "ar": "America/Argentina/Buenos_Aires",
+    "ar-zonajobs": "America/Argentina/Buenos_Aires",
+    "pe": "America/Lima",
+    "pe-konzerta": "America/Lima",
+    "ec": "America/Guayaquil",
+    "ec-multitrabajos": "America/Guayaquil",
+    "ve": "America/Caracas",
+    "cl": "America/Santiago",
 }
 
 # Sites whose backend isn't on the shared searchV2 API. The scraper
@@ -143,11 +156,13 @@ class BumeranScraper(BaseScraper):
 
     Optional knobs:
 
-    - ``max_pages`` — pagination cap (default 1000, covers every
-      currently active country at PAGE_SIZE=100).
+    - ``max_pages`` — optional explicit pagination cap for bounded probes;
+      production defaults to the full reported catalogue.
     - ``client_kind`` — ``"httpcloak"`` (default) uses TLS+h2
       impersonation to clear Cloudflare; ``"httpx"`` skips httpcloak
       for diagnostic comparison and will 403 in production.
+    - ``proxy`` / ``include_descriptions`` — standard scraper options,
+      forwarded to the selected transport and parser respectively.
 
     The class returns ``[]`` (with a warning log) when ``httpcloak``
     isn't installed so the publish pipeline doesn't crash on operators
@@ -161,15 +176,27 @@ class BumeranScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = 30.0,
-        max_pages: int = 1000,
+        max_pages: int | None = None,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
+        client_kind: str = "httpcloak",
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         if company_slug not in REGIONS:
             raise CompanyNotFoundError(
                 f"Bumeran: unknown region {company_slug!r}. "
                 f"Known: {sorted(REGIONS)}"
             )
         self.max_pages = max_pages
+        if client_kind not in {"httpcloak", "httpx"}:
+            raise ValueError("client_kind must be 'httpcloak' or 'httpx'")
+        self.client_kind = client_kind
+        self._timezone = ZoneInfo(REGION_TIMEZONES[company_slug])
         (
             self._base_url,
             self._site_id,
@@ -186,7 +213,7 @@ class BumeranScraper(BaseScraper):
                 self.company_slug,
             )
             return []
-        if find_spec("httpcloak") is None:
+        if self.client_kind == "httpcloak" and find_spec("httpcloak") is None:
             log.warning(
                 "Bumeran: httpcloak is required to clear Cloudflare on "
                 "Navent's API — install with `pip install ats_scrapers[scrapers]`. "
@@ -213,10 +240,9 @@ class BumeranScraper(BaseScraper):
         # ``size`` from the API is the number of rows actually returned
         # on this page, not the requested pageSize — when only a handful
         # of jobs exist, ``size`` is small but the math still holds.
-        total_pages = min(
-            self.max_pages,
-            (total + size - 1) // size if total else 1,
-        )
+        total_pages = (total + size - 1) // size if total else 1
+        if self.max_pages is not None:
+            total_pages = min(self.max_pages, total_pages)
 
         seen: set[str] = set()
         jobs: list[Job] = []
@@ -252,9 +278,19 @@ class BumeranScraper(BaseScraper):
     def _open_session(self) -> Any:
         """Create an httpcloak Session, prime it with the landing page so
         Cloudflare drops the right cookies, and return it."""
-        import httpcloak
+        if self.client_kind == "httpx":
+            session: Any = httpx.Client(
+                proxy=self.proxy,
+                follow_redirects=True,
+            )
+        else:
+            import httpcloak
 
-        session = httpcloak.Session()
+            session = (
+                httpcloak.Session(proxy=self.proxy)
+                if self.proxy
+                else httpcloak.Session()
+            )
         landing = f"{self._base_url}/empleos.html"
         try:
             response = session.get(landing, timeout=self.timeout)
@@ -304,7 +340,7 @@ class BumeranScraper(BaseScraper):
             text = _response_text(response)
             if status == 200:
                 try:
-                    return json.loads(text)
+                    payload = json.loads(text)
                 except ValueError as exc:
                     # Cloudflare sometimes returns 200 + HTML challenge
                     # body on transient flaky edges — retry rather than
@@ -316,6 +352,12 @@ class BumeranScraper(BaseScraper):
                         ) from exc
                     _sleep(RETRY_BASE_DELAY * attempt)
                     continue
+                if not isinstance(payload, dict):
+                    raise ScraperError(
+                        f"Bumeran ({self.company_slug}) page {page}: "
+                        f"expected object, got {type(payload).__name__}"
+                    )
+                return payload
             if status == 404:
                 # Past the last page — caller treats empty content as EOF.
                 return {"content": [], "total": 0, "size": 0, "number": page}
@@ -380,10 +422,15 @@ class BumeranScraper(BaseScraper):
         tipo = (item.get("tipoTrabajo") or "").strip()
         employment_type = _TIPO_TRABAJO_MAP.get(tipo.lower())
 
-        description = _clean_description(item.get("detalle"))
+        description = (
+            _clean_description(item.get("detalle"))
+            if self.include_descriptions
+            else None
+        )
 
         posted_at = _parse_datetime(
             item.get("fechaHoraPublicacion") or item.get("fechaPublicacion"),
+            timezone=self._timezone,
         )
 
         raw: dict[str, Any] = {}
@@ -458,18 +505,23 @@ def _clean_description(value: object) -> str | None:
     return cleaned[:10_000]
 
 
-def _parse_datetime(value: object) -> datetime | None:
+def _parse_datetime(
+    value: object,
+    *,
+    timezone: ZoneInfo,
+) -> datetime | None:
     """Parse Bumeran's ``DD-MM-YYYY HH:MM:SS`` (and date-only fallback).
 
-    The API ships local time without a zone — we keep it as naive
-    datetime and let the downstream enrichment localize. Returns None
-    for any unparsable input rather than guessing."""
+    The API ships local time without a zone, so interpret it in the
+    selected regional timezone and normalize to UTC."""
     if not isinstance(value, str) or not value.strip():
         return None
     s = value.strip()
     for fmt in (_DATE_FMT, _DATE_ONLY_FMT):
         try:
-            return datetime.strptime(s, fmt)
+            return datetime.strptime(s, fmt).replace(
+                tzinfo=timezone,
+            ).astimezone(UTC)
         except ValueError:
             continue
     return None

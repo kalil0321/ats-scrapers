@@ -189,29 +189,34 @@ class TorreScraper(BaseScraper):
         }
         last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
-            async with sem:
-                try:
+            try:
+                async with sem:
                     response = await client.post(
                         SEARCH_URL,
                         params=params,
                         headers=headers,
                         json={},
                     )
-                except httpx.HTTPError as exc:
-                    last_exc = exc
-                    if attempt == MAX_RETRIES:
-                        raise ScraperError(
-                            f"Torre fetch failed (cursor={cursor!r}): {exc}"
-                        ) from exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt == MAX_RETRIES:
+                    raise ScraperError(
+                        f"Torre fetch failed (cursor={cursor!r}): {exc}"
+                    ) from exc
+                await asyncio.sleep(RETRY_BASE_DELAY * attempt)
+                continue
             if response.status_code == 200:
                 try:
-                    return response.json()
+                    payload = response.json()
                 except ValueError as exc:
                     raise ScraperError(
                         f"Torre returned non-JSON (cursor={cursor!r}): {exc}"
                     ) from exc
+                if not isinstance(payload, dict):
+                    raise ScraperError(
+                        f"Torre returned {type(payload).__name__}, expected object"
+                    )
+                return payload
             if response.status_code == 429 or 500 <= response.status_code < 600:
                 if attempt == MAX_RETRIES:
                     raise ScraperError(

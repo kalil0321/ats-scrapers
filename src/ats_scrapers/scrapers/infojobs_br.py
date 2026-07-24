@@ -50,6 +50,7 @@ import re
 import urllib.parse
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -493,7 +494,7 @@ def _parse_salary(
             return None, parsed[0], "BRL", normalized
         if "partir" in lower or "a partir" in lower:
             return parsed[0], None, "BRL", normalized
-        return None, parsed[0], "BRL", normalized
+        return parsed[0], parsed[0], "BRL", normalized
     return parsed[0], parsed[-1], "BRL", normalized
 
 
@@ -527,7 +528,9 @@ def _parse_brazilian_date(raw: str) -> datetime | None:
     raw = raw.strip()
     for fmt in ("%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d", "%d/%m/%Y"):
         try:
-            return datetime.strptime(raw, fmt)
+            return datetime.strptime(raw, fmt).replace(
+                tzinfo=ZoneInfo("America/Sao_Paulo"),
+            ).astimezone(UTC)
         except ValueError:
             continue
     return None

@@ -56,11 +56,7 @@ CASES: list[tuple[str, Callable[[], object], str]] = [
     ),
     (
         "jobthai",
-        lambda: JobThaiScraper(
-            "jobthai",
-            job_type_ids=("4",),
-            max_pages_per_type=1,
-        ),
+        lambda: JobThaiScraper("jobthai", max_pages_per_type=1),
         "jobthai.com",
     ),
     (
@@ -111,4 +107,3 @@ async def test_live_jobboard_smoke(
     async with asyncio.timeout(TIMEOUT):
         jobs = await scraper.afetch()
     _assert_real_jobs(jobs, expected_domain)
-

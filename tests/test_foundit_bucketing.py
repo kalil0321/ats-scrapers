@@ -286,23 +286,19 @@ def test_keyword_strategy_continues_past_cross_seed_duplicate_page(
     ]
 
 
-def test_keyword_strategy_continues_past_bucket_error(
+def test_keyword_strategy_fails_on_bucket_error(
     httpx_mock: Any,
 ) -> None:
-    """A bucket that 502s for its retry budget must not crash the
-    whole run — we still try the remaining seeds."""
+    """A failed bucket cannot publish a silently partial catalogue."""
     # Bucket "engineer": all 502 (2 attempts after retry override).
     httpx_mock.add_response(url=_INDIA_RE, status_code=502)
     httpx_mock.add_response(url=_INDIA_RE, status_code=502)
-    # Bucket "manager": 1 good row + empty.
-    httpx_mock.add_response(
-        url=_INDIA_RE, json=_make_page([_make_row("m1")]),
-    )
-    httpx_mock.add_response(url=_INDIA_RE, json=_make_page([]))
-
-    jobs = FounditScraper(
-        "in", max_pages=5,
-        bucket_strategy="keyword",
-        keyword_seeds=["engineer", "manager"],
-    ).fetch()
-    assert [j.ats_id for j in jobs] == ["m1"]
+    with pytest.raises(ScraperError, match="returned 502"):
+        FounditScraper(
+            "in", max_pages=5,
+            bucket_strategy="keyword",
+            keyword_seeds=["engineer", "manager"],
+        ).fetch()
+    assert [request.url.params["query"] for request in httpx_mock.get_requests()] == [
+        "engineer", "engineer",
+    ]
