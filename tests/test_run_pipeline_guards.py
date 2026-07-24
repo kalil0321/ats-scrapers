@@ -804,6 +804,112 @@ def test_streaming_failure_preserves_previous_jobs_csv(
     assert not (out_dir / ".jobs.csv.tmp").exists()
 
 
+@pytest.mark.parametrize("has_previous", [True, False])
+def test_required_empty_output_removes_partial_file(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, has_previous: bool,
+) -> None:
+    out_dir = tmp_path / "empty"
+    out_dir.mkdir()
+    out_path = out_dir / "jobs.csv"
+    previous = (
+        "url,title,company,ats_type,ats_id\n"
+        "https://example.com/old,Old,Acme,custom,old\n"
+    )
+    if has_previous:
+        out_path.write_text(previous, encoding="utf-8")
+
+    class EmptyScraper:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def fetch(self):
+            return []
+
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "empty",
+        {
+            "scraper": EmptyScraper,
+            "singleton": True,
+            "output": "empty/jobs.csv",
+            "fail_closed_on_empty": True,
+        },
+    )
+
+    rc = asyncio.run(
+        runner.run("empty", concurrency=1, max_tenants=None, timeout=1)
+    )
+
+    assert rc == 1
+    if has_previous:
+        assert out_path.read_text(encoding="utf-8") == previous
+    else:
+        assert not out_path.exists()
+    assert not (out_dir / ".jobs.csv.tmp").exists()
+
+
+@pytest.mark.parametrize("has_previous", [True, False])
+def test_required_shard_failure_removes_partial_output(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, has_previous: bool,
+) -> None:
+    (tmp_path / "ats-companies").mkdir()
+    (tmp_path / "ats-companies" / "shards.csv").write_text(
+        "name,slug,url\nGood,good,https://good\nBad,bad,https://bad\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "sharded"
+    out_dir.mkdir()
+    out_path = out_dir / "jobs.csv"
+    previous = (
+        "url,title,company,ats_type,ats_id\n"
+        "https://example.com/old,Old,Acme,custom,old\n"
+    )
+    if has_previous:
+        out_path.write_text(previous, encoding="utf-8")
+
+    class ShardedScraper:
+        def __init__(self, slug, **_kwargs) -> None:
+            self.slug = slug
+
+        def fetch(self):
+            if self.slug == "bad":
+                raise RuntimeError("shard failed")
+            return [
+                Job(
+                    url="https://example.com/new",
+                    title="New",
+                    company="Acme",
+                    ats_type=ATSType.CUSTOM,
+                    ats_id="new",
+                )
+            ]
+
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "sharded",
+        {
+            "scraper": ShardedScraper,
+            "slug": lambda row: row["slug"],
+            "csv": "ats-companies/shards.csv",
+            "output": "sharded/jobs.csv",
+            "fail_closed_on_any_error": True,
+        },
+    )
+
+    rc = asyncio.run(
+        runner.run("sharded", concurrency=2, max_tenants=None, timeout=1)
+    )
+
+    assert rc == 1
+    if has_previous:
+        assert out_path.read_text(encoding="utf-8") == previous
+    else:
+        assert not out_path.exists()
+    assert not (out_dir / ".jobs.csv.tmp").exists()
+
+
 def test_streaming_pipeline_skips_capped_description_cache(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

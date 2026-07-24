@@ -87,6 +87,9 @@ class ATSType(StrEnum):
     YCOMBINATOR = "ycombinator"
     WELLFOUND = "wellfound"
     INFOJOBSES = "infojobs_es"
+    BUMERAN = "bumeran"
+    ELEMPLEO = "elempleo"
+    INFOJOBSBR = "infojobs_br"
     # Additional multi-tenant ATSes (post-0.1)
     BAMBOOHR = "bamboohr"
     BREEZY = "breezy"

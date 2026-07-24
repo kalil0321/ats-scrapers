@@ -19,10 +19,12 @@ from ats_scrapers.scrapers.beisen import BeisenScraper
 from ats_scrapers.scrapers.beisen_legacy import BeisenLegacyScraper
 from ats_scrapers.scrapers.breezy import BreezyScraper
 from ats_scrapers.scrapers.builtin import BuiltInScraper
+from ats_scrapers.scrapers.bumeran import BumeranScraper
 from ats_scrapers.scrapers.bundesagentur import BundesagenturScraper
 from ats_scrapers.scrapers.cornerstone import CornerstoneScraper
 from ats_scrapers.scrapers.darwinbox import DarwinboxScraper
 from ats_scrapers.scrapers.eightfold import EightfoldScraper
+from ats_scrapers.scrapers.elempleo import ElempleoScraper
 from ats_scrapers.scrapers.eures import EuresScraper
 from ats_scrapers.scrapers.gem import GemScraper
 from ats_scrapers.scrapers.getonbrd import GetOnBrdScraper
@@ -30,6 +32,7 @@ from ats_scrapers.scrapers.google import GoogleScraper
 from ats_scrapers.scrapers.greenhouse import GreenhouseScraper
 from ats_scrapers.scrapers.gupy import GupyScraper
 from ats_scrapers.scrapers.icims import iCIMSScraper
+from ats_scrapers.scrapers.infojobs_br import InfoJobsBrasilScraper
 from ats_scrapers.scrapers.infojobs_es import InfoJobsSpainScraper
 from ats_scrapers.scrapers.jazzhr import JazzHRScraper
 from ats_scrapers.scrapers.jobs_cz import JobsCzScraper
@@ -78,16 +81,19 @@ __all__ = [
     "BeisenScraper",
     "BreezyScraper",
     "BuiltInScraper",
+    "BumeranScraper",
     "BundesagenturScraper",
     "CornerstoneScraper",
     "DarwinboxScraper",
     "EightfoldScraper",
+    "ElempleoScraper",
     "EuresScraper",
     "GemScraper",
     "GetOnBrdScraper",
     "GoogleScraper",
     "GreenhouseScraper",
     "GupyScraper",
+    "InfoJobsBrasilScraper",
     "InfoJobsSpainScraper",
     "JazzHRScraper",
     "JobsChScraper",
