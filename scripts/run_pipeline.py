@@ -831,6 +831,7 @@ DATA_ROOT = Path(__file__).resolve().parent.parent  # → repo root
 
 JOB_CSV_FIELDS = [
     "url", "title", "company", "ats_type", "ats_id", "location",
+    "country_iso", "region", "language",
     "is_remote", "salary_min", "salary_max", "salary_currency",
     "salary_period", "salary_summary", "employment_type",
     "department", "team", "description", "posted_at",
@@ -1223,6 +1224,9 @@ def _job_to_row(job: Job) -> dict[str, Any]:
         "ats_type": job.ats_type.value,
         "ats_id": job.ats_id,
         "location": job.location or "",
+        "country_iso": job.country_iso or "",
+        "region": job.region or "",
+        "language": job.language or "",
         "is_remote": "" if job.is_remote is None else str(job.is_remote).lower(),
         "salary_min": "" if job.salary_min is None else job.salary_min,
         "salary_max": "" if job.salary_max is None else job.salary_max,

@@ -9,6 +9,26 @@ import scripts.run_pipeline as runner
 from ats_scrapers.models import ATSType, Job
 
 
+def test_job_to_row_preserves_structured_location_metadata() -> None:
+    row = runner._job_to_row(
+        Job(
+            url="https://example.com/jobs/1",
+            title="Engineer",
+            company="Acme",
+            ats_type=ATSType.JOBTHAI,
+            ats_id="1",
+            location="กรุงเทพมหานคร",
+            country_iso="TH",
+            region="Asia",
+            language="th",
+        )
+    )
+
+    assert row["country_iso"] == "TH"
+    assert row["region"] == "Asia"
+    assert row["language"] == "th"
+
+
 def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
     sf_row = {
         "name": "Ace1950",
