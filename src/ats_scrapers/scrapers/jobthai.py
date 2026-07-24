@@ -137,10 +137,17 @@ class JobThaiScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         job_type_ids: tuple[str, ...] | list[str] | None = None,
         max_pages_per_type: int | None = None,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         if max_pages_per_type is not None and max_pages_per_type < 1:
             raise ScraperError(
                 "JobThai max_pages_per_type must be positive, got "
@@ -162,7 +169,7 @@ class JobThaiScraper(BaseScraper):
         lock = asyncio.Lock()
 
         async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
+            timeout=self.timeout, follow_redirects=True, proxy=self.proxy
         ) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             job_type_ids = self.job_type_ids

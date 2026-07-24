@@ -160,10 +160,17 @@ class InfoJobsBrasilScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         max_pages: int | None = None,
         listing_url: str = DEFAULT_LISTING_URL,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         if max_pages is not None and max_pages < 1:
             raise ScraperError(
                 f"InfoJobs Brasil max_pages must be positive, got {max_pages}"
@@ -182,7 +189,7 @@ class InfoJobsBrasilScraper(BaseScraper):
         seen_ids: set[str] = set()
         jobs: list[Job] = []
         async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True,
+            timeout=self.timeout, follow_redirects=True, proxy=self.proxy,
         ) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             page = 1
@@ -207,8 +214,10 @@ class InfoJobsBrasilScraper(BaseScraper):
                 else:
                     consecutive_empty = 0
                 page += 1
-            if consecutive_empty >= 3:
-                exhausted = True
+            if consecutive_empty >= 3 and self._full_catalogue:
+                raise ScraperError(
+                    "InfoJobs Brasil returned repeated empty pages before eof"
+                )
         if self._full_catalogue and not exhausted:
             raise ScraperError(
                 f"InfoJobs Brasil reached its {DEFAULT_MAX_PAGES}-page safety "

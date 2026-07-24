@@ -125,9 +125,16 @@ class SeekScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         max_pages: int | None = None,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.max_pages = max_pages
         region = company_slug.strip().lower()
         if region == "all":
@@ -150,7 +157,7 @@ class SeekScraper(BaseScraper):
         jobs: list[Job] = []
         seen: set[str] = set()
         async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
+            timeout=self.timeout, follow_redirects=True, proxy=self.proxy
         ) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             for region in self.regions:

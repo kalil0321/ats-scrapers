@@ -427,6 +427,19 @@ def test_default_full_run_fails_at_safety_limit(
         InfoJobsBrasilScraper("any").fetch()
 
 
+def test_default_full_run_rejects_repeated_empty_pages_without_eof(
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(
+        url=re.compile(_FRAGMENT_RE),
+        json=_empty_fragment(),
+        is_reusable=True,
+    )
+
+    with pytest.raises(ScraperError, match="repeated empty pages before eof"):
+        InfoJobsBrasilScraper("any").fetch()
+
+
 # --- error paths ------------------------------------------------------------
 
 

@@ -132,10 +132,17 @@ class JobBankCAScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = DEFAULT_TIMEOUT,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         max_pages: int | None = None,
         language: str = "en",
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         if max_pages is not None and max_pages < 1:
             raise ScraperError(
                 f"Job Bank max_pages must be positive, got {max_pages}"
@@ -159,6 +166,7 @@ class JobBankCAScraper(BaseScraper):
         sem = asyncio.Semaphore(MAX_CONCURRENCY)
         async with httpx.AsyncClient(
             timeout=self.timeout, follow_redirects=True,
+            proxy=self.proxy,
             headers={
                 "User-Agent": DEFAULT_USER_AGENT,
                 "Accept": "text/html,application/xhtml+xml",

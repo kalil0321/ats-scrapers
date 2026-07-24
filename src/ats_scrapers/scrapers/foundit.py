@@ -248,6 +248,8 @@ class FounditScraper(BaseScraper):
         company_slug: str = "in",
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         max_pages: int = DEFAULT_MAX_PAGES,
         bucket_strategy: BucketStrategy = "none",
         keyword_seeds: Sequence[str] | None = None,
@@ -265,7 +267,12 @@ class FounditScraper(BaseScraper):
                 f"Foundit unknown bucket_strategy {bucket_strategy!r}. "
                 f"Known: 'none', 'keyword'."
             )
-        super().__init__(normalized, timeout=timeout)
+        super().__init__(
+            normalized,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.country_slug = normalized
         domain, token, iso, region = _COUNTRY_TABLE[normalized]
         self._domain = domain
@@ -306,6 +313,7 @@ class FounditScraper(BaseScraper):
         seen: set[str] = set()
         with httpx.Client(
             timeout=self.timeout,
+            proxy=self.proxy,
             headers={
                 "Accept": "application/json",
                 "Accept-Language": "en-US,en;q=0.9",

@@ -159,9 +159,16 @@ class ElempleoScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
         max_pages: int = DEFAULT_MAX_PAGES,
     ) -> None:
-        super().__init__(company_slug, timeout=timeout)
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
         self.max_pages = max_pages
 
     async def afetch(self) -> list[Job]:
@@ -175,7 +182,7 @@ class ElempleoScraper(BaseScraper):
         jobs: list[Job] = []
 
         async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True,
+            timeout=self.timeout, follow_redirects=True, proxy=self.proxy,
         ) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             # Pages out of range return HTTP 200 with zero job cards

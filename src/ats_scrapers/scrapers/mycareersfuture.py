@@ -114,7 +114,7 @@ class MyCareersFutureScraper(BaseScraper):
         seen: set[str] = set()
         jobs: list[Job] = []
         async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
+            timeout=self.timeout, follow_redirects=True, proxy=self.proxy
         ) as client:
             # First page: discover ``total`` so we can plan pagination.
             first = await self._fetch_page(client, user_agent, offset=0)
