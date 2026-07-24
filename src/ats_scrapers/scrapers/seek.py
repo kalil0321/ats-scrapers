@@ -212,9 +212,22 @@ class SeekScraper(BaseScraper):
 
         for start in range(2, last_page + 1, MAX_CONCURRENCY):
             pages = range(start, min(start + MAX_CONCURRENCY, last_page + 1))
-            batches = await asyncio.gather(*(one_page(page) for page in pages))
-            results.extend(batch for batch, _count in batches)
-            if any(count < PAGE_SIZE for _batch, count in batches):
+            page_numbers = list(pages)
+            batches = await asyncio.gather(
+                *(one_page(page) for page in page_numbers),
+                return_exceptions=True,
+            )
+            reached_end = False
+            for result in batches:
+                if reached_end:
+                    break
+                if isinstance(result, BaseException):
+                    raise result
+                batch, count = result
+                results.append(batch)
+                if count < PAGE_SIZE:
+                    reached_end = True
+            if reached_end:
                 break
 
         flat: list[Job] = []
@@ -322,8 +335,8 @@ class SeekScraper(BaseScraper):
 
         # Description — search response is summary-only. We concatenate
         # the teaser with the bullet points (when both are present) so
-        # downstream consumers have *something* searchable; the canonical
-        # canonical 25kB cap from the model is preserved.
+        # downstream consumers have *something* searchable; the model's
+        # canonical 25k-character cap is preserved.
         teaser = (item.get("teaser") or "").strip()
         bullets = [
             b.strip() for b in (item.get("bulletPoints") or [])

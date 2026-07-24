@@ -146,6 +146,29 @@ def test_registry_resolves_bumeran() -> None:
     assert ScraperRegistry.get(ATSType.BUMERAN) is BumeranScraper
 
 
+def test_fetch_closes_transport_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Session:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    session = Session()
+    monkeypatch.setattr(
+        "ats_scrapers.scrapers.bumeran.find_spec", lambda _name: object(),
+    )
+    scraper = BumeranScraper("ar")
+    monkeypatch.setattr(scraper, "_open_session", lambda: session)
+    monkeypatch.setattr(
+        scraper,
+        "_search_page",
+        lambda _session, page: _page_response([], page=page),
+    )
+
+    assert scraper.fetch() == []
+    assert session.closed is True
+
+
 def test_unknown_region_raises_company_not_found() -> None:
     with pytest.raises(CompanyNotFoundError):
         BumeranScraper("mx")  # MX isn't in the LATAM Navent footprint

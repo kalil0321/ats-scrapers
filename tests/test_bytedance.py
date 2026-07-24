@@ -200,6 +200,31 @@ def test_fetch_retries_transient_response(httpx_mock, monkeypatch) -> None:
     ]
 
 
+@pytest.mark.parametrize("status", [408, 429, 503])
+def test_fetch_retries_transient_statuses(httpx_mock, monkeypatch, status) -> None:
+    import ats_scrapers.scrapers.bytedance as module
+
+    delays = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(module, "MAX_RETRIES", 2)
+    monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+    httpx_mock.add_response(
+        url=API_URL,
+        status_code=status,
+        headers={"Retry-After": "0.25"},
+    )
+    httpx_mock.add_response(
+        url=API_URL,
+        json={"code": 0, "data": {"job_post_list": [], "count": 0}},
+    )
+
+    assert BytedanceScraper("any").fetch() == []
+    assert delays == [0.25]
+
+
 def test_fetch_rejects_non_object_json(httpx_mock) -> None:
     httpx_mock.add_response(url=API_URL, json=[])
     with pytest.raises(ScraperError, match="non-object"):

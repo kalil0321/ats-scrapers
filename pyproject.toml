@@ -46,6 +46,7 @@ dependencies = [
     "httpx>=0.27",
     "pydantic>=2.6",
     "pandas>=2.0",
+    "tzdata>=2025.2",
 ]
 
 [project.optional-dependencies]

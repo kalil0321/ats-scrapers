@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 SEARCH_URL = "https://www.jobbank.gc.ca/jobsearch/jobsearch"
 POSTING_URL_TEMPLATE = "https://www.jobbank.gc.ca/jobsearch/jobposting/{id}"
 PAGE_SIZE = 25  # Server renders 25 results per page; not configurable.
+MAX_PAGES = 5000
 MAX_CONCURRENCY = 4
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 1.5
@@ -135,7 +136,12 @@ class JobBankCAScraper(BaseScraper):
         language: str = "en",
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
-        self.max_pages = max_pages
+        if max_pages is not None and max_pages < 1:
+            raise ScraperError(
+                f"Job Bank max_pages must be positive, got {max_pages}"
+            )
+        self._full_catalogue = max_pages is None
+        self.max_pages = min(max_pages or MAX_PAGES, MAX_PAGES)
         # ``en`` (default) → english site. ``fr`` → ``?lang=fra`` variant.
         self.language = language
 
@@ -149,6 +155,7 @@ class JobBankCAScraper(BaseScraper):
         seen: set[str] = set()
         jobs: list[Job] = []
         repeated_pages = 0
+        exhausted = False
         sem = asyncio.Semaphore(MAX_CONCURRENCY)
         async with httpx.AsyncClient(
             timeout=self.timeout, follow_redirects=True,
@@ -164,7 +171,7 @@ class JobBankCAScraper(BaseScraper):
             # dominates, but parallel pre-fetching past the unknown last
             # page would just waste work.
             page = 1
-            while self.max_pages is None or page <= self.max_pages:
+            while page <= self.max_pages:
                 html_text = await self._fetch_page(client, sem, page)
                 fetched = datetime.now(tz=UTC)
                 page_jobs = self._parse_page(html_text, fetched_at=fetched)
@@ -173,6 +180,11 @@ class JobBankCAScraper(BaseScraper):
                         raise ScraperError(
                             f"Job Bank page={page} lacked result markup"
                         )
+                    if _ARTICLE_OPEN_RE.search(html_text):
+                        raise ScraperError(
+                            f"Job Bank page={page} contained unparseable articles"
+                        )
+                    exhausted = True
                     break
                 added = 0
                 for job in page_jobs:
@@ -191,6 +203,11 @@ class JobBankCAScraper(BaseScraper):
                         "Job Bank repeated only known jobs on consecutive pages"
                     )
                 page += 1
+        if self._full_catalogue and not exhausted:
+            raise ScraperError(
+                f"Job Bank reached its {MAX_PAGES}-page safety limit before "
+                "detecting the end of results"
+            )
         return jobs
 
     async def _fetch_page(

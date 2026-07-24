@@ -682,6 +682,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: _slug_col(r) or None,
         "csv": "ats-companies/bumeran.csv",
         "output": "bumeran/jobs.csv",
+        "fail_closed_on_any_error": True,
     },
     "bytedance": {
         "scraper": BytedanceScraper, "singleton": True,
@@ -697,6 +698,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "kwargs": lambda r: {"bucket_strategy": "keyword"},
         "csv": "ats-companies/foundit.csv",
         "output": "foundit/jobs.csv",
+        "fail_closed_on_any_error": True,
     },
     "infojobs_br": {
         "scraper": InfoJobsBrasilScraper, "singleton": True,
@@ -719,6 +721,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: _slug_col(r) or None,
         "csv": "ats-companies/seek.csv",
         "output": "seek/jobs.csv",
+        "fail_closed_on_any_error": True,
     },
     "timesjobs": {
         "scraper": TimesJobsScraper, "singleton": True,
@@ -1502,6 +1505,27 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                 print(
                     f"[{ats}] ACTION retry: streaming scrape failed after "
                     f"{counts['jobs']:,} jobs and no previous jobs.csv exists."
+                )
+            return 1
+
+        sharded_failure = (
+            bool(cfg.get("fail_closed_on_any_error"))
+            and counts["error"] > 0
+        )
+        if sharded_failure:
+            tmp_output_path.unlink(missing_ok=True)
+            if output_path.exists():
+                print(
+                    f"[{ats}] ACTION keep_previous: {counts['error']}/"
+                    f"{len(targets)} required shards failed after "
+                    f"{counts['jobs']:,} jobs; preserved {output_path} "
+                    "instead of publishing a partial dataset."
+                )
+            else:
+                print(
+                    f"[{ats}] ACTION retry: {counts['error']}/"
+                    f"{len(targets)} required shards failed and no previous "
+                    "jobs.csv exists."
                 )
             return 1
 

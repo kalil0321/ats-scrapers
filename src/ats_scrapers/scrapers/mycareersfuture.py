@@ -120,7 +120,11 @@ class MyCareersFutureScraper(BaseScraper):
             first = await self._fetch_page(client, user_agent, offset=0)
             self._absorb(first["results"], seen, jobs)
             total_raw = first.get("total")
-            if not isinstance(total_raw, int) or total_raw < 0:
+            if (
+                isinstance(total_raw, bool)
+                or not isinstance(total_raw, int)
+                or total_raw < 0
+            ):
                 raise ScraperError(
                     "MyCareersFuture response omitted a valid total"
                 )

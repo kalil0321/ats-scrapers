@@ -203,9 +203,17 @@ class TimesJobsScraper(BaseScraper):
                     payload = await self._search(client, page=page)
                 await absorb(payload.get("jobs") or [])
 
-            await asyncio.gather(
-                *(one(p) for p in range(2, total_pages + 1)),
-            )
+            tasks = [
+                asyncio.create_task(one(page))
+                for page in range(2, total_pages + 1)
+            ]
+            try:
+                await asyncio.gather(*tasks)
+            except BaseException:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
 
         return all_jobs
 
@@ -244,10 +252,6 @@ class TimesJobsScraper(BaseScraper):
                         f"got {type(data).__name__}"
                     )
                 return data
-
-            if r.status_code == 400 and page > 1:
-                # The API uses 400 for page numbers beyond the result set.
-                return {"jobs": [], "totalPages": 0, "total": 0}
 
             if r.status_code in (429,) or 500 <= r.status_code < 600:
                 if attempt == MAX_RETRIES:
@@ -399,7 +403,7 @@ _INDIAN_REGIONS = frozenset({
     "maharashtra", "manipur", "meghalaya", "mizoram", "nagaland",
     "odisha", "punjab", "rajasthan", "sikkim", "tamil nadu",
     "telangana", "tripura", "uttar pradesh", "uttarakhand",
-    "west bengal", "delhi", "india", "in",
+    "west bengal", "delhi", "india",
 })
 
 
@@ -416,7 +420,16 @@ def _infer_in_country_iso(location: str | None) -> str | None:
     parts = [p.strip().lower() for p in location.split(",") if p.strip()]
     if not parts:
         return None
-    if parts[-1] in {"india", "in"}:
+    if parts[-1] == "india":
+        return "IN"
+    if (
+        parts[-1] == "in"
+        and len(parts) > 1
+        and all(
+            part in _INDIAN_CITIES or part in _INDIAN_REGIONS
+            for part in parts[:-1]
+        )
+    ):
         return "IN"
     if all(p in _INDIAN_CITIES or p in _INDIAN_REGIONS for p in parts):
         return "IN"

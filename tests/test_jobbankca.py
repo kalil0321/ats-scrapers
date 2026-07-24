@@ -295,6 +295,27 @@ def test_fetch_respects_max_pages_cap(httpx_mock) -> None:
     assert [j.ats_id for j in jobs] == ["42"]
 
 
+def test_default_full_run_fails_at_safety_limit(
+    httpx_mock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ats_scrapers.scrapers.jobbankca as jobbank
+
+    monkeypatch.setattr(jobbank, "MAX_PAGES", 1)
+    httpx_mock.add_response(url=_SEARCH_RE, html=_page([_article(job_id="42")]))
+    with pytest.raises(ScraperError, match="safety limit"):
+        JobBankCAScraper("any").fetch()
+
+
+def test_unparseable_articles_raise_instead_of_ending(httpx_mock) -> None:
+    malformed = (
+        '<span class="found" id="results-count">1</span>'
+        '<article id="article-42"><div>changed markup</div></article>'
+    )
+    httpx_mock.add_response(url=_SEARCH_RE, html=malformed)
+    with pytest.raises(ScraperError, match="unparseable articles"):
+        JobBankCAScraper("any").fetch()
+
+
 def test_persistent_500_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=_SEARCH_RE, status_code=500, is_reusable=True)
     with pytest.raises(ScraperError):

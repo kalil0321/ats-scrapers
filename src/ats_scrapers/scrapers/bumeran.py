@@ -232,6 +232,14 @@ class BumeranScraper(BaseScraper):
         # landing-page GET seeds Cloudflare's __cf_* cookies that the
         # subsequent /api/avisos/searchV2 POSTs need to pass the WAF.
         session = await asyncio.to_thread(self._open_session)
+        try:
+            return await self._fetch_with_session(session)
+        finally:
+            close = getattr(session, "close", None)
+            if callable(close):
+                await asyncio.to_thread(close)
+
+    async def _fetch_with_session(self, session: Any) -> list[Job]:
         first = await asyncio.to_thread(self._search_page, session, 0)
         total = int(first.get("total") or 0)
         size = int(first.get("size") or PAGE_SIZE)
@@ -295,11 +303,17 @@ class BumeranScraper(BaseScraper):
         try:
             response = session.get(landing, timeout=self.timeout)
         except Exception as exc:
+            close = getattr(session, "close", None)
+            if callable(close):
+                close()
             raise ScraperError(
                 f"Bumeran ({self.company_slug}): landing-page fetch "
                 f"failed: {exc}"
             ) from exc
         if response.status_code != 200:
+            close = getattr(session, "close", None)
+            if callable(close):
+                close()
             raise ScraperError(
                 f"Bumeran ({self.company_slug}): landing returned "
                 f"{response.status_code} (expected 200)"

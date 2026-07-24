@@ -167,6 +167,7 @@ dependencies = [
     { name = "httpx" },
     { name = "pandas" },
     { name = "pydantic" },
+    { name = "tzdata" },
 ]
 
 [package.optional-dependencies]
@@ -241,6 +242,7 @@ requires-dist = [
     { name = "pytest-httpx", marker = "extra == 'test'", specifier = ">=0.30" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
     { name = "types-boto3", marker = "extra == 'dev'" },
+    { name = "tzdata", specifier = ">=2025.2" },
 ]
 provides-extras = ["scrapers", "parquet", "all", "test", "dev"]
 

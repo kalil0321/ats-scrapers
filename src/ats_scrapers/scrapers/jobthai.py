@@ -105,7 +105,13 @@ _SINGLE_RE = re.compile(r"(?P<val>\d[\d,\.]*)")
 _THAI_SCRIPT_RE = re.compile(r"[฀-๿]")
 _SALARY_PERIOD_PATTERNS = (
     (re.compile(r"เดือน|/\s*month|per\s+month|monthly", re.IGNORECASE), "MONTH"),
-    (re.compile(r"วัน|/\s*day|per\s+day|daily", re.IGNORECASE), "DAY"),
+    (
+        re.compile(
+            r"วันละ|ต่อ\s*วัน|/\s*day|\bper\s+day\b|\bdaily\b",
+            re.IGNORECASE,
+        ),
+        "DAY",
+    ),
     (re.compile(r"ชั่วโมง|/\s*hour|per\s+hour|hourly", re.IGNORECASE), "HOUR"),
 )
 
@@ -135,6 +141,11 @@ class JobThaiScraper(BaseScraper):
         max_pages_per_type: int | None = None,
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
+        if max_pages_per_type is not None and max_pages_per_type < 1:
+            raise ScraperError(
+                "JobThai max_pages_per_type must be positive, got "
+                f"{max_pages_per_type}"
+            )
         self.job_type_ids = tuple(job_type_ids) if job_type_ids is not None else None
         self.max_pages_per_type = max_pages_per_type or MAX_USABLE_PAGES
         self._full_catalogue = max_pages_per_type is None

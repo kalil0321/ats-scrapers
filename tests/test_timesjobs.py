@@ -10,6 +10,7 @@ retry / shape-changed defensive paths.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -357,9 +358,8 @@ def test_persistent_500_raises(httpx_mock) -> None:
         TimesJobsScraper("any").fetch()
 
 
-def test_400_on_subsequent_page_terminates_cleanly(httpx_mock) -> None:
-    """A 400 past the last page is the API's way of saying 'no more
-    rows' — treat as exhausted, not as an error."""
+def test_400_on_subsequent_page_raises(httpx_mock) -> None:
+    """A requested page came from totalPages, so a 400 is a failure."""
     httpx_mock.add_response(
         url=API_URL,
         match_json={
@@ -377,8 +377,8 @@ def test_400_on_subsequent_page_terminates_cleanly(httpx_mock) -> None:
         status_code=400,
         json={"error": "Invalid JSON format"},
     )
-    jobs = TimesJobsScraper("any").fetch()
-    assert [j.ats_id for j in jobs] == ["1"]
+    with pytest.raises(ScraperError, match=r"returned 400.*page=2"):
+        TimesJobsScraper("any").fetch()
 
 
 def test_400_on_first_page_raises(httpx_mock) -> None:
@@ -405,9 +405,45 @@ def test_failed_later_page_raises_instead_of_returning_partial(httpx_mock) -> No
         TimesJobsScraper("any").fetch()
 
 
+def test_failed_page_cancels_sibling_tasks(monkeypatch) -> None:
+    scraper = TimesJobsScraper("any")
+    sibling_cancelled = False
+
+    async def fake_search(_client, *, page: int):
+        nonlocal sibling_cancelled
+        if page == 1:
+            return _response([_job(job_id="1")], total_pages=3, total=3)
+        if page == 2:
+            await asyncio.sleep(0)
+            raise ScraperError("page 2 failed")
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            sibling_cancelled = True
+            raise
+
+    monkeypatch.setattr(scraper, "_search", fake_search)
+
+    with pytest.raises(ScraperError, match="page 2 failed"):
+        scraper.fetch()
+    assert sibling_cancelled is True
+
+
 def test_country_iso_accepts_india_suffix(httpx_mock) -> None:
     httpx_mock.add_response(
         url=API_URL,
         json=_response([_job(location="Bengaluru, Karnataka, India")]),
     )
     assert TimesJobsScraper("any").fetch()[0].country_iso == "IN"
+
+
+@pytest.mark.parametrize(
+    "location,expected",
+    [("Bengaluru, IN", "IN"), ("Indianapolis, IN", None)],
+)
+def test_country_iso_disambiguates_in_suffix(httpx_mock, location, expected) -> None:
+    httpx_mock.add_response(
+        url=API_URL,
+        json=_response([_job(location=location)]),
+    )
+    assert TimesJobsScraper("any").fetch()[0].country_iso == expected

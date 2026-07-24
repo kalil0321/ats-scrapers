@@ -435,6 +435,15 @@ def test_fetch_raises_when_total_is_missing(httpx_mock) -> None:
         MyCareersFutureScraper("sg").fetch()
 
 
+def test_fetch_rejects_boolean_total(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_RE,
+        json={"results": [_job_record()], "total": True},
+    )
+    with pytest.raises(ScraperError, match="valid total"):
+        MyCareersFutureScraper("sg").fetch()
+
+
 @pytest.mark.parametrize("payload", [[], None, {"total": 1}, {"results": None, "total": 1}])
 def test_fetch_rejects_invalid_envelopes(httpx_mock, payload) -> None:
     httpx_mock.add_response(url=_API_RE, json=payload)

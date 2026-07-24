@@ -237,6 +237,20 @@ def test_salary_period_requires_explicit_unit(httpx_mock) -> None:
     assert job.salary_period == "MONTH"
 
 
+def test_salary_period_ignores_schedule_day_word(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_URL,
+        json=_envelope([_row(salary="20,000 บาท หยุดวันเสาร์")]),
+    )
+    job = JobThaiScraper("any", job_type_ids=("17",)).fetch()[0]
+    assert job.salary_period is None
+
+
+def test_non_positive_max_pages_per_type_raises() -> None:
+    with pytest.raises(ScraperError, match="must be positive"):
+        JobThaiScraper("any", max_pages_per_type=0)
+
+
 def test_default_discovers_current_job_types(httpx_mock) -> None:
     httpx_mock.add_response(
         url=_API_URL,

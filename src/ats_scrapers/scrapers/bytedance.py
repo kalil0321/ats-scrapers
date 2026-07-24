@@ -138,13 +138,22 @@ class BytedanceScraper(BaseScraper):
                         "ByteDance returned a non-object JSON response"
                     )
                 return body
-            if response.status_code == 429 or 500 <= response.status_code < 600:
+            if response.status_code in (408, 429) or 500 <= response.status_code < 600:
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
                         f"ByteDance returned {response.status_code} after "
-                        f"{MAX_RETRIES} retries"
+                        f"{MAX_RETRIES} attempts"
                     )
-                await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    delay = float(retry_after) if retry_after else None
+                except ValueError:
+                    delay = None
+                await asyncio.sleep(
+                    max(0.0, delay)
+                    if delay is not None
+                    else RETRY_BASE_DELAY * (2 ** attempt)
+                )
                 continue
             raise ScraperError(
                 f"ByteDance returned {response.status_code}: "
