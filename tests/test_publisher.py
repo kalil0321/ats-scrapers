@@ -124,6 +124,40 @@ def test_publisher_excludes_and_deletes_stale_seek_slice(
     assert "jobhive/v1/seek/jobs.parquet" in fake_r2.deleted
 
 
+def test_disabled_seek_delete_failure_does_not_rewrite_manifest(
+    ats_csv_dir, fake_r2, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_key = "jobhive/v1/manifest.json"
+    original_manifest = json.dumps(
+        {
+            "by_ats": {
+                "seek": {
+                    "csv": "jobhive/v1/seek/jobs.csv",
+                    "rows": 1,
+                }
+            }
+        }
+    ).encode()
+    fake_r2.upload_bytes(original_manifest, manifest_key)
+    fake_r2.upload_bytes(b"stale", "jobhive/v1/seek/jobs.csv")
+
+    original_delete_many = fake_r2.delete_many
+
+    def fail_seek_delete(keys: list[str]) -> int:
+        if any("/seek/jobs." in key for key in keys):
+            raise StorageError("seek delete failed")
+        return original_delete_many(keys)
+
+    monkeypatch.setattr(fake_r2, "delete_many", fail_seek_delete)
+
+    with pytest.raises(StorageError, match="seek delete failed"):
+        DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+            ats_csv_dir
+        )
+
+    assert fake_r2.uploads[manifest_key]["data"] == original_manifest
+
+
 # --- Manifest ---------------------------------------------------------------
 
 

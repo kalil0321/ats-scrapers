@@ -61,3 +61,50 @@ def test_disabled_seek_company_delete_failure_is_fatal() -> None:
         match=r"seek/companies\.csv: AccessDenied",
     ):
         module.delete_disabled_sources(client, "test-bucket")
+
+
+def test_disabled_delete_failure_prevents_manifest_rewrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_publish_companies()
+    companies_dir = tmp_path / "ats-companies"
+    companies_dir.mkdir()
+    (companies_dir / "greenhouse.csv").write_text(
+        "name,slug,url\nAcme,acme,https://example.com/jobs\n"
+    )
+    uploaded_keys: list[str] = []
+
+    monkeypatch.setattr(module, "ATS_COMPANIES_DIR", companies_dir)
+    monkeypatch.setattr(module, "env", lambda _name: "test-bucket")
+    monkeypatch.setattr(module, "make_client", object)
+    monkeypatch.setattr(
+        module,
+        "fetch_existing_manifest",
+        lambda _client, _bucket: {"stats": {"total_companies": 99}},
+    )
+
+    def record_upload(
+        _client: object,
+        _bucket: str,
+        key: str,
+        _body: bytes,
+        _content_type: str,
+    ) -> None:
+        uploaded_keys.append(key)
+
+    def fail_disabled_delete(_client: object, _bucket: str) -> None:
+        raise RuntimeError("seek delete failed")
+
+    monkeypatch.setattr(module, "upload", record_upload)
+    monkeypatch.setattr(module, "delete_disabled_sources", fail_disabled_delete)
+    monkeypatch.setattr(
+        module,
+        "delete_legacy",
+        lambda _client, _bucket: None,
+    )
+
+    with pytest.raises(RuntimeError, match="seek delete failed"):
+        module.main()
+
+    assert f"{module.PREFIX}/manifest.json" not in uploaded_keys

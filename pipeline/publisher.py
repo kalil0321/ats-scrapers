@@ -267,6 +267,10 @@ class DatasetPublisher:
             )
             files_uploaded.extend(_collect_uploaded_keys(all_entry))
 
+            deleted = self.prune_disabled_job_sources()
+            if deleted:
+                logger.info("Deleted %d disabled-source keys", deleted)
+
             manifest_key = self._patch_and_upload_manifest(
                 generated_at=started,
                 stats_factory=lambda existing: {
@@ -282,10 +286,6 @@ class DatasetPublisher:
                 existing_manifest=existing_manifest,
             )
             files_uploaded.append(manifest_key)
-
-            deleted = self.prune_disabled_job_sources()
-            if deleted:
-                logger.info("Deleted %d disabled-source keys", deleted)
 
             deleted = self.prune_legacy_paths()
             if deleted:

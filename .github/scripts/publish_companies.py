@@ -299,7 +299,10 @@ def main() -> None:
         "parquet_sha256": sha256_bytes(agg_parquet),
     }
 
-    print("\n== Step 3: patch manifest.json")
+    print("\n== Step 3: cleanup disabled-source artifacts")
+    delete_disabled_sources(client, bucket)
+
+    print("\n== Step 4: patch manifest.json")
     manifest = fetch_existing_manifest(client, bucket)
     manifest["companies"] = aggregate_entry
     manifest["by_ats_companies"] = by_ats_entries
@@ -335,8 +338,7 @@ def main() -> None:
         "application/json",
     )
 
-    print("\n== Step 4: cleanup disabled and legacy paths")
-    delete_disabled_sources(client, bucket)
+    print("\n== Step 5: cleanup legacy paths")
     delete_legacy(client, bucket)
 
     print(
