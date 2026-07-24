@@ -165,6 +165,30 @@ def test_dedupes_repeated_job_ids(httpx_mock) -> None:
     assert sorted(j.ats_id for j in jobs) == ["1", "2"]
 
 
+def test_full_catalogue_rejects_repeated_result_page(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=API_URL,
+        json=_response(
+            [_job(job_id="1")],
+            page=1,
+            total_pages=2,
+            total=2,
+        ),
+    )
+    httpx_mock.add_response(
+        url=API_URL,
+        json=_response(
+            [_job(job_id="1")],
+            page=2,
+            total_pages=2,
+            total=2,
+        ),
+    )
+
+    with pytest.raises(ScraperError, match="repeated an earlier result page"):
+        TimesJobsScraper("any").fetch()
+
+
 # --- field extraction -------------------------------------------------------
 
 

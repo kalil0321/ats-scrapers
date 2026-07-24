@@ -175,7 +175,6 @@ class TimesJobsScraper(BaseScraper):
                 )
             new_jobs: list[Job] = []
             async with lock:
-                raw_rows += len(items)
                 for job in parsed:
                     if job is None:
                         continue
@@ -183,6 +182,16 @@ class TimesJobsScraper(BaseScraper):
                         continue
                     seen.add(job.ats_id)
                     new_jobs.append(job)
+                if (
+                    self._full_catalogue
+                    and page > 1
+                    and items
+                    and not new_jobs
+                ):
+                    raise ScraperError(
+                        f"TimesJobs page={page} repeated an earlier result page"
+                    )
+                raw_rows += len(items)
             if on_job is not None:
                 for job in new_jobs:
                     await on_job(job)
