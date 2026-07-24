@@ -468,7 +468,7 @@ def _apply_detail(job: Job, html_text: str) -> None:
         if isinstance(href, str) and href:
             try:
                 job.apply_url = HttpUrl(urljoin(str(job.url), href))
-            except ValidationError:
+            except (ValidationError, ValueError):
                 logger.warning(
                     "Ignoring invalid PageUp apply URL for job %s",
                     job.ats_id,

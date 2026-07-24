@@ -365,7 +365,14 @@ def test_descriptionless_detail_is_dropped_without_aborting(httpx_mock) -> None:
     assert [job.ats_id for job in jobs] == ["513/cw/en:101"]
 
 
-def test_invalid_apply_link_does_not_abort_detail_batch(httpx_mock) -> None:
+@pytest.mark.parametrize(
+    "invalid_apply_url",
+    ["javascript:void(0)", "https://["],
+)
+def test_invalid_apply_link_does_not_abort_detail_batch(
+    httpx_mock,
+    invalid_apply_url: str,
+) -> None:
     httpx_mock.add_response(
         url="https://careers.pageuppeople.com/513/cw/en/listing/?page=1&page-items=1000",
         text=_listing(
@@ -384,7 +391,7 @@ def test_invalid_apply_link_does_not_abort_detail_batch(httpx_mock) -> None:
         text=_detail("102").replace(
             "https://secure.dc2.pageuppeople.com/apply/513/"
             "gateway/default.aspx?c=apply&amp;lJobID=102",
-            "javascript:void(0)",
+            invalid_apply_url,
         ),
     )
 
