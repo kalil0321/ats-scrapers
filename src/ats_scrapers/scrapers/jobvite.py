@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urljoin, urlparse
 
-from pydantic import HttpUrl
+from pydantic import HttpUrl, ValidationError
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
@@ -351,6 +351,8 @@ def _apply_detail(job: Job, html_text: str) -> None:
         employment_type = _employment_type(posting.get("employmentType"))
         if employment_type is not None:
             job.employment_type = employment_type
+        if _is_remote_job_location_type(posting.get("jobLocationType")):
+            job.is_remote = True
 
         structured_location = _location_from_jsonld(posting.get("jobLocation"))
         if structured_location and (
@@ -374,7 +376,13 @@ def _apply_detail(job: Job, html_text: str) -> None:
     if apply_link is not None:
         href = apply_link.get("href")
         if isinstance(href, str) and href:
-            job.apply_url = HttpUrl(urljoin(str(job.url), href))
+            try:
+                job.apply_url = HttpUrl(urljoin(str(job.url), href))
+            except (ValidationError, ValueError):
+                logger.warning(
+                    "Ignoring invalid Jobvite apply URL for job %s",
+                    job.ats_id,
+                )
 
     if not job.description:
         container = soup.select_one(".jv-job-detail-description")
@@ -462,6 +470,15 @@ def _location_from_jsonld(value: object) -> str | None:
         if location and location not in locations:
             locations.append(location)
     return "; ".join(locations) or None
+
+
+def _is_remote_job_location_type(value: object) -> bool:
+    values = value if isinstance(value, list) else [value]
+    return any(
+        isinstance(item, str)
+        and item.strip().upper() in {"TELECOMMUTE", "REMOTE"}
+        for item in values
+    )
 
 
 def _employment_type(value: object) -> EmploymentType | None:

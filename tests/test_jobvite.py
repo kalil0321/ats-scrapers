@@ -49,6 +49,7 @@ def _detail(
     title: str = "Engineer",
     employment_type: str = "FULL_TIME",
     locations: list[dict[str, object]] | None = None,
+    job_location_type: str | None = None,
 ) -> str:
     posting = {
         "@context": "https://schema.org",
@@ -82,6 +83,8 @@ def _detail(
             },
         },
     }
+    if job_location_type is not None:
+        posting["jobLocationType"] = job_location_type
     return f"""
     <html><body>
       <h2 class="jv-header">{title}</h2>
@@ -605,6 +608,44 @@ def test_structured_remote_location_updates_remote_status() -> None:
 
     assert job.location == "Remote, France"
     assert job.is_remote is True
+
+
+def test_structured_telecommute_marker_updates_remote_status() -> None:
+    job = Job(
+        url="https://jobs.jobvite.com/acme/job/a1",
+        title="Engineer",
+        company="Acme",
+        ats_type=ATSType.JOBVITE,
+        ats_id="a1",
+        location="Paris, France",
+    )
+
+    _apply_detail(
+        job,
+        _detail("a1", job_location_type="TELECOMMUTE"),
+    )
+
+    assert job.location == "Paris, France"
+    assert job.is_remote is True
+
+
+@pytest.mark.parametrize("href", ["javascript:void(0)", "https://["])
+def test_invalid_apply_link_is_ignored(href: str) -> None:
+    job = Job(
+        url="https://jobs.jobvite.com/acme/job/a1",
+        title="Engineer",
+        company="Acme",
+        ats_type=ATSType.JOBVITE,
+        ats_id="a1",
+    )
+    html_text = _detail("a1").replace(
+        "/acme/job/a1/apply",
+        href,
+    )
+
+    _apply_detail(job, html_text)
+
+    assert job.apply_url is None
 
 
 def test_get_description_uses_detail_page(httpx_mock) -> None:
