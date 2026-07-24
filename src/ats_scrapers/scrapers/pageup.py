@@ -414,8 +414,7 @@ def _apply_detail(job: Job, html_text: str) -> None:
         job.requisition_id = requisition_id
     if location := _first_metadata(metadata, "location", "locations"):
         job.location = location
-        if "remote" in location.lower():
-            job.is_remote = True
+        job.is_remote = True if "remote" in location.lower() else None
     if work_type := _first_metadata(
         metadata,
         "work type",

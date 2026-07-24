@@ -124,6 +124,31 @@ def test_fetches_all_pages_and_enriches_details(httpx_mock) -> None:
     assert str(jobs[0].apply_url).startswith(
         "https://secure.dc2.pageuppeople.com/apply/513/"
     )
+
+
+def test_detail_location_resets_listing_remote_status(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=(
+            "https://careers.pageuppeople.com/513/cw/en/listing/"
+            "?page=1&page-items=1000"
+        ),
+        text=_listing([("101", "Platform Engineer", "Remote")]),
+    )
+    httpx_mock.add_response(
+        url=(
+            "https://careers.pageuppeople.com/513/cw/en/job/"
+            "101/platform-engineer"
+        ),
+        text=_detail("101").replace(
+            "Remote - Australia",
+            "Sydney, Australia",
+        ),
+    )
+
+    jobs = PageUpScraper("513/cw/en").fetch()
+
+    assert jobs[0].location == "Sydney, Australia"
+    assert jobs[0].is_remote is None
     assert jobs[0].raw == {
         "closes_at": "2026-08-07T13:55:00Z",
         "listing_summary": "Summary for Platform Engineer",
