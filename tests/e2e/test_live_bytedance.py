@@ -11,6 +11,7 @@ import pytest
 
 from ats_scrapers.models import Job
 from ats_scrapers.scrapers import BytedanceScraper
+from ats_scrapers.scrapers.base import BaseScraper
 
 pytestmark = [
     pytest.mark.live,
@@ -20,7 +21,7 @@ pytestmark = [
     ),
 ]
 
-CASES: list[tuple[str, Callable[[], object], str]] = [
+CASES: list[tuple[str, Callable[[], BaseScraper], str]] = [
     ("bytedance", lambda: BytedanceScraper("bytedance"), "joinbytedance.com"),
 ]
 
@@ -30,7 +31,7 @@ CASES: list[tuple[str, Callable[[], object], str]] = [
     [pytest.param(factory, domain, id=name) for name, factory, domain in CASES],
 )
 async def test_live_jobboard_smoke(
-    factory: Callable[[], object], expected_domain: str
+    factory: Callable[[], BaseScraper], expected_domain: str
 ) -> None:
     async with asyncio.timeout(180):
         jobs = await factory().afetch()

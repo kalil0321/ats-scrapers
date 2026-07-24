@@ -15,12 +15,28 @@ and walk ``city_info.parent`` for the location string.
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
+from pydantic import HttpUrl
+
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._throne import (
+    compose_description as _compose_description,
+)
+from ats_scrapers.scrapers._throne import (
+    extract_label as _extract_label,
+)
+from ats_scrapers.scrapers._throne import (
+    extract_location as _extract_location,
+)
+from ats_scrapers.scrapers._throne import (
+    map_recruit_type as _map_recruit_type,
+)
+from ats_scrapers.scrapers._throne import (
+    to_float as _to_float,
+)
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -31,22 +47,6 @@ if TYPE_CHECKING:
 API_URL = "https://jobs.bytedance.com/api/v1/public/supplier/search/job/posts"
 PAGE_SIZE = 100
 MAX_RETRIES = 4
-
-_EMPLOYMENT_TYPE_PATTERNS = {
-    "intern": "INTERN",
-    "internship": "INTERN",
-    "contract": "CONTRACT",
-    "contractor": "CONTRACT",
-    "temporary": "TEMPORARY",
-    "part-time": "PART_TIME",
-    "part time": "PART_TIME",
-    "parttime": "PART_TIME",
-    "full-time": "FULL_TIME",
-    "full time": "FULL_TIME",
-    "fulltime": "FULL_TIME",
-    "regular": "FULL_TIME",
-    "permanent": "FULL_TIME",
-}
 
 HEADERS = {
     "accept": "*/*",
@@ -127,7 +127,11 @@ class BytedanceScraper(BaseScraper):
                         "ByteDance could not parse every returned job row"
                     )
                 for job in parsed:
-                    if job is None or job.ats_id in seen_ids:
+                    if (
+                        job is None
+                        or not job.ats_id
+                        or job.ats_id in seen_ids
+                    ):
                         continue
                     seen_ids.add(job.ats_id)
                     all_jobs.append(job)
@@ -167,6 +171,8 @@ class BytedanceScraper(BaseScraper):
         if not ats_id or not title:
             return None
         post_info = item.get("job_post_info") or {}
+        salary_min = _to_float(post_info.get("min_salary"))
+        salary_max = _to_float(post_info.get("max_salary"))
 
         # Description: concatenate ``description`` + ``requirement``
         # (the API splits the body into two fields). Strip and cap.
@@ -202,7 +208,7 @@ class BytedanceScraper(BaseScraper):
                 raw[k] = v
 
         return Job(
-            url=f"https://joinbytedance.com/search/{ats_id}",
+            url=HttpUrl(f"https://joinbytedance.com/search/{ats_id}"),
             title=title,
             company="ByteDance",
             ats_type=ATSType.BYTEDANCE,
@@ -214,93 +220,18 @@ class BytedanceScraper(BaseScraper):
             commitment=commitment,
             description=description if self.include_descriptions else None,
             requisition_id=requisition_id,
-            salary_min=_to_float(post_info.get("min_salary")),
-            salary_max=_to_float(post_info.get("max_salary")),
+            salary_min=salary_min,
+            salary_max=salary_max,
             salary_currency=post_info.get("currency"),
+            salary_period=(
+                "YEAR"
+                if salary_min is not None or salary_max is not None
+                else None
+            ),
             posted_at=_parse_ts(item.get("publish_time") or item.get("post_time")),
             fetched_at=datetime.now(tz=UTC),
             raw=raw or None,
         )
-
-
-def _compose_description(*sources: object) -> str | None:
-    """Concatenate description-like fields and cap at 10kB.
-
-    The body sometimes contains repeated whitespace from the API; we
-    collapse runs of blank lines to keep storage tight.
-    """
-    parts: list[str] = []
-    for source in sources:
-        if isinstance(source, str) and source.strip():
-            parts.append(source.strip())
-    if not parts:
-        return None
-    text = "\n\n".join(parts)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return text[:10_000] or None
-
-
-def _extract_label(value: object) -> str | None:
-    """ByteDance wraps category-style fields as
-    ``{"en_name": "Algorithm", "i18n_name": "Algorithm", ...}``.
-    Prefer ``en_name``; fall through to ``i18n_name`` / ``name``."""
-    if not isinstance(value, dict):
-        return None
-    for key in ("en_name", "i18n_name", "name"):
-        v = value.get(key)
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    return None
-
-
-def _map_recruit_type(value: object) -> tuple[str | None, str | None]:
-    """Map ``recruit_type`` to ``(employment_type, commitment)``.
-
-    The API ships ``{"en_name": "Regular", "i18n_name": "Regular", ...}``.
-    We surface the human label in ``commitment`` and translate to the
-    canonical FT/PT/CONTRACT/INTERN/TEMPORARY enum.
-    """
-    label = _extract_label(value)
-    if not label:
-        return None, None
-    norm = label.lower()
-    for needle, mapped in _EMPLOYMENT_TYPE_PATTERNS.items():
-        if needle in norm:
-            return mapped, label
-    return None, label
-
-
-def _extract_location(item: dict) -> str | None:
-    """ByteDance's `city_info` is a nested location object with parent chain.
-
-    The current API exposes a single `city_info` dict whose `parent` chain
-    walks up to country. Legacy `city_list` is handled as a fallback.
-    """
-    city_info = item.get("city_info")
-    if isinstance(city_info, dict):
-        parts = []
-        node = city_info
-        while isinstance(node, dict):
-            name = node.get("en_name") or node.get("name")
-            if name:
-                parts.append(name)
-            node = node.get("parent")
-        if parts:
-            return ", ".join(parts)
-    # Legacy: city_list[0].name
-    city_list = item.get("city_list") or []
-    if city_list and isinstance(city_list[0], dict):
-        return city_list[0].get("name")
-    return None
-
-
-def _to_float(value: object) -> float | None:
-    if value is None or value == "":
-        return None
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
 
 
 def _parse_ts(value: int | None) -> datetime | None:

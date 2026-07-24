@@ -145,6 +145,7 @@ def test_salary_fields_absent_when_missing() -> None:
     assert job.salary_min is None
     assert job.salary_max is None
     assert job.salary_currency is None
+    assert job.salary_period is None
     assert job.salary is None
 
 
@@ -161,6 +162,7 @@ def test_salary_fields_parsed_when_present() -> None:
     assert job.salary_min == 120000.0
     assert job.salary_max == 180000.0
     assert job.salary_currency == "USD"
+    assert job.salary_period == "YEAR"
 
 
 def test_raw_keeps_only_truthy_fields() -> None:
@@ -349,11 +351,11 @@ def test_compose_description_returns_none_for_empty() -> None:
     assert _compose_description(None, "", "   ") is None
 
 
-def test_compose_description_caps_at_10kb() -> None:
-    big = "x" * 20_000
+def test_compose_description_caps_at_25kb() -> None:
+    big = "x" * 30_000
     out = _compose_description(big)
     assert out is not None
-    assert len(out) == 10_000
+    assert len(out) == 25_000
 
 
 def test_extract_label_prefers_en_name() -> None:

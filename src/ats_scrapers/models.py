@@ -61,6 +61,7 @@ class ATSType(StrEnum):
     # Big-tech custom careers systems (single-tenant, bespoke APIs)
     AMAZON = "amazon"
     APPLE = "apple"
+    BYTEDANCE = "bytedance"
     GOOGLE = "google"
     META = "meta"
     TESLA = "tesla"
@@ -89,7 +90,6 @@ class ATSType(StrEnum):
     INFOJOBSES = "infojobs_es"
     JOBBANKCA = "jobbankca"
     SEEK = "seek"
-    BYTEDANCE = "bytedance"
     # Additional multi-tenant ATSes (post-0.1)
     BAMBOOHR = "bamboohr"
     BREEZY = "breezy"

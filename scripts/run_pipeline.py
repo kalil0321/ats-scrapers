@@ -600,6 +600,11 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "scraper": AppleScraper, "singleton": True,
         "output": "apple/jobs.csv",
     },
+    "bytedance": {
+        "scraper": BytedanceScraper, "singleton": True,
+        "output": "bytedance/jobs.csv",
+        "fail_closed_on_empty": True,
+    },
     "google": {
         "scraper": GoogleScraper, "singleton": True,
         "output": "google/jobs.csv",
@@ -679,11 +684,6 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/seek.csv",
         "output": "seek/jobs.csv",
         "fail_closed_on_any_error": True,
-    },
-    "bytedance": {
-        "scraper": BytedanceScraper, "singleton": True,
-        "output": "bytedance/jobs.csv",
-        "fail_closed_on_empty": True,
     },
     "jobs_cz": {
         # jobs.cz - Czech Republic's largest direct-posting board. ~10k live via seeded search.

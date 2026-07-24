@@ -14,11 +14,25 @@ and pull ``job_category.en_name`` as the department.
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._throne import (
+    compose_description as _compose_description,
+)
+from ats_scrapers.scrapers._throne import (
+    extract_label as _extract_label,
+)
+from ats_scrapers.scrapers._throne import (
+    extract_location as _extract_location,
+)
+from ats_scrapers.scrapers._throne import (
+    map_recruit_type as _map_recruit_type,
+)
+from ats_scrapers.scrapers._throne import (
+    to_float as _to_float,
+)
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -26,22 +40,6 @@ if TYPE_CHECKING:
 
 API_URL = "https://api.lifeattiktok.com/api/v1/public/supplier/search/job/posts"
 PAGE_SIZE = 100
-
-_EMPLOYMENT_TYPE_PATTERNS = {
-    "intern": "INTERN",
-    "internship": "INTERN",
-    "contract": "CONTRACT",
-    "contractor": "CONTRACT",
-    "temporary": "TEMPORARY",
-    "part-time": "PART_TIME",
-    "part time": "PART_TIME",
-    "parttime": "PART_TIME",
-    "full-time": "FULL_TIME",
-    "full time": "FULL_TIME",
-    "fulltime": "FULL_TIME",
-    "regular": "FULL_TIME",
-    "permanent": "FULL_TIME",
-}
 
 HEADERS = {
     "accept": "*/*",
@@ -146,86 +144,6 @@ class TikTokScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
-
-
-def _compose_description(*sources: object) -> str | None:
-    """Concatenate description-like fields and cap at 25k chars.
-
-    The body sometimes contains repeated whitespace from the API; we
-    collapse runs of blank lines to keep storage tight.
-    """
-    parts: list[str] = []
-    for source in sources:
-        if isinstance(source, str) and source.strip():
-            parts.append(source.strip())
-    if not parts:
-        return None
-    text = "\n\n".join(parts)
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    return text[:25_000] or None
-
-
-def _extract_label(value: object) -> str | None:
-    """TikTok wraps category-style fields as
-    ``{"en_name": "Operations", "i18n_name": "Operations", ...}``.
-    Prefer ``en_name``; fall through to ``i18n_name`` / ``name``."""
-    if not isinstance(value, dict):
-        return None
-    for key in ("en_name", "i18n_name", "name"):
-        v = value.get(key)
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    return None
-
-
-def _map_recruit_type(value: object) -> tuple[str | None, str | None]:
-    """Map ``recruit_type`` to ``(employment_type, commitment)``.
-
-    The API ships ``{"en_name": "Intern", "i18n_name": "Intern", ...}``.
-    We surface the human label in ``commitment`` and translate to the
-    canonical FT/PT/CONTRACT/INTERN/TEMPORARY enum.
-    """
-    label = _extract_label(value)
-    if not label:
-        return None, None
-    norm = label.lower()
-    for needle, mapped in _EMPLOYMENT_TYPE_PATTERNS.items():
-        if needle in norm:
-            return mapped, label
-    return None, label
-
-
-def _extract_location(item: dict) -> str | None:
-    """TikTok's `city_info` is a nested location object with parent chain.
-
-    Older API versions used `city_list` (an array); the current API exposes
-    a single `city_info` dict whose `parent` chain walks up to country.
-    """
-    city_info = item.get("city_info")
-    if isinstance(city_info, dict):
-        parts = []
-        node = city_info
-        while isinstance(node, dict):
-            name = node.get("en_name") or node.get("name")
-            if name:
-                parts.append(name)
-            node = node.get("parent")
-        if parts:
-            return ", ".join(parts)
-    # Legacy: city_list[0].name
-    city_list = item.get("city_list") or []
-    if city_list and isinstance(city_list[0], dict):
-        return city_list[0].get("name")
-    return None
-
-
-def _to_float(value: object) -> float | None:
-    if value is None or value == "":
-        return None
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
 
 
 def _parse_ts(value: int | None) -> datetime | None:
