@@ -39,6 +39,7 @@ class ATSType(StrEnum):
     BEISEN_LEGACY = "beisen_legacy"
     CORNERSTONE = "cornerstone"
     DARWINBOX = "darwinbox"
+    DAYFORCE = "dayforce"
     EIGHTFOLD = "eightfold"
     GEM = "gem"
     GREENHOUSE = "greenhouse"

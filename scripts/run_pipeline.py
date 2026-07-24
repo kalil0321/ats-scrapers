@@ -51,6 +51,7 @@ from ats_scrapers.scrapers import (
     BytedanceScraper,
     CornerstoneScraper,
     DarwinboxScraper,
+    DayforceScraper,
     EightfoldScraper,
     EuresScraper,
     GemScraper,
@@ -452,6 +453,15 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
         "csv": "ats-companies/bamboohr.csv",
         "output": "bamboohr/jobs.csv",
+    },
+    "dayforce": {
+        "scraper": DayforceScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
+        "csv": "ats-companies/dayforce.csv",
+        "output": "dayforce/jobs.csv",
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_empty": True,
     },
     "teamtailor": {
         "scraper": TeamtailorScraper,

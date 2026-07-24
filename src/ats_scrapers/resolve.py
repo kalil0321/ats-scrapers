@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 # an f-string URL.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._\-]*$", re.IGNORECASE)
 _DNS_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
+_DAYFORCE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 class ResolvedCareersUrl(NamedTuple):
@@ -132,6 +133,24 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             return ResolvedCareersUrl(
                 ATSType.MOKA,
                 f"{prefix}{segments[1]}/{segments[2]}{recruitment_type}",
+            )
+        return None
+
+    if host == "jobs.dayforcehcm.com":
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if segments and re.fullmatch(
+            r"[A-Za-z]{2}(?:-[A-Za-z]{2})?",
+            segments[0],
+        ):
+            segments.pop(0)
+        if (
+            len(segments) >= 2
+            and _DAYFORCE_SEGMENT_RE.fullmatch(segments[0])
+            and _DAYFORCE_SEGMENT_RE.fullmatch(segments[1])
+        ):
+            return ResolvedCareersUrl(
+                ATSType.DAYFORCE,
+                f"{segments[0]}/{segments[1]}",
             )
         return None
 

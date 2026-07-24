@@ -12,6 +12,7 @@ from ats_scrapers.scrapers import (
     BeisenLegacyScraper,
     BeisenScraper,
     DarwinboxScraper,
+    DayforceScraper,
     GreenhouseScraper,
     GupyScraper,
     MokaScraper,
@@ -32,6 +33,11 @@ RESOLVES = [
     ("https://jobs.gem.com/accel", ATSType.GEM, "accel"),
     ("https://ats.rippling.com/acme/jobs", ATSType.RIPPLING, "acme"),
     ("https://join.com/companies/acme", ATSType.JOIN_COM, "acme"),
+    (
+        "https://jobs.dayforcehcm.com/en-CA/mayfair/CANDIDATEPORTAL/jobs/3612",
+        ATSType.DAYFORCE,
+        "mayfair/CANDIDATEPORTAL",
+    ),
     (
         "https://app.mokahr.com/social-recruitment/trip/70415/job/123",
         ATSType.MOKA,
@@ -140,6 +146,12 @@ def test_get_scraper_for_url_builds_scraper() -> None:
         GreenhouseScraper,
     )
     assert isinstance(get_scraper_for_url("https://petz.gupy.io"), GupyScraper)
+    assert isinstance(
+        get_scraper_for_url(
+            "https://jobs.dayforcehcm.com/mayfair/CANDIDATEPORTAL"
+        ),
+        DayforceScraper,
+    )
     assert isinstance(
         get_scraper_for_url(
             "https://app.mokahr.com/social-recruitment/trip/70415"
