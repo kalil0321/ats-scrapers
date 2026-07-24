@@ -544,15 +544,22 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "workday": 1,
     # Big-tech bespoke careers — also priority 1 (single-tenant, canonical)
     "amazon": 1, "apple": 1, "google": 1, "meta": 1, "tesla": 1,
-    "tiktok": 1, "uber": 1,
+    "bytedance": 1, "tiktok": 1, "uber": 1,
     # Hybrid jobboards
     "welcometothejungle": 3, "mercor": 3, "gem": 3,
+    # Direct-posting job boards. Prefer canonical employer ATS rows when
+    # the same opening is syndicated to one of these marketplaces.
+    "bumeran": 4, "elempleo": 4, "foundit": 4, "infojobs_br": 4,
+    "jobthai": 4, "seek": 4, "timesjobs": 4, "torre": 4,
+    "vietnamworks": 4,
     # Sourcing/matching layer that mirrors others
     "eightfold": 5,
     # National public-sector aggregators — government-curated but the
     # same role often appears here AND on the employer's direct ATS.
     "bundesagentur": 6,
     "arbetsformedlingen": 6,
+    "jobbankca": 6,
+    "mycareersfuture": 6,
     "usajobs": 6,
 }
 

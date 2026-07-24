@@ -24,10 +24,17 @@ import pytest
 
 from ats_scrapers.exceptions import StorageError
 from pipeline.publisher import (
+    ATS_DEDUP_PRIORITY,
     CACHE_CONTROL_LATEST,
     DEFAULT_PREFIX,
     DatasetPublisher,
 )
+
+
+def test_jobboard_dedup_priorities_prefer_canonical_employer_sources() -> None:
+    assert ATS_DEDUP_PRIORITY["bytedance"] == 1
+    assert ATS_DEDUP_PRIORITY["timesjobs"] > ATS_DEDUP_PRIORITY["workday"]
+    assert ATS_DEDUP_PRIORITY["jobbankca"] > ATS_DEDUP_PRIORITY["timesjobs"]
 
 # --- Layout -----------------------------------------------------------------
 
