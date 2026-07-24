@@ -248,6 +248,26 @@ def test_descriptionless_detail_is_dropped_without_aborting(httpx_mock) -> None:
     assert [job.ats_id for job in jobs] == ["a1"]
 
 
+def test_systemic_detail_request_failure_fails_closed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        text=_listing(
+            [("a1", "Engineer", "Paris")],
+            start=1,
+            end=1,
+            total=1,
+        ),
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/job/a1",
+        status_code=500,
+        is_reusable=True,
+    )
+
+    with pytest.raises(ScraperError, match="returned 500"):
+        JobviteScraper("acme").fetch()
+
+
 @pytest.mark.parametrize(
     "href",
     [
@@ -396,7 +416,7 @@ def test_duplicate_job_id_fails_closed(httpx_mock) -> None:
         JobviteScraper("acme").fetch()
 
 
-def test_detail_without_description_drops_job(httpx_mock) -> None:
+def test_all_details_without_descriptions_fail_closed(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://jobs.jobvite.com/acme/search?p=0",
         text=_listing(
@@ -411,7 +431,8 @@ def test_detail_without_description_drops_job(httpx_mock) -> None:
         text="<html><body><h2 class='jv-header'>Engineer</h2></body></html>",
     )
 
-    assert JobviteScraper("acme").fetch() == []
+    with pytest.raises(ScraperError, match="lost every listed job"):
+        JobviteScraper("acme").fetch()
 
 
 def test_detail_dom_fallback_populates_description() -> None:

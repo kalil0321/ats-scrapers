@@ -146,7 +146,13 @@ class JobviteScraper(BaseScraper):
             enriched = await asyncio.gather(
                 *(self._enrich_detail(fetch, semaphore, job) for job in jobs)
             )
-        return [job for job in enriched if job is not None]
+        completed = [job for job in enriched if job is not None]
+        if jobs and not completed:
+            raise ScraperError(
+                f"Jobvite ({self.tenant_path}) lost every listed job "
+                "during detail validation"
+            )
+        return completed
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -167,20 +173,12 @@ class JobviteScraper(BaseScraper):
         semaphore: asyncio.Semaphore,
         job: Job,
     ) -> Job | None:
-        try:
-            async with semaphore:
-                response = await fetch.request(
-                    "GET",
-                    str(job.url),
-                    handled={404, 410},
-                )
-        except ScraperError as exc:
-            logger.warning(
-                "Dropping Jobvite job %s after detail failure: %s",
-                job.ats_id,
-                exc,
+        async with semaphore:
+            response = await fetch.request(
+                "GET",
+                str(job.url),
+                handled={404, 410},
             )
-            return None
         if response.status_code in {404, 410}:
             return None
         _apply_detail(job, response.text)
