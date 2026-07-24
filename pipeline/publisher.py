@@ -1037,15 +1037,26 @@ def _enrich_lazy(lf: pl.LazyFrame) -> pl.LazyFrame:
             lf = lf.with_columns(derived_country.alias("country_iso"))
         else:
             current_country = pl.col("country_iso").cast(pl.String)
-            lf = lf.with_columns(
-                pl.when(
-                    current_country.is_null()
-                    | (current_country.str.strip_chars().str.len_bytes() == 0)
+            has_blank_country = bool(
+                lf.select(
+                    (
+                        current_country.is_null()
+                        | (current_country.str.strip_chars().str.len_bytes() == 0)
+                    ).any().alias("has_blank_country")
                 )
-                .then(derived_country)
-                .otherwise(current_country)
-                .alias("country_iso")
+                .collect(engine="streaming")
+                .item()
             )
+            if has_blank_country:
+                lf = lf.with_columns(
+                    pl.when(
+                        current_country.is_null()
+                        | (current_country.str.strip_chars().str.len_bytes() == 0)
+                    )
+                    .then(derived_country)
+                    .otherwise(current_country)
+                    .alias("country_iso")
+                )
 
     return lf
 

@@ -14,6 +14,7 @@ All network access is mocked via ``httpx_mock``.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import UTC, datetime
 
@@ -440,6 +441,33 @@ def test_batch_failure_raises_even_when_earlier_page_is_short(httpx_mock) -> Non
 
     with pytest.raises(ScraperError, match="503"):
         SeekScraper("au").fetch()
+
+
+def test_batch_failure_cancels_sibling_tasks(monkeypatch) -> None:
+    scraper = SeekScraper("au")
+    sibling_cancelled = False
+
+    async def fake_search(_client, _sem, *, page: int, **_kwargs):
+        nonlocal sibling_cancelled
+        if page == 1:
+            return _page(
+                [_au_job(id=f"p1-{idx}") for idx in range(100)],
+                total=300,
+            )
+        if page == 2:
+            await asyncio.sleep(0)
+            raise ScraperError("page 2 failed")
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            sibling_cancelled = True
+            raise
+
+    monkeypatch.setattr(scraper, "_search", fake_search)
+
+    with pytest.raises(ScraperError, match="page 2 failed"):
+        scraper.fetch()
+    assert sibling_cancelled is True
 
 
 def test_fetch_dedupes_cross_region_for_all(httpx_mock) -> None:

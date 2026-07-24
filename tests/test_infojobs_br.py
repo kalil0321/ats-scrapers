@@ -411,6 +411,22 @@ def test_max_pages_caps_pagination(httpx_mock) -> None:
     assert {j.ats_id for j in jobs} == {"42"}
 
 
+def test_default_full_run_fails_at_safety_limit(
+    httpx_mock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ats_scrapers.scrapers.infojobs_br as infojobs_br
+
+    monkeypatch.setattr(infojobs_br, "DEFAULT_MAX_PAGES", 2)
+    httpx_mock.add_response(
+        url=re.compile(_FRAGMENT_RE),
+        json=_fragment([_card(job_id="42")]),
+        is_reusable=True,
+    )
+
+    with pytest.raises(ScraperError, match="safety limit"):
+        InfoJobsBrasilScraper("any").fetch()
+
+
 # --- error paths ------------------------------------------------------------
 
 

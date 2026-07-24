@@ -212,7 +212,14 @@ class SeekScraper(BaseScraper):
 
         for start in range(2, last_page + 1, MAX_CONCURRENCY):
             pages = range(start, min(start + MAX_CONCURRENCY, last_page + 1))
-            batches = await asyncio.gather(*(one_page(page) for page in pages))
+            tasks = [asyncio.create_task(one_page(page)) for page in pages]
+            try:
+                batches = await asyncio.gather(*tasks)
+            except BaseException:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                raise
             reached_end = False
             for batch, count in batches:
                 results.append(batch)

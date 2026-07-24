@@ -146,7 +146,8 @@ class InfoJobsBrasilScraper(BaseScraper):
 
     Knobs:
 
-    - ``max_pages`` — pagination cap (default 200 → ~4,000 jobs).
+    - ``max_pages`` — optional pagination cap for bounded probes;
+      production fails loudly at the 200-page safety limit.
     - ``listing_url`` — override the base listing URL when you want to
       restrict to a city / category. The page=N parameter is appended
       by the scraper; don't include it in the override.
@@ -159,11 +160,16 @@ class InfoJobsBrasilScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = 30.0,
-        max_pages: int = DEFAULT_MAX_PAGES,
+        max_pages: int | None = None,
         listing_url: str = DEFAULT_LISTING_URL,
     ) -> None:
         super().__init__(company_slug, timeout=timeout)
-        self.max_pages = max_pages
+        if max_pages is not None and max_pages < 1:
+            raise ScraperError(
+                f"InfoJobs Brasil max_pages must be positive, got {max_pages}"
+            )
+        self._full_catalogue = max_pages is None
+        self.max_pages = min(max_pages or DEFAULT_MAX_PAGES, DEFAULT_MAX_PAGES)
         self.listing_url = listing_url
 
     async def afetch(self) -> list[Job]:
@@ -181,6 +187,7 @@ class InfoJobsBrasilScraper(BaseScraper):
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             page = 1
             consecutive_empty = 0
+            exhausted = False
             while page <= self.max_pages and consecutive_empty < 3:
                 payload = await self._fetch_page(client, sem, page)
                 fragment = payload.get("listFragmentHTML") or ""
@@ -193,12 +200,20 @@ class InfoJobsBrasilScraper(BaseScraper):
                     jobs.append(job)
                     new_count += 1
                 if eof:
+                    exhausted = True
                     break
                 if new_count == 0:
                     consecutive_empty += 1
                 else:
                     consecutive_empty = 0
                 page += 1
+            if consecutive_empty >= 3:
+                exhausted = True
+        if self._full_catalogue and not exhausted:
+            raise ScraperError(
+                f"InfoJobs Brasil reached its {DEFAULT_MAX_PAGES}-page safety "
+                "limit before detecting the end of results"
+            )
         return jobs
 
     async def _fetch_page(
