@@ -181,6 +181,58 @@ def test_card_layout_ignores_duplicate_apply_link(httpx_mock) -> None:
     assert jobs[0].commitment == "Student"
 
 
+def test_card_layout_follows_pagination(httpx_mock) -> None:
+    first_page = """
+    <div id="search-results">
+      <div id="search-results-content">
+        <div class="card">
+          <a class="job-link" href="/920/cw/en/job/101/engineer">Engineer</a>
+        </div>
+      </div>
+      <p><a class="more-link" href="/920/cw/en/listing/?page=2&amp;page-items=1000">
+        More Jobs <span class="count">1</span>
+      </a></p>
+    </div>
+    """
+    second_page = """
+    <div id="search-results">
+      <div id="search-results-content">
+        <div class="card">
+          <a class="job-link" href="/920/cw/en/job/102/designer">Designer</a>
+        </div>
+      </div>
+    </div>
+    """
+    httpx_mock.add_response(
+        url="https://careers.pageuppeople.com/920/cw/en/listing/?page=1&page-items=1000",
+        text=first_page,
+    )
+    httpx_mock.add_response(
+        url="https://careers.pageuppeople.com/920/cw/en/listing/?page=2&page-items=1000",
+        text=second_page,
+    )
+
+    jobs = PageUpScraper("920/cw/en", include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["101", "102"]
+
+
+def test_generic_job_links_fail_closed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://careers.pageuppeople.com/513/cw/en/listing/?page=1&page-items=1000",
+        text="""
+        <div id="search-results">
+          <div id="search-results-content">
+            <a class="job-link" href="/513/cw/en/job/101/engineer">Apply</a>
+          </div>
+        </div>
+        """,
+    )
+
+    with pytest.raises(ScraperError, match="no usable jobs"):
+        PageUpScraper("513/cw/en", include_descriptions=False).fetch()
+
+
 def test_closed_job_between_listing_and_detail_is_dropped(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://careers.pageuppeople.com/513/cw/en/listing/?page=1&page-items=1000",
@@ -203,6 +255,58 @@ def test_closed_job_between_listing_and_detail_is_dropped(httpx_mock) -> None:
     jobs = PageUpScraper("513/cw/en").fetch()
 
     assert [job.ats_id for job in jobs] == ["101"]
+
+
+def test_job_not_found_redirect_is_dropped(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://careers.pageuppeople.com/513/cw/en/listing/?page=1&page-items=1000",
+        text=_listing(
+            [
+                ("101", "Engineer", "Melbourne"),
+                ("102", "Designer", "Sydney"),
+            ]
+        ),
+    )
+    httpx_mock.add_response(
+        url="https://careers.pageuppeople.com/513/cw/en/job/101/engineer",
+        text=_detail("101"),
+    )
+    httpx_mock.add_response(
+        url="https://careers.pageuppeople.com/513/cw/en/job/102/designer",
+        status_code=301,
+        headers={
+            "Location": (
+                "https://careers.pageuppeople.com/513/cw/en/listing/"
+                "?jobnotfound=true"
+            )
+        },
+    )
+    httpx_mock.add_response(
+        url=(
+            "https://careers.pageuppeople.com/513/cw/en/listing/"
+            "?jobnotfound=true"
+        ),
+        text='<a href="/513/cw/en/listing/?jobnotfound=true">Jobs</a>',
+    )
+
+    jobs = PageUpScraper("513/cw/en").fetch()
+
+    assert [job.ats_id for job in jobs] == ["101"]
+
+
+def test_systemic_detail_request_failure_fails_closed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://careers.pageuppeople.com/513/cw/en/listing/?page=1&page-items=1000",
+        text=_listing([("101", "Engineer", "Melbourne")]),
+    )
+    httpx_mock.add_response(
+        url="https://careers.pageuppeople.com/513/cw/en/job/101/engineer",
+        status_code=500,
+        is_reusable=True,
+    )
+
+    with pytest.raises(ScraperError, match="returned 500"):
+        PageUpScraper("513/cw/en").fetch()
 
 
 def test_descriptionless_detail_is_dropped_without_aborting(httpx_mock) -> None:

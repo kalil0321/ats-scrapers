@@ -138,7 +138,13 @@ class PageUpScraper(BaseScraper):
             enriched = await asyncio.gather(
                 *(self._enrich_detail(fetch, semaphore, job) for job in jobs)
             )
-        return [job for job in enriched if job is not None]
+        completed = [job for job in enriched if job is not None]
+        if jobs and not completed:
+            raise ScraperError(
+                f"PageUp ({self.tenant_path}) lost every listed job "
+                "during detail validation"
+            )
+        return completed
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -162,21 +168,15 @@ class PageUpScraper(BaseScraper):
         semaphore: asyncio.Semaphore,
         job: Job,
     ) -> Job | None:
-        try:
-            async with semaphore:
-                response = await fetch.request(
-                    "GET",
-                    str(job.url),
-                    handled={404, 410},
-                )
-        except ScraperError as exc:
-            logger.warning(
-                "Dropping PageUp job %s after detail failure: %s",
-                job.ats_id,
-                exc,
+        async with semaphore:
+            response = await fetch.request(
+                "GET",
+                str(job.url),
+                handled={404, 410},
             )
-            return None
         if response.status_code in {404, 410}:
+            return None
+        if "jobnotfound=true" in response.text.lower():
             return None
         try:
             _apply_detail(job, response.text)
@@ -301,11 +301,15 @@ class PageUpScraper(BaseScraper):
                 )
             )
 
-        table = container.find_parent("table")
-        sibling = table.find_next_sibling() if table is not None else None
+        if not jobs:
+            raise ScraperError(
+                f"PageUp ({self.tenant_path}) returned no usable jobs"
+            )
+
+        results_wrapper = container.find_parent(id="search-results")
         more_link = (
-            sibling.select_one("a.more-link[href]")
-            if sibling is not None and sibling.name == "p"
+            results_wrapper.select_one("a.more-link[href]")
+            if results_wrapper is not None
             else None
         )
         if more_link is None:
