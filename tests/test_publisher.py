@@ -156,6 +156,14 @@ def test_disabled_seek_delete_failure_does_not_rewrite_manifest(
         )
 
     assert fake_r2.uploads[manifest_key]["data"] == original_manifest
+    assert not any(
+        key in fake_r2.uploads
+        for key in (
+            "jobhive/v1/all.csv",
+            "jobhive/v1/all.parquet",
+            "jobhive/v1/greenhouse/jobs.csv",
+        )
+    )
 
 
 # --- Manifest ---------------------------------------------------------------

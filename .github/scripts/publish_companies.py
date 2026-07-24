@@ -268,11 +268,14 @@ def main() -> None:
     bucket = env("R2_BUCKET")
     client = make_client()
 
-    csvs = sorted(p for p in ATS_COMPANIES_DIR.glob("*.csv") if p.is_file())
+    csvs = sorted(
+        p
+        for p in ATS_COMPANIES_DIR.glob("*.csv")
+        if p.is_file() and p.stem not in DISABLED_ATS
+    )
     if not csvs:
         sys.exit(f"FATAL: no CSVs found under {ATS_COMPANIES_DIR}")
 
-    print(f"== Step 1: upload {len(csvs)} per-ATS companies.csv files")
     ats_files: dict[str, bytes] = {}
     by_ats_entries: dict[str, dict[str, Any]] = {}
     for path in csvs:
@@ -280,13 +283,23 @@ def main() -> None:
         data = read_csv(path)
         ats_files[ats] = data
         key = f"{PREFIX}/{ats}/companies.csv"
-        upload(client, bucket, key, data, "text/csv")
         by_ats_entries[ats] = file_entry(public_url(bucket, key), data=data)
 
-    print("\n== Step 2: build + upload aggregated companies.{csv,parquet}")
     agg_csv, agg_parquet, agg_rows = build_aggregated(ats_files)
     csv_key = f"{PREFIX}/companies.csv"
     parquet_key = f"{PREFIX}/companies.parquet"
+
+    manifest = fetch_existing_manifest(client, bucket)
+
+    print("== Step 1: cleanup disabled-source artifacts")
+    delete_disabled_sources(client, bucket)
+
+    print(f"\n== Step 2: upload {len(csvs)} per-ATS companies.csv files")
+    for ats, data in ats_files.items():
+        key = f"{PREFIX}/{ats}/companies.csv"
+        upload(client, bucket, key, data, "text/csv")
+
+    print("\n== Step 3: upload aggregated companies.{csv,parquet}")
     upload(client, bucket, csv_key, agg_csv, "text/csv")
     upload(client, bucket, parquet_key, agg_parquet, "application/vnd.apache.parquet")
     aggregate_entry = {
@@ -299,11 +312,7 @@ def main() -> None:
         "parquet_sha256": sha256_bytes(agg_parquet),
     }
 
-    print("\n== Step 3: cleanup disabled-source artifacts")
-    delete_disabled_sources(client, bucket)
-
     print("\n== Step 4: patch manifest.json")
-    manifest = fetch_existing_manifest(client, bucket)
     manifest["companies"] = aggregate_entry
     manifest["by_ats_companies"] = by_ats_entries
     stats = manifest.get("stats")

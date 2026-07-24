@@ -74,6 +74,7 @@ def test_disabled_delete_failure_prevents_manifest_rewrite(
         "name,slug,url\nAcme,acme,https://example.com/jobs\n"
     )
     uploaded_keys: list[str] = []
+    operations: list[str] = []
 
     monkeypatch.setattr(module, "ATS_COMPANIES_DIR", companies_dir)
     monkeypatch.setattr(module, "env", lambda _name: "test-bucket")
@@ -81,7 +82,10 @@ def test_disabled_delete_failure_prevents_manifest_rewrite(
     monkeypatch.setattr(
         module,
         "fetch_existing_manifest",
-        lambda _client, _bucket: {"stats": {"total_companies": 99}},
+        lambda _client, _bucket: (
+            operations.append("fetch_manifest")
+            or {"stats": {"total_companies": 99}}
+        ),
     )
 
     def record_upload(
@@ -91,9 +95,11 @@ def test_disabled_delete_failure_prevents_manifest_rewrite(
         _body: bytes,
         _content_type: str,
     ) -> None:
+        operations.append(f"upload:{key}")
         uploaded_keys.append(key)
 
     def fail_disabled_delete(_client: object, _bucket: str) -> None:
+        operations.append("delete_disabled")
         raise RuntimeError("seek delete failed")
 
     monkeypatch.setattr(module, "upload", record_upload)
@@ -108,3 +114,5 @@ def test_disabled_delete_failure_prevents_manifest_rewrite(
         module.main()
 
     assert f"{module.PREFIX}/manifest.json" not in uploaded_keys
+    assert uploaded_keys == []
+    assert operations == ["fetch_manifest", "delete_disabled"]

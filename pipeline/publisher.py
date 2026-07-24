@@ -174,6 +174,9 @@ class DatasetPublisher:
             ats_csv_pattern=ats_csv_pattern,
             existing_manifest=existing_manifest,
         )
+        deleted = self.prune_disabled_job_sources()
+        if deleted:
+            logger.info("Deleted %d disabled-source keys", deleted)
 
         # ExitStack owns every per-ATS CSV temp: Pass 1 streams each
         # enriched per-ATS slice into one of these, then Pass 3
@@ -266,10 +269,6 @@ class DatasetPublisher:
                 rows_total=n_kept,
             )
             files_uploaded.extend(_collect_uploaded_keys(all_entry))
-
-            deleted = self.prune_disabled_job_sources()
-            if deleted:
-                logger.info("Deleted %d disabled-source keys", deleted)
 
             manifest_key = self._patch_and_upload_manifest(
                 generated_at=started,
