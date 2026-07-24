@@ -466,7 +466,20 @@ def _apply_detail(job: Job, html_text: str) -> None:
         href = apply_link.get("href")
         if isinstance(href, str) and href:
             try:
-                job.apply_url = HttpUrl(urljoin(str(job.url), href))
+                apply_url = urljoin(str(job.url), href)
+                parsed_apply = urlparse(apply_url)
+                if (
+                    parsed_apply.scheme != "https"
+                    or parsed_apply.hostname is None
+                    or not (
+                        parsed_apply.hostname == "careers.pageuppeople.com"
+                        or parsed_apply.hostname.endswith(".pageuppeople.com")
+                    )
+                    or parsed_apply.username is not None
+                    or parsed_apply.password is not None
+                ):
+                    raise ValueError("unsafe PageUp apply URL")
+                job.apply_url = HttpUrl(apply_url)
             except (ValidationError, ValueError):
                 logger.warning(
                     "Ignoring invalid PageUp apply URL for job %s",

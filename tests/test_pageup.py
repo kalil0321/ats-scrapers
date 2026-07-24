@@ -392,7 +392,12 @@ def test_descriptionless_detail_is_dropped_without_aborting(httpx_mock) -> None:
 
 @pytest.mark.parametrize(
     "invalid_apply_url",
-    ["javascript:void(0)", "https://["],
+    [
+        "javascript:void(0)",
+        "https://[",
+        "https://evil.example/apply",
+        "//evil.example/apply",
+    ],
 )
 def test_invalid_apply_link_does_not_abort_detail_batch(
     httpx_mock,
