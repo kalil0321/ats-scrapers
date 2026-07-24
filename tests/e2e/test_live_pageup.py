@@ -29,7 +29,7 @@ async def test_live_pageup_smoke() -> None:
     assert len({job.ats_id for job in jobs}) == len(jobs)
     assert all(job.title.strip() for job in jobs)
     assert all(job.description for job in jobs)
-    assert all(":" in job.global_id for job in jobs)
+    assert all(job.ats_id.startswith("902/cw/en:") for job in jobs)
     assert all("careers.pageuppeople.com" in str(job.url) for job in jobs)
 
 

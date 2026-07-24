@@ -168,12 +168,20 @@ class PageUpScraper(BaseScraper):
         semaphore: asyncio.Semaphore,
         job: Job,
     ) -> Job | None:
-        async with semaphore:
-            response = await fetch.request(
-                "GET",
-                str(job.url),
-                handled={404, 410},
+        try:
+            async with semaphore:
+                response = await fetch.request(
+                    "GET",
+                    str(job.url),
+                    handled={404, 410},
+                )
+        except ScraperError as exc:
+            logger.warning(
+                "Dropping PageUp job %s after detail failure: %s",
+                job.ats_id,
+                exc,
             )
+            return None
         if response.status_code in {404, 410}:
             return None
         if "jobnotfound=true" in response.text.lower():
@@ -287,7 +295,8 @@ class PageUpScraper(BaseScraper):
                     title=title,
                     company=self.company_name,
                     ats_type=ATSType.PAGEUP,
-                    ats_id=job_id,
+                    ats_id=f"{self.tenant_path}:{job_id}",
+                    requisition_id=job_id,
                     location=location or None,
                     is_remote=(
                         True if location and "remote" in location.lower() else None

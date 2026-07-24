@@ -101,7 +101,11 @@ def test_fetches_all_pages_and_enriches_details(httpx_mock) -> None:
 
     jobs = PageUpScraper("513/cw/en", company_name="Monash").fetch()
 
-    assert [job.ats_id for job in jobs] == ["101", "102", "103"]
+    assert [job.ats_id for job in jobs] == [
+        "513/cw/en:101",
+        "513/cw/en:102",
+        "513/cw/en:103",
+    ]
     assert all(job.ats_type is ATSType.PAGEUP for job in jobs)
     assert all(job.company == "Monash" for job in jobs)
     assert all(job.language == "en" for job in jobs)
@@ -174,7 +178,7 @@ def test_card_layout_ignores_duplicate_apply_link(httpx_mock) -> None:
     ).fetch()
 
     assert len(jobs) == 1
-    assert jobs[0].ats_id == "498105"
+    assert jobs[0].ats_id == "920/cw/en:498105"
     assert jobs[0].title == "Engineering Trainee - Technical Author"
     assert jobs[0].location == "Brixworth"
     assert jobs[0].department == "Assembly Systems"
@@ -214,7 +218,10 @@ def test_card_layout_follows_pagination(httpx_mock) -> None:
 
     jobs = PageUpScraper("920/cw/en", include_descriptions=False).fetch()
 
-    assert [job.ats_id for job in jobs] == ["101", "102"]
+    assert [job.ats_id for job in jobs] == [
+        "920/cw/en:101",
+        "920/cw/en:102",
+    ]
 
 
 def test_generic_job_links_fail_closed(httpx_mock) -> None:
@@ -254,7 +261,7 @@ def test_closed_job_between_listing_and_detail_is_dropped(httpx_mock) -> None:
 
     jobs = PageUpScraper("513/cw/en").fetch()
 
-    assert [job.ats_id for job in jobs] == ["101"]
+    assert [job.ats_id for job in jobs] == ["513/cw/en:101"]
 
 
 def test_job_not_found_redirect_is_dropped(httpx_mock) -> None:
@@ -291,7 +298,7 @@ def test_job_not_found_redirect_is_dropped(httpx_mock) -> None:
 
     jobs = PageUpScraper("513/cw/en").fetch()
 
-    assert [job.ats_id for job in jobs] == ["101"]
+    assert [job.ats_id for job in jobs] == ["513/cw/en:101"]
 
 
 def test_systemic_detail_request_failure_fails_closed(httpx_mock) -> None:
@@ -305,8 +312,33 @@ def test_systemic_detail_request_failure_fails_closed(httpx_mock) -> None:
         is_reusable=True,
     )
 
-    with pytest.raises(ScraperError, match="returned 500"):
+    with pytest.raises(ScraperError, match="lost every listed job"):
         PageUpScraper("513/cw/en").fetch()
+
+
+def test_detail_request_failure_drops_only_failed_job(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://careers.pageuppeople.com/513/cw/en/listing/?page=1&page-items=1000",
+        text=_listing(
+            [
+                ("101", "Engineer", "Melbourne"),
+                ("102", "Designer", "Sydney"),
+            ]
+        ),
+    )
+    httpx_mock.add_response(
+        url="https://careers.pageuppeople.com/513/cw/en/job/101/engineer",
+        text=_detail("101"),
+    )
+    httpx_mock.add_response(
+        url="https://careers.pageuppeople.com/513/cw/en/job/102/designer",
+        status_code=500,
+        is_reusable=True,
+    )
+
+    jobs = PageUpScraper("513/cw/en").fetch()
+
+    assert [job.ats_id for job in jobs] == ["513/cw/en:101"]
 
 
 def test_descriptionless_detail_is_dropped_without_aborting(httpx_mock) -> None:
@@ -330,7 +362,7 @@ def test_descriptionless_detail_is_dropped_without_aborting(httpx_mock) -> None:
 
     jobs = PageUpScraper("513/cw/en").fetch()
 
-    assert [job.ats_id for job in jobs] == ["101"]
+    assert [job.ats_id for job in jobs] == ["513/cw/en:101"]
 
 
 @pytest.mark.parametrize(
@@ -403,6 +435,24 @@ def test_duplicate_job_ids_fail_closed(httpx_mock) -> None:
 
     with pytest.raises(ScraperError, match="duplicate job id"):
         PageUpScraper("513/cw/en", include_descriptions=False).fetch()
+
+
+def test_numeric_job_ids_are_namespaced_by_tenant() -> None:
+    first_jobs, _, _ = PageUpScraper("513/cw/en")._parse_listing(
+        _listing([("101", "Engineer", "Melbourne")])
+    )
+    second_jobs, _, _ = PageUpScraper("920/cw/en")._parse_listing(
+        _listing([("101", "Engineer", "Melbourne")]).replace(
+            "/513/cw/en/",
+            "/920/cw/en/",
+        )
+    )
+
+    assert first_jobs[0].ats_id == "513/cw/en:101"
+    assert second_jobs[0].ats_id == "920/cw/en:101"
+    assert first_jobs[0].global_id != second_jobs[0].global_id
+    assert first_jobs[0].requisition_id == "101"
+    assert second_jobs[0].requisition_id == "101"
 
 
 def test_explicit_no_jobs_returns_empty(httpx_mock) -> None:
