@@ -104,7 +104,12 @@ class JobviteScraper(BaseScraper):
                 listing_html = await fetch.get_text(listing_url)
                 page_jobs, start, end, total = self._parse_listing(listing_html)
                 if total == 0:
-                    return []
+                    if page == 0 and not jobs:
+                        return []
+                    raise ScraperError(
+                        f"Jobvite ({self.tenant_path}) catalogue became empty "
+                        "during pagination"
+                    )
                 if reported_total is None:
                     reported_total = total
                 elif total != reported_total:

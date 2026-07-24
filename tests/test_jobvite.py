@@ -461,6 +461,27 @@ def test_total_change_fails_closed(httpx_mock) -> None:
         JobviteScraper("acme").fetch()
 
 
+def test_catalogue_becoming_empty_mid_pagination_fails_closed(
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        text=_listing(
+            [("a1", "Engineer", "Paris")],
+            start=1,
+            end=1,
+            total=2,
+        ),
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=1",
+        text='<div class="jv-job-list">No jobs are currently available.</div>',
+    )
+
+    with pytest.raises(ScraperError, match="became empty"):
+        JobviteScraper("acme").fetch()
+
+
 def test_duplicate_job_id_fails_closed(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://jobs.jobvite.com/acme/search?p=0",
