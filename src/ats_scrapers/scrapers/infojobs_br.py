@@ -217,10 +217,14 @@ class InfoJobsBrasilScraper(BaseScraper):
                 if reached_tail:
                     break
                 pages = range(start, min(start + MAX_CONCURRENCY, self.max_pages + 1))
-                payloads = await asyncio.gather(
-                    *(self._fetch_page(client, sem, page) for page in pages)
+                results = await asyncio.gather(
+                    *(self._fetch_page(client, sem, page) for page in pages),
+                    return_exceptions=True,
                 )
-                for payload in payloads:
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
+                    payload = result
                     eof, new_count = absorb(payload)
                     if eof:
                         exhausted = True

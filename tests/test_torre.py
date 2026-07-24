@@ -263,9 +263,10 @@ def test_include_descriptions_false_omits_description(httpx_mock) -> None:
         json=_envelope([_opp_with_salary_range()], next_cursor=None),
     )
 
-    job = TorreScraper("any", include_descriptions=False).fetch()[0]
+    jobs = TorreScraper("any", include_descriptions=False).fetch()
 
-    assert job.description is None
+    assert len(jobs) == 1
+    assert jobs[0].description is None
 
 
 # --- to-be-agreed: salary must stay None ------------------------------------

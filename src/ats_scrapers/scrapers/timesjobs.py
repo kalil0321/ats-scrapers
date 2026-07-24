@@ -489,8 +489,11 @@ def _date_to_dt(value: object) -> datetime | None:
     # Support both ``YYYY-MM-DD`` and the occasional full ISO timestamp.
     try:
         if "T" in s:
-            return datetime.fromisoformat(s.replace("Z", "+00:00"))
-        return datetime.strptime(s, "%Y-%m-%d")
+            parsed = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=UTC)
+            return parsed.astimezone(UTC)
+        return datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=UTC)
     except ValueError:
         return None
 

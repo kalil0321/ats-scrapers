@@ -401,6 +401,25 @@ def test_paginates_until_eof(httpx_mock) -> None:
     assert {j.ats_id for j in jobs} == {"1", "2", "3", "4", "5"}
 
 
+def test_ignores_speculative_failure_after_ordered_eof(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=re.compile(_FRAGMENT_RE.pattern + r".*page%3D1"),
+        json=_fragment([_card(job_id="1")]),
+    )
+    httpx_mock.add_response(
+        url=re.compile(_FRAGMENT_RE.pattern + r".*page%3D2"),
+        json=_fragment([_card(job_id="2")], eof=True),
+    )
+    httpx_mock.add_response(
+        url=re.compile(_FRAGMENT_RE.pattern + r".*page%3D3"),
+        status_code=500,
+    )
+
+    jobs = InfoJobsBrasilScraper("any", max_pages=3).fetch()
+
+    assert {job.ats_id for job in jobs} == {"1", "2"}
+
+
 def test_max_pages_caps_pagination(httpx_mock) -> None:
     """Even if every page is fresh and ``eof`` never fires, the cap
     is hard. Prevents a buggy site from looping forever."""

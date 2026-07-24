@@ -277,6 +277,9 @@ def test_post_date_parsed_to_datetime(httpx_mock) -> None:
     assert j.posted_at.year == 2026
     assert j.posted_at.month == 5
     assert j.posted_at.day == 11
+    assert j.posted_at.tzinfo is not None
+    assert j.posted_at.utcoffset() is not None
+    assert j.posted_at.utcoffset().total_seconds() == 0
 
 
 def test_html_is_stripped_from_description(httpx_mock) -> None:
