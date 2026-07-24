@@ -90,6 +90,7 @@ CACHE_CONTROL_LATEST = "public, max-age=300"  # manifest + latest data files
 # RAM.
 FORMATS_ALL = ("csv", "parquet")
 FORMATS_PER_ATS = ("csv", "parquet")
+DISABLED_JOB_SOURCES = frozenset({ATSType.SEEK})
 
 # Common pl.scan_csv options across every read path. ``ignore_errors``
 # is what lets the scanner fall back to string for a column whose first
@@ -186,7 +187,7 @@ class DatasetPublisher:
 
             any_csv_found = False
             for ats in ATSType:
-                if ats is ATSType.CUSTOM:
+                if ats is ATSType.CUSTOM or ats in DISABLED_JOB_SOURCES:
                     continue
                 source_path = source_dir / ats_csv_pattern.format(ats=ats.value)
                 if not source_path.exists():
@@ -282,6 +283,10 @@ class DatasetPublisher:
             )
             files_uploaded.append(manifest_key)
 
+            deleted = self.prune_disabled_job_sources()
+            if deleted:
+                logger.info("Deleted %d disabled-source keys", deleted)
+
             deleted = self.prune_legacy_paths()
             if deleted:
                 logger.info("Deleted %d legacy keys", deleted)
@@ -309,6 +314,19 @@ class DatasetPublisher:
         ]
         keys: list[str] = []
         for prefix in legacy_prefixes:
+            for obj in self._r2.list(prefix=prefix):
+                key = obj.get("Key")
+                if key:
+                    keys.append(key)
+        if not keys:
+            return 0
+        return self._r2.delete_many(keys)
+
+    def prune_disabled_job_sources(self) -> int:
+        """Delete published job artifacts for intentionally disabled sources."""
+        keys: list[str] = []
+        for ats in DISABLED_JOB_SOURCES:
+            prefix = f"{self._prefix}/{ats.value}/jobs."
             for obj in self._r2.list(prefix=prefix):
                 key = obj.get("Key")
                 if key:
@@ -407,7 +425,7 @@ class DatasetPublisher:
         with ExitStack() as stage_stack:
             per_ats_parquets: list[Path] = []
             for ats in ATSType:
-                if ats is ATSType.CUSTOM:
+                if ats is ATSType.CUSTOM or ats in DISABLED_JOB_SOURCES:
                     continue
                 survivor_frame = survivors.get(ats.value)
                 if survivor_frame is None or survivor_frame.is_empty():
@@ -547,6 +565,7 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "tiktok": 1, "uber": 1,
     # Hybrid jobboards
     "welcometothejungle": 3, "mercor": 3, "gem": 3,
+    "seek": 4,
     # Sourcing/matching layer that mirrors others
     "eightfold": 5,
     # National public-sector aggregators — government-curated but the
@@ -1156,7 +1175,7 @@ def _guard_suspicious_empty_job_slices(
 
     suspicious: list[str] = []
     for ats in ATSType:
-        if ats is ATSType.CUSTOM:
+        if ats is ATSType.CUSTOM or ats in DISABLED_JOB_SOURCES:
             continue
         source_path = source_dir / ats_csv_pattern.format(ats=ats.value)
         if not source_path.exists():

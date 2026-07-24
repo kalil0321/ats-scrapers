@@ -90,6 +90,40 @@ def test_publisher_does_not_write_by_date(ats_csv_dir, fake_r2) -> None:
     assert bydate_keys == []
 
 
+def test_publisher_excludes_and_deletes_stale_seek_slice(
+    ats_csv_dir, fake_r2
+) -> None:
+    seek_dir = ats_csv_dir / "seek"
+    seek_dir.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "url": "https://www.seek.com.au/job/123",
+                "title": "Stale SEEK Job",
+                "location": "Sydney",
+                "company": "Acme",
+                "ats_id": "123",
+            }
+        ]
+    ).to_csv(seek_dir / "jobs.csv", index=False)
+    for suffix in ("csv", "parquet"):
+        fake_r2.upload_bytes(
+            b"stale",
+            f"jobhive/v1/seek/jobs.{suffix}",
+        )
+
+    result = DatasetPublisher(
+        fake_r2, write_parquet=True
+    ).publish_from_directory(ats_csv_dir)
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+
+    assert result.total_jobs == 9
+    assert "seek" not in manifest["by_ats"]
+    assert not any("/seek/jobs." in key for key in fake_r2.uploads)
+    assert "jobhive/v1/seek/jobs.csv" in fake_r2.deleted
+    assert "jobhive/v1/seek/jobs.parquet" in fake_r2.deleted
+
+
 # --- Manifest ---------------------------------------------------------------
 
 

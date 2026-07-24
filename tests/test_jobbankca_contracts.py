@@ -28,3 +28,7 @@ def test_jobbank_singleton_fails_closed_on_empty() -> None:
 
 def test_seek_is_not_scheduled_for_ingestion() -> None:
     assert "seek" not in CONFIGS
+
+
+def test_seek_retains_low_priority_for_manual_outputs() -> None:
+    assert ATS_DEDUP_PRIORITY["seek"] > ATS_DEDUP_PRIORITY["workday"]
