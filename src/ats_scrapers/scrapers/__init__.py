@@ -20,6 +20,7 @@ from ats_scrapers.scrapers.beisen_legacy import BeisenLegacyScraper
 from ats_scrapers.scrapers.breezy import BreezyScraper
 from ats_scrapers.scrapers.builtin import BuiltInScraper
 from ats_scrapers.scrapers.bundesagentur import BundesagenturScraper
+from ats_scrapers.scrapers.bytedance import BytedanceScraper
 from ats_scrapers.scrapers.cornerstone import CornerstoneScraper
 from ats_scrapers.scrapers.darwinbox import DarwinboxScraper
 from ats_scrapers.scrapers.eightfold import EightfoldScraper
@@ -56,6 +57,7 @@ from ats_scrapers.scrapers.teamtailor import TeamtailorScraper
 from ats_scrapers.scrapers.tesla import TeslaScraper
 from ats_scrapers.scrapers.thehub import TheHubScraper
 from ats_scrapers.scrapers.tiktok import TikTokScraper
+from ats_scrapers.scrapers.torre import TorreScraper
 from ats_scrapers.scrapers.uber import UberScraper
 from ats_scrapers.scrapers.usajobs import USAJobsScraper
 from ats_scrapers.scrapers.wanted import WantedScraper
@@ -79,6 +81,7 @@ __all__ = [
     "BreezyScraper",
     "BuiltInScraper",
     "BundesagenturScraper",
+    "BytedanceScraper",
     "CornerstoneScraper",
     "DarwinboxScraper",
     "EightfoldScraper",
@@ -115,6 +118,7 @@ __all__ = [
     "TeslaScraper",
     "TheHubScraper",
     "TikTokScraper",
+    "TorreScraper",
     "USAJobsScraper",
     "UberScraper",
     "WTTJScraper",
