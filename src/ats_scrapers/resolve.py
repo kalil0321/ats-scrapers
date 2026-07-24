@@ -88,6 +88,7 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
 _WORKDAY_HOST_RE = re.compile(r"^[^.]+\.wd\d+\.myworkdayjobs\.com$")
 _TALEO_HOST_RE = re.compile(r"^[^.]+\.tbe\.taleo\.net$")
 _ICIMS_HOST_RE = re.compile(r"^(?P<prefix>[a-z0-9-]+)\.icims\.com$", re.IGNORECASE)
+_JOBVITE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
@@ -108,6 +109,25 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         slug = _first_path_segment(parsed)
         if slug and _SLUG_RE.match(slug):
             return ResolvedCareersUrl(_PATH_HOSTS[host], slug)
+        return None
+
+    if host == "jobs.jobvite.com":
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            len(segments) >= 2
+            and segments[0] == "careers"
+            and _JOBVITE_SEGMENT_RE.fullmatch(segments[1])
+        ):
+            return ResolvedCareersUrl(
+                ATSType.JOBVITE,
+                f"careers/{segments[1]}",
+            )
+        if (
+            segments
+            and segments[0] != "careers"
+            and _JOBVITE_SEGMENT_RE.fullmatch(segments[0])
+        ):
+            return ResolvedCareersUrl(ATSType.JOBVITE, segments[0])
         return None
 
     # join.com/companies/{slug}

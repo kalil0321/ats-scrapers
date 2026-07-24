@@ -18,7 +18,8 @@ def test_ats_type_includes_every_supported_platform() -> None:
     expected = {
         # Multi-tenant ATS systems
             "ashby", "avature", "beisen", "beisen_legacy", "cornerstone", "darwinbox", "eightfold", "gem", "greenhouse", "gupy",
-        "icims", "join_com", "lever", "mercor", "moka", "oracle", "personio", "phenom",
+        "icims", "join_com", "jobvite", "lever", "mercor", "moka", "oracle",
+        "personio", "phenom",
         "pinpoint", "recruiterbox", "rippling", "smartrecruiters",
         "successfactors", "workable", "workday",
         # Big-tech custom careers systems

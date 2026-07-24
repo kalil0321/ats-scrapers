@@ -63,6 +63,7 @@ from ats_scrapers.scrapers import (
     JobBankCAScraper,
     JobsChScraper,
     JobsCzScraper,
+    JobviteScraper,
     JoinComScraper,
     LeverScraper,
     ManfredScraper,
@@ -466,6 +467,15 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
         "csv": "ats-companies/jazzhr.csv",
         "output": "jazzhr/jobs.csv",
+    },
+    "jobvite": {
+        "scraper": JobviteScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
+        "csv": "ats-companies/jobvite.csv",
+        "output": "jobvite/jobs.csv",
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_empty": True,
     },
     "recruitee": {
         "scraper": RecruiteeScraper,

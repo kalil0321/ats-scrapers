@@ -14,6 +14,7 @@ from ats_scrapers.scrapers import (
     DarwinboxScraper,
     GreenhouseScraper,
     GupyScraper,
+    JobviteScraper,
     MokaScraper,
     WorkdayScraper,
 )
@@ -31,6 +32,12 @@ RESOLVES = [
     ("https://careers.smartrecruiters.com/10Pearls", ATSType.SMARTRECRUITERS, "10Pearls"),
     ("https://jobs.gem.com/accel", ATSType.GEM, "accel"),
     ("https://ats.rippling.com/acme/jobs", ATSType.RIPPLING, "acme"),
+    ("https://jobs.jobvite.com/sitecore", ATSType.JOBVITE, "sitecore"),
+    (
+        "https://jobs.jobvite.com/careers/loandepot/search?p=0",
+        ATSType.JOBVITE,
+        "careers/loandepot",
+    ),
     ("https://join.com/companies/acme", ATSType.JOIN_COM, "acme"),
     (
         "https://app.mokahr.com/social-recruitment/trip/70415/job/123",
@@ -140,6 +147,16 @@ def test_get_scraper_for_url_builds_scraper() -> None:
         GreenhouseScraper,
     )
     assert isinstance(get_scraper_for_url("https://petz.gupy.io"), GupyScraper)
+    assert isinstance(
+        get_scraper_for_url("https://jobs.jobvite.com/sitecore"),
+        JobviteScraper,
+    )
+    assert (
+        get_scraper_for_url(
+            "https://jobs.jobvite.com/careers/loandepot/search"
+        ).tenant_path
+        == "careers/loandepot"
+    )
     assert isinstance(
         get_scraper_for_url(
             "https://app.mokahr.com/social-recruitment/trip/70415"
