@@ -48,6 +48,7 @@ from ats_scrapers.scrapers import (
     BreezyScraper,
     BuiltInScraper,
     BundesagenturScraper,
+    BytedanceScraper,
     CornerstoneScraper,
     DarwinboxScraper,
     EightfoldScraper,
@@ -678,6 +679,11 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/seek.csv",
         "output": "seek/jobs.csv",
         "fail_closed_on_any_error": True,
+    },
+    "bytedance": {
+        "scraper": BytedanceScraper, "singleton": True,
+        "output": "bytedance/jobs.csv",
+        "fail_closed_on_empty": True,
     },
     "jobs_cz": {
         # jobs.cz - Czech Republic's largest direct-posting board. ~10k live via seeded search.
