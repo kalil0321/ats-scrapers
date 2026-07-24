@@ -173,12 +173,20 @@ class JobviteScraper(BaseScraper):
         semaphore: asyncio.Semaphore,
         job: Job,
     ) -> Job | None:
-        async with semaphore:
-            response = await fetch.request(
-                "GET",
-                str(job.url),
-                handled={404, 410},
+        try:
+            async with semaphore:
+                response = await fetch.request(
+                    "GET",
+                    str(job.url),
+                    handled={404, 410},
+                )
+        except ScraperError as exc:
+            logger.warning(
+                "Dropping Jobvite job %s after detail failure: %s",
+                job.ats_id,
+                exc,
             )
+            return None
         if response.status_code in {404, 410}:
             return None
         _apply_detail(job, response.text)
@@ -233,25 +241,37 @@ class JobviteScraper(BaseScraper):
             if not isinstance(href, str):
                 continue
             id_match = _JOB_ID_RE.search(href)
-            title_node = anchor.select_one(".jv-job-list-name")
-            if id_match is None or title_node is None:
+            name_cell = anchor.find_parent(class_="jv-job-list-name")
+            title_node = (
+                anchor.select_one(".jv-job-list-name")
+                or name_cell
+                or anchor
+            )
+            if id_match is None:
                 continue
             title = _clean_text(title_node.get_text(" ", strip=True))
             if not title:
                 continue
             detail_url = urljoin(f"{BASE_URL}/", href)
             parsed_url = urlparse(detail_url)
+            accepted_tenant_paths = [self.tenant_path]
+            if self.tenant_path.startswith("careers/"):
+                accepted_tenant_paths.append(self.tenant_path.split("/", 1)[1])
             if (
                 parsed_url.scheme != "https"
                 or parsed_url.hostname != "jobs.jobvite.com"
-                or not parsed_url.path.startswith(
-                    f"/{self.tenant_path}/job/"
+                or not any(
+                    parsed_url.path.startswith(f"/{tenant_path}/job/")
+                    for tenant_path in accepted_tenant_paths
                 )
             ):
                 raise ScraperError(
                     f"Jobvite ({self.tenant_path}) returned an unsafe job URL"
                 )
+            row = anchor.find_parent("tr")
             location_node = anchor.select_one(".jv-job-list-location")
+            if location_node is None and row is not None:
+                location_node = row.select_one(".jv-job-list-location")
             location = (
                 _clean_text(location_node.get_text(" ", strip=True))
                 if location_node is not None

@@ -264,8 +264,77 @@ def test_systemic_detail_request_failure_fails_closed(httpx_mock) -> None:
         is_reusable=True,
     )
 
-    with pytest.raises(ScraperError, match="returned 500"):
+    with pytest.raises(ScraperError, match="lost every listed job"):
         JobviteScraper("acme").fetch()
+
+
+def test_detail_request_failure_drops_only_failed_job(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        text=_listing(
+            [
+                ("a1", "Engineer", "Paris"),
+                ("a2", "Designer", "London"),
+            ],
+            start=1,
+            end=2,
+            total=2,
+        ),
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/job/a1",
+        text=_detail("a1"),
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/job/a2",
+        status_code=500,
+        is_reusable=True,
+    )
+
+    jobs = JobviteScraper("acme").fetch()
+
+    assert [job.ats_id for job in jobs] == ["a1"]
+
+
+def test_table_listing_layout_reads_title_and_location(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        text="""
+        <div class="jv-job-list">
+          <table><tr>
+            <td class="jv-job-list-name">
+              <a href="/acme/job/a1">Platform Engineer</a>
+            </td>
+            <td class="jv-job-list-location">Paris, France</td>
+          </tr></table>
+        </div>
+        <div class="jv-pagination-text">1-1 of 1</div>
+        """,
+    )
+
+    jobs = JobviteScraper("acme", include_descriptions=False).fetch()
+
+    assert jobs[0].title == "Platform Engineer"
+    assert jobs[0].location == "Paris, France"
+
+
+def test_careers_tenant_accepts_canonical_detail_path(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/careers/acme/search?p=0",
+        text=_listing(
+            [("a1", "Engineer", "Paris")],
+            start=1,
+            end=1,
+            total=1,
+        ),
+    )
+
+    jobs = JobviteScraper(
+        "careers/acme",
+        include_descriptions=False,
+    ).fetch()
+
+    assert str(jobs[0].url) == "https://jobs.jobvite.com/acme/job/a1"
 
 
 @pytest.mark.parametrize(
