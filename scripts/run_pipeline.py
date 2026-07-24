@@ -70,6 +70,7 @@ from ats_scrapers.scrapers import (
     MetaScraper,
     MokaScraper,
     OracleScraper,
+    PageUpScraper,
     PersonioScraper,
     PhenomScraper,
     PinpointScraper,
@@ -466,6 +467,15 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
         "csv": "ats-companies/jazzhr.csv",
         "output": "jazzhr/jobs.csv",
+    },
+    "pageup": {
+        "scraper": PageUpScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
+        "csv": "ats-companies/pageup.csv",
+        "output": "pageup/jobs.csv",
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_empty": True,
     },
     "recruitee": {
         "scraper": RecruiteeScraper,

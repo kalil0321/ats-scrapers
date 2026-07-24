@@ -88,6 +88,9 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
 _WORKDAY_HOST_RE = re.compile(r"^[^.]+\.wd\d+\.myworkdayjobs\.com$")
 _TALEO_HOST_RE = re.compile(r"^[^.]+\.tbe\.taleo\.net$")
 _ICIMS_HOST_RE = re.compile(r"^(?P<prefix>[a-z0-9-]+)\.icims\.com$", re.IGNORECASE)
+_PAGEUP_CLIENT_RE = re.compile(r"^\d+$")
+_PAGEUP_SEGMENT_RE = re.compile(r"^[A-Za-z0-9-]+$")
+_PAGEUP_LOCALE_RE = re.compile(r"^[A-Za-z]{2}(?:-[A-Za-z]{2})?$")
 
 
 def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
@@ -108,6 +111,22 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         slug = _first_path_segment(parsed)
         if slug and _SLUG_RE.match(slug):
             return ResolvedCareersUrl(_PATH_HOSTS[host], slug)
+        return None
+
+    if host == "careers.pageuppeople.com":
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if segments and segments[0].lower() == "mob":
+            segments.pop(0)
+        if (
+            len(segments) >= 3
+            and _PAGEUP_CLIENT_RE.fullmatch(segments[0])
+            and _PAGEUP_SEGMENT_RE.fullmatch(segments[1])
+            and _PAGEUP_LOCALE_RE.fullmatch(segments[2])
+        ):
+            return ResolvedCareersUrl(
+                ATSType.PAGEUP,
+                "/".join(segments[:3]),
+            )
         return None
 
     # join.com/companies/{slug}

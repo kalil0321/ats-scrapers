@@ -49,6 +49,7 @@ class ATSType(StrEnum):
     MERCOR = "mercor"
     MOKA = "moka"
     ORACLE = "oracle"
+    PAGEUP = "pageup"
     PERSONIO = "personio"
     PHENOM = "phenom"
     PINPOINT = "pinpoint"
