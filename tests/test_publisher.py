@@ -160,6 +160,7 @@ def test_publisher_derives_country_iso_column(ats_csv_dir, fake_r2) -> None:
     gh_csv = ats_csv_dir / "greenhouse" / "jobs.csv"
     df = pd.read_csv(gh_csv)
     df.loc[df["location"] == "Paris", "location"] = "Paris, France"
+    df["country_iso"] = ""
     df.to_csv(gh_csv, index=False)
 
     publisher = DatasetPublisher(fake_r2, write_parquet=True)
@@ -173,6 +174,25 @@ def test_publisher_derives_country_iso_column(ats_csv_dir, fake_r2) -> None:
     france_rows = [row for row in rows if row["location"] == "Paris, France"]
     assert france_rows
     assert {row["country_iso"] for row in france_rows} == {"FR"}
+
+
+def test_country_derivation_skips_callback_when_column_is_complete(monkeypatch) -> None:
+    import pipeline.publisher as publisher_module
+
+    frame = publisher_module.pl.DataFrame({
+        "location": ["Paris, France"],
+        "country_iso": ["FR"],
+    }).lazy()
+
+    def fail_if_called(_location):
+        raise AssertionError("country callback should stay on the fast path")
+
+    monkeypatch.setattr(
+        publisher_module, "_country_iso_from_location", fail_if_called,
+    )
+
+    result = publisher_module._enrich_lazy(frame).collect()
+    assert result["country_iso"].to_list() == ["FR"]
 
 
 # --- Manifest patch (read-modify-write) -------------------------------------

@@ -761,6 +761,7 @@ DATA_ROOT = Path(__file__).resolve().parent.parent  # → repo root
 
 JOB_CSV_FIELDS = [
     "url", "title", "company", "ats_type", "ats_id", "location",
+    "country_iso", "region", "language", "lat", "lon",
     "is_remote", "salary_min", "salary_max", "salary_currency",
     "salary_period", "salary_summary", "employment_type",
     "department", "team", "description", "posted_at",
@@ -1153,6 +1154,11 @@ def _job_to_row(job: Job) -> dict[str, Any]:
         "ats_type": job.ats_type.value,
         "ats_id": job.ats_id,
         "location": job.location or "",
+        "country_iso": job.country_iso or "",
+        "region": job.region or "",
+        "language": job.language or "",
+        "lat": "" if job.lat is None else job.lat,
+        "lon": "" if job.lon is None else job.lon,
         "is_remote": "" if job.is_remote is None else str(job.is_remote).lower(),
         "salary_min": "" if job.salary_min is None else job.salary_min,
         "salary_max": "" if job.salary_max is None else job.salary_max,
@@ -1422,6 +1428,22 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
         )
 
         failure_threshold = max(1, (len(targets) + 1) // 2)
+        streaming_failure = uses_streaming and counts["error"] > 0
+        if streaming_failure:
+            tmp_output_path.unlink(missing_ok=True)
+            if output_path.exists():
+                print(
+                    f"[{ats}] ACTION keep_previous: streaming scrape failed "
+                    f"after {counts['jobs']:,} jobs; preserved {output_path} "
+                    "instead of publishing a partial dataset."
+                )
+            else:
+                print(
+                    f"[{ats}] ACTION retry: streaming scrape failed after "
+                    f"{counts['jobs']:,} jobs and no previous jobs.csv exists."
+                )
+            return 1
+
         catastrophic_failure = (
             bool(targets)
             and counts["jobs"] == 0
