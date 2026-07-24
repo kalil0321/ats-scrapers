@@ -430,9 +430,7 @@ class BumeranScraper(BaseScraper):
 
     @property
     def _request_timeout(self) -> float:
-        """Return timeout units expected by the selected transport."""
-        if self.client_kind == "httpcloak":
-            return self.timeout * 1_000
+        """Return the per-request timeout in seconds."""
         return self.timeout
 
     # --- parsing ------------------------------------------------------------

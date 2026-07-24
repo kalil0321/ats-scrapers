@@ -650,7 +650,7 @@ def test_search_page_rejects_404_in_reported_page_range() -> None:
         BumeranScraper("ar")._search_page(FakeSession(), 1)
 
 
-def test_httpcloak_timeout_is_converted_to_milliseconds(monkeypatch) -> None:
+def test_httpcloak_timeout_remains_in_seconds(monkeypatch) -> None:
     import sys
     from types import SimpleNamespace
 
@@ -679,7 +679,7 @@ def test_httpcloak_timeout_is_converted_to_milliseconds(monkeypatch) -> None:
     opened = scraper._open_session()
     scraper._search_page(opened, 0)
 
-    assert timeouts == [12_500, 12_500]
+    assert timeouts == [12.5, 12.5]
 
 
 def test_search_page_rejects_non_object_json() -> None:
