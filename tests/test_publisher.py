@@ -106,10 +106,10 @@ def test_publisher_excludes_and_deletes_stale_seek_slice(
             }
         ]
     ).to_csv(seek_dir / "jobs.csv", index=False)
-    for suffix in ("csv", "parquet"):
+    for artifact in ("jobs.csv", "jobs.parquet", "companies.csv"):
         fake_r2.upload_bytes(
             b"stale",
-            f"jobhive/v1/seek/jobs.{suffix}",
+            f"jobhive/v1/seek/{artifact}",
         )
 
     result = DatasetPublisher(
@@ -122,6 +122,7 @@ def test_publisher_excludes_and_deletes_stale_seek_slice(
     assert not any("/seek/jobs." in key for key in fake_r2.uploads)
     assert "jobhive/v1/seek/jobs.csv" in fake_r2.deleted
     assert "jobhive/v1/seek/jobs.parquet" in fake_r2.deleted
+    assert "jobhive/v1/seek/companies.csv" in fake_r2.deleted
 
 
 # --- Manifest ---------------------------------------------------------------
@@ -635,6 +636,46 @@ def test_cross_ats_dedup_keeps_higher_priority_ats(
     assert len(df) == 3
     assert (df["ats_type"] == "workday").all()
     assert df["url"].str.contains("workday.com").all()
+
+
+def test_cross_ats_dedup_keeps_employer_source_over_manual_seek(
+    tmp_path,
+) -> None:
+    import pipeline.publisher as publisher_module
+
+    workday_path = tmp_path / "workday.csv"
+    seek_path = tmp_path / "seek.csv"
+    shared = {
+        "title": "Backend Engineer",
+        "company": "Acme",
+        "location": "Sydney, Australia",
+        "country_iso": "AU",
+    }
+    pd.DataFrame([
+        {
+            **shared,
+            "url": "https://acme.wd5.myworkdayjobs.com/job/1",
+            "ats_id": "wd-1",
+        },
+    ]).to_csv(workday_path, index=False)
+    pd.DataFrame([
+        {
+            **shared,
+            "url": "https://www.seek.com.au/job/123",
+            "ats_id": "seek-123",
+        },
+    ]).to_csv(seek_path, index=False)
+
+    survivors, raw_count, kept_count = (
+        publisher_module._dedup_from_per_ats_csvs(
+            {"workday": workday_path, "seek": seek_path}
+        )
+    )
+
+    assert raw_count == 2
+    assert kept_count == 1
+    assert survivors["workday"].height == 1
+    assert "seek" not in survivors
 
 
 def test_cross_ats_dedup_prefers_structured_country_iso(tmp_path) -> None:

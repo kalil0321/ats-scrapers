@@ -323,14 +323,15 @@ class DatasetPublisher:
         return self._r2.delete_many(keys)
 
     def prune_disabled_job_sources(self) -> int:
-        """Delete published job artifacts for intentionally disabled sources."""
+        """Delete published artifacts for intentionally disabled sources."""
         keys: list[str] = []
         for ats in DISABLED_JOB_SOURCES:
-            prefix = f"{self._prefix}/{ats.value}/jobs."
-            for obj in self._r2.list(prefix=prefix):
-                key = obj.get("Key")
-                if key:
-                    keys.append(key)
+            for artifact in ("jobs.", "companies."):
+                prefix = f"{self._prefix}/{ats.value}/{artifact}"
+                for obj in self._r2.list(prefix=prefix):
+                    key = obj.get("Key")
+                    if key:
+                        keys.append(key)
         if not keys:
             return 0
         return self._r2.delete_many(keys)
