@@ -12,7 +12,7 @@ tenant CSV under ``ats-companies/`` lands on ``main``. Behaviour:
    ``companies`` entry and the per-ATS ``by_ats_companies`` map. Other
    fields (``by_ats`` for jobs, ``all``, ``stats``…) are preserved
    untouched — they're owned by the publisher pipeline, not the CI.
-4. Delete the now-obsolete legacy paths
+4. Delete disabled-source artifacts and the now-obsolete legacy paths
    (``companies/all.csv`` + ``companies/by-ats/*``).
 
 Notes:
@@ -57,6 +57,7 @@ from botocore.exceptions import ClientError
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ATS_COMPANIES_DIR = REPO_ROOT / "ats-companies"
 PREFIX = "jobhive/v1"
+DISABLED_ATS = frozenset({"seek"})
 # Lowest manifest version this script knows how to write. Treat as a
 # floor: bump existing manifests up to it, never down. If the
 # jobs-side publisher independently moves the manifest to a newer
@@ -193,6 +194,16 @@ def delete_legacy(client, bucket: str) -> None:
             client.delete_objects(Bucket=bucket, Delete={"Objects": chunk})
 
 
+def delete_disabled_sources(client, bucket: str) -> None:
+    """Delete stable per-ATS company artifacts for disabled sources."""
+    objects = [
+        {"Key": f"{PREFIX}/{ats}/companies.csv"}
+        for ats in sorted(DISABLED_ATS)
+    ]
+    if objects:
+        client.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+
+
 def _parse_version(value: object) -> tuple[int, ...]:
     """Parse ``"<int>.<int>..."`` into a comparable int-tuple.
 
@@ -302,7 +313,8 @@ def main() -> None:
         "application/json",
     )
 
-    print("\n== Step 4: cleanup legacy paths")
+    print("\n== Step 4: cleanup disabled and legacy paths")
+    delete_disabled_sources(client, bucket)
     delete_legacy(client, bucket)
 
     print(
