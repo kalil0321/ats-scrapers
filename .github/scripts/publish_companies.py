@@ -12,7 +12,7 @@ tenant CSV under ``ats-companies/`` lands on ``main``. Behaviour:
    ``companies`` entry and the per-ATS ``by_ats_companies`` map. Other
    fields (``by_ats`` for jobs, ``all``, ``stats``…) are preserved
    untouched — they're owned by the publisher pipeline, not the CI.
-4. Delete disabled-source artifacts and the now-obsolete legacy paths
+4. Delete the now-obsolete legacy paths
    (``companies/all.csv`` + ``companies/by-ats/*``).
 
 Notes:
@@ -58,7 +58,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ATS_COMPANIES_DIR = REPO_ROOT / "ats-companies"
 PREFIX = "jobhive/v1"
 DISABLED_ATS = frozenset({"seek"})
-DISABLED_CLEANUP_GRACE_SECONDS = 300
+CACHE_CONTROL_LATEST = "public, max-age=300"
 # Lowest manifest version this script knows how to write. Treat as a
 # floor: bump existing manifests up to it, never down. If the
 # jobs-side publisher independently moves the manifest to a newer
@@ -101,12 +101,25 @@ def read_csv(path: Path) -> bytes:
     return path.read_bytes()
 
 
-def upload(client, bucket: str, key: str, body: bytes, content_type: str) -> None:
+def upload(
+    client,
+    bucket: str,
+    key: str,
+    body: bytes,
+    content_type: str,
+    *,
+    cache_control: str | None = None,
+) -> None:
+    kwargs: dict[str, Any] = {
+        "Bucket": bucket,
+        "Key": key,
+        "Body": body,
+        "ContentType": content_type,
+    }
+    if cache_control is not None:
+        kwargs["CacheControl"] = cache_control
     client.put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=body,
-        ContentType=content_type,
+        **kwargs,
     )
     print(f"  put s3://{bucket}/{key} ({len(body):,} bytes, {content_type})")
 
@@ -212,55 +225,6 @@ def delete_legacy(client, bucket: str) -> None:
         for i in range(0, len(to_delete), 1000):
             chunk = to_delete[i : i + 1000]
             delete_objects_checked(client, bucket, chunk)
-
-
-def delete_disabled_sources(
-    client,
-    bucket: str,
-    *,
-    existing_manifest: dict[str, Any],
-    now: datetime | None = None,
-) -> None:
-    """Delete disabled artifacts after cached old manifests have expired."""
-    current_time = now or datetime.now(tz=UTC)
-    objects = [
-        {"Key": f"{PREFIX}/{ats}/companies.csv"}
-        for ats in sorted(DISABLED_ATS)
-        if _disabled_cleanup_ready(
-            existing_manifest,
-            section="by_ats_companies",
-            source=ats,
-            now=current_time,
-        )
-    ]
-    if objects:
-        delete_objects_checked(client, bucket, objects)
-
-
-def _disabled_cleanup_ready(
-    manifest: dict[str, Any],
-    *,
-    section: str,
-    source: str,
-    now: datetime,
-) -> bool:
-    entries = manifest.get(section)
-    if not isinstance(entries, dict) or source in entries:
-        return False
-    timestamp_value = manifest.get("updated_at") or manifest.get("generated_at")
-    if not isinstance(timestamp_value, str):
-        return False
-    try:
-        timestamp = datetime.fromisoformat(
-            timestamp_value.strip().replace("Z", "+00:00")
-        )
-    except ValueError:
-        return False
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=UTC)
-    return (
-        now.astimezone(UTC) - timestamp.astimezone(UTC)
-    ).total_seconds() >= DISABLED_CLEANUP_GRACE_SECONDS
 
 
 def _parse_version(value: object) -> tuple[int, ...]:
@@ -383,17 +347,15 @@ def main() -> None:
         f"{PREFIX}/manifest.json",
         manifest_bytes,
         "application/json",
+        cache_control=CACHE_CONTROL_LATEST,
     )
 
-    # R2 cannot atomically combine stable-key uploads, manifest replacement,
-    # and object deletion. Publish the canonical manifest first so cleanup
-    # failures can only leave an unadvertised orphan that the next run retries.
-    print("\n== Step 4: cleanup disabled and legacy paths")
-    delete_disabled_sources(
-        client,
-        bucket,
-        existing_manifest=manifest_before_update,
-    )
+    # Disabled-source objects are deliberately retained as unadvertised
+    # orphans. The shared manifest previously had no guaranteed cache lifetime,
+    # so deleting a stable object could break an indefinitely cached old
+    # manifest. Excluding the source from current aggregates and manifests
+    # disables publication without creating dangling links for old clients.
+    print("\n== Step 4: cleanup legacy paths")
     delete_legacy(client, bucket)
 
     print(

@@ -18,84 +18,7 @@ def _load_publish_companies() -> ModuleType:
     return module
 
 
-class _Client:
-    def __init__(self, errors: list[dict[str, str]] | None = None) -> None:
-        self.deleted: list[str] = []
-        self.errors = errors or []
-
-    def delete_objects(
-        self,
-        **kwargs: object,
-    ) -> dict[str, object]:
-        assert kwargs["Bucket"] == "test-bucket"
-        delete = kwargs["Delete"]
-        assert isinstance(delete, dict)
-        objects = delete["Objects"]
-        assert isinstance(objects, list)
-        self.deleted.extend(item["Key"] for item in objects)
-        return {"Errors": self.errors}
-
-
-def test_disabled_seek_company_artifact_is_deleted() -> None:
-    module = _load_publish_companies()
-    client = _Client()
-
-    module.delete_disabled_sources(
-        client,
-        "test-bucket",
-        existing_manifest={
-            "by_ats_companies": {},
-            "updated_at": "2000-01-01T00:00:00Z",
-        },
-    )
-
-    assert client.deleted == ["jobhive/v1/seek/companies.csv"]
-
-
-def test_disabled_seek_company_cleanup_waits_for_manifest_grace() -> None:
-    module = _load_publish_companies()
-    client = _Client()
-
-    module.delete_disabled_sources(
-        client,
-        "test-bucket",
-        existing_manifest={
-            "by_ats_companies": {
-                "seek": {"csv": "jobhive/v1/seek/companies.csv"}
-            },
-            "updated_at": "2000-01-01T00:00:00Z",
-        },
-    )
-
-    assert client.deleted == []
-
-
-def test_disabled_seek_company_delete_failure_is_fatal() -> None:
-    module = _load_publish_companies()
-    client = _Client(
-        errors=[
-            {
-                "Key": "jobhive/v1/seek/companies.csv",
-                "Code": "AccessDenied",
-            }
-        ]
-    )
-
-    with pytest.raises(
-        RuntimeError,
-        match=r"seek/companies\.csv: AccessDenied",
-    ):
-        module.delete_disabled_sources(
-            client,
-            "test-bucket",
-            existing_manifest={
-                "by_ats_companies": {},
-                "updated_at": "2000-01-01T00:00:00Z",
-            },
-        )
-
-
-def test_disabled_delete_failure_happens_after_manifest_rewrite(
+def test_disabled_company_artifact_is_left_unadvertised(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -130,28 +53,21 @@ def test_disabled_delete_failure_happens_after_manifest_rewrite(
         key: str,
         _body: bytes,
         _content_type: str,
+        **kwargs: object,
     ) -> None:
         operations.append(f"upload:{key}")
         uploaded_keys.append(key)
-
-    def fail_disabled_delete(
-        _client: object,
-        _bucket: str,
-        **_kwargs: object,
-    ) -> None:
-        operations.append("delete_disabled")
-        raise RuntimeError("seek delete failed")
+        if key.endswith("/manifest.json"):
+            assert kwargs["cache_control"] == module.CACHE_CONTROL_LATEST
 
     monkeypatch.setattr(module, "upload", record_upload)
-    monkeypatch.setattr(module, "delete_disabled_sources", fail_disabled_delete)
     monkeypatch.setattr(
         module,
         "delete_legacy",
         lambda _client, _bucket: None,
     )
 
-    with pytest.raises(RuntimeError, match="seek delete failed"):
-        module.main()
+    module.main()
 
     assert uploaded_keys == [
         f"{module.PREFIX}/greenhouse/companies.csv",
@@ -162,5 +78,4 @@ def test_disabled_delete_failure_happens_after_manifest_rewrite(
     assert operations == [
         "fetch_manifest",
         *(f"upload:{key}" for key in uploaded_keys),
-        "delete_disabled",
     ]

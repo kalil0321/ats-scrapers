@@ -81,7 +81,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PREFIX = "jobhive/v1"
 CACHE_CONTROL_LATEST = "public, max-age=300"  # manifest + latest data files
-DISABLED_CLEANUP_GRACE_SECONDS = 300
 
 # ``all`` ships both formats — parquet for typed pandas / DuckDB
 # consumers, CSV (~2.3 GB at the current ~4M-row corpus) for
@@ -284,17 +283,6 @@ class DatasetPublisher:
             )
             files_uploaded.append(manifest_key)
 
-            # Stable data keys and the manifest cannot be updated in one R2
-            # transaction. Cleanup therefore runs only after the canonical
-            # manifest and enabled snapshots are internally consistent. A
-            # delete failure leaves an unadvertised orphan for the next run
-            # to retry instead of leaving enabled objects with stale metadata.
-            deleted = self.prune_disabled_job_sources(
-                existing_manifest=existing_manifest,
-            )
-            if deleted:
-                logger.info("Deleted %d disabled-source keys", deleted)
-
             deleted = self.prune_legacy_paths()
             if deleted:
                 logger.info("Deleted %d legacy keys", deleted)
@@ -322,32 +310,6 @@ class DatasetPublisher:
         ]
         keys: list[str] = []
         for prefix in legacy_prefixes:
-            for obj in self._r2.list(prefix=prefix):
-                key = obj.get("Key")
-                if key:
-                    keys.append(key)
-        if not keys:
-            return 0
-        return self._r2.delete_many(keys)
-
-    def prune_disabled_job_sources(
-        self,
-        *,
-        existing_manifest: dict[str, object],
-        now: datetime | None = None,
-    ) -> int:
-        """Delete disabled artifacts after cached old manifests have expired."""
-        current_time = now or datetime.now(tz=UTC)
-        keys: list[str] = []
-        for ats in DISABLED_JOB_SOURCES:
-            if not _disabled_cleanup_ready(
-                existing_manifest,
-                section="by_ats",
-                source=ats.value,
-                now=current_time,
-            ):
-                continue
-            prefix = f"{self._prefix}/{ats.value}/jobs."
             for obj in self._r2.list(prefix=prefix):
                 key = obj.get("Key")
                 if key:
@@ -1169,32 +1131,6 @@ def _sum_by_ats_companies_rows(manifest: dict[str, object]) -> int:
             if isinstance(rows, int):
                 total += rows
     return total
-
-
-def _disabled_cleanup_ready(
-    manifest: dict[str, object],
-    *,
-    section: str,
-    source: str,
-    now: datetime,
-) -> bool:
-    entries = manifest.get(section)
-    if not isinstance(entries, dict) or source in entries:
-        return False
-    timestamp_value = manifest.get("updated_at") or manifest.get("generated_at")
-    if not isinstance(timestamp_value, str):
-        return False
-    try:
-        timestamp = datetime.fromisoformat(
-            timestamp_value.strip().replace("Z", "+00:00")
-        )
-    except ValueError:
-        return False
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=UTC)
-    return (
-        now.astimezone(UTC) - timestamp.astimezone(UTC)
-    ).total_seconds() >= DISABLED_CLEANUP_GRACE_SECONDS
 
 
 def _guard_suspicious_empty_job_slices(

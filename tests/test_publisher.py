@@ -90,7 +90,7 @@ def test_publisher_does_not_write_by_date(ats_csv_dir, fake_r2) -> None:
     assert bydate_keys == []
 
 
-def test_publisher_excludes_and_deletes_stale_seek_slice(
+def test_publisher_excludes_stale_seek_slice(
     ats_csv_dir, fake_r2
 ) -> None:
     fake_r2.upload_bytes(
@@ -128,12 +128,15 @@ def test_publisher_excludes_and_deletes_stale_seek_slice(
 
     assert result.total_jobs == 9
     assert "seek" not in manifest["by_ats"]
-    assert not any("/seek/jobs." in key for key in fake_r2.uploads)
-    assert "jobhive/v1/seek/jobs.csv" in fake_r2.deleted
-    assert "jobhive/v1/seek/jobs.parquet" in fake_r2.deleted
+    assert not any(
+        "/seek/jobs." in key
+        for key in result.files
+    )
+    assert "jobhive/v1/seek/jobs.csv" in fake_r2.uploads
+    assert "jobhive/v1/seek/jobs.parquet" in fake_r2.uploads
 
 
-def test_disabled_seek_cleanup_waits_for_cached_manifest_grace(
+def test_disabled_seek_artifacts_remain_unadvertised(
     ats_csv_dir,
     fake_r2,
 ) -> None:
@@ -163,41 +166,6 @@ def test_disabled_seek_cleanup_waits_for_cached_manifest_grace(
     assert "seek" not in manifest["by_ats"]
     assert seek_key in fake_r2.uploads
     assert seek_key not in fake_r2.deleted
-
-
-def test_disabled_seek_delete_failure_leaves_consistent_manifest(
-    ats_csv_dir, fake_r2, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    manifest_key = "jobhive/v1/manifest.json"
-    original_manifest = json.dumps(
-        {
-            "by_ats": {},
-            "updated_at": "2000-01-01T00:00:00Z",
-        }
-    ).encode()
-    fake_r2.upload_bytes(original_manifest, manifest_key)
-    fake_r2.upload_bytes(b"stale", "jobhive/v1/seek/jobs.csv")
-
-    original_delete_many = fake_r2.delete_many
-
-    def fail_seek_delete(keys: list[str]) -> int:
-        if any("/seek/jobs." in key for key in keys):
-            raise StorageError("seek delete failed")
-        return original_delete_many(keys)
-
-    monkeypatch.setattr(fake_r2, "delete_many", fail_seek_delete)
-
-    with pytest.raises(StorageError, match="seek delete failed"):
-        DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
-            ats_csv_dir
-        )
-
-    manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
-    assert "seek" not in manifest["by_ats"]
-    assert manifest["stats"]["total_jobs"] == 9
-    assert "jobhive/v1/all.csv" in fake_r2.uploads
-    assert "jobhive/v1/all.parquet" in fake_r2.uploads
-    assert "jobhive/v1/greenhouse/jobs.csv" in fake_r2.uploads
 
 
 # --- Manifest ---------------------------------------------------------------
