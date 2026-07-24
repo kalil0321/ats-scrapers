@@ -676,7 +676,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "scraper": TorreScraper, "singleton": True,
         "output": "torre/jobs.csv",
         "fail_closed_on_empty": True,
-        "defer_descriptions_to_cache": True,
+        # The public catalogue currently exceeds 250k rows. Publishing
+        # search summaries avoids a cold-start crawl of one detail page
+        # per row; get_description remains available for targeted backfills.
+        "skip_description_enrichment": True,
     },
     "jobs_cz": {
         # jobs.cz - Czech Republic's largest direct-posting board. ~10k live via seeded search.

@@ -389,10 +389,7 @@ def test_follows_cursor_pagination(httpx_mock) -> None:
     assert {j.ats_id for j in jobs} == {"arQneQnW", "Yd6mya1w"}
 
 
-def test_dedups_repeated_ids_across_pages(httpx_mock) -> None:
-    """Defensive: if the server somehow yields the same opportunity on
-    two consecutive pages (cursor edge cases), we de-duplicate by
-    ``ats_id`` before adding to the output list."""
+def test_rejects_duplicate_ids_that_mask_reported_total(httpx_mock) -> None:
     httpx_mock.add_response(
         url=re.compile(rf"{_SEARCH_RE.pattern}(?!.*after=)"),
         json=_envelope(
@@ -406,8 +403,30 @@ def test_dedups_repeated_ids_across_pages(httpx_mock) -> None:
             [_opp_with_salary_range()], next_cursor=None, total=2,
         ),
     )
-    jobs = TorreScraper("any").fetch()
-    assert len(jobs) == 1
+    with pytest.raises(ScraperError, match=r"1/2 unique jobs"):
+        TorreScraper("any").fetch()
+
+
+def test_rejects_partial_overlap_that_masks_reported_total(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=re.compile(rf"{_SEARCH_RE.pattern}(?!.*after=)"),
+        json=_envelope(
+            [_opp_with_salary_range(), _opp_to_be_agreed()],
+            next_cursor="C2",
+            total=4,
+        ),
+    )
+    httpx_mock.add_response(
+        url=re.compile(rf"{_SEARCH_RE.pattern}.*after=C2"),
+        json=_envelope(
+            [_opp_to_be_agreed(), _opp_no_compensation()],
+            next_cursor=None,
+            total=4,
+        ),
+    )
+
+    with pytest.raises(ScraperError, match=r"3/4 unique jobs"):
+        TorreScraper("any").fetch()
 
 
 def test_rejects_empty_first_page(httpx_mock) -> None:
@@ -481,7 +500,9 @@ def test_rejects_catalogue_ending_before_reported_total(httpx_mock) -> None:
         ),
     )
 
-    with pytest.raises(ScraperError, match=r"reported total \(1/2\)"):
+    with pytest.raises(
+        ScraperError, match=r"reported total \(1/2 unique jobs\)"
+    ):
         TorreScraper("any").fetch()
 
 

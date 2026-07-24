@@ -153,7 +153,6 @@ class TorreScraper(BaseScraper):
         seen: set[str] = set()
         seen_cursors: set[str] = set()
         jobs: list[Job] = []
-        raw_rows = 0
         reported_total: int | None = None
         async with self.make_fetcher(retries=MAX_RETRIES) as fetch:
             cursor: str | None = None
@@ -198,7 +197,6 @@ class TorreScraper(BaseScraper):
                     raise ScraperError(
                         f"Torre could not parse every row on page {page}"
                     )
-                raw_rows += len(results)
                 for job in parsed:
                     if job is None:
                         continue
@@ -228,11 +226,11 @@ class TorreScraper(BaseScraper):
         if (
             self.max_pages is None
             and reported_total is not None
-            and raw_rows < reported_total
+            and len(seen) < reported_total
         ):
             raise ScraperError(
                 "Torre catalogue ended before the reported total "
-                f"({raw_rows}/{reported_total})"
+                f"({len(seen)}/{reported_total} unique jobs)"
             )
         return jobs
 
