@@ -316,7 +316,7 @@ class MyCareersFutureScraper(BaseScraper):
             employment_type=employment_type,
             commitment=emp_label if isinstance(emp_label, str) else None,
             requisition_id=requisition_id,
-            description=description,
+            description=description if self.include_descriptions else None,
             salary_currency=salary_currency,
             salary_period=salary_period,  # type: ignore[arg-type]
             salary_summary=salary_summary,

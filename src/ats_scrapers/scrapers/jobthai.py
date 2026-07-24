@@ -78,6 +78,9 @@ _SEARCH_JOBS_QUERY = (
     "district{id name}"
     "}}}}"
 )
+_SEARCH_JOBS_QUERY_NO_DESCRIPTION = _SEARCH_JOBS_QUERY.replace(
+    "jobDescription ", ""
+)
 _JOB_TYPES_QUERY = (
     "query getJobTypeList{getJobTypeList(version:1){data{id}}}"
 )
@@ -250,7 +253,11 @@ class JobThaiScraper(BaseScraper):
             client,
             sem,
             operation_name="searchJobs",
-            query=_SEARCH_JOBS_QUERY,
+            query=(
+                _SEARCH_JOBS_QUERY
+                if self.include_descriptions
+                else _SEARCH_JOBS_QUERY_NO_DESCRIPTION
+            ),
             variables={"page": page, "size": PER_PAGE, "jobtype": jobtype},
             context=f"jobtype={jobtype} page={page}",
         )
@@ -354,7 +361,11 @@ class JobThaiScraper(BaseScraper):
         company_id = item.get("companyID")
 
         location = _format_location(item)
-        description = _format_description(item.get("jobDescription"))
+        description = (
+            _format_description(item.get("jobDescription"))
+            if self.include_descriptions
+            else None
+        )
         posted_at = _parse_iso(item.get("updatedAt"))
 
         salary_summary, salary_currency, salary_min, salary_max = _parse_salary(

@@ -349,7 +349,7 @@ class VietnamWorksScraper(BaseScraper):
             employment_type=employment_type,
             department=department,
             team=team,
-            description=description,
+            description=description if self.include_descriptions else None,
             posted_at=posted_at,
             fetched_at=datetime.now(tz=UTC),
             language=language,

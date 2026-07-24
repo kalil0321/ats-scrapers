@@ -399,7 +399,7 @@ class ElempleoScraper(BaseScraper):
             salary_max=salary_max,
             employment_type=employment_type,
             commitment=commitment,
-            description=description,
+            description=description if self.include_descriptions else None,
             posted_at=posted_at,
             fetched_at=datetime.now(tz=UTC),
             language="es",

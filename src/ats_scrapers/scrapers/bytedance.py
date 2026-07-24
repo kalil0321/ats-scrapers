@@ -209,7 +209,7 @@ class BytedanceScraper(BaseScraper):
             team=team if team and team != department else None,
             employment_type=employment_type,
             commitment=commitment,
-            description=description,
+            description=description if self.include_descriptions else None,
             requisition_id=requisition_id,
             salary_min=_to_float(post_info.get("min_salary")),
             salary_max=_to_float(post_info.get("max_salary")),

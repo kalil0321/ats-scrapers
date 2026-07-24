@@ -351,7 +351,11 @@ class TorreScraper(BaseScraper):
             if isinstance(s, dict) and isinstance(s.get("name"), str) and s.get("name").strip()
         ]
 
-        description = _build_description(opp.get("tagline"), skill_names)
+        description = (
+            _build_description(opp.get("tagline"), skill_names)
+            if self.include_descriptions
+            else None
+        )
 
         # ``raw`` overflow — keep verbatim the Torre-specific fields the
         # canonical schema can't represent.

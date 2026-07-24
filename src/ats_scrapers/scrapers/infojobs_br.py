@@ -67,9 +67,9 @@ FRAGMENT_PATH = "/mf-publicarea/VacancyList/GetVacancyListFragment"
 # honors the ``page=N`` query string verbatim, unlike the SSR page which
 # geolocates the request.
 DEFAULT_LISTING_URL = f"{API_ROOT}/vagas-de-emprego.aspx"
-DEFAULT_MAX_PAGES = 200  # ~20 cards/page → ~4,000 most-recent jobs
+DEFAULT_MAX_PAGES = 5_000  # ~20 cards/page → safety ceiling near 100k jobs
 # InfoJobs is friendly but we keep concurrency low to be a polite citizen.
-MAX_CONCURRENCY = 4
+MAX_CONCURRENCY = 2
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 2.0
 
@@ -147,7 +147,8 @@ class InfoJobsBrasilScraper(BaseScraper):
     Knobs:
 
     - ``max_pages`` — optional pagination cap for bounded probes;
-      production fails loudly at the 200-page safety limit.
+      production walks to ``eof`` and fails loudly at the 5,000-page
+      safety limit.
     - ``listing_url`` — override the base listing URL when you want to
       restrict to a city / category. The page=N parameter is appended
       by the scraper; don't include it in the override.
@@ -192,13 +193,11 @@ class InfoJobsBrasilScraper(BaseScraper):
             timeout=self.timeout, follow_redirects=True, proxy=self.proxy,
         ) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
-            page = 1
             consecutive_empty = 0
             exhausted = False
-            while page <= self.max_pages and consecutive_empty < 3:
-                payload = await self._fetch_page(client, sem, page)
+
+            def absorb(payload: dict[str, Any]) -> tuple[bool, int]:
                 fragment = payload.get("listFragmentHTML") or ""
-                eof = bool(payload.get("eof"))
                 new_count = 0
                 for job in self._parse_listing(fragment):
                     if job.ats_id in seen_ids:
@@ -206,18 +205,41 @@ class InfoJobsBrasilScraper(BaseScraper):
                     seen_ids.add(job.ats_id)
                     jobs.append(job)
                     new_count += 1
-                if eof:
-                    exhausted = True
+                return bool(payload.get("eof")), new_count
+
+            first = await self._fetch_page(client, sem, 1)
+            exhausted, first_count = absorb(first)
+            if first_count == 0 and not exhausted:
+                consecutive_empty = 1
+
+            reached_tail = exhausted
+            for start in range(2, self.max_pages + 1, MAX_CONCURRENCY):
+                if reached_tail:
                     break
-                if new_count == 0:
-                    consecutive_empty += 1
-                else:
-                    consecutive_empty = 0
-                page += 1
-            if consecutive_empty >= 3 and self._full_catalogue:
-                raise ScraperError(
-                    "InfoJobs Brasil returned repeated empty pages before eof"
+                pages = range(start, min(start + MAX_CONCURRENCY, self.max_pages + 1))
+                payloads = await asyncio.gather(
+                    *(self._fetch_page(client, sem, page) for page in pages)
                 )
+                for payload in payloads:
+                    eof, new_count = absorb(payload)
+                    if eof:
+                        exhausted = True
+                        reached_tail = True
+                        break
+                    if new_count == 0:
+                        consecutive_empty += 1
+                    else:
+                        consecutive_empty = 0
+                    if consecutive_empty >= 3:
+                        if self._full_catalogue:
+                            raise ScraperError(
+                                "InfoJobs Brasil returned repeated empty pages "
+                                "before eof"
+                            )
+                        reached_tail = True
+                        break
+                if reached_tail:
+                    break
         if self._full_catalogue and not exhausted:
             raise ScraperError(
                 f"InfoJobs Brasil reached its {DEFAULT_MAX_PAGES}-page safety "
@@ -428,7 +450,7 @@ class InfoJobsBrasilScraper(BaseScraper):
             salary_max=salary_max,
             employment_type=employment_type,  # type: ignore[arg-type]
             commitment=commitment_raw,
-            description=description,
+            description=description if self.include_descriptions else None,
             posted_at=posted_at,
             fetched_at=datetime.now(tz=UTC),
             language="pt",

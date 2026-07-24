@@ -422,7 +422,7 @@ class SeekScraper(BaseScraper):
             salary_period=salary_period,
             salary_summary=salary_label,
             department=department,
-            description=description,
+            description=description if self.include_descriptions else None,
             posted_at=posted_at,
             fetched_at=datetime.now(tz=UTC),
             language="en",

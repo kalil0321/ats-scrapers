@@ -374,7 +374,7 @@ class TimesJobsScraper(BaseScraper):
             experience=experience,
             department=raw.get("job_function"),
             commitment=raw.get("job_type"),
-            description=description,
+            description=description if self.include_descriptions else None,
             posted_at=posted_at,
             fetched_at=datetime.now(tz=UTC),
             raw=raw or None,

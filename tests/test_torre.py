@@ -257,6 +257,17 @@ def test_parses_full_opportunity_with_salary_range(httpx_mock) -> None:
     assert j.raw.get("skills") == ["Office automation", "Software development"]
 
 
+def test_include_descriptions_false_omits_description(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_SEARCH_RE,
+        json=_envelope([_opp_with_salary_range()], next_cursor=None),
+    )
+
+    job = TorreScraper("any", include_descriptions=False).fetch()[0]
+
+    assert job.description is None
+
+
 # --- to-be-agreed: salary must stay None ------------------------------------
 
 

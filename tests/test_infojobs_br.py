@@ -30,6 +30,7 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import InfoJobsBrasilScraper, ScraperRegistry
 from ats_scrapers.scrapers.infojobs_br import (
+    DEFAULT_MAX_PAGES,
     _infer_remote,
     _parse_brazilian_date,
     _parse_brl_amount,
@@ -135,6 +136,10 @@ def test_ats_type_value_is_infojobs_br() -> None:
     """The enum value drives every downstream CSV column name and
     storage path — pin it explicitly."""
     assert ATSType.INFOJOBSBR.value == "infojobs_br"
+
+
+def test_default_cap_covers_documented_catalogue_size() -> None:
+    assert DEFAULT_MAX_PAGES >= 3_000
 
 
 # --- happy path -------------------------------------------------------------

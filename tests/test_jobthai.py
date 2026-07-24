@@ -8,6 +8,7 @@ for the common Thai-baht / ``ตามตกลง`` (negotiable) patterns.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -150,6 +151,20 @@ def test_english_only_title_sets_language_en(httpx_mock) -> None:
     )
     jobs = JobThaiScraper("any", job_type_ids=("17",)).fetch()
     assert jobs[0].language == "en"
+
+
+def test_include_descriptions_false_omits_field_and_query_selection(
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(url=_API_URL, json=_envelope([_row()]))
+
+    jobs = JobThaiScraper(
+        "any", job_type_ids=("17",), include_descriptions=False
+    ).fetch()
+
+    assert jobs[0].description is None
+    request_body = json.loads(httpx_mock.get_requests()[0].content)
+    assert "jobDescription" not in request_body["query"]
 
 
 # --- pagination -------------------------------------------------------------
