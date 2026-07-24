@@ -209,7 +209,15 @@ class R2Client:
                 )
             except Exception as exc:
                 raise StorageError(f"R2 batch delete failed: {exc}") from exc
-            deleted += len(batch) - len(response.get("Errors", []))
+            errors = response.get("Errors", [])
+            if errors:
+                details = ", ".join(
+                    f"{error.get('Key', '<unknown>')}: "
+                    f"{error.get('Code', 'unknown error')}"
+                    for error in errors
+                )
+                raise StorageError(f"R2 batch delete was incomplete: {details}")
+            deleted += len(batch)
         return deleted
 
     def public_url(self, key: str) -> str | None:

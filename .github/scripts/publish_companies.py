@@ -170,6 +170,25 @@ def fetch_existing_manifest(client, bucket: str) -> dict[str, Any]:
     return json.loads(obj["Body"].read().decode("utf-8"))
 
 
+def delete_objects_checked(
+    client,
+    bucket: str,
+    objects: list[dict[str, str]],
+) -> None:
+    response = client.delete_objects(
+        Bucket=bucket,
+        Delete={"Objects": objects},
+    )
+    errors = (response or {}).get("Errors", [])
+    if errors:
+        details = ", ".join(
+            f"{error.get('Key', '<unknown>')}: "
+            f"{error.get('Code', 'unknown error')}"
+            for error in errors
+        )
+        raise RuntimeError(f"R2 object deletion was incomplete: {details}")
+
+
 def delete_legacy(client, bucket: str) -> None:
     """One-shot cleanup of the old companies layout. Idempotent — if
     the prefix is already empty the loop is a no-op."""
@@ -191,7 +210,7 @@ def delete_legacy(client, bucket: str) -> None:
         # delete_objects max 1000 keys per request — chunk defensively.
         for i in range(0, len(to_delete), 1000):
             chunk = to_delete[i : i + 1000]
-            client.delete_objects(Bucket=bucket, Delete={"Objects": chunk})
+            delete_objects_checked(client, bucket, chunk)
 
 
 def delete_disabled_sources(client, bucket: str) -> None:
@@ -201,7 +220,7 @@ def delete_disabled_sources(client, bucket: str) -> None:
         for ats in sorted(DISABLED_ATS)
     ]
     if objects:
-        client.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+        delete_objects_checked(client, bucket, objects)
 
 
 def _parse_version(value: object) -> tuple[int, ...]:
@@ -284,6 +303,9 @@ def main() -> None:
     manifest = fetch_existing_manifest(client, bucket)
     manifest["companies"] = aggregate_entry
     manifest["by_ats_companies"] = by_ats_entries
+    stats = manifest.get("stats")
+    if isinstance(stats, dict):
+        stats["total_companies"] = agg_rows
     manifest["updated_at"] = datetime.now(tz=UTC).isoformat(
         timespec="seconds"
     ).replace("+00:00", "Z")

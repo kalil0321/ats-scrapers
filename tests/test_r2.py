@@ -143,6 +143,7 @@ class FakeBoto3Client:
         self.uploaded_files: list[tuple[str, str, str, dict]] = []
         self.put_objects: list[dict] = []
         self.head_responses: dict[str, dict] = {}
+        self.delete_response: dict = {}
 
     def upload_file(self, src: str, bucket: str, key: str, ExtraArgs=None) -> None:  # noqa: N803
         self.uploaded_files.append((src, bucket, key, ExtraArgs or {}))
@@ -161,6 +162,9 @@ class FakeBoto3Client:
                 yield {"Contents": [{"Key": f"{kwargs.get('Prefix', '')}example"}]}
 
         return P()
+
+    def delete_objects(self, **_kwargs):
+        return self.delete_response
 
 
 @pytest.fixture
@@ -258,3 +262,23 @@ def test_list_iterates_paginated_results(
     client, _ = fake_r2_client
     results = list(client.list(prefix="jobhive/"))
     assert results[0]["Key"] == "jobhive/example"
+
+
+def test_delete_many_raises_on_partial_failure(
+    fake_r2_client: tuple[R2Client, FakeBoto3Client],
+) -> None:
+    client, fake = fake_r2_client
+    fake.delete_response = {
+        "Errors": [
+            {
+                "Key": "jobhive/v1/seek/jobs.csv",
+                "Code": "AccessDenied",
+            }
+        ]
+    }
+
+    with pytest.raises(
+        StorageError,
+        match=r"seek/jobs\.csv: AccessDenied",
+    ):
+        client.delete_many(["jobhive/v1/seek/jobs.csv"])
