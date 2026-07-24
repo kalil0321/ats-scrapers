@@ -219,20 +219,14 @@ def test_region_table_resolves(
 # --- httpcloak gating -------------------------------------------------------
 
 
-def test_fetch_returns_empty_when_httpcloak_missing(
-    monkeypatch: pytest.MonkeyPatch, caplog,
+def test_fetch_raises_when_httpcloak_missing(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When httpcloak isn't installed, the publish pipeline must keep
-    running. The scraper logs a warning and returns []."""
-    import logging
-
     monkeypatch.setattr(
         "ats_scrapers.scrapers.bumeran.find_spec", lambda _name: None,
     )
-    with caplog.at_level(logging.WARNING, logger="ats_scrapers.scrapers.bumeran"):
-        jobs = BumeranScraper("ar").fetch()
-    assert jobs == []
-    assert any("httpcloak" in r.getMessage() for r in caplog.records)
+    with pytest.raises(ScraperError, match="httpcloak is required"):
+        BumeranScraper("ar").fetch()
 
 
 def test_unsupported_region_returns_empty_with_warning(

@@ -214,12 +214,10 @@ class BumeranScraper(BaseScraper):
             )
             return []
         if self.client_kind == "httpcloak" and find_spec("httpcloak") is None:
-            log.warning(
+            raise ScraperError(
                 "Bumeran: httpcloak is required to clear Cloudflare on "
-                "Navent's API — install with `pip install ats_scrapers[scrapers]`. "
-                "Returning []."
+                "Navent's API — install with `pip install ats_scrapers[scrapers]`"
             )
-            return []
         return await self._fetch_async()
 
     def fetch(self) -> list[Job]:

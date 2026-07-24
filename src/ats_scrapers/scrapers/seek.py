@@ -210,24 +210,10 @@ class SeekScraper(BaseScraper):
                 len(items),
             )
 
-        for start in range(2, last_page + 1, MAX_CONCURRENCY):
-            pages = range(start, min(start + MAX_CONCURRENCY, last_page + 1))
-            page_numbers = list(pages)
-            batches = await asyncio.gather(
-                *(one_page(page) for page in page_numbers),
-                return_exceptions=True,
-            )
-            reached_end = False
-            for result in batches:
-                if reached_end:
-                    break
-                if isinstance(result, BaseException):
-                    raise result
-                batch, count = result
-                results.append(batch)
-                if count < PAGE_SIZE:
-                    reached_end = True
-            if reached_end:
+        for page in range(2, last_page + 1):
+            batch, count = await one_page(page)
+            results.append(batch)
+            if count < PAGE_SIZE:
                 break
 
         flat: list[Job] = []

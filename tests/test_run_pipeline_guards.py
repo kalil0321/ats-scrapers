@@ -21,12 +21,16 @@ def test_job_to_row_preserves_structured_location_metadata() -> None:
             country_iso="TH",
             region="Asia",
             language="th",
+            lat=13.7563,
+            lon=100.5018,
         )
     )
 
     assert row["country_iso"] == "TH"
     assert row["region"] == "Asia"
     assert row["language"] == "th"
+    assert row["lat"] == 13.7563
+    assert row["lon"] == 100.5018
 
 
 def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
@@ -800,8 +804,9 @@ def test_streaming_failure_preserves_previous_jobs_csv(
     assert not (out_dir / ".jobs.csv.tmp").exists()
 
 
-def test_required_shard_failure_preserves_previous_jobs_csv(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("has_previous", [True, False])
+def test_required_shard_failure_removes_partial_output(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, has_previous: bool,
 ) -> None:
     (tmp_path / "ats-companies").mkdir()
     (tmp_path / "ats-companies" / "shards.csv").write_text(
@@ -815,7 +820,8 @@ def test_required_shard_failure_preserves_previous_jobs_csv(
         "url,title,company,ats_type,ats_id\n"
         "https://example.com/old,Old,Acme,custom,old\n"
     )
-    out_path.write_text(previous, encoding="utf-8")
+    if has_previous:
+        out_path.write_text(previous, encoding="utf-8")
 
     class ShardedScraper:
         def __init__(self, slug, **_kwargs) -> None:
@@ -852,7 +858,10 @@ def test_required_shard_failure_preserves_previous_jobs_csv(
     )
 
     assert rc == 1
-    assert out_path.read_text(encoding="utf-8") == previous
+    if has_previous:
+        assert out_path.read_text(encoding="utf-8") == previous
+    else:
+        assert not out_path.exists()
     assert not (out_dir / ".jobs.csv.tmp").exists()
 
 
