@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urljoin, urlparse
 
-from pydantic import HttpUrl
+from pydantic import HttpUrl, ValidationError
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
@@ -466,7 +466,13 @@ def _apply_detail(job: Job, html_text: str) -> None:
     if apply_link is not None:
         href = apply_link.get("href")
         if isinstance(href, str) and href:
-            job.apply_url = HttpUrl(urljoin(str(job.url), href))
+            try:
+                job.apply_url = HttpUrl(urljoin(str(job.url), href))
+            except ValidationError:
+                logger.warning(
+                    "Ignoring invalid PageUp apply URL for job %s",
+                    job.ats_id,
+                )
 
     description_soup = _parse_html(str(container))
     description = description_soup.select_one("#job-content")

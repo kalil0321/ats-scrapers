@@ -365,6 +365,39 @@ def test_descriptionless_detail_is_dropped_without_aborting(httpx_mock) -> None:
     assert [job.ats_id for job in jobs] == ["513/cw/en:101"]
 
 
+def test_invalid_apply_link_does_not_abort_detail_batch(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://careers.pageuppeople.com/513/cw/en/listing/?page=1&page-items=1000",
+        text=_listing(
+            [
+                ("101", "Engineer", "Melbourne"),
+                ("102", "Designer", "Sydney"),
+            ]
+        ),
+    )
+    httpx_mock.add_response(
+        url="https://careers.pageuppeople.com/513/cw/en/job/101/engineer",
+        text=_detail("101"),
+    )
+    httpx_mock.add_response(
+        url="https://careers.pageuppeople.com/513/cw/en/job/102/designer",
+        text=_detail("102").replace(
+            "https://secure.dc2.pageuppeople.com/apply/513/"
+            "gateway/default.aspx?c=apply&amp;lJobID=102",
+            "javascript:void(0)",
+        ),
+    )
+
+    jobs = PageUpScraper("513/cw/en").fetch()
+
+    assert [job.ats_id for job in jobs] == [
+        "513/cw/en:101",
+        "513/cw/en:102",
+    ]
+    assert jobs[0].apply_url is not None
+    assert jobs[1].apply_url is None
+
+
 @pytest.mark.parametrize(
     "href",
     [
