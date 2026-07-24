@@ -134,10 +134,15 @@ def test_location_handles_legacy_city_list_shape() -> None:
     item = {
         **_FIXTURE,
         "city_info": None,
-        "city_list": [{"name": "Tokyo"}],
+        "city_list": [
+            {"name": "東京", "en_name": "Tokyo"},
+            {"name": "Osaka"},
+            {"name": "Osaka"},
+            None,
+        ],
     }
     job = BytedanceScraper("bytedance")._parse_job(item)
-    assert job.location == "Tokyo"
+    assert job.location == "Tokyo; Osaka"
 
 
 def test_salary_fields_absent_when_missing() -> None:

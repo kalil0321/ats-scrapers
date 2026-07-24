@@ -76,10 +76,12 @@ def extract_location(item: dict[str, Any]) -> str | None:
         if parts:
             return ", ".join(parts)
     city_list = item.get("city_list") or []
-    if city_list and isinstance(city_list[0], dict):
-        name = city_list[0].get("name")
-        return name if isinstance(name, str) else None
-    return None
+    locations = [
+        label
+        for entry in city_list
+        if (label := extract_label(entry)) is not None
+    ]
+    return "; ".join(dict.fromkeys(locations)) or None
 
 
 def to_float(value: object) -> float | None:
