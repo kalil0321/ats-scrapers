@@ -387,6 +387,39 @@ def test_fetch_single_page(httpx_mock) -> None:
     assert {j.ats_id for j in jobs} == {"1", "2"}
 
 
+@pytest.mark.parametrize("invalid_total", [None, True, "2", -1])
+def test_fetch_rejects_invalid_total_count(httpx_mock, invalid_total) -> None:
+    payload = _page([_au_job(id="1")], total=1)
+    payload["totalCount"] = invalid_total
+    httpx_mock.add_response(
+        url=_search_url("au.seek.com", "AU-Main", 1),
+        json=payload,
+    )
+    with pytest.raises(ScraperError, match="valid totalCount"):
+        SeekScraper("au").fetch()
+
+
+@pytest.mark.parametrize("invalid_data", [None, {}, [None]])
+def test_fetch_rejects_invalid_data(httpx_mock, invalid_data) -> None:
+    payload = _page([_au_job(id="1")], total=1)
+    payload["data"] = invalid_data
+    httpx_mock.add_response(
+        url=_search_url("au.seek.com", "AU-Main", 1),
+        json=payload,
+    )
+    with pytest.raises(ScraperError, match="invalid data"):
+        SeekScraper("au").fetch()
+
+
+def test_fetch_rejects_empty_first_page_with_positive_total(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_search_url("au.seek.com", "AU-Main", 1),
+        json=_page([], total=10),
+    )
+    with pytest.raises(ScraperError, match="empty first page"):
+        SeekScraper("au").fetch()
+
+
 def test_fetch_paginates_until_total_reached(httpx_mock) -> None:
     # Total 150 → 2 pages of 100. With ``is_reusable=True`` we let
     # httpx_mock match by page index in the URL.

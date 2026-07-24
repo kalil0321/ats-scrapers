@@ -129,6 +129,7 @@ def test_parses_full_article() -> None:
     assert job.language == "en"
     assert job.salary_summary == "$42.00 to $50.00 hourly (to be negotiated)"
     assert job.salary_currency == "CAD"
+    assert job.salary_period == "HOUR"
     assert job.is_remote is False  # "On site" → explicit no
     assert job.commitment == "On site"
     assert job.requisition_id == "3571211"  # Job number, distinct from ats_id
@@ -191,6 +192,31 @@ def test_non_dollar_salary_keeps_summary_drops_currency() -> None:
     assert job is not None
     assert job.salary_summary == "To be negotiated"
     assert job.salary_currency is None
+
+
+@pytest.mark.parametrize(
+    ("salary", "period"),
+    [
+        ("$200 daily", "DAY"),
+        ("$1,200 weekly", "WEEK"),
+        ("$5,000 monthly", "MONTH"),
+        ("$80,000 annually", "YEAR"),
+        ("$25 par heure", "HOUR"),
+    ],
+)
+def test_salary_period_preserves_source_cadence(salary, period) -> None:
+    job = JobBankCAScraper("any")._parse_job(_article(salary=salary))
+    assert job is not None
+    assert job.salary_currency == "CAD"
+    assert job.salary_period == period
+
+
+def test_unknown_salary_cadence_does_not_emit_structured_currency() -> None:
+    job = JobBankCAScraper("any")._parse_job(_article(salary="$42 negotiable"))
+    assert job is not None
+    assert job.salary_summary == "$42 negotiable"
+    assert job.salary_currency is None
+    assert job.salary_period is None
 
 
 def test_job_number_omitted_when_same_as_ats_id() -> None:

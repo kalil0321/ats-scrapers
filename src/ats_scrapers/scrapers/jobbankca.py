@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, Job, SalaryPeriod
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -313,9 +313,11 @@ class JobBankCAScraper(BaseScraper):
         salary_raw = _capture_text(_SALARY_RE, chunk)
         salary_summary = None
         salary_currency = None
+        salary_period = None
         if salary_raw:
             salary_summary = re.sub(r"^Salary\s*", "", salary_raw).strip() or None
-            if salary_summary and "$" in salary_summary:
+            salary_period = _salary_period(salary_summary)
+            if salary_summary and "$" in salary_summary and salary_period:
                 salary_currency = "CAD"
 
         telework = _capture_text(_TELEWORK_RE, chunk)
@@ -354,6 +356,7 @@ class JobBankCAScraper(BaseScraper):
             is_remote=is_remote,
             salary_summary=salary_summary,
             salary_currency=salary_currency,
+            salary_period=salary_period,
             commitment=telework or None,
             requisition_id=job_number,
             posted_at=posted_at,
@@ -364,6 +367,26 @@ class JobBankCAScraper(BaseScraper):
 
 
 # --- module-level helpers ----------------------------------------------------
+
+
+def _salary_period(summary: str | None) -> SalaryPeriod | None:
+    if not summary:
+        return None
+    normalized = summary.casefold().replace("’", "'")
+    markers: tuple[tuple[SalaryPeriod, tuple[str, ...]], ...] = (
+        ("HOUR", ("hourly", "per hour", "par heure", "de l'heure", "à l'heure")),
+        ("DAY", ("daily", "per day", "par jour")),
+        ("WEEK", ("weekly", "per week", "par semaine")),
+        ("MONTH", ("monthly", "per month", "par mois")),
+        (
+            "YEAR",
+            ("annually", "annual", "yearly", "per year", "par année", "annuel"),
+        ),
+    )
+    for period, candidates in markers:
+        if any(candidate in normalized for candidate in candidates):
+            return period
+    return None
 
 
 def _capture_text(pattern: re.Pattern[str], chunk: str) -> str | None:

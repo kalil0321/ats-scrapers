@@ -181,8 +181,7 @@ class SeekScraper(BaseScraper):
         host, site_key, country_iso = SEEK_SITES[region]
         first = await self._search(client, sem, host=host,
                                    site_key=site_key, page=1)
-        total = int(first.get("totalCount") or 0)
-        data = first.get("data") or []
+        total, data = self._page_data(first, region=region, page=1)
         jobs: list[Job] = [
             self._parse_job(item, host=host, country_iso=country_iso)
             for item in data
@@ -208,7 +207,7 @@ class SeekScraper(BaseScraper):
         async def one_page(page: int) -> tuple[list[Job], int]:
             payload = await self._search(client, sem, host=host,
                                          site_key=site_key, page=page)
-            items = payload.get("data") or []
+            _, items = self._page_data(payload, region=region, page=page)
             return (
                 [
                     self._parse_job(it, host=host, country_iso=country_iso)
@@ -242,6 +241,29 @@ class SeekScraper(BaseScraper):
                 if j is not None:
                     flat.append(j)
         return flat
+
+    @staticmethod
+    def _page_data(
+        payload: dict[str, Any], *, region: str, page: int,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        total = payload.get("totalCount")
+        if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+            raise ScraperError(
+                f"SEEK region={region} page={page} omitted a valid totalCount"
+            )
+        data = payload.get("data")
+        if not isinstance(data, list) or not all(
+            isinstance(item, dict) for item in data
+        ):
+            raise ScraperError(
+                f"SEEK region={region} page={page} returned invalid data"
+            )
+        if page == 1 and total > 0 and not data:
+            raise ScraperError(
+                f"SEEK region={region} reported {total} jobs but returned "
+                "an empty first page"
+            )
+        return total, data
 
     async def _search(
         self,
