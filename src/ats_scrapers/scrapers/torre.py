@@ -32,9 +32,9 @@ publisher's cross-ATS dedup still works.
 
 Note: the search endpoint returns only a **summary** (``tagline``,
 skills list, structured compensation) — the full posting body is not
-included. ``Job.description`` is populated from the tagline plus a
-bulletised skills list; the LLM enrichment pass downstream is expected
-to fetch the full body from ``url`` if a richer description is needed.
+included. The pipeline defers descriptions to :meth:`get_description`,
+which extracts the full responsibilities body from the public posting
+page and falls back to the search summary if that detail request fails.
 """
 
 from __future__ import annotations
@@ -131,6 +131,23 @@ class TorreScraper(BaseScraper):
 
     def fetch(self) -> list[Job]:
         return self._run_sync(self.afetch())
+
+    def get_description(self, job: Job) -> str | None:
+        fallback = job.description
+        if job.raw:
+            search_summary = job.raw.get("search_summary")
+            if isinstance(search_summary, str) and search_summary.strip():
+                fallback = search_summary.strip()
+
+        async def run() -> str | None:
+            try:
+                async with self.make_fetcher(retries=MAX_RETRIES) as fetch:
+                    detail_html = await fetch.get_text(str(job.url))
+            except ScraperError:
+                return fallback
+            return _parse_detail_description(detail_html) or fallback
+
+        return self._run_sync(run())
 
     async def _fetch_async(self) -> list[Job]:
         seen: set[str] = set()
@@ -346,15 +363,14 @@ class TorreScraper(BaseScraper):
             if isinstance(s, dict) and isinstance(s.get("name"), str) and s.get("name").strip()
         ]
 
-        description = (
-            _build_description(opp.get("tagline"), skill_names)
-            if self.include_descriptions
-            else None
-        )
+        search_summary = _build_description(opp.get("tagline"), skill_names)
+        description = search_summary if self.include_descriptions else None
 
         # ``raw`` overflow — keep verbatim the Torre-specific fields the
         # canonical schema can't represent.
         raw: dict[str, Any] = {}
+        if search_summary:
+            raw["search_summary"] = search_summary
         org_size = first_org.get("size")
         if isinstance(org_size, (int, float)):
             raw["organization_size"] = org_size
@@ -452,3 +468,22 @@ def _build_description(tagline: object, skills: list[str]) -> str | None:
     if not parts:
         return None
     return "\n\n".join(parts)
+
+
+def _parse_detail_description(detail_html: str) -> str | None:
+    if not detail_html:
+        return None
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError as exc:  # pragma: no cover
+        raise ScraperError(
+            "Torre detail parsing requires beautifulsoup4. Install with "
+            "`pip install ats-scrapers[scrapers]`."
+        ) from exc
+
+    soup = BeautifulSoup(detail_html, "html.parser")
+    responsibilities = soup.select_one(".opportunity-responsibilities__preview")
+    if responsibilities is None:
+        return None
+    description = responsibilities.get_text("\n", strip=True)
+    return description or None

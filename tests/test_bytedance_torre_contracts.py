@@ -25,3 +25,4 @@ def test_dedup_priorities_match_source_authority() -> None:
 def test_singleton_configs_fail_closed_on_empty() -> None:
     assert CONFIGS["bytedance"]["fail_closed_on_empty"] is True
     assert CONFIGS["torre"]["fail_closed_on_empty"] is True
+    assert CONFIGS["torre"]["defer_descriptions_to_cache"] is True

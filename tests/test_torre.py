@@ -16,6 +16,7 @@ import pytest
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import ScraperRegistry, TorreScraper
+from ats_scrapers.scrapers.torre import _parse_detail_description
 
 # pytest-httpx matches on URL path; matching with a regex keeps the test
 # tolerant of query-string ordering (httpx serializes ``params={}`` dicts
@@ -271,6 +272,51 @@ def test_include_descriptions_false_omits_description(httpx_mock) -> None:
 
     assert len(jobs) == 1
     assert jobs[0].description is None
+    assert jobs[0].raw is not None
+    assert "Contribuirás al éxito global" in jobs[0].raw["search_summary"]
+
+
+def test_parses_full_detail_description() -> None:
+    detail_html = """
+    <section>
+      <div class="opportunity-responsibilities__preview">
+        <p>Build the core product.</p>
+        <p>Partner directly with customers.</p>
+      </div>
+    </section>
+    """
+
+    assert _parse_detail_description(detail_html) == (
+        "Build the core product.\nPartner directly with customers."
+    )
+
+
+def test_get_description_fetches_public_posting_body(httpx_mock) -> None:
+    scraper = TorreScraper("any", include_descriptions=False)
+    job = scraper._parse_job(_opp_with_salary_range())
+    assert job is not None
+    httpx_mock.add_response(
+        url=str(job.url),
+        html=(
+            '<div class="opportunity-responsibilities__preview">'
+            "<p>Own the production platform.</p>"
+            "</div>"
+        ),
+    )
+
+    assert scraper.get_description(job) == "Own the production platform."
+
+
+def test_get_description_falls_back_to_search_summary(httpx_mock) -> None:
+    scraper = TorreScraper("any", include_descriptions=False)
+    job = scraper._parse_job(_opp_with_salary_range())
+    assert job is not None
+    httpx_mock.add_response(url=str(job.url), status_code=503, is_reusable=True)
+
+    description = scraper.get_description(job)
+
+    assert description is not None
+    assert "Contribuirás al éxito global" in description
 
 
 # --- to-be-agreed: salary must stay None ------------------------------------

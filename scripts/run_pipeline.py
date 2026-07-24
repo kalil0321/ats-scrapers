@@ -676,6 +676,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "scraper": TorreScraper, "singleton": True,
         "output": "torre/jobs.csv",
         "fail_closed_on_empty": True,
+        "defer_descriptions_to_cache": True,
     },
     "jobs_cz": {
         # jobs.cz - Czech Republic's largest direct-posting board. ~10k live via seeded search.
