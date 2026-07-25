@@ -238,8 +238,9 @@ def patch_manifest(
         manifest["companies"] = aggregate_entry
         manifest["by_ats_companies"] = by_ats_entries
         stats = manifest.get("stats")
-        if isinstance(stats, dict):
-            stats["total_companies"] = aggregate_rows
+        manifest_stats = {**stats} if isinstance(stats, dict) else {}
+        manifest_stats["total_companies"] = aggregate_rows
+        manifest["stats"] = manifest_stats
         manifest["updated_at"] = datetime.now(tz=UTC).isoformat(
             timespec="seconds"
         ).replace("+00:00", "Z")
@@ -310,7 +311,7 @@ def _has_company_generation(
     if manifest.get("by_ats_companies") != by_ats_entries:
         return False
     stats = manifest.get("stats")
-    return not isinstance(stats, dict) or (
+    return isinstance(stats, dict) and (
         stats.get("total_companies") == aggregate_rows
     )
 

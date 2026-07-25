@@ -522,7 +522,7 @@ def test_manifest_patch_retries_after_concurrent_jobs_write(
 
     monkeypatch.setattr(module, "upload", race_once)
 
-    module.patch_manifest(
+    publication = module.patch_manifest(
         object(),
         "bucket",
         aggregate_entry={"rows": 3},
@@ -536,6 +536,48 @@ def test_manifest_patch_retries_after_concurrent_jobs_write(
     assert final["by_ats"] == {"greenhouse": {"rows": 12}}
     assert final["stats"] == {"total_jobs": 12, "total_companies": 3}
     assert kwargs["if_match"] == '"etag-2"'
+    assert publication.previous["stats"] == {
+        "total_jobs": 12,
+        "total_companies": 1,
+    }
+    assert publication.intended["stats"] == {
+        "total_jobs": 12,
+        "total_companies": 3,
+    }
+
+
+def test_manifest_patch_adds_company_count_to_fresh_stats(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_publish_companies()
+    manifests = iter([
+        ({}, None),
+    ])
+    monkeypatch.setattr(
+        module,
+        "fetch_existing_manifest",
+        lambda _client, _bucket: next(manifests),
+    )
+    uploaded: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        module,
+        "upload",
+        lambda _client, _bucket, _key, body, _content_type, **_kwargs: (
+            uploaded.append(json.loads(body))
+        ),
+    )
+
+    publication = module.patch_manifest(
+        object(),
+        "bucket",
+        aggregate_entry={"rows": 3},
+        by_ats_entries={"greenhouse": {"rows": 3}},
+        aggregate_rows=3,
+    )
+
+    assert uploaded[0]["stats"] == {"total_companies": 3}
+    assert publication.previous == {}
+    assert publication.intended["stats"] == {"total_companies": 3}
 
 
 def test_manifest_patch_accepts_lost_success_response(
