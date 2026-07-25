@@ -135,6 +135,13 @@ class AliasSnapshot:
     content_type: str
 
 
+@dataclass(frozen=True)
+class ManifestPublication:
+    key: str
+    previous: dict[str, object]
+    intended: dict[str, object]
+
+
 class DatasetPublisher:
     """Builds and publishes a versioned dataset to R2.
 
@@ -306,7 +313,7 @@ class DatasetPublisher:
             alias_copies.extend(all_aliases)
             files_uploaded.extend(_collect_uploaded_keys(all_entry))
 
-            manifest_key = self._patch_and_upload_manifest(
+            manifest_publication = self._patch_and_upload_manifest(
                 generated_at=started,
                 stats_factory=lambda existing: {
                     "total_jobs": n_kept,
@@ -320,8 +327,19 @@ class DatasetPublisher:
                 by_ats=per_ats_entries,
                 existing_manifest=existing_manifest,
             )
+            manifest_key = manifest_publication.key
             files_uploaded.append(manifest_key)
-            self._refresh_job_aliases(alias_copies)
+            try:
+                self._refresh_job_aliases(alias_copies)
+            except StorageError:
+                try:
+                    self._rollback_jobs_manifest(manifest_publication)
+                except StorageError as rollback_exc:
+                    raise StorageError(
+                        "Stable job aliases failed and the jobs manifest "
+                        "generation could not be rolled back"
+                    ) from rollback_exc
+                raise
             files_uploaded.extend(
                 alias.destination_key for alias in alias_copies
             )
@@ -379,8 +397,11 @@ class DatasetPublisher:
         aliases: list[AliasCopy] = []
 
         stable_csv_key = f"{base_key}.csv"
+        snapshot_prefix = (
+            f"{base_key.removesuffix('/jobs')}/job-snapshots"
+        )
         csv_sha, csv_size = _file_sha_size(csv_path)
-        csv_key = f"{base_key}-snapshots/{csv_sha}.csv"
+        csv_key = f"{snapshot_prefix}/{csv_sha}.csv"
         self._r2.upload(
             csv_path,
             csv_key,
@@ -409,9 +430,7 @@ class DatasetPublisher:
                     pq_path, compression="zstd"
                 )
                 pq_sha, pq_size = _file_sha_size(pq_path)
-                parquet_key = (
-                    f"{base_key}-snapshots/{pq_sha}.parquet"
-                )
+                parquet_key = f"{snapshot_prefix}/{pq_sha}.parquet"
                 self._r2.upload(
                     pq_path,
                     parquet_key,
@@ -670,12 +689,13 @@ class DatasetPublisher:
         all_entry: dict[str, object],
         by_ats: dict[ATSType, dict[str, object]],
         existing_manifest: dict[str, object] | None = None,
-    ) -> str:
+    ) -> ManifestPublication:
         """Replace jobs fields and preserve enabled CI-owned companies."""
         key = f"{self._prefix}/manifest.json"
         del existing_manifest
         for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
             existing, etag = _load_existing_manifest_with_etag(self._r2, key)
+            previous = existing
             companies_override: dict[str, object] | None = None
             if _has_disabled_company_sources(existing):
                 companies_override = self._filter_disabled_company_aggregate(
@@ -723,7 +743,7 @@ class DatasetPublisher:
                 )
                 if (
                     current_etag != etag
-                    and _has_jobs_manifest_generation(
+                    and _has_complete_manifest_generation(
                         current,
                         intended=manifest,
                     )
@@ -732,7 +752,7 @@ class DatasetPublisher:
                         "Manifest write response was ambiguous, but the "
                         "intended jobs generation is current"
                     )
-                    return key
+                    return ManifestPublication(key, previous, manifest)
                 if not isinstance(exc, StorageConflictError):
                     raise
                 if attempt == MANIFEST_WRITE_ATTEMPTS:
@@ -743,7 +763,72 @@ class DatasetPublisher:
                     MANIFEST_WRITE_ATTEMPTS,
                 )
                 continue
-            return key
+            return ManifestPublication(key, previous, manifest)
+        raise AssertionError("unreachable")
+
+    def _rollback_jobs_manifest(
+        self,
+        publication: ManifestPublication,
+    ) -> None:
+        for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
+            current, etag = _load_existing_manifest_with_etag(
+                self._r2,
+                publication.key,
+            )
+            if not _has_jobs_manifest_fields(
+                current,
+                intended=publication.intended,
+            ):
+                raise StorageError(
+                    "Cannot roll back jobs manifest because another jobs "
+                    "generation is already current"
+                )
+            rollback = _replace_jobs_manifest_fields(
+                current,
+                previous=publication.previous,
+            )
+            body = json.dumps(
+                rollback,
+                indent=2,
+                sort_keys=True,
+                default=str,
+            ).encode()
+            try:
+                self._r2.upload_bytes_if_current(
+                    body,
+                    publication.key,
+                    expected_etag=etag,
+                    content_type="application/json",
+                    cache_control=CACHE_CONTROL_LATEST,
+                )
+            except StorageError as exc:
+                reloaded, reloaded_etag = _load_existing_manifest_with_etag(
+                    self._r2,
+                    publication.key,
+                )
+                if (
+                    reloaded_etag != etag
+                    and _has_jobs_manifest_fields(
+                        reloaded,
+                        intended=rollback,
+                    )
+                ):
+                    logger.warning(
+                        "Manifest rollback response was ambiguous, but the "
+                        "previous jobs generation is current"
+                    )
+                    return
+                if not isinstance(exc, StorageConflictError):
+                    raise
+                if attempt == MANIFEST_WRITE_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "Manifest changed during jobs rollback; retrying (%d/%d)",
+                    attempt,
+                    MANIFEST_WRITE_ATTEMPTS,
+                )
+                continue
+            return
         raise AssertionError("unreachable")
 
     def _filter_disabled_company_aggregate(
@@ -820,12 +905,78 @@ class DatasetPublisher:
         return self._r2.public_url(key) or key
 
 
-def _has_jobs_manifest_generation(
+def _has_complete_manifest_generation(
     current: dict[str, object],
     *,
     intended: dict[str, object],
 ) -> bool:
     return current == intended
+
+
+_JOB_MANIFEST_FIELDS = ("generator", "generated_at", "all", "by_ats")
+_JOB_STATS_FIELDS = (
+    "total_jobs",
+    "total_jobs_raw",
+    "ats_count",
+    "schema_version",
+    "schema_columns",
+)
+
+
+def _has_jobs_manifest_fields(
+    current: dict[str, object],
+    *,
+    intended: dict[str, object],
+) -> bool:
+    if any(
+        current.get(field_name) != intended.get(field_name)
+        for field_name in _JOB_MANIFEST_FIELDS
+    ):
+        return False
+    current_stats = current.get("stats")
+    intended_stats = intended.get("stats")
+    return all(
+        (
+            current_stats.get(field_name)
+            if isinstance(current_stats, dict)
+            else None
+        )
+        == (
+            intended_stats.get(field_name)
+            if isinstance(intended_stats, dict)
+            else None
+        )
+        for field_name in _JOB_STATS_FIELDS
+    )
+
+
+def _replace_jobs_manifest_fields(
+    current: dict[str, object],
+    *,
+    previous: dict[str, object],
+) -> dict[str, object]:
+    rollback = {**current}
+    for field_name in _JOB_MANIFEST_FIELDS:
+        if field_name in previous:
+            rollback[field_name] = previous[field_name]
+        else:
+            rollback.pop(field_name, None)
+
+    current_stats = current.get("stats")
+    rollback_stats = (
+        {**current_stats} if isinstance(current_stats, dict) else {}
+    )
+    previous_stats = previous.get("stats")
+    for field_name in _JOB_STATS_FIELDS:
+        if isinstance(previous_stats, dict) and field_name in previous_stats:
+            rollback_stats[field_name] = previous_stats[field_name]
+        else:
+            rollback_stats.pop(field_name, None)
+    if rollback_stats:
+        rollback["stats"] = rollback_stats
+    else:
+        rollback.pop("stats", None)
+    return rollback
 
 
 @contextmanager

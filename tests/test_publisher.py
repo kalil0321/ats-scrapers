@@ -230,7 +230,7 @@ def test_manifest_falls_back_to_keys_when_no_public_url(
         f"{manifest['all']['parquet_sha256']}.parquet"
     )
     assert manifest["by_ats"]["greenhouse"]["csv"] == (
-        "jobhive/v1/greenhouse/jobs-snapshots/"
+        "jobhive/v1/greenhouse/job-snapshots/"
         f"{manifest['by_ats']['greenhouse']['sha256']}.csv"
     )
 
@@ -472,7 +472,7 @@ def test_manifest_contention_leaves_stable_job_aliases_unchanged(
     assert fake_r2.uploads[all_key]["data"] == b"old all"
     assert fake_r2.uploads[greenhouse_key]["data"] == b"old greenhouse"
     assert any(
-        "/job-snapshots/" in key or "/jobs-snapshots/" in key
+        "/job-snapshots/" in key
         for key in fake_r2.uploads
     )
     assert "jobhive/v1/lever/jobs.csv" not in fake_r2.uploads
@@ -585,6 +585,9 @@ def test_persistent_alias_copy_failure_restores_every_stable_job_alias(
         key: fake_r2.uploads[key]["data"]
         for key in stable_keys
     }
+    previous_manifest = json.loads(
+        fake_r2.uploads["jobhive/v1/manifest.json"]["data"]
+    )
     ashby_csv = ats_csv_dir / "ashby" / "jobs.csv"
     ashby_frame = pd.read_csv(ashby_csv)
     ashby_frame.loc[0, "title"] = "Updated Engineer"
@@ -598,7 +601,7 @@ def test_persistent_alias_copy_failure_restores_every_stable_job_alias(
     ):
         if (
             destination_key == "jobhive/v1/ashby/jobs.parquet"
-            and "/jobs-snapshots/" in source_key
+            and "/job-snapshots/" in source_key
         ):
             raise StorageError("persistent copy failure")
         return original_copy(
@@ -616,10 +619,110 @@ def test_persistent_alias_copy_failure_restores_every_stable_job_alias(
         key: fake_r2.uploads[key]["data"]
         for key in stable_keys
     } == previous
+    rolled_back_manifest = json.loads(
+        fake_r2.uploads["jobhive/v1/manifest.json"]["data"]
+    )
+    assert rolled_back_manifest["all"] == previous_manifest["all"]
+    assert rolled_back_manifest["by_ats"] == previous_manifest["by_ats"]
+    for field in (
+        "total_jobs",
+        "total_jobs_raw",
+        "ats_count",
+        "schema_version",
+        "schema_columns",
+    ):
+        assert rolled_back_manifest["stats"][field] == (
+            previous_manifest["stats"][field]
+        )
     assert not any(
         "/job-alias-rollbacks/" in key
         for key in fake_r2.uploads
     )
+
+
+def test_job_manifest_rollback_preserves_concurrent_company_generation(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+    manifest_key = "jobhive/v1/manifest.json"
+    previous_manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
+
+    ashby_csv = ats_csv_dir / "ashby" / "jobs.csv"
+    ashby_frame = pd.read_csv(ashby_csv)
+    ashby_frame.loc[0, "title"] = "Updated Engineer"
+    ashby_frame.to_csv(ashby_csv, index=False)
+
+    original_copy = fake_r2.copy
+
+    def fail_new_ashby_parquet(
+        source_key: str,
+        destination_key: str,
+        **kwargs,
+    ):
+        if (
+            destination_key == "jobhive/v1/ashby/jobs.parquet"
+            and "/job-snapshots/" in source_key
+        ):
+            raise StorageError("persistent copy failure")
+        return original_copy(
+            source_key,
+            destination_key,
+            **kwargs,
+        )
+
+    original_conditional_upload = fake_r2.upload_bytes_if_current
+    conditional_writes = 0
+
+    def company_wins_before_first_rollback(
+        data: bytes,
+        key: str,
+        *,
+        expected_etag: str | None,
+        **kwargs,
+    ):
+        nonlocal conditional_writes
+        conditional_writes += 1
+        if conditional_writes == 2:
+            current = json.loads(fake_r2.uploads[manifest_key]["data"])
+            current["companies"] = {"rows": 2}
+            current["by_ats_companies"] = {
+                "greenhouse": {"rows": 2},
+            }
+            current["stats"]["total_companies"] = 2
+            current["updated_at"] = "2099-01-01T00:00:00Z"
+            fake_r2.upload_bytes(
+                json.dumps(current).encode(),
+                manifest_key,
+                content_type="application/json",
+            )
+        return original_conditional_upload(
+            data,
+            key,
+            expected_etag=expected_etag,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(fake_r2, "copy", fail_new_ashby_parquet)
+    monkeypatch.setattr(
+        fake_r2,
+        "upload_bytes_if_current",
+        company_wins_before_first_rollback,
+    )
+
+    with pytest.raises(StorageError, match="persistent copy failure"):
+        publisher.publish_from_directory(ats_csv_dir)
+
+    rolled_back = json.loads(fake_r2.uploads[manifest_key]["data"])
+    assert conditional_writes == 3
+    assert rolled_back["all"] == previous_manifest["all"]
+    assert rolled_back["by_ats"] == previous_manifest["by_ats"]
+    assert rolled_back["companies"] == {"rows": 2}
+    assert rolled_back["by_ats_companies"] == {
+        "greenhouse": {"rows": 2},
+    }
+    assert rolled_back["stats"]["total_companies"] == 2
+    assert rolled_back["updated_at"] == "2099-01-01T00:00:00Z"
 
 
 def test_disabled_company_filter_reloads_after_companies_race(
@@ -853,7 +956,7 @@ def test_manifest_uploaded_after_data_files(ats_csv_dir, fake_r2) -> None:
     immutable_keys = [
         k
         for k in fake_r2.uploads
-        if "/job-snapshots/" in k or "/jobs-snapshots/" in k
+        if "/job-snapshots/" in k
     ]
     alias_keys = [
         "jobhive/v1/all.csv",
