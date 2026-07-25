@@ -347,8 +347,15 @@ class PageUpScraper(BaseScraper):
         ), remaining
 
     def _tenant_url(self, href: str, *, expected_segment: str) -> str:
-        resolved = urljoin(f"{BASE_URL}/", href)
-        parsed = urlparse(resolved)
+        try:
+            resolved = urljoin(f"{BASE_URL}/", href)
+            parsed = urlparse(resolved)
+            port = parsed.port
+        except ValueError as exc:
+            raise ScraperError(
+                f"PageUp ({self.tenant_path}) returned an unsafe "
+                f"{expected_segment} URL"
+            ) from exc
         expected_prefix = (
             f"/{self.tenant_path}/{expected_segment}"
         ).casefold()
@@ -356,6 +363,7 @@ class PageUpScraper(BaseScraper):
         if (
             parsed.scheme != "https"
             or parsed.hostname != "careers.pageuppeople.com"
+            or port not in (None, 443)
             or not (
                 normalized_path == expected_prefix
                 or normalized_path.startswith(f"{expected_prefix}/")
@@ -377,6 +385,7 @@ def _normalize_tenant_path(value: str) -> str:
         if (
             parsed.scheme != "https"
             or parsed.hostname != "careers.pageuppeople.com"
+            or parsed.port not in (None, 443)
         ):
             raise ValueError(
                 "PageUp tenant URL must use https://careers.pageuppeople.com"

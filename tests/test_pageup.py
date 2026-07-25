@@ -442,6 +442,7 @@ def test_invalid_apply_link_does_not_abort_detail_batch(
         "https://evil.example/513/cw/en/job/101/engineer",
         "//127.0.0.1/513/cw/en/job/101/engineer",
         "https://careers.pageuppeople.com/999/cw/en/job/101/engineer",
+        "https://careers.pageuppeople.com:444/513/cw/en/job/101/engineer",
     ],
 )
 def test_rejects_unsafe_detail_urls(httpx_mock, href: str) -> None:
@@ -569,6 +570,7 @@ def test_normalizes_supported_tenant_paths(value: str, expected: str) -> None:
         "",
         "careers.pageuppeople.com/513/cw/en",
         "http://careers.pageuppeople.com/513/cw/en",
+        "https://careers.pageuppeople.com:444/513/cw/en",
         "https://evil.example/513/cw/en",
         "513/cw",
         "abc/cw/en",
