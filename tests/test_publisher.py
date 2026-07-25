@@ -451,16 +451,16 @@ def test_disabled_company_filter_reloads_after_companies_race(
 
     original_upload = fake_r2.upload_bytes_if_current
     attempts = 0
+    current_csv = (
+        b"ats,name,slug,url\n"
+        b"greenhouse,Acme,acme,https://example.com/acme\n"
+        b"lever,New,new,https://example.com/new\n"
+    )
 
     def companies_win_once(*args, **kwargs):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
-            current_csv = (
-                b"ats,name,slug,url\n"
-                b"greenhouse,Acme,acme,https://example.com/acme\n"
-                b"lever,New,new,https://example.com/new\n"
-            )
             current_sha = hashlib.sha256(current_csv).hexdigest()
             current_key = (
                 f"jobhive/v1/company-aggregates/{current_sha}.csv"
@@ -485,6 +485,11 @@ def test_disabled_company_filter_reloads_after_companies_race(
                 manifest_key,
                 content_type="application/json",
             )
+            fake_r2.upload_bytes(
+                current_csv,
+                "jobhive/v1/companies.csv",
+                content_type="text/csv",
+            )
         return original_upload(*args, **kwargs)
 
     monkeypatch.setattr(
@@ -505,6 +510,8 @@ def test_disabled_company_filter_reloads_after_companies_race(
         "lever": {"rows": 1},
     }
     assert manifest["stats"]["total_companies"] == 2
+    stable_csv = fake_r2.uploads["jobhive/v1/companies.csv"]["data"]
+    assert stable_csv == current_csv
 
 
 def test_manifest_patch_drops_legacy_fields(ats_csv_dir, fake_r2) -> None:

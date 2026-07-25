@@ -398,22 +398,6 @@ def main() -> None:
         "application/vnd.apache.parquet",
         cache_control=CACHE_CONTROL_IMMUTABLE,
     )
-    upload(
-        client,
-        bucket,
-        stable_csv_key,
-        agg_csv,
-        "text/csv",
-        cache_control=CACHE_CONTROL_LATEST,
-    )
-    upload(
-        client,
-        bucket,
-        stable_parquet_key,
-        agg_parquet,
-        "application/vnd.apache.parquet",
-        cache_control=CACHE_CONTROL_LATEST,
-    )
     aggregate_entry = {
         "csv": public_url(bucket, immutable_csv_key),
         "parquet": public_url(bucket, immutable_parquet_key),
@@ -433,12 +417,30 @@ def main() -> None:
         aggregate_rows=agg_rows,
     )
 
+    print("\n== Step 4: refresh stable aggregate aliases")
+    upload(
+        client,
+        bucket,
+        stable_csv_key,
+        agg_csv,
+        "text/csv",
+        cache_control=CACHE_CONTROL_LATEST,
+    )
+    upload(
+        client,
+        bucket,
+        stable_parquet_key,
+        agg_parquet,
+        "application/vnd.apache.parquet",
+        cache_control=CACHE_CONTROL_LATEST,
+    )
+
     # Disabled-source objects are deliberately retained as unadvertised
     # orphans. The shared manifest previously had no guaranteed cache lifetime,
     # so deleting a stable object could break an indefinitely cached old
     # manifest. Excluding the source from current aggregates and manifests
     # disables publication without creating dangling links for old clients.
-    print("\n== Step 4: cleanup legacy paths")
+    print("\n== Step 5: cleanup legacy paths")
     delete_legacy(client, bucket)
 
     print(

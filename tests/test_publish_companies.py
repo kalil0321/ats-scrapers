@@ -90,14 +90,15 @@ def test_disabled_company_artifact_is_left_unadvertised(
         f"{module.PREFIX}/greenhouse/companies.csv",
         aggregate_csv_key,
         aggregate_parquet_key,
+        f"{module.PREFIX}/manifest.json",
         f"{module.PREFIX}/companies.csv",
         f"{module.PREFIX}/companies.parquet",
-        f"{module.PREFIX}/manifest.json",
     ]
     assert operations == [
-        *(f"upload:{key}" for key in uploaded_keys[:-1]),
+        *(f"upload:{key}" for key in uploaded_keys[:3]),
         "fetch_manifest",
-        f"upload:{uploaded_keys[-1]}",
+        f"upload:{uploaded_keys[3]}",
+        *(f"upload:{key}" for key in uploaded_keys[4:]),
     ]
 
 
