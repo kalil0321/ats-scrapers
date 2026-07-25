@@ -118,8 +118,8 @@ class DatasetPublisher:
 
     The publisher is responsible for **jobs only**. Companies / tenant
     lists are written by the CI workflow. Both writers share
-    ``manifest.json`` via read-modify-write, so the publisher must
-    never touch the ``companies`` or ``by_ats_companies`` keys.
+    ``manifest.json`` via read-modify-write, so the publisher preserves
+    enabled ``companies`` metadata while removing disabled sources.
     """
 
     def __init__(
@@ -160,7 +160,8 @@ class DatasetPublisher:
         2. Cross-ATS deduped global snapshot ``<prefix>/all.{csv,parquet}``.
         3. Patched ``<prefix>/manifest.json`` with refreshed
            ``all`` and ``by_ats`` jobs entries; ``companies`` and
-           ``by_ats_companies`` (CI-owned) are preserved untouched.
+           ``by_ats_companies`` (CI-owned) are preserved for enabled
+           sources.
 
         Then deletes the legacy paths
         (``<prefix>/jobs/*``, ``<prefix>/companies/*``).
@@ -483,14 +484,14 @@ class DatasetPublisher:
         by_ats: dict[ATSType, dict[str, object]],
         existing_manifest: dict[str, object] | None = None,
     ) -> str:
-        """Read existing manifest, replace jobs-related fields, preserve
-        the companies block written by the CI."""
+        """Replace jobs fields and preserve enabled CI-owned companies."""
         key = f"{self._prefix}/manifest.json"
         existing = (
             existing_manifest
             if existing_manifest is not None
             else _load_existing_manifest(self._r2, key)
         )
+        existing = _without_disabled_company_sources(existing)
 
         manifest: dict[str, object] = {**existing}
         manifest["version"] = "2.0"
@@ -1133,6 +1134,28 @@ def _sum_by_ats_companies_rows(manifest: dict[str, object]) -> int:
             if isinstance(rows, int):
                 total += rows
     return total
+
+
+def _without_disabled_company_sources(
+    manifest: dict[str, object],
+) -> dict[str, object]:
+    sanitized = {**manifest}
+    block = manifest.get("by_ats_companies")
+    if not isinstance(block, dict):
+        return sanitized
+
+    disabled_names = {ats.value for ats in DISABLED_JOB_SOURCES}
+    enabled = {
+        ats_name: entry
+        for ats_name, entry in block.items()
+        if ats_name not in disabled_names
+    }
+    if len(enabled) == len(block):
+        return sanitized
+
+    sanitized["by_ats_companies"] = enabled
+    sanitized.pop("companies", None)
+    return sanitized
 
 
 def _guard_suspicious_empty_job_slices(

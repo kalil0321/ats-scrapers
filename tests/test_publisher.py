@@ -315,6 +315,36 @@ def test_manifest_patch_preserves_companies_block(ats_csv_dir, fake_r2) -> None:
     assert manifest["all"]["parquet"].endswith("/all.parquet")
 
 
+def test_manifest_patch_drops_disabled_company_sources(
+    ats_csv_dir, fake_r2
+) -> None:
+    pre_existing = {
+        "companies": {
+            "csv": "https://cdn.example.com/jobhive/v1/companies.csv",
+            "rows": 8,
+        },
+        "by_ats_companies": {
+            "greenhouse": {"csv": "...", "rows": 3},
+            "seek": {"csv": "...", "rows": 5},
+        },
+    }
+    fake_r2.upload_bytes(
+        json.dumps(pre_existing).encode("utf-8"),
+        "jobhive/v1/manifest.json",
+        content_type="application/json",
+    )
+
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    assert manifest["by_ats_companies"] == {
+        "greenhouse": {"csv": "...", "rows": 3}
+    }
+    assert "companies" not in manifest
+    assert manifest["stats"]["total_companies"] == 3
+
+
 def test_manifest_patch_drops_legacy_fields(ats_csv_dir, fake_r2) -> None:
     """Pre-2.0 manifests carried `by_date` and `companies_by_ats`. Their
     underlying objects are deleted by `prune_legacy_paths`, so the
