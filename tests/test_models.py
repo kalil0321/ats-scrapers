@@ -17,12 +17,13 @@ from ats_scrapers.models import ATSType, Company, Job, Salary
 def test_ats_type_includes_every_supported_platform() -> None:
     expected = {
         # Multi-tenant ATS systems
-            "ashby", "avature", "beisen", "beisen_legacy", "cornerstone", "darwinbox", "eightfold", "gem", "greenhouse", "gupy",
-        "icims", "join_com", "lever", "mercor", "moka", "oracle", "personio", "phenom",
+            "ashby", "avature", "beisen", "beisen_legacy", "cornerstone", "darwinbox", "dayforce", "eightfold", "gem", "greenhouse", "gupy",
+        "icims", "join_com", "jobvite", "lever", "mercor", "moka", "oracle", "pageup",
+        "personio", "phenom",
         "pinpoint", "recruiterbox", "rippling", "smartrecruiters",
-        "successfactors", "workable", "workday",
+        "successfactors", "ukg", "workable", "workday",
         # Big-tech custom careers systems
-        "amazon", "apple", "google", "meta",
+        "amazon", "apple", "bytedance", "google", "meta",
         "tesla", "tiktok", "uber", "usajobs",
         # National / supranational public-sector aggregators
         "bundesagentur", "arbetsformedlingen", "eures",

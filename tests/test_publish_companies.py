@@ -76,6 +76,7 @@ def test_disabled_company_artifact_is_left_unadvertised(
         f"{module.PREFIX}/manifest.json",
     ]
     assert operations == [
+        *(f"upload:{key}" for key in uploaded_keys[:-1]),
         "fetch_manifest",
-        *(f"upload:{key}" for key in uploaded_keys),
+        f"upload:{uploaded_keys[-1]}",
     ]

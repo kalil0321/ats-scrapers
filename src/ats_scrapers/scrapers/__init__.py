@@ -20,8 +20,10 @@ from ats_scrapers.scrapers.beisen_legacy import BeisenLegacyScraper
 from ats_scrapers.scrapers.breezy import BreezyScraper
 from ats_scrapers.scrapers.builtin import BuiltInScraper
 from ats_scrapers.scrapers.bundesagentur import BundesagenturScraper
+from ats_scrapers.scrapers.bytedance import BytedanceScraper
 from ats_scrapers.scrapers.cornerstone import CornerstoneScraper
 from ats_scrapers.scrapers.darwinbox import DarwinboxScraper
+from ats_scrapers.scrapers.dayforce import DayforceScraper
 from ats_scrapers.scrapers.eightfold import EightfoldScraper
 from ats_scrapers.scrapers.eures import EuresScraper
 from ats_scrapers.scrapers.gem import GemScraper
@@ -35,6 +37,7 @@ from ats_scrapers.scrapers.jazzhr import JazzHRScraper
 from ats_scrapers.scrapers.jobbankca import JobBankCAScraper
 from ats_scrapers.scrapers.jobs_cz import JobsCzScraper
 from ats_scrapers.scrapers.jobsch import JobsChScraper
+from ats_scrapers.scrapers.jobvite import JobviteScraper
 from ats_scrapers.scrapers.join_com import JoinComScraper
 from ats_scrapers.scrapers.lever import LeverScraper
 from ats_scrapers.scrapers.manfred import ManfredScraper
@@ -42,6 +45,7 @@ from ats_scrapers.scrapers.mercor import MercorScraper
 from ats_scrapers.scrapers.meta import MetaScraper
 from ats_scrapers.scrapers.moka import MokaScraper
 from ats_scrapers.scrapers.oracle import OracleScraper
+from ats_scrapers.scrapers.pageup import PageUpScraper
 from ats_scrapers.scrapers.personio import PersonioScraper
 from ats_scrapers.scrapers.phenom import PhenomScraper
 from ats_scrapers.scrapers.pinpoint import PinpointScraper
@@ -59,6 +63,7 @@ from ats_scrapers.scrapers.tesla import TeslaScraper
 from ats_scrapers.scrapers.thehub import TheHubScraper
 from ats_scrapers.scrapers.tiktok import TikTokScraper
 from ats_scrapers.scrapers.uber import UberScraper
+from ats_scrapers.scrapers.ukg import UKGProScraper
 from ats_scrapers.scrapers.usajobs import USAJobsScraper
 from ats_scrapers.scrapers.wanted import WantedScraper
 from ats_scrapers.scrapers.welcometothejungle import WTTJScraper
@@ -81,8 +86,10 @@ __all__ = [
     "BreezyScraper",
     "BuiltInScraper",
     "BundesagenturScraper",
+    "BytedanceScraper",
     "CornerstoneScraper",
     "DarwinboxScraper",
+    "DayforceScraper",
     "EightfoldScraper",
     "EuresScraper",
     "GemScraper",
@@ -95,6 +102,7 @@ __all__ = [
     "JobBankCAScraper",
     "JobsChScraper",
     "JobsCzScraper",
+    "JobviteScraper",
     "JoinComScraper",
     "LeverScraper",
     "ManfredScraper",
@@ -102,6 +110,7 @@ __all__ = [
     "MetaScraper",
     "MokaScraper",
     "OracleScraper",
+    "PageUpScraper",
     "PersonioScraper",
     "PhenomScraper",
     "PinpointScraper",
@@ -119,6 +128,7 @@ __all__ = [
     "TeslaScraper",
     "TheHubScraper",
     "TikTokScraper",
+    "UKGProScraper",
     "USAJobsScraper",
     "UberScraper",
     "WTTJScraper",

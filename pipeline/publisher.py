@@ -537,15 +537,17 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     # Direct employer ATSes
     "ashby": 1, "avature": 1, "bamboohr": 1, "beisen": 1, "beisen_legacy": 1,
     "breezy": 1, "cornerstone": 1,
-    "darwinbox": 1,
-    "greenhouse": 1, "gupy": 1, "icims": 1, "jazzhr": 1, "join_com": 1, "lever": 1,
-    "moka": 1, "oracle": 1, "personio": 1, "phenom": 1, "pinpoint": 1, "recruitee": 1,
+    "darwinbox": 1, "dayforce": 1,
+    "greenhouse": 1, "gupy": 1, "icims": 1, "jazzhr": 1, "join_com": 1, "jobvite": 1,
+    "lever": 1,
+    "moka": 1, "oracle": 1, "pageup": 1, "personio": 1, "phenom": 1, "pinpoint": 1,
+    "recruitee": 1,
     "recruiterbox": 1, "rippling": 1, "smartrecruiters": 1,
-    "successfactors": 1, "taleo": 1, "teamtailor": 1, "workable": 1,
+    "successfactors": 1, "taleo": 1, "teamtailor": 1, "ukg": 1, "workable": 1,
     "workday": 1,
     # Big-tech bespoke careers — also priority 1 (single-tenant, canonical)
-    "amazon": 1, "apple": 1, "google": 1, "meta": 1, "tesla": 1,
-    "tiktok": 1, "uber": 1,
+    "amazon": 1, "apple": 1, "bytedance": 1, "google": 1, "meta": 1,
+    "tesla": 1, "tiktok": 1, "uber": 1,
     # Hybrid jobboards
     "welcometothejungle": 3, "mercor": 3, "gem": 3,
     "seek": 4,

@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 # an f-string URL.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._\-]*$", re.IGNORECASE)
 _DNS_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
+_DAYFORCE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 class ResolvedCareersUrl(NamedTuple):
@@ -88,6 +89,18 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
 _WORKDAY_HOST_RE = re.compile(r"^[^.]+\.wd\d+\.myworkdayjobs\.com$")
 _TALEO_HOST_RE = re.compile(r"^[^.]+\.tbe\.taleo\.net$")
 _ICIMS_HOST_RE = re.compile(r"^(?P<prefix>[a-z0-9-]+)\.icims\.com$", re.IGNORECASE)
+_JOBVITE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_JOBVITE_RESERVED_SEGMENTS = frozenset({"jobs", "search", "viewall"})
+_PAGEUP_CLIENT_RE = re.compile(r"^\d+$")
+_PAGEUP_SEGMENT_RE = re.compile(r"^[A-Za-z0-9-]+$")
+_PAGEUP_LOCALE_RE = re.compile(r"^[A-Za-z]{2}(?:-[A-Za-z]{2})?$")
+_UKG_HOST_RE = re.compile(r"^recruiting\d*\.ultipro\.(?:com|ca)$", re.IGNORECASE)
+_UKG_TENANT_RE = re.compile(r"^[A-Za-z0-9]+$")
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
@@ -108,6 +121,57 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         slug = _first_path_segment(parsed)
         if slug and _SLUG_RE.match(slug):
             return ResolvedCareersUrl(_PATH_HOSTS[host], slug)
+        return None
+
+    if host == "jobs.jobvite.com":
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            len(segments) >= 2
+            and segments[0] == "careers"
+            and segments[1].casefold() not in _JOBVITE_RESERVED_SEGMENTS
+            and _JOBVITE_SEGMENT_RE.fullmatch(segments[1])
+        ):
+            return ResolvedCareersUrl(
+                ATSType.JOBVITE,
+                f"careers/{segments[1]}",
+            )
+        if (
+            segments
+            and segments[0] != "careers"
+            and segments[0].casefold() not in _JOBVITE_RESERVED_SEGMENTS
+            and _JOBVITE_SEGMENT_RE.fullmatch(segments[0])
+        ):
+            return ResolvedCareersUrl(ATSType.JOBVITE, segments[0])
+        return None
+
+    if host == "careers.pageuppeople.com":
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if segments and segments[0].lower() == "mob":
+            segments.pop(0)
+        if (
+            len(segments) >= 3
+            and _PAGEUP_CLIENT_RE.fullmatch(segments[0])
+            and _PAGEUP_SEGMENT_RE.fullmatch(segments[1])
+            and _PAGEUP_LOCALE_RE.fullmatch(segments[2])
+        ):
+            return ResolvedCareersUrl(
+                ATSType.PAGEUP,
+                "/".join(segments[:3]),
+            )
+        return None
+
+    if _UKG_HOST_RE.fullmatch(host):
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            len(segments) >= 3
+            and _UKG_TENANT_RE.fullmatch(segments[0])
+            and segments[1].casefold() == "jobboard"
+            and _UUID_RE.fullmatch(segments[2])
+        ):
+            return ResolvedCareersUrl(
+                ATSType.UKG,
+                f"https://{host}/{segments[0]}/JobBoard/{segments[2]}",
+            )
         return None
 
     # join.com/companies/{slug}
@@ -133,6 +197,39 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
                 ATSType.MOKA,
                 f"{prefix}{segments[1]}/{segments[2]}{recruitment_type}",
             )
+        return None
+
+    if host == "jobs.dayforcehcm.com":
+        segments = [segment for segment in parsed.path.split("/") if segment]
+
+        def resolve_segments(parts: list[str]) -> str | None:
+            if (
+                len(parts) < 2
+                or not _DAYFORCE_SEGMENT_RE.fullmatch(parts[0])
+                or not _DAYFORCE_SEGMENT_RE.fullmatch(parts[1])
+            ):
+                return None
+            remainder = [segment.casefold() for segment in parts[2:]]
+            if remainder and not (
+                remainder[0] == "jobs"
+                and len(remainder) in {1, 2, 3}
+                and (len(remainder) == 1 or remainder[1].isdigit())
+                and (len(remainder) < 3 or remainder[2] == "apply")
+            ):
+                return None
+            return f"{parts[0]}/{parts[1]}"
+
+        if (slug := resolve_segments(segments)) is not None:
+            return ResolvedCareersUrl(ATSType.DAYFORCE, slug)
+        if (
+            len(segments) >= 3
+            and re.fullmatch(
+                r"[A-Za-z]{2}(?:-[A-Za-z]{2})?",
+                segments[0],
+            )
+            and (slug := resolve_segments(segments[1:])) is not None
+        ):
+            return ResolvedCareersUrl(ATSType.DAYFORCE, slug)
         return None
 
     for suffix, tld in ((".darwinbox.in", "in"), (".darwinbox.com", "com")):

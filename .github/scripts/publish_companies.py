@@ -293,9 +293,6 @@ def main() -> None:
     csv_key = f"{PREFIX}/companies.csv"
     parquet_key = f"{PREFIX}/companies.parquet"
 
-    manifest_before_update = fetch_existing_manifest(client, bucket)
-    manifest = {**manifest_before_update}
-
     print(f"== Step 1: upload {len(csvs)} per-ATS companies.csv files")
     for ats, data in ats_files.items():
         key = f"{PREFIX}/{ats}/companies.csv"
@@ -315,6 +312,7 @@ def main() -> None:
     }
 
     print("\n== Step 3: patch manifest.json")
+    manifest = {**fetch_existing_manifest(client, bucket)}
     manifest["companies"] = aggregate_entry
     manifest["by_ats_companies"] = by_ats_entries
     stats = manifest.get("stats")
