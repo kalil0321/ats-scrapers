@@ -703,13 +703,16 @@ class DatasetPublisher:
                     cache_control=CACHE_CONTROL_LATEST,
                 )
             except StorageError as exc:
-                current, _current_etag = _load_existing_manifest_with_etag(
+                current, current_etag = _load_existing_manifest_with_etag(
                     self._r2,
                     key,
                 )
                 if (
-                    current.get("all") == all_entry
-                    and current.get("by_ats") == expected_by_ats
+                    current_etag != etag
+                    and _has_jobs_manifest_generation(
+                        current,
+                        intended=manifest,
+                    )
                 ):
                     logger.warning(
                         "Manifest write response was ambiguous, but the "
@@ -801,6 +804,30 @@ class DatasetPublisher:
 
     def _public_or_key(self, key: str) -> str:
         return self._r2.public_url(key) or key
+
+
+def _has_jobs_manifest_generation(
+    current: dict[str, object],
+    *,
+    intended: dict[str, object],
+) -> bool:
+    for key in ("version", "generator", "generated_at", "all", "by_ats"):
+        if current.get(key) != intended.get(key):
+            return False
+    if any(key in current for key in ("by_date", "companies_by_ats")):
+        return False
+    current_stats = current.get("stats")
+    intended_stats = intended.get("stats")
+    if not isinstance(current_stats, dict) or not isinstance(
+        intended_stats,
+        dict,
+    ):
+        return current_stats == intended_stats
+    return all(
+        current_stats.get(key) == value
+        for key, value in intended_stats.items()
+        if key != "total_companies"
+    )
 
 
 # --- Cross-ATS dedup -------------------------------------------------------

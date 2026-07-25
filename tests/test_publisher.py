@@ -517,6 +517,29 @@ def test_lost_manifest_success_response_still_refreshes_job_aliases(
     )
 
 
+def test_definite_manifest_failure_is_not_mistaken_for_same_job_generation(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+    manifest_key = "jobhive/v1/manifest.json"
+    previous_manifest = fake_r2.uploads[manifest_key]["data"]
+
+    def fail_before_write(*_args, **_kwargs):
+        raise StorageError("authorization failed")
+
+    monkeypatch.setattr(
+        fake_r2,
+        "upload_bytes_if_current",
+        fail_before_write,
+    )
+
+    with pytest.raises(StorageError, match="authorization failed"):
+        publisher.publish_from_directory(ats_csv_dir)
+
+    assert fake_r2.uploads[manifest_key]["data"] == previous_manifest
+
+
 def test_persistent_alias_copy_failure_restores_every_stable_job_alias(
     ats_csv_dir, fake_r2, monkeypatch
 ) -> None:
