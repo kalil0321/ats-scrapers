@@ -45,6 +45,7 @@ class ATSType(StrEnum):
     GREENHOUSE = "greenhouse"
     GUPY = "gupy"
     ICIMS = "icims"
+    JOBVITE = "jobvite"
     JOIN_COM = "join_com"
     LEVER = "lever"
     MERCOR = "mercor"

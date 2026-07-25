@@ -15,6 +15,7 @@ from ats_scrapers.scrapers import (
     DayforceScraper,
     GreenhouseScraper,
     GupyScraper,
+    JobviteScraper,
     MokaScraper,
     PageUpScraper,
     UKGProScraper,
@@ -34,6 +35,12 @@ RESOLVES = [
     ("https://careers.smartrecruiters.com/10Pearls", ATSType.SMARTRECRUITERS, "10Pearls"),
     ("https://jobs.gem.com/accel", ATSType.GEM, "accel"),
     ("https://ats.rippling.com/acme/jobs", ATSType.RIPPLING, "acme"),
+    ("https://jobs.jobvite.com/sitecore", ATSType.JOBVITE, "sitecore"),
+    (
+        "https://jobs.jobvite.com/careers/loandepot/search?p=0",
+        ATSType.JOBVITE,
+        "careers/loandepot",
+    ),
     (
         "https://careers.pageuppeople.com/513/cw/en/listing/",
         ATSType.PAGEUP,
@@ -148,6 +155,10 @@ def test_icims_nonstandard_prefix_keeps_full_url() -> None:
         "https://careers.example.com/jobs",       # custom domain
         "https://www.linkedin.com/jobs/view/1",   # aggregator
         "https://jobs.ashbyhq.com",               # no slug in path
+        "https://jobs.jobvite.com/search",
+        "https://jobs.jobvite.com/jobs",
+        "https://jobs.jobvite.com/viewall",
+        "https://jobs.jobvite.com/careers/search",
         "https://join.com/about",                 # join.com non-company path
         "https://evil.recruitee.com.attacker.io", # suffix-spoofing host
         "https://bad_slug.darwinbox.in/ms/candidate/careers",
@@ -179,6 +190,16 @@ def test_get_scraper_for_url_builds_scraper() -> None:
         GreenhouseScraper,
     )
     assert isinstance(get_scraper_for_url("https://petz.gupy.io"), GupyScraper)
+    assert isinstance(
+        get_scraper_for_url("https://jobs.jobvite.com/sitecore"),
+        JobviteScraper,
+    )
+    assert (
+        get_scraper_for_url(
+            "https://jobs.jobvite.com/careers/loandepot/search"
+        ).tenant_path
+        == "careers/loandepot"
+    )
     assert isinstance(
         get_scraper_for_url(
             "https://careers.pageuppeople.com/513/cw/en/listing/"
