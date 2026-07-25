@@ -341,8 +341,56 @@ def test_manifest_patch_drops_disabled_company_sources(
     assert manifest["by_ats_companies"] == {
         "greenhouse": {"csv": "...", "rows": 3}
     }
-    assert "companies" not in manifest
+    assert manifest["companies"] == pre_existing["companies"]
     assert manifest["stats"]["total_companies"] == 3
+
+
+def test_manifest_patch_retries_after_concurrent_companies_write(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    manifest_key = "jobhive/v1/manifest.json"
+    fake_r2.upload_bytes(
+        json.dumps({
+            "companies": {"rows": 3},
+            "by_ats_companies": {"greenhouse": {"rows": 3}},
+        }).encode(),
+        manifest_key,
+        content_type="application/json",
+    )
+    original_upload = fake_r2.upload_bytes_if_current
+    attempts = 0
+
+    def race_once(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            fake_r2.upload_bytes(
+                json.dumps({
+                    "companies": {"rows": 4},
+                    "by_ats_companies": {
+                        "greenhouse": {"rows": 3},
+                        "lever": {"rows": 1},
+                    },
+                }).encode(),
+                manifest_key,
+                content_type="application/json",
+            )
+        return original_upload(*args, **kwargs)
+
+    monkeypatch.setattr(fake_r2, "upload_bytes_if_current", race_once)
+
+    DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
+
+    manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
+    assert attempts == 2
+    assert manifest["companies"] == {"rows": 4}
+    assert manifest["by_ats_companies"] == {
+        "greenhouse": {"rows": 3},
+        "lever": {"rows": 1},
+    }
+    assert manifest["stats"]["total_companies"] == 4
 
 
 def test_manifest_patch_drops_legacy_fields(ats_csv_dir, fake_r2) -> None:

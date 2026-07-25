@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
@@ -143,6 +144,7 @@ class FakeBoto3Client:
         self.uploaded_files: list[tuple[str, str, str, dict]] = []
         self.put_objects: list[dict] = []
         self.head_responses: dict[str, dict] = {}
+        self.get_responses: dict[str, dict] = {}
         self.delete_response: dict = {}
 
     def upload_file(self, src: str, bucket: str, key: str, ExtraArgs=None) -> None:  # noqa: N803
@@ -155,6 +157,9 @@ class FakeBoto3Client:
         if Key in self.head_responses:
             return self.head_responses[Key]
         raise Exception("404")
+
+    def get_object(self, *, Bucket: str, Key: str):  # noqa: N803
+        return self.get_responses[Key]
 
     def get_paginator(self, _name: str):
         class P:
@@ -218,6 +223,44 @@ def test_upload_bytes_calls_put_object(
     client.upload_bytes(b"hello", "k", content_type="text/plain")
     assert fake.put_objects[0]["Body"] == b"hello"
     assert fake.put_objects[0]["Key"] == "k"
+
+
+def test_conditional_upload_uses_etag(
+    fake_r2_client: tuple[R2Client, FakeBoto3Client],
+) -> None:
+    client, fake = fake_r2_client
+    client.upload_bytes_if_current(
+        b"hello",
+        "k",
+        expected_etag='"etag-1"',
+        content_type="application/json",
+    )
+    assert fake.put_objects[0]["IfMatch"] == '"etag-1"'
+    assert "IfNoneMatch" not in fake.put_objects[0]
+
+
+def test_conditional_upload_uses_create_precondition(
+    fake_r2_client: tuple[R2Client, FakeBoto3Client],
+) -> None:
+    client, fake = fake_r2_client
+    client.upload_bytes_if_current(
+        b"hello",
+        "k",
+        expected_etag=None,
+    )
+    assert fake.put_objects[0]["IfNoneMatch"] == "*"
+
+
+def test_get_bytes_with_etag(
+    fake_r2_client: tuple[R2Client, FakeBoto3Client],
+) -> None:
+    client, fake = fake_r2_client
+    fake.get_responses["k"] = {
+        "Body": io.BytesIO(b"hello"),
+        "ETag": '"etag-1"',
+    }
+
+    assert client.get_bytes_with_etag("k") == (b"hello", '"etag-1"')
 
 
 def test_public_url_returns_none_when_no_base() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +10,8 @@ from typing import Any
 
 import pandas as pd
 import pytest
+
+from ats_scrapers.exceptions import StorageConflictError
 
 
 @dataclass
@@ -37,8 +40,40 @@ class FakeR2:
             "data": data,
             "content_type": content_type,
             "cache_control": cache_control,
+            "etag": hashlib.sha256(data).hexdigest(),
         }
         return key
+
+    def upload_bytes_if_current(
+        self,
+        data: bytes,
+        key: str,
+        *,
+        expected_etag: str | None,
+        content_type: str | None = None,
+        cache_control: str | None = None,
+    ) -> str:
+        current = self.uploads.get(key)
+        if expected_etag is None:
+            if current is not None:
+                raise StorageConflictError("conditional create lost")
+        elif current is None or current.get("etag") != expected_etag:
+            raise StorageConflictError("conditional update lost")
+        return self.upload_bytes(
+            data,
+            key,
+            content_type=content_type,
+            cache_control=cache_control,
+        )
+
+    def get_bytes_with_etag(
+        self,
+        key: str,
+    ) -> tuple[bytes | None, str | None]:
+        entry = self.uploads.get(key)
+        if entry is None:
+            return None, None
+        return entry["data"], entry["etag"]
 
     def upload(
         self,

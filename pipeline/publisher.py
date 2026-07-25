@@ -59,7 +59,7 @@ import polars as pl
 
 from ats_scrapers._version import __version__
 from ats_scrapers.enrichment import infer_is_remote, parse_salary_range
-from ats_scrapers.exceptions import StorageError
+from ats_scrapers.exceptions import StorageConflictError, StorageError
 from ats_scrapers.models import ATSType
 
 # Pull the keyword list used by ``infer_is_remote`` so the lazy
@@ -81,6 +81,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PREFIX = "jobhive/v1"
 CACHE_CONTROL_LATEST = "public, max-age=300"  # manifest + latest data files
+MANIFEST_WRITE_ATTEMPTS = 5
 
 # ``all`` ships both formats — parquet for typed pandas / DuckDB
 # consumers, CSV (~2.3 GB at the current ~4M-row corpus) for
@@ -486,44 +487,52 @@ class DatasetPublisher:
     ) -> str:
         """Replace jobs fields and preserve enabled CI-owned companies."""
         key = f"{self._prefix}/manifest.json"
-        existing = (
-            existing_manifest
-            if existing_manifest is not None
-            else _load_existing_manifest(self._r2, key)
-        )
-        existing = _without_disabled_company_sources(existing)
+        del existing_manifest
+        for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
+            existing, etag = _load_existing_manifest_with_etag(self._r2, key)
+            existing = _without_disabled_company_sources(existing)
 
-        manifest: dict[str, object] = {**existing}
-        manifest["version"] = "2.0"
-        manifest["generator"] = f"ats-scrapers/{__version__}"
-        manifest["generated_at"] = generated_at.isoformat()
-        # ``updated_at`` is the "manifest last touched" timestamp; both
-        # writers (publisher + CI companies workflow) bump it so a
-        # client like the homepage that reads only ``updated_at`` for
-        # the freshness badge sees the latest write regardless of which
-        # writer ran most recently. Format matches what the CI script
-        # writes: UTC ``Z``-suffixed seconds.
-        manifest["updated_at"] = generated_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-        manifest["stats"] = stats_factory(existing)
-        manifest["all"] = all_entry
-        manifest["by_ats"] = {ats.value: entry for ats, entry in by_ats.items()}
+            manifest: dict[str, object] = {**existing}
+            manifest["version"] = "2.0"
+            manifest["generator"] = f"ats-scrapers/{__version__}"
+            manifest["generated_at"] = generated_at.isoformat()
+            manifest["updated_at"] = generated_at.strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            manifest["stats"] = stats_factory(existing)
+            manifest["all"] = all_entry
+            manifest["by_ats"] = {
+                ats.value: entry for ats, entry in by_ats.items()
+            }
 
-        # Drop fields from the pre-2.0 layout if they survived the
-        # legacy-path prune. Their data is gone so the entries point
-        # nowhere.
-        for legacy in ("by_date", "companies_by_ats"):
-            manifest.pop(legacy, None)
+            for legacy in ("by_date", "companies_by_ats"):
+                manifest.pop(legacy, None)
 
-        body = json.dumps(manifest, indent=2, sort_keys=True, default=str).encode(
-            "utf-8"
-        )
-        self._r2.upload_bytes(
-            body,
-            key,
-            content_type="application/json",
-            cache_control=CACHE_CONTROL_LATEST,
-        )
-        return key
+            body = json.dumps(
+                manifest,
+                indent=2,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+            try:
+                self._r2.upload_bytes_if_current(
+                    body,
+                    key,
+                    expected_etag=etag,
+                    content_type="application/json",
+                    cache_control=CACHE_CONTROL_LATEST,
+                )
+            except StorageConflictError:
+                if attempt == MANIFEST_WRITE_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "Manifest changed during jobs patch; retrying (%d/%d)",
+                    attempt,
+                    MANIFEST_WRITE_ATTEMPTS,
+                )
+                continue
+            return key
+        raise AssertionError("unreachable")
 
     def _public_or_key(self, key: str) -> str:
         return self._r2.public_url(key) or key
@@ -1154,7 +1163,6 @@ def _without_disabled_company_sources(
         return sanitized
 
     sanitized["by_ats_companies"] = enabled
-    sanitized.pop("companies", None)
     return sanitized
 
 
@@ -1260,6 +1268,34 @@ def _load_existing_manifest(r2_client: R2Client, key: str) -> dict[str, object]:
         )
         return {}
     return loaded
+
+
+def _load_existing_manifest_with_etag(
+    r2_client: R2Client,
+    key: str,
+) -> tuple[dict[str, object], str | None]:
+    try:
+        body, etag = r2_client.get_bytes_with_etag(key)
+    except StorageError as exc:
+        logger.warning("Could not read existing manifest %s: %s", key, exc)
+        return {}, None
+    if not body:
+        return {}, etag
+    try:
+        loaded = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "Existing manifest %s did not parse as JSON (%s); starting fresh",
+            key,
+            exc,
+        )
+        return {}, etag
+    if not isinstance(loaded, dict):
+        logger.warning(
+            "Existing manifest %s root is not an object; starting fresh", key
+        )
+        return {}, etag
+    return loaded, etag
 
 
 @contextmanager

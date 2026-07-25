@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+from botocore.exceptions import ClientError
 
 
 def _load_publish_companies() -> ModuleType:
@@ -39,11 +41,14 @@ def test_disabled_company_artifact_is_left_unadvertised(
         "fetch_existing_manifest",
         lambda _client, _bucket: (
             operations.append("fetch_manifest")
-            or {
-                "by_ats_companies": {},
-                "stats": {"total_companies": 99},
-                "updated_at": "2000-01-01T00:00:00Z",
-            }
+            or (
+                {
+                    "by_ats_companies": {},
+                    "stats": {"total_companies": 99},
+                    "updated_at": "2000-01-01T00:00:00Z",
+                },
+                '"etag-1"',
+            )
         ),
     )
 
@@ -59,6 +64,8 @@ def test_disabled_company_artifact_is_left_unadvertised(
         uploaded_keys.append(key)
         if key.endswith("/manifest.json"):
             assert kwargs["cache_control"] == module.CACHE_CONTROL_LATEST
+            assert kwargs["if_match"] == '"etag-1"'
+            assert kwargs["if_none_match"] is None
 
     monkeypatch.setattr(module, "upload", record_upload)
     monkeypatch.setattr(
@@ -80,3 +87,68 @@ def test_disabled_company_artifact_is_left_unadvertised(
         "fetch_manifest",
         f"upload:{uploaded_keys[-1]}",
     ]
+
+
+def test_manifest_patch_retries_after_concurrent_jobs_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_publish_companies()
+    manifests = iter([
+        (
+            {
+                "all": {"rows": 10},
+                "by_ats": {"greenhouse": {"rows": 10}},
+                "stats": {"total_jobs": 10, "total_companies": 1},
+            },
+            '"etag-1"',
+        ),
+        (
+            {
+                "all": {"rows": 12},
+                "by_ats": {"greenhouse": {"rows": 12}},
+                "stats": {"total_jobs": 12, "total_companies": 1},
+            },
+            '"etag-2"',
+        ),
+    ])
+    monkeypatch.setattr(
+        module,
+        "fetch_existing_manifest",
+        lambda _client, _bucket: next(manifests),
+    )
+    uploaded: list[tuple[dict[str, object], dict[str, object]]] = []
+
+    def race_once(
+        _client: object,
+        _bucket: str,
+        _key: str,
+        body: bytes,
+        _content_type: str,
+        **kwargs: object,
+    ) -> None:
+        uploaded.append((json.loads(body), kwargs))
+        if len(uploaded) == 1:
+            raise ClientError(
+                {
+                    "Error": {"Code": "PreconditionFailed"},
+                    "ResponseMetadata": {"HTTPStatusCode": 412},
+                },
+                "PutObject",
+            )
+
+    monkeypatch.setattr(module, "upload", race_once)
+
+    module.patch_manifest(
+        object(),
+        "bucket",
+        aggregate_entry={"rows": 3},
+        by_ats_entries={"greenhouse": {"rows": 3}},
+        aggregate_rows=3,
+    )
+
+    assert len(uploaded) == 2
+    final, kwargs = uploaded[-1]
+    assert final["all"] == {"rows": 12}
+    assert final["by_ats"] == {"greenhouse": {"rows": 12}}
+    assert final["stats"] == {"total_jobs": 12, "total_companies": 3}
+    assert kwargs["if_match"] == '"etag-2"'

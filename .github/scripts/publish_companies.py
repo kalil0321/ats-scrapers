@@ -27,16 +27,9 @@ Notes:
   migrated yet (still ``name,url``) get an empty ``slug`` column in
   the aggregate so the published schema stays uniform.
 
-Known limitation — manifest read-modify-write race:
-  This script and ``DatasetPublisher`` both read+modify+write
-  ``manifest.json``. The workflow's ``concurrency`` group prevents two
-  CI runs from overlapping, but a manual publisher run that fires while
-  CI is in flight would each read the same manifest version and the
-  later writer would clobber the earlier writer's fields. Practical
-  risk is low (manual publisher runs are rare and operator-driven), but
-  if it ever bites, swap the final ``put_object`` for a conditional
-  ``put_object(IfMatch=etag)`` retry loop using the etag from the
-  ``get_object`` response.
+Manifest updates use conditional writes. If the jobs publisher wins the
+read-modify-write race, this script reloads the new manifest, reapplies
+the companies patch, and retries instead of reverting jobs metadata.
 """
 
 from __future__ import annotations
@@ -64,6 +57,7 @@ CACHE_CONTROL_LATEST = "public, max-age=300"
 # jobs-side publisher independently moves the manifest to a newer
 # version, that wins until this constant catches up.
 MIN_MANIFEST_VERSION = "2.0"
+MANIFEST_WRITE_ATTEMPTS = 5
 
 
 def env(name: str) -> str:
@@ -109,6 +103,8 @@ def upload(
     content_type: str,
     *,
     cache_control: str | None = None,
+    if_match: str | None = None,
+    if_none_match: str | None = None,
 ) -> None:
     kwargs: dict[str, Any] = {
         "Bucket": bucket,
@@ -118,6 +114,10 @@ def upload(
     }
     if cache_control is not None:
         kwargs["CacheControl"] = cache_control
+    if if_match is not None:
+        kwargs["IfMatch"] = if_match
+    if if_none_match is not None:
+        kwargs["IfNoneMatch"] = if_none_match
     client.put_object(
         **kwargs,
     )
@@ -170,8 +170,11 @@ def build_aggregated(ats_files: dict[str, bytes]) -> tuple[bytes, bytes, int]:
     return csv_buf.getvalue(), parquet_buf.getvalue(), len(combined)
 
 
-def fetch_existing_manifest(client, bucket: str) -> dict[str, Any]:
-    """Return the manifest if it exists, else a fresh-template dict."""
+def fetch_existing_manifest(
+    client,
+    bucket: str,
+) -> tuple[dict[str, Any], str | None]:
+    """Return the manifest and ETag, or a fresh template when absent."""
     key = f"{PREFIX}/manifest.json"
     try:
         obj = client.get_object(Bucket=bucket, Key=key)
@@ -179,9 +182,80 @@ def fetch_existing_manifest(client, bucket: str) -> dict[str, Any]:
         code = exc.response.get("Error", {}).get("Code", "")
         if code in ("NoSuchKey", "404"):
             print("  no existing manifest — starting fresh")
-            return {}
+            return {}, None
         raise
-    return json.loads(obj["Body"].read().decode("utf-8"))
+    etag = obj.get("ETag")
+    return (
+        json.loads(obj["Body"].read().decode("utf-8")),
+        etag if isinstance(etag, str) else None,
+    )
+
+
+def _is_manifest_conflict(exc: ClientError) -> bool:
+    code = exc.response.get("Error", {}).get("Code", "")
+    status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return status in {409, 412} or code in {
+        "ConditionalRequestConflict",
+        "PreconditionFailed",
+    }
+
+
+def patch_manifest(
+    client,
+    bucket: str,
+    *,
+    aggregate_entry: dict[str, Any],
+    by_ats_entries: dict[str, dict[str, Any]],
+    aggregate_rows: int,
+) -> None:
+    key = f"{PREFIX}/manifest.json"
+    for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
+        existing, etag = fetch_existing_manifest(client, bucket)
+        manifest = {**existing}
+        manifest["companies"] = aggregate_entry
+        manifest["by_ats_companies"] = by_ats_entries
+        stats = manifest.get("stats")
+        if isinstance(stats, dict):
+            stats["total_companies"] = aggregate_rows
+        manifest["updated_at"] = datetime.now(tz=UTC).isoformat(
+            timespec="seconds"
+        ).replace("+00:00", "Z")
+        existing_version = manifest.get("version")
+        if existing_version is None or _parse_version(
+            existing_version
+        ) < _parse_version(MIN_MANIFEST_VERSION):
+            manifest["version"] = MIN_MANIFEST_VERSION
+        manifest.pop("companies_by_ats", None)
+        manifest_bytes = json.dumps(
+            manifest,
+            indent=2,
+            sort_keys=True,
+        ).encode("utf-8")
+        try:
+            upload(
+                client,
+                bucket,
+                key,
+                manifest_bytes,
+                "application/json",
+                cache_control=CACHE_CONTROL_LATEST,
+                if_match=etag,
+                if_none_match="*" if etag is None else None,
+            )
+        except ClientError as exc:
+            if not _is_manifest_conflict(exc):
+                raise
+            if attempt == MANIFEST_WRITE_ATTEMPTS:
+                raise RuntimeError(
+                    "manifest changed during every companies patch attempt"
+                ) from exc
+            print(
+                "  manifest changed during companies patch; "
+                f"retrying ({attempt}/{MANIFEST_WRITE_ATTEMPTS})"
+            )
+            continue
+        return
+    raise AssertionError("unreachable")
 
 
 def delete_objects_checked(
@@ -312,40 +386,12 @@ def main() -> None:
     }
 
     print("\n== Step 3: patch manifest.json")
-    manifest = {**fetch_existing_manifest(client, bucket)}
-    manifest["companies"] = aggregate_entry
-    manifest["by_ats_companies"] = by_ats_entries
-    stats = manifest.get("stats")
-    if isinstance(stats, dict):
-        stats["total_companies"] = agg_rows
-    manifest["updated_at"] = datetime.now(tz=UTC).isoformat(
-        timespec="seconds"
-    ).replace("+00:00", "Z")
-    # Monotonic floor: bump up to MIN_MANIFEST_VERSION if absent or
-    # below, leave anything higher untouched. Prevents this script
-    # from silently downgrading a manifest that a newer publisher
-    # has already moved forward (e.g. publisher moves to "3.0",
-    # next companies-side run preserves it).
-    existing_version = manifest.get("version")
-    if existing_version is None or _parse_version(existing_version) < _parse_version(
-        MIN_MANIFEST_VERSION
-    ):
-        manifest["version"] = MIN_MANIFEST_VERSION
-    # Drop the legacy companies-side field. It pointed at
-    # `<prefix>/companies/by-ats/<ats>.csv` URLs that we deleted in
-    # `delete_legacy(...)` below, and its name is one underscore away
-    # from `by_ats_companies` so leaving it behind invites confusion.
-    # Jobs-side legacy fields (`by_date`) are publisher-owned — that
-    # cleanup happens in DatasetPublisher.
-    manifest.pop("companies_by_ats", None)
-    manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
-    upload(
+    patch_manifest(
         client,
         bucket,
-        f"{PREFIX}/manifest.json",
-        manifest_bytes,
-        "application/json",
-        cache_control=CACHE_CONTROL_LATEST,
+        aggregate_entry=aggregate_entry,
+        by_ats_entries=by_ats_entries,
+        aggregate_rows=agg_rows,
     )
 
     # Disabled-source objects are deliberately retained as unadvertised
