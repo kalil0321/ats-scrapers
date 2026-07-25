@@ -494,14 +494,10 @@ class DatasetPublisher:
         for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
             existing, etag = _load_existing_manifest_with_etag(self._r2, key)
             companies_override: dict[str, object] | None = None
-            companies_aliases: tuple[bytes, bytes] | None = None
             if _has_disabled_company_sources(existing):
-                (
-                    companies_override,
-                    filtered_csv,
-                    filtered_parquet,
-                ) = self._filter_disabled_company_aggregate(existing)
-                companies_aliases = (filtered_csv, filtered_parquet)
+                companies_override = self._filter_disabled_company_aggregate(
+                    existing
+                )
             existing = _without_disabled_company_sources(existing)
             if companies_override is not None:
                 existing["companies"] = companies_override
@@ -545,19 +541,13 @@ class DatasetPublisher:
                     MANIFEST_WRITE_ATTEMPTS,
                 )
                 continue
-            if companies_aliases is not None:
-                filtered_csv, filtered_parquet = companies_aliases
-                self._upload_company_aliases(
-                    filtered_csv,
-                    filtered_parquet,
-                )
             return key
         raise AssertionError("unreachable")
 
     def _filter_disabled_company_aggregate(
         self,
         manifest: dict[str, object],
-    ) -> tuple[dict[str, object], bytes, bytes]:
+    ) -> dict[str, object]:
         aggregate = manifest.get("companies")
         if not isinstance(aggregate, dict):
             raise StorageError(
@@ -614,37 +604,15 @@ class DatasetPublisher:
             content_type="application/vnd.apache.parquet",
             cache_control=CACHE_CONTROL_IMMUTABLE,
         )
-        return (
-            {
-                "csv": self._public_or_key(immutable_csv_key),
-                "parquet": self._public_or_key(immutable_parquet_key),
-                "rows": filtered.height,
-                "size_bytes": len(filtered_csv),
-                "sha256": csv_sha256,
-                "parquet_size_bytes": len(filtered_parquet),
-                "parquet_sha256": parquet_sha256,
-            },
-            filtered_csv,
-            filtered_parquet,
-        )
-
-    def _upload_company_aliases(
-        self,
-        csv_bytes: bytes,
-        parquet_bytes: bytes,
-    ) -> None:
-        self._r2.upload_bytes(
-            csv_bytes,
-            f"{self._prefix}/companies.csv",
-            content_type="text/csv",
-            cache_control=CACHE_CONTROL_LATEST,
-        )
-        self._r2.upload_bytes(
-            parquet_bytes,
-            f"{self._prefix}/companies.parquet",
-            content_type="application/vnd.apache.parquet",
-            cache_control=CACHE_CONTROL_LATEST,
-        )
+        return {
+            "csv": self._public_or_key(immutable_csv_key),
+            "parquet": self._public_or_key(immutable_parquet_key),
+            "rows": filtered.height,
+            "size_bytes": len(filtered_csv),
+            "sha256": csv_sha256,
+            "parquet_size_bytes": len(filtered_parquet),
+            "parquet_sha256": parquet_sha256,
+        }
 
     def _public_or_key(self, key: str) -> str:
         return self._r2.public_url(key) or key

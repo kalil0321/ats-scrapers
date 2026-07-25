@@ -361,15 +361,16 @@ def test_manifest_patch_drops_disabled_company_sources(
     assert manifest["stats"]["total_companies"] == 3
     assert "/company-aggregates/" in manifest["companies"]["csv"]
     assert "/company-aggregates/" in manifest["companies"]["parquet"]
-    published_companies = fake_r2.uploads[
+    stable_companies = fake_r2.uploads[
         "jobhive/v1/companies.csv"
-    ]["data"].decode()
-    assert "greenhouse,Acme 1" in published_companies
-    assert "seek,Other 1" not in published_companies
+    ]["data"]
+    assert stable_companies == aggregate_csv
     immutable_csv_key = manifest["companies"]["csv"].removeprefix(
         "https://cdn.example.com/"
     )
     immutable_csv = fake_r2.uploads[immutable_csv_key]["data"]
+    assert b"greenhouse,Acme 1" in immutable_csv
+    assert b"seek,Other 1" not in immutable_csv
     assert hashlib.sha256(immutable_csv).hexdigest() == (
         manifest["companies"]["sha256"]
     )
