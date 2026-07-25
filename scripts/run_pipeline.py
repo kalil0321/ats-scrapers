@@ -487,6 +487,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/jobvite.csv",
         "output": "jobvite/jobs.csv",
         "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
     },
     "pageup": {
