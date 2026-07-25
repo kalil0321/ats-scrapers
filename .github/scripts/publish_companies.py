@@ -251,8 +251,25 @@ def patch_manifest(
                 if_match=etag,
                 if_none_match="*" if etag is None else None,
             )
-        except ClientError as exc:
-            if not _is_manifest_conflict(exc):
+        except Exception as exc:
+            current, _current_etag = fetch_existing_manifest(
+                client,
+                bucket,
+            )
+            if _has_company_generation(
+                current,
+                aggregate_entry=aggregate_entry,
+                by_ats_entries=by_ats_entries,
+                aggregate_rows=aggregate_rows,
+            ):
+                print(
+                    "  manifest write response was ambiguous, but the "
+                    "intended company generation is current"
+                )
+                return
+            if not isinstance(exc, ClientError) or not _is_manifest_conflict(
+                exc
+            ):
                 raise
             if attempt == MANIFEST_WRITE_ATTEMPTS:
                 raise RuntimeError(
@@ -265,6 +282,23 @@ def patch_manifest(
             continue
         return
     raise AssertionError("unreachable")
+
+
+def _has_company_generation(
+    manifest: dict[str, Any],
+    *,
+    aggregate_entry: dict[str, Any],
+    by_ats_entries: dict[str, dict[str, Any]],
+    aggregate_rows: int,
+) -> bool:
+    if manifest.get("companies") != aggregate_entry:
+        return False
+    if manifest.get("by_ats_companies") != by_ats_entries:
+        return False
+    stats = manifest.get("stats")
+    return not isinstance(stats, dict) or (
+        stats.get("total_companies") == aggregate_rows
+    )
 
 
 def delete_objects_checked(

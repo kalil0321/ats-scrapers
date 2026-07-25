@@ -349,6 +349,14 @@ def test_manifest_patch_retries_after_concurrent_jobs_write(
             },
             '"etag-2"',
         ),
+        (
+            {
+                "all": {"rows": 12},
+                "by_ats": {"greenhouse": {"rows": 12}},
+                "stats": {"total_jobs": 12, "total_companies": 1},
+            },
+            '"etag-2"',
+        ),
     ])
     monkeypatch.setattr(
         module,
@@ -391,3 +399,63 @@ def test_manifest_patch_retries_after_concurrent_jobs_write(
     assert final["by_ats"] == {"greenhouse": {"rows": 12}}
     assert final["stats"] == {"total_jobs": 12, "total_companies": 3}
     assert kwargs["if_match"] == '"etag-2"'
+
+
+def test_manifest_patch_accepts_lost_success_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_publish_companies()
+    aggregate_entry = {
+        "csv": "jobhive/v1/company-aggregates/new.csv",
+        "parquet": "jobhive/v1/company-aggregates/new.parquet",
+        "rows": 3,
+        "sha256": "new",
+    }
+    by_ats_entries = {"greenhouse": {"rows": 3}}
+    manifests = iter([
+        (
+            {
+                "companies": {"rows": 2},
+                "by_ats_companies": {"greenhouse": {"rows": 2}},
+                "stats": {"total_jobs": 10, "total_companies": 2},
+            },
+            '"etag-old"',
+        ),
+        (
+            {
+                "companies": aggregate_entry,
+                "by_ats_companies": by_ats_entries,
+                "stats": {"total_jobs": 12, "total_companies": 3},
+            },
+            '"etag-new"',
+        ),
+    ])
+    monkeypatch.setattr(
+        module,
+        "fetch_existing_manifest",
+        lambda _client, _bucket: next(manifests),
+    )
+    uploads = 0
+
+    def lose_success_response(*_args: object, **_kwargs: object) -> None:
+        nonlocal uploads
+        uploads += 1
+        raise ClientError(
+            {
+                "Error": {"Code": "PreconditionFailed"},
+                "ResponseMetadata": {"HTTPStatusCode": 412},
+            },
+            "PutObject",
+        )
+
+    monkeypatch.setattr(module, "upload", lose_success_response)
+
+    module.patch_manifest(
+        object(),
+        "bucket",
+        aggregate_entry=aggregate_entry,
+        by_ats_entries=by_ats_entries,
+        aggregate_rows=3,
+    )
+
+    assert uploads == 1
