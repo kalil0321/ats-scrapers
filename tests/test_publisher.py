@@ -359,11 +359,20 @@ def test_manifest_patch_drops_disabled_company_sources(
     }
     assert manifest["companies"]["rows"] == 3
     assert manifest["stats"]["total_companies"] == 3
+    assert "/company-aggregates/" in manifest["companies"]["csv"]
+    assert "/company-aggregates/" in manifest["companies"]["parquet"]
     published_companies = fake_r2.uploads[
         "jobhive/v1/companies.csv"
     ]["data"].decode()
     assert "greenhouse,Acme 1" in published_companies
     assert "seek,Other 1" not in published_companies
+    immutable_csv_key = manifest["companies"]["csv"].removeprefix(
+        "https://cdn.example.com/"
+    )
+    immutable_csv = fake_r2.uploads[immutable_csv_key]["data"]
+    assert hashlib.sha256(immutable_csv).hexdigest() == (
+        manifest["companies"]["sha256"]
+    )
 
 
 def test_manifest_patch_retries_after_concurrent_companies_write(
@@ -412,6 +421,90 @@ def test_manifest_patch_retries_after_concurrent_companies_write(
         "lever": {"rows": 1},
     }
     assert manifest["stats"]["total_companies"] == 4
+
+
+def test_disabled_company_filter_reloads_after_companies_race(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    manifest_key = "jobhive/v1/manifest.json"
+    stale_csv = (
+        b"ats,name,slug,url\n"
+        b"greenhouse,Acme,acme,https://example.com/acme\n"
+        b"seek,Other,other,https://example.com/other\n"
+    )
+    fake_r2.upload_bytes(
+        stale_csv,
+        "jobhive/v1/companies.csv",
+        content_type="text/csv",
+    )
+    fake_r2.upload_bytes(
+        json.dumps({
+            "companies": {"csv": "...", "rows": 2},
+            "by_ats_companies": {
+                "greenhouse": {"rows": 1},
+                "seek": {"rows": 1},
+            },
+        }).encode(),
+        manifest_key,
+        content_type="application/json",
+    )
+
+    original_upload = fake_r2.upload_bytes_if_current
+    attempts = 0
+
+    def companies_win_once(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            current_csv = (
+                b"ats,name,slug,url\n"
+                b"greenhouse,Acme,acme,https://example.com/acme\n"
+                b"lever,New,new,https://example.com/new\n"
+            )
+            current_sha = hashlib.sha256(current_csv).hexdigest()
+            current_key = (
+                f"jobhive/v1/company-aggregates/{current_sha}.csv"
+            )
+            fake_r2.upload_bytes(
+                current_csv,
+                current_key,
+                content_type="text/csv",
+            )
+            fake_r2.upload_bytes(
+                json.dumps({
+                    "companies": {
+                        "csv": current_key,
+                        "rows": 2,
+                        "sha256": current_sha,
+                    },
+                    "by_ats_companies": {
+                        "greenhouse": {"rows": 1},
+                        "lever": {"rows": 1},
+                    },
+                }).encode(),
+                manifest_key,
+                content_type="application/json",
+            )
+        return original_upload(*args, **kwargs)
+
+    monkeypatch.setattr(
+        fake_r2,
+        "upload_bytes_if_current",
+        companies_win_once,
+    )
+
+    DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
+
+    manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
+    assert attempts == 2
+    assert manifest["companies"]["rows"] == 2
+    assert manifest["by_ats_companies"] == {
+        "greenhouse": {"rows": 1},
+        "lever": {"rows": 1},
+    }
+    assert manifest["stats"]["total_companies"] == 2
 
 
 def test_manifest_patch_drops_legacy_fields(ats_csv_dir, fake_r2) -> None:

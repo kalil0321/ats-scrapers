@@ -6,8 +6,10 @@ tenant CSV under ``ats-companies/`` lands on ``main``. Behaviour:
 1. For each ``ats-companies/<ats>.csv`` upload to
    ``s3://<bucket>/jobhive/v1/<ats>/companies.csv``.
 2. Build an aggregated ``companies.{csv,parquet}`` that concatenates
-   every per-ATS file with an extra ``ats`` column. Upload to
-   ``s3://<bucket>/jobhive/v1/companies.{csv,parquet}``.
+   every per-ATS file with an extra ``ats`` column. Upload immutable,
+   content-addressed objects for the manifest and refresh the stable
+   ``s3://<bucket>/jobhive/v1/companies.{csv,parquet}`` aliases for
+   backwards compatibility.
 3. Patch ``manifest.json`` in place: refresh the top-level
    ``companies`` entry and the per-ATS ``by_ats_companies`` map. Other
    fields (``by_ats`` for jobs, ``all``, ``stats``…) are preserved
@@ -52,6 +54,7 @@ ATS_COMPANIES_DIR = REPO_ROOT / "ats-companies"
 PREFIX = "jobhive/v1"
 DISABLED_ATS = frozenset({"seek"})
 CACHE_CONTROL_LATEST = "public, max-age=300"
+CACHE_CONTROL_IMMUTABLE = "public, max-age=31536000, immutable"
 # Lowest manifest version this script knows how to write. Treat as a
 # floor: bump existing manifests up to it, never down. If the
 # jobs-side publisher independently moves the manifest to a newer
@@ -364,8 +367,14 @@ def main() -> None:
         by_ats_entries[ats] = file_entry(public_url(bucket, key), data=data)
 
     agg_csv, agg_parquet, agg_rows = build_aggregated(ats_files)
-    csv_key = f"{PREFIX}/companies.csv"
-    parquet_key = f"{PREFIX}/companies.parquet"
+    csv_sha256 = sha256_bytes(agg_csv)
+    parquet_sha256 = sha256_bytes(agg_parquet)
+    immutable_csv_key = f"{PREFIX}/company-aggregates/{csv_sha256}.csv"
+    immutable_parquet_key = (
+        f"{PREFIX}/company-aggregates/{parquet_sha256}.parquet"
+    )
+    stable_csv_key = f"{PREFIX}/companies.csv"
+    stable_parquet_key = f"{PREFIX}/companies.parquet"
 
     print(f"== Step 1: upload {len(csvs)} per-ATS companies.csv files")
     for ats, data in ats_files.items():
@@ -373,16 +382,46 @@ def main() -> None:
         upload(client, bucket, key, data, "text/csv")
 
     print("\n== Step 2: upload aggregated companies.{csv,parquet}")
-    upload(client, bucket, csv_key, agg_csv, "text/csv")
-    upload(client, bucket, parquet_key, agg_parquet, "application/vnd.apache.parquet")
+    upload(
+        client,
+        bucket,
+        immutable_csv_key,
+        agg_csv,
+        "text/csv",
+        cache_control=CACHE_CONTROL_IMMUTABLE,
+    )
+    upload(
+        client,
+        bucket,
+        immutable_parquet_key,
+        agg_parquet,
+        "application/vnd.apache.parquet",
+        cache_control=CACHE_CONTROL_IMMUTABLE,
+    )
+    upload(
+        client,
+        bucket,
+        stable_csv_key,
+        agg_csv,
+        "text/csv",
+        cache_control=CACHE_CONTROL_LATEST,
+    )
+    upload(
+        client,
+        bucket,
+        stable_parquet_key,
+        agg_parquet,
+        "application/vnd.apache.parquet",
+        cache_control=CACHE_CONTROL_LATEST,
+    )
     aggregate_entry = {
-        "csv": public_url(bucket, csv_key),
-        "parquet": public_url(bucket, parquet_key),
+        "csv": public_url(bucket, immutable_csv_key),
+        "parquet": public_url(bucket, immutable_parquet_key),
         "rows": agg_rows,
         "size_bytes": len(agg_csv),
-        "sha256": sha256_bytes(agg_csv),
+        "sha256": csv_sha256,
         "parquet_size_bytes": len(agg_parquet),
-        "parquet_sha256": sha256_bytes(agg_parquet),
+        "parquet_sha256": parquet_sha256,
     }
 
     print("\n== Step 3: patch manifest.json")

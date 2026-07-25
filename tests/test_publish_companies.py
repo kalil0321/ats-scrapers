@@ -76,8 +76,20 @@ def test_disabled_company_artifact_is_left_unadvertised(
 
     module.main()
 
+    aggregate_csv_key = next(
+        key for key in uploaded_keys
+        if key.startswith(f"{module.PREFIX}/company-aggregates/")
+        and key.endswith(".csv")
+    )
+    aggregate_parquet_key = next(
+        key for key in uploaded_keys
+        if key.startswith(f"{module.PREFIX}/company-aggregates/")
+        and key.endswith(".parquet")
+    )
     assert uploaded_keys == [
         f"{module.PREFIX}/greenhouse/companies.csv",
+        aggregate_csv_key,
+        aggregate_parquet_key,
         f"{module.PREFIX}/companies.csv",
         f"{module.PREFIX}/companies.parquet",
         f"{module.PREFIX}/manifest.json",

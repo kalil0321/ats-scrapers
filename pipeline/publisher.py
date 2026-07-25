@@ -9,11 +9,12 @@ Layout produced under ``<prefix>`` (default ``jobhive/v1``):
 
 Tenant lists (``<ats>/companies.csv`` and the aggregated
 ``companies.{csv,parquet}``) are owned by the GitHub Actions workflow
-``.github/workflows/publish-ats-companies.yml`` — the publisher only
-touches the **jobs** side of the bucket. ``manifest.json`` is read,
-patched (jobs entries updated, ``companies`` / ``by_ats_companies``
-preserved), and re-uploaded so the two writers never clobber each
-other.
+``.github/workflows/publish-ats-companies.yml``. The publisher normally
+touches only the **jobs** side of the bucket, but it may publish a
+content-addressed replacement aggregate when removing a disabled
+source from cached company metadata. ``manifest.json`` is patched with
+conditional writes so concurrent jobs and companies runs never
+advertise metadata for mutable aggregate bytes.
 
 Old layout (``jobs/all.parquet``, ``jobs/by-ats/*``, ``jobs/by-date/*``,
 ``companies/*``) is wiped on first run by :meth:`prune_legacy_paths`.
@@ -82,6 +83,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PREFIX = "jobhive/v1"
 CACHE_CONTROL_LATEST = "public, max-age=300"  # manifest + latest data files
+CACHE_CONTROL_IMMUTABLE = "public, max-age=31536000, immutable"
 MANIFEST_WRITE_ATTEMPTS = 5
 
 # ``all`` ships both formats — parquet for typed pandas / DuckDB
@@ -489,13 +491,10 @@ class DatasetPublisher:
         """Replace jobs fields and preserve enabled CI-owned companies."""
         key = f"{self._prefix}/manifest.json"
         del existing_manifest
-        companies_override: dict[str, object] | None = None
         for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
             existing, etag = _load_existing_manifest_with_etag(self._r2, key)
-            if (
-                companies_override is None
-                and _has_disabled_company_sources(existing)
-            ):
+            companies_override: dict[str, object] | None = None
+            if _has_disabled_company_sources(existing):
                 companies_override = self._filter_disabled_company_aggregate(
                     existing
                 )
@@ -582,27 +581,49 @@ class DatasetPublisher:
         parquet_buffer = io.BytesIO()
         filtered.write_parquet(parquet_buffer)
         filtered_parquet = parquet_buffer.getvalue()
-        parquet_key = f"{self._prefix}/companies.parquet"
+        csv_sha256 = hashlib.sha256(filtered_csv).hexdigest()
+        parquet_sha256 = hashlib.sha256(filtered_parquet).hexdigest()
+        immutable_csv_key = (
+            f"{self._prefix}/company-aggregates/{csv_sha256}.csv"
+        )
+        immutable_parquet_key = (
+            f"{self._prefix}/company-aggregates/{parquet_sha256}.parquet"
+        )
+        stable_csv_key = f"{self._prefix}/companies.csv"
+        stable_parquet_key = f"{self._prefix}/companies.parquet"
+
         self._r2.upload_bytes(
             filtered_csv,
-            csv_key,
+            immutable_csv_key,
+            content_type="text/csv",
+            cache_control=CACHE_CONTROL_IMMUTABLE,
+        )
+        self._r2.upload_bytes(
+            filtered_parquet,
+            immutable_parquet_key,
+            content_type="application/vnd.apache.parquet",
+            cache_control=CACHE_CONTROL_IMMUTABLE,
+        )
+        self._r2.upload_bytes(
+            filtered_csv,
+            stable_csv_key,
             content_type="text/csv",
             cache_control=CACHE_CONTROL_LATEST,
         )
         self._r2.upload_bytes(
             filtered_parquet,
-            parquet_key,
+            stable_parquet_key,
             content_type="application/vnd.apache.parquet",
             cache_control=CACHE_CONTROL_LATEST,
         )
         return {
-            "csv": self._public_or_key(csv_key),
-            "parquet": self._public_or_key(parquet_key),
+            "csv": self._public_or_key(immutable_csv_key),
+            "parquet": self._public_or_key(immutable_parquet_key),
             "rows": filtered.height,
             "size_bytes": len(filtered_csv),
-            "sha256": hashlib.sha256(filtered_csv).hexdigest(),
+            "sha256": csv_sha256,
             "parquet_size_bytes": len(filtered_parquet),
-            "parquet_sha256": hashlib.sha256(filtered_parquet).hexdigest(),
+            "parquet_sha256": parquet_sha256,
         }
 
     def _public_or_key(self, key: str) -> str:
