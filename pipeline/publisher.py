@@ -45,6 +45,7 @@ DataFrame is ever materialized.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import io
 import json
@@ -165,6 +166,19 @@ class DatasetPublisher:
                 ) from exc
 
     def publish_from_directory(
+        self,
+        source_dir: Path,
+        *,
+        ats_csv_pattern: str = "{ats}/jobs.csv",
+    ) -> PublishResult:
+        """Serialize jobs publication on the pipeline host."""
+        with _job_publish_lock(self._r2.bucket, self._prefix):
+            return self._publish_from_directory_unlocked(
+                source_dir,
+                ats_csv_pattern=ats_csv_pattern,
+            )
+
+    def _publish_from_directory_unlocked(
         self,
         source_dir: Path,
         *,
@@ -811,23 +825,22 @@ def _has_jobs_manifest_generation(
     *,
     intended: dict[str, object],
 ) -> bool:
-    for key in ("version", "generator", "generated_at", "all", "by_ats"):
-        if current.get(key) != intended.get(key):
-            return False
-    if any(key in current for key in ("by_date", "companies_by_ats")):
-        return False
-    current_stats = current.get("stats")
-    intended_stats = intended.get("stats")
-    if not isinstance(current_stats, dict) or not isinstance(
-        intended_stats,
-        dict,
-    ):
-        return current_stats == intended_stats
-    return all(
-        current_stats.get(key) == value
-        for key, value in intended_stats.items()
-        if key != "total_companies"
+    return current == intended
+
+
+@contextmanager
+def _job_publish_lock(bucket: str, prefix: str) -> Iterator[None]:
+    lock_id = hashlib.sha256(f"{bucket}\0{prefix}".encode()).hexdigest()[:16]
+    lock_path = (
+        Path(tempfile.gettempdir())
+        / f"ats-scrapers-publish-jobs-{lock_id}.lock"
     )
+    with lock_path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 # --- Cross-ATS dedup -------------------------------------------------------
