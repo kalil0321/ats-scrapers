@@ -63,6 +63,11 @@ RESOLVES = [
         "fi/CANDIDATEPORTAL",
     ),
     (
+        "https://jobs.dayforcehcm.com/gm/CANDIDATEPORTAL/jobs",
+        ATSType.DAYFORCE,
+        "gm/CANDIDATEPORTAL",
+    ),
+    (
         "https://app.mokahr.com/social-recruitment/trip/70415/job/123",
         ATSType.MOKA,
         "trip/70415",

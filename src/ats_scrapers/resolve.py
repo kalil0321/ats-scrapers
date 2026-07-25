@@ -196,6 +196,8 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
                 return None
             return f"{parts[0]}/{parts[1]}"
 
+        if (slug := resolve_segments(segments)) is not None:
+            return ResolvedCareersUrl(ATSType.DAYFORCE, slug)
         if (
             len(segments) >= 3
             and re.fullmatch(
@@ -204,8 +206,6 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             )
             and (slug := resolve_segments(segments[1:])) is not None
         ):
-            return ResolvedCareersUrl(ATSType.DAYFORCE, slug)
-        if (slug := resolve_segments(segments)) is not None:
             return ResolvedCareersUrl(ATSType.DAYFORCE, slug)
         return None
 

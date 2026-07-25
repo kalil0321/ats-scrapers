@@ -238,33 +238,35 @@ def _normalize_tenant_board(value: str) -> tuple[str, str]:
         segments = [segment for segment in parsed.path.split("/") if segment]
     else:
         segments = [segment for segment in raw.split("/") if segment]
-    if (
-        segments
-        and _LOCALE_RE.fullmatch(segments[0])
-        and (
-            len(segments) == 3
-            or (
-                len(segments) in {5, 6}
-                and segments[3].casefold() == "jobs"
-            )
-        )
-    ):
-        segments.pop(0)
-    if len(segments) < 2:
-        raise ValueError(f"Invalid Dayforce tenant/board: {value!r}")
-    tenant, board = segments[:2]
-    if not _SEGMENT_RE.fullmatch(tenant) or not _SEGMENT_RE.fullmatch(board):
-        raise ValueError(f"Invalid Dayforce tenant/board: {value!r}")
-    if len(segments) > 2:
-        remainder = [segment.casefold() for segment in segments[2:]]
-        if not (
+
+    def parse_parts(parts: list[str]) -> tuple[str, str] | None:
+        if len(parts) < 2:
+            return None
+        tenant, board = parts[:2]
+        if (
+            not _SEGMENT_RE.fullmatch(tenant)
+            or not _SEGMENT_RE.fullmatch(board)
+        ):
+            return None
+        remainder = [segment.casefold() for segment in parts[2:]]
+        if remainder and not (
             remainder[0] == "jobs"
             and len(remainder) in {1, 2, 3}
             and (len(remainder) == 1 or remainder[1].isdigit())
             and (len(remainder) < 3 or remainder[2] == "apply")
         ):
-            raise ValueError(f"Invalid Dayforce tenant/board: {value!r}")
-    return tenant, board
+            return None
+        return tenant, board
+
+    if (tenant_board := parse_parts(segments)) is not None:
+        return tenant_board
+    if (
+        len(segments) >= 3
+        and _LOCALE_RE.fullmatch(segments[0])
+        and (tenant_board := parse_parts(segments[1:])) is not None
+    ):
+        return tenant_board
+    raise ValueError(f"Invalid Dayforce tenant/board: {value!r}")
 
 
 def _validated_details_url(

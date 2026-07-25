@@ -249,6 +249,10 @@ def test_scraper_is_registered() -> None:
             "https://jobs.dayforcehcm.com/fi/CANDIDATEPORTAL/jobs/123",
             ("fi", "CANDIDATEPORTAL"),
         ),
+        (
+            "https://jobs.dayforcehcm.com/gm/CANDIDATEPORTAL/jobs",
+            ("gm", "CANDIDATEPORTAL"),
+        ),
     ],
 )
 def test_normalizes_tenant_board(
