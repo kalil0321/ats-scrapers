@@ -15,7 +15,9 @@ tenant CSV under ``ats-companies/`` lands on ``main``. Behaviour:
 4. Refresh the stable per-ATS ``companies.csv`` files and aggregate
    ``companies.{csv,parquet}`` aliases for backwards compatibility. A
    failed generation update restores every alias to its previous bytes
-   before retrying or failing. Rollback itself is retried.
+   before retrying or failing, then restores the previous companies
+   generation in the manifest without overwriting concurrent jobs.
+   Both rollback paths are retried.
 5. Delete the now-obsolete legacy paths
    (``companies/all.csv`` + ``companies/by-ats/*``).
 
@@ -65,6 +67,20 @@ MIN_MANIFEST_VERSION = "2.0"
 MANIFEST_WRITE_ATTEMPTS = 5
 ALIAS_WRITE_ATTEMPTS = 3
 ALIAS_ROLLBACK_ATTEMPTS = 3
+
+
+class ManifestPublication:
+    __slots__ = ("intended", "key", "previous")
+
+    def __init__(
+        self,
+        key: str,
+        previous: dict[str, Any],
+        intended: dict[str, Any],
+    ) -> None:
+        self.key = key
+        self.previous = previous
+        self.intended = intended
 
 
 def env(name: str) -> str:
@@ -214,7 +230,7 @@ def patch_manifest(
     aggregate_entry: dict[str, Any],
     by_ats_entries: dict[str, dict[str, Any]],
     aggregate_rows: int,
-) -> None:
+) -> ManifestPublication:
     key = f"{PREFIX}/manifest.json"
     for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
         existing, etag = fetch_existing_manifest(client, bucket)
@@ -264,7 +280,7 @@ def patch_manifest(
                     "  manifest write response was ambiguous, but the "
                     "intended company generation is current"
                 )
-                return
+                return ManifestPublication(key, existing, current)
             if not isinstance(exc, ClientError) or not _is_manifest_conflict(
                 exc
             ):
@@ -278,7 +294,7 @@ def patch_manifest(
                 f"retrying ({attempt}/{MANIFEST_WRITE_ATTEMPTS})"
             )
             continue
-        return
+        return ManifestPublication(key, existing, manifest)
     raise AssertionError("unreachable")
 
 
@@ -296,6 +312,152 @@ def _has_company_generation(
     stats = manifest.get("stats")
     return not isinstance(stats, dict) or (
         stats.get("total_companies") == aggregate_rows
+    )
+
+
+def rollback_company_manifest(
+    client,
+    bucket: str,
+    *,
+    publication: ManifestPublication,
+) -> None:
+    intended_companies = publication.intended.get("companies")
+    intended_by_ats = publication.intended.get("by_ats_companies")
+    intended_stats = publication.intended.get("stats")
+    intended_rows = (
+        intended_stats.get("total_companies")
+        if isinstance(intended_stats, dict)
+        else None
+    )
+    if (
+        not isinstance(intended_companies, dict)
+        or not isinstance(intended_by_ats, dict)
+        or not isinstance(intended_rows, int)
+    ):
+        raise RuntimeError("published company generation is incomplete")
+
+    for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
+        current, etag = fetch_existing_manifest(client, bucket)
+        if not _has_company_generation(
+            current,
+            aggregate_entry=intended_companies,
+            by_ats_entries=intended_by_ats,
+            aggregate_rows=intended_rows,
+        ):
+            raise RuntimeError(
+                "cannot roll back companies manifest because another "
+                "company generation is already current"
+            )
+        rollback = _replace_company_manifest_fields(
+            current,
+            previous=publication.previous,
+        )
+        body = json.dumps(
+            rollback,
+            indent=2,
+            sort_keys=True,
+        ).encode()
+        try:
+            upload(
+                client,
+                bucket,
+                publication.key,
+                body,
+                "application/json",
+                cache_control=CACHE_CONTROL_LATEST,
+                if_match=etag,
+                if_none_match="*" if etag is None else None,
+            )
+        except Exception as exc:
+            reloaded, reloaded_etag = fetch_existing_manifest(
+                client,
+                bucket,
+            )
+            if (
+                reloaded_etag != etag
+                and _has_company_manifest_fields(
+                    reloaded,
+                    intended=rollback,
+                )
+            ):
+                print(
+                    "  manifest rollback response was ambiguous, but the "
+                    "previous company generation is current"
+                )
+                return
+            if not isinstance(exc, ClientError) or not _is_manifest_conflict(
+                exc
+            ):
+                raise
+            if attempt == MANIFEST_WRITE_ATTEMPTS:
+                raise RuntimeError(
+                    "manifest changed during every companies rollback attempt"
+                ) from exc
+            print(
+                "  manifest changed during companies rollback; "
+                f"retrying ({attempt}/{MANIFEST_WRITE_ATTEMPTS})"
+            )
+            continue
+        return
+    raise AssertionError("unreachable")
+
+
+def _replace_company_manifest_fields(
+    current: dict[str, Any],
+    *,
+    previous: dict[str, Any],
+) -> dict[str, Any]:
+    rollback = {**current}
+    for field_name in ("companies", "by_ats_companies"):
+        if field_name in previous:
+            rollback[field_name] = previous[field_name]
+        else:
+            rollback.pop(field_name, None)
+
+    current_stats = current.get("stats")
+    rollback_stats = (
+        {**current_stats} if isinstance(current_stats, dict) else {}
+    )
+    previous_stats = previous.get("stats")
+    if isinstance(previous_stats, dict) and "total_companies" in previous_stats:
+        rollback_stats["total_companies"] = previous_stats["total_companies"]
+    else:
+        rollback_stats.pop("total_companies", None)
+    if rollback_stats:
+        rollback["stats"] = rollback_stats
+    else:
+        rollback.pop("stats", None)
+    return rollback
+
+
+def _has_company_manifest_fields(
+    current: dict[str, Any],
+    *,
+    intended: dict[str, Any],
+) -> bool:
+    for field_name in ("companies", "by_ats_companies"):
+        if (
+            field_name in current,
+            current.get(field_name),
+        ) != (
+            field_name in intended,
+            intended.get(field_name),
+        ):
+            return False
+    current_stats = current.get("stats")
+    intended_stats = intended.get("stats")
+    return (
+        isinstance(current_stats, dict)
+        and "total_companies" in current_stats,
+        current_stats.get("total_companies")
+        if isinstance(current_stats, dict)
+        else None,
+    ) == (
+        isinstance(intended_stats, dict)
+        and "total_companies" in intended_stats,
+        intended_stats.get("total_companies")
+        if isinstance(intended_stats, dict)
+        else None,
     )
 
 
@@ -456,7 +618,7 @@ def publish_aggregate_generation(
     additional_aliases: tuple[tuple[str, bytes, str], ...] = (),
 ) -> None:
     print("\n== Step 3: patch manifest.json")
-    patch_manifest(
+    publication = patch_manifest(
         client,
         bucket,
         aggregate_entry=aggregate_entry,
@@ -464,15 +626,29 @@ def publish_aggregate_generation(
         aggregate_rows=aggregate_rows,
     )
     print("\n== Step 4: refresh stable company aliases")
-    refresh_stable_aliases(
-        client,
-        bucket,
-        csv_key=csv_key,
-        csv_data=csv_data,
-        parquet_key=parquet_key,
-        parquet_data=parquet_data,
-        additional_aliases=additional_aliases,
-    )
+    try:
+        refresh_stable_aliases(
+            client,
+            bucket,
+            csv_key=csv_key,
+            csv_data=csv_data,
+            parquet_key=parquet_key,
+            parquet_data=parquet_data,
+            additional_aliases=additional_aliases,
+        )
+    except Exception:
+        try:
+            rollback_company_manifest(
+                client,
+                bucket,
+                publication=publication,
+            )
+        except Exception as rollback_exc:
+            raise RuntimeError(
+                "stable company aliases failed and the companies manifest "
+                "generation could not be rolled back"
+            ) from rollback_exc
+        raise
 
 
 def delete_legacy(client, bucket: str) -> None:

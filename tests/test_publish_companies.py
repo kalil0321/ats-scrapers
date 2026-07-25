@@ -341,6 +341,130 @@ def test_manifest_failure_does_not_refresh_stable_aliases(
     assert refreshed is False
 
 
+def test_alias_failure_rolls_back_company_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_publish_companies()
+    publication = module.ManifestPublication(
+        key=f"{module.PREFIX}/manifest.json",
+        previous={
+            "companies": {"rows": 2},
+            "by_ats_companies": {"greenhouse": {"rows": 2}},
+            "stats": {"total_jobs": 10, "total_companies": 2},
+        },
+        intended={
+            "companies": {"rows": 3},
+            "by_ats_companies": {"greenhouse": {"rows": 3}},
+            "stats": {"total_jobs": 10, "total_companies": 3},
+        },
+    )
+    rolled_back: list[object] = []
+
+    monkeypatch.setattr(
+        module,
+        "patch_manifest",
+        lambda *_args, **_kwargs: publication,
+    )
+    monkeypatch.setattr(
+        module,
+        "refresh_stable_aliases",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ClientError(
+                {"Error": {"Code": "InternalError"}},
+                "PutObject",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "rollback_company_manifest",
+        lambda *_args, **kwargs: rolled_back.append(kwargs["publication"]),
+    )
+
+    with pytest.raises(ClientError):
+        module.publish_aggregate_generation(
+            object(),
+            "bucket",
+            csv_key=f"{module.PREFIX}/companies.csv",
+            csv_data=b"new csv",
+            parquet_key=f"{module.PREFIX}/companies.parquet",
+            parquet_data=b"new parquet",
+            aggregate_entry={"rows": 3},
+            by_ats_entries={"greenhouse": {"rows": 3}},
+            aggregate_rows=3,
+        )
+
+    assert rolled_back == [publication]
+
+
+def test_company_manifest_rollback_preserves_concurrent_jobs_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_publish_companies()
+    old_companies = {"rows": 2}
+    old_by_ats = {"greenhouse": {"rows": 2}}
+    new_companies = {"rows": 3}
+    new_by_ats = {"greenhouse": {"rows": 3}}
+    publication = module.ManifestPublication(
+        key=f"{module.PREFIX}/manifest.json",
+        previous={
+            "companies": old_companies,
+            "by_ats_companies": old_by_ats,
+            "stats": {"total_jobs": 10, "total_companies": 2},
+        },
+        intended={
+            "companies": new_companies,
+            "by_ats_companies": new_by_ats,
+            "stats": {"total_jobs": 10, "total_companies": 3},
+        },
+    )
+    current = {
+        "all": {"rows": 12},
+        "by_ats": {"greenhouse": {"rows": 12}},
+        "companies": new_companies,
+        "by_ats_companies": new_by_ats,
+        "stats": {"total_jobs": 12, "total_companies": 3},
+        "updated_at": "2099-01-01T00:00:00Z",
+    }
+    monkeypatch.setattr(
+        module,
+        "fetch_existing_manifest",
+        lambda _client, _bucket: (current, '"etag-current"'),
+    )
+    uploads: list[tuple[dict[str, object], dict[str, object]]] = []
+
+    def record_upload(
+        _client: object,
+        _bucket: str,
+        _key: str,
+        body: bytes,
+        _content_type: str,
+        **kwargs: object,
+    ) -> None:
+        uploads.append((json.loads(body), kwargs))
+
+    monkeypatch.setattr(module, "upload", record_upload)
+
+    module.rollback_company_manifest(
+        object(),
+        "bucket",
+        publication=publication,
+    )
+
+    assert len(uploads) == 1
+    rolled_back, kwargs = uploads[0]
+    assert rolled_back["all"] == {"rows": 12}
+    assert rolled_back["by_ats"] == {"greenhouse": {"rows": 12}}
+    assert rolled_back["companies"] == old_companies
+    assert rolled_back["by_ats_companies"] == old_by_ats
+    assert rolled_back["stats"] == {
+        "total_jobs": 12,
+        "total_companies": 2,
+    }
+    assert rolled_back["updated_at"] == "2099-01-01T00:00:00Z"
+    assert kwargs["if_match"] == '"etag-current"'
+
+
 def test_manifest_patch_retries_after_concurrent_jobs_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
