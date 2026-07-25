@@ -151,6 +151,8 @@ def test_icims_nonstandard_prefix_keeps_full_url() -> None:
         "https://bad_slug.zhiye.com/social/jobs",
         "https://recruiting.ultipro.com/bad-tenant/JobBoard/"
         "11111111-2222-3333-4444-555555555555",
+        "https://jobs.dayforcehcm.com/en-CA/mayfair/"
+        "CANDIDATEPORTAL/search",
         f"https://{'a' * 64}.zhiye.com/social/jobs",
         "not a url at all",
     ],

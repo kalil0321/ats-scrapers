@@ -178,30 +178,35 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
 
     if host == "jobs.dayforcehcm.com":
         segments = [segment for segment in parsed.path.split("/") if segment]
+
+        def resolve_segments(parts: list[str]) -> str | None:
+            if (
+                len(parts) < 2
+                or not _DAYFORCE_SEGMENT_RE.fullmatch(parts[0])
+                or not _DAYFORCE_SEGMENT_RE.fullmatch(parts[1])
+            ):
+                return None
+            remainder = [segment.casefold() for segment in parts[2:]]
+            if remainder and not (
+                remainder[0] == "jobs"
+                and len(remainder) in {1, 2, 3}
+                and (len(remainder) == 1 or remainder[1].isdigit())
+                and (len(remainder) < 3 or remainder[2] == "apply")
+            ):
+                return None
+            return f"{parts[0]}/{parts[1]}"
+
         if (
-            segments
+            len(segments) >= 3
             and re.fullmatch(
                 r"[A-Za-z]{2}(?:-[A-Za-z]{2})?",
                 segments[0],
             )
-            and (
-                len(segments) == 3
-                or (
-                    len(segments) in {5, 6}
-                    and segments[3].casefold() == "jobs"
-                )
-            )
+            and (slug := resolve_segments(segments[1:])) is not None
         ):
-            segments.pop(0)
-        if (
-            len(segments) >= 2
-            and _DAYFORCE_SEGMENT_RE.fullmatch(segments[0])
-            and _DAYFORCE_SEGMENT_RE.fullmatch(segments[1])
-        ):
-            return ResolvedCareersUrl(
-                ATSType.DAYFORCE,
-                f"{segments[0]}/{segments[1]}",
-            )
+            return ResolvedCareersUrl(ATSType.DAYFORCE, slug)
+        if (slug := resolve_segments(segments)) is not None:
+            return ResolvedCareersUrl(ATSType.DAYFORCE, slug)
         return None
 
     for suffix, tld in ((".darwinbox.in", "in"), (".darwinbox.com", "com")):

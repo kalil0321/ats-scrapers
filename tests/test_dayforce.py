@@ -73,8 +73,8 @@ def test_fetches_and_maps_public_feed(httpx_mock) -> None:
     assert job.is_remote is False
     assert job.employment_type == "FULL_TIME"
     assert job.commitment == "Full Time"
-    assert job.department == "Accounting"
-    assert job.team == "Finance"
+    assert job.department == "Finance"
+    assert job.team == "Accounting"
     assert job.language == "en"
     assert job.description == (
         "<p>Lead finance operations.</p><p>Support patients.</p>"
