@@ -7,14 +7,16 @@ tenant CSV under ``ats-companies/`` lands on ``main``. Behaviour:
    ``s3://<bucket>/jobhive/v1/<ats>/companies.csv``.
 2. Build an aggregated ``companies.{csv,parquet}`` that concatenates
    every per-ATS file with an extra ``ats`` column. Upload immutable,
-   content-addressed objects for the manifest and refresh the stable
+   content-addressed objects for the manifest.
+3. Refresh the stable
    ``s3://<bucket>/jobhive/v1/companies.{csv,parquet}`` aliases for
-   backwards compatibility.
-3. Patch ``manifest.json`` in place: refresh the top-level
+   backwards compatibility. A failed pair update restores both aliases
+   to their previous generation before retrying or failing.
+4. Patch ``manifest.json`` in place: refresh the top-level
    ``companies`` entry and the per-ATS ``by_ats_companies`` map. Other
    fields (``by_ats`` for jobs, ``all``, ``stats``…) are preserved
    untouched — they're owned by the publisher pipeline, not the CI.
-4. Delete the now-obsolete legacy paths
+5. Delete the now-obsolete legacy paths
    (``companies/all.csv`` + ``companies/by-ats/*``).
 
 Notes:
@@ -61,6 +63,7 @@ CACHE_CONTROL_IMMUTABLE = "public, max-age=31536000, immutable"
 # version, that wins until this constant catches up.
 MIN_MANIFEST_VERSION = "2.0"
 MANIFEST_WRITE_ATTEMPTS = 5
+ALIAS_WRITE_ATTEMPTS = 3
 
 
 def env(name: str) -> str:
@@ -280,6 +283,101 @@ def delete_objects_checked(
         raise RuntimeError(f"R2 object deletion was incomplete: {details}")
 
 
+def fetch_object_snapshot(
+    client,
+    bucket: str,
+    key: str,
+) -> tuple[bytes, str, str | None] | None:
+    try:
+        obj = client.get_object(Bucket=bucket, Key=key)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code in ("NoSuchKey", "404"):
+            return None
+        raise
+    return (
+        obj["Body"].read(),
+        obj.get("ContentType") or "application/octet-stream",
+        obj.get("CacheControl"),
+    )
+
+
+def restore_object_snapshot(
+    client,
+    bucket: str,
+    key: str,
+    snapshot: tuple[bytes, str, str | None] | None,
+) -> None:
+    if snapshot is None:
+        delete_objects_checked(client, bucket, [{"Key": key}])
+        return
+    body, content_type, cache_control = snapshot
+    upload(
+        client,
+        bucket,
+        key,
+        body,
+        content_type,
+        cache_control=cache_control,
+    )
+
+
+def refresh_stable_aliases(
+    client,
+    bucket: str,
+    *,
+    csv_key: str,
+    csv_data: bytes,
+    parquet_key: str,
+    parquet_data: bytes,
+) -> None:
+    aliases = (
+        (csv_key, csv_data, "text/csv"),
+        (
+            parquet_key,
+            parquet_data,
+            "application/vnd.apache.parquet",
+        ),
+    )
+    snapshots = {
+        key: fetch_object_snapshot(client, bucket, key)
+        for key, _data, _content_type in aliases
+    }
+    for attempt in range(1, ALIAS_WRITE_ATTEMPTS + 1):
+        try:
+            for key, data, content_type in aliases:
+                upload(
+                    client,
+                    bucket,
+                    key,
+                    data,
+                    content_type,
+                    cache_control=CACHE_CONTROL_LATEST,
+                )
+        except Exception:
+            try:
+                for key, _data, _content_type in aliases:
+                    restore_object_snapshot(
+                        client,
+                        bucket,
+                        key,
+                        snapshots[key],
+                    )
+            except Exception as rollback_exc:
+                raise RuntimeError(
+                    "stable company aliases failed to publish and rollback"
+                ) from rollback_exc
+            if attempt == ALIAS_WRITE_ATTEMPTS:
+                raise
+            print(
+                "  stable alias pair failed and was rolled back; "
+                f"retrying ({attempt}/{ALIAS_WRITE_ATTEMPTS})"
+            )
+            continue
+        return
+    raise AssertionError("unreachable")
+
+
 def delete_legacy(client, bucket: str) -> None:
     """One-shot cleanup of the old companies layout. Idempotent — if
     the prefix is already empty the loop is a no-op."""
@@ -408,31 +506,23 @@ def main() -> None:
         "parquet_sha256": parquet_sha256,
     }
 
-    print("\n== Step 3: patch manifest.json")
+    print("\n== Step 3: refresh stable aggregate aliases")
+    refresh_stable_aliases(
+        client,
+        bucket,
+        csv_key=stable_csv_key,
+        csv_data=agg_csv,
+        parquet_key=stable_parquet_key,
+        parquet_data=agg_parquet,
+    )
+
+    print("\n== Step 4: patch manifest.json")
     patch_manifest(
         client,
         bucket,
         aggregate_entry=aggregate_entry,
         by_ats_entries=by_ats_entries,
         aggregate_rows=agg_rows,
-    )
-
-    print("\n== Step 4: refresh stable aggregate aliases")
-    upload(
-        client,
-        bucket,
-        stable_csv_key,
-        agg_csv,
-        "text/csv",
-        cache_control=CACHE_CONTROL_LATEST,
-    )
-    upload(
-        client,
-        bucket,
-        stable_parquet_key,
-        agg_parquet,
-        "application/vnd.apache.parquet",
-        cache_control=CACHE_CONTROL_LATEST,
     )
 
     # Disabled-source objects are deliberately retained as unadvertised

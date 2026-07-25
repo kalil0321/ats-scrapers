@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from io import BytesIO
 from pathlib import Path
 from types import ModuleType
 
@@ -68,6 +69,36 @@ def test_disabled_company_artifact_is_left_unadvertised(
             assert kwargs["if_none_match"] is None
 
     monkeypatch.setattr(module, "upload", record_upload)
+
+    def record_alias_refresh(
+        _client: object,
+        _bucket: str,
+        *,
+        csv_key: str,
+        csv_data: bytes,
+        parquet_key: str,
+        parquet_data: bytes,
+    ) -> None:
+        record_upload(
+            _client,
+            _bucket,
+            csv_key,
+            csv_data,
+            "text/csv",
+        )
+        record_upload(
+            _client,
+            _bucket,
+            parquet_key,
+            parquet_data,
+            "application/vnd.apache.parquet",
+        )
+
+    monkeypatch.setattr(
+        module,
+        "refresh_stable_aliases",
+        record_alias_refresh,
+    )
     monkeypatch.setattr(
         module,
         "delete_legacy",
@@ -90,16 +121,87 @@ def test_disabled_company_artifact_is_left_unadvertised(
         f"{module.PREFIX}/greenhouse/companies.csv",
         aggregate_csv_key,
         aggregate_parquet_key,
-        f"{module.PREFIX}/manifest.json",
         f"{module.PREFIX}/companies.csv",
         f"{module.PREFIX}/companies.parquet",
+        f"{module.PREFIX}/manifest.json",
     ]
     assert operations == [
-        *(f"upload:{key}" for key in uploaded_keys[:3]),
+        *(f"upload:{key}" for key in uploaded_keys[:5]),
         "fetch_manifest",
-        f"upload:{uploaded_keys[3]}",
-        *(f"upload:{key}" for key in uploaded_keys[4:]),
+        f"upload:{uploaded_keys[5]}",
     ]
+
+
+class _AliasClient:
+    def __init__(self, objects: dict[str, tuple[bytes, str, str | None]]) -> None:
+        self.objects = objects
+
+    def get_object(self, **kwargs: str) -> dict[str, object]:
+        body, content_type, cache_control = self.objects[kwargs["Key"]]
+        return {
+            "Body": BytesIO(body),
+            "ContentType": content_type,
+            "CacheControl": cache_control,
+        }
+
+    def delete_objects(self, **kwargs: object) -> dict[str, object]:
+        delete = kwargs["Delete"]
+        assert isinstance(delete, dict)
+        for item in delete["Objects"]:
+            self.objects.pop(item["Key"], None)
+        return {}
+
+
+def test_stable_alias_failure_rolls_back_both_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_publish_companies()
+    csv_key = f"{module.PREFIX}/companies.csv"
+    parquet_key = f"{module.PREFIX}/companies.parquet"
+    old_csv = b"old csv"
+    old_parquet = b"old parquet"
+    new_csv = b"new csv"
+    new_parquet = b"new parquet"
+    client = _AliasClient({
+        csv_key: (old_csv, "text/csv", module.CACHE_CONTROL_LATEST),
+        parquet_key: (
+            old_parquet,
+            "application/vnd.apache.parquet",
+            module.CACHE_CONTROL_LATEST,
+        ),
+    })
+
+    def fail_new_parquet(
+        _client: _AliasClient,
+        _bucket: str,
+        key: str,
+        body: bytes,
+        content_type: str,
+        *,
+        cache_control: str | None = None,
+        **_kwargs: object,
+    ) -> None:
+        if key == parquet_key and body == new_parquet:
+            raise ClientError(
+                {"Error": {"Code": "InternalError"}},
+                "PutObject",
+            )
+        client.objects[key] = (body, content_type, cache_control)
+
+    monkeypatch.setattr(module, "upload", fail_new_parquet)
+
+    with pytest.raises(ClientError):
+        module.refresh_stable_aliases(
+            client,
+            "bucket",
+            csv_key=csv_key,
+            csv_data=new_csv,
+            parquet_key=parquet_key,
+            parquet_data=new_parquet,
+        )
+
+    assert client.objects[csv_key][0] == old_csv
+    assert client.objects[parquet_key][0] == old_parquet
 
 
 def test_manifest_patch_retries_after_concurrent_jobs_write(
