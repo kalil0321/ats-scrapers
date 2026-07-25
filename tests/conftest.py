@@ -91,6 +91,22 @@ class FakeR2:
             cache_control=cache_control,
         )
 
+    def copy(
+        self,
+        source_key: str,
+        destination_key: str,
+        *,
+        content_type: str | None = None,
+        cache_control: str | None = None,
+    ) -> str:
+        source = self.uploads[source_key]
+        return self.upload_bytes(
+            source["data"],
+            destination_key,
+            content_type=content_type,
+            cache_control=cache_control,
+        )
+
     def list(self, prefix: str = ""):
         for key in self.uploads:
             if key.startswith(prefix):

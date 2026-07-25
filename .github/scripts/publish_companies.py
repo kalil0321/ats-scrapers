@@ -3,21 +3,19 @@
 Triggered by `.github/workflows/publish-ats-companies.yml` whenever a
 tenant CSV under ``ats-companies/`` lands on ``main``. Behaviour:
 
-1. For each ``ats-companies/<ats>.csv`` upload to
-   ``s3://<bucket>/jobhive/v1/<ats>/companies.csv``.
+1. For each ``ats-companies/<ats>.csv`` upload an immutable object to
+   ``s3://<bucket>/jobhive/v1/<ats>/company-snapshots/<sha>.csv``.
 2. Build an aggregated ``companies.{csv,parquet}`` that concatenates
    every per-ATS file with an extra ``ats`` column. Upload immutable,
    content-addressed objects for the manifest.
-3. Refresh the stable
-   ``s3://<bucket>/jobhive/v1/companies.{csv,parquet}`` aliases for
-   backwards compatibility. A failed pair update restores both aliases
-   to their previous generation before retrying or failing. Rollback
-   itself is retried, and a subsequent manifest failure also restores
-   the previous aliases.
-4. Patch ``manifest.json`` in place: refresh the top-level
+3. Patch ``manifest.json`` in place: refresh the top-level
    ``companies`` entry and the per-ATS ``by_ats_companies`` map. Other
    fields (``by_ats`` for jobs, ``all``, ``stats``…) are preserved
    untouched — they're owned by the publisher pipeline, not the CI.
+4. Refresh the stable per-ATS ``companies.csv`` files and aggregate
+   ``companies.{csv,parquet}`` aliases for backwards compatibility. A
+   failed generation update restores every alias to its previous bytes
+   before retrying or failing. Rollback itself is retried.
 5. Delete the now-obsolete legacy paths
    (``companies/all.csv`` + ``companies/by-ats/*``).
 
@@ -396,8 +394,10 @@ def refresh_stable_aliases(
     csv_data: bytes,
     parquet_key: str,
     parquet_data: bytes,
+    additional_aliases: tuple[tuple[str, bytes, str], ...] = (),
 ) -> dict[str, tuple[bytes, str, str | None] | None]:
     aliases = (
+        *additional_aliases,
         (csv_key, csv_data, "text/csv"),
         (
             parquet_key,
@@ -453,32 +453,26 @@ def publish_aggregate_generation(
     aggregate_entry: dict[str, Any],
     by_ats_entries: dict[str, dict[str, Any]],
     aggregate_rows: int,
+    additional_aliases: tuple[tuple[str, bytes, str], ...] = (),
 ) -> None:
-    print("\n== Step 3: refresh stable aggregate aliases")
-    snapshots = refresh_stable_aliases(
+    print("\n== Step 3: patch manifest.json")
+    patch_manifest(
+        client,
+        bucket,
+        aggregate_entry=aggregate_entry,
+        by_ats_entries=by_ats_entries,
+        aggregate_rows=aggregate_rows,
+    )
+    print("\n== Step 4: refresh stable company aliases")
+    refresh_stable_aliases(
         client,
         bucket,
         csv_key=csv_key,
         csv_data=csv_data,
         parquet_key=parquet_key,
         parquet_data=parquet_data,
+        additional_aliases=additional_aliases,
     )
-    try:
-        print("\n== Step 4: patch manifest.json")
-        patch_manifest(
-            client,
-            bucket,
-            aggregate_entry=aggregate_entry,
-            by_ats_entries=by_ats_entries,
-            aggregate_rows=aggregate_rows,
-        )
-    except Exception:
-        restore_stable_aliases(
-            client,
-            bucket,
-            snapshots=snapshots,
-        )
-        raise
 
 
 def delete_legacy(client, bucket: str) -> None:
@@ -560,12 +554,23 @@ def main() -> None:
 
     ats_files: dict[str, bytes] = {}
     by_ats_entries: dict[str, dict[str, Any]] = {}
+    per_ats_aliases: list[tuple[str, bytes, str]] = []
+    immutable_per_ats: list[tuple[str, bytes]] = []
     for path in csvs:
         ats = path.stem
         data = read_csv(path)
         ats_files[ats] = data
-        key = f"{PREFIX}/{ats}/companies.csv"
-        by_ats_entries[ats] = file_entry(public_url(bucket, key), data=data)
+        sha256 = sha256_bytes(data)
+        immutable_key = (
+            f"{PREFIX}/{ats}/company-snapshots/{sha256}.csv"
+        )
+        stable_key = f"{PREFIX}/{ats}/companies.csv"
+        immutable_per_ats.append((immutable_key, data))
+        per_ats_aliases.append((stable_key, data, "text/csv"))
+        by_ats_entries[ats] = file_entry(
+            public_url(bucket, immutable_key),
+            data=data,
+        )
 
     agg_csv, agg_parquet, agg_rows = build_aggregated(ats_files)
     csv_sha256 = sha256_bytes(agg_csv)
@@ -577,10 +582,16 @@ def main() -> None:
     stable_csv_key = f"{PREFIX}/companies.csv"
     stable_parquet_key = f"{PREFIX}/companies.parquet"
 
-    print(f"== Step 1: upload {len(csvs)} per-ATS companies.csv files")
-    for ats, data in ats_files.items():
-        key = f"{PREFIX}/{ats}/companies.csv"
-        upload(client, bucket, key, data, "text/csv")
+    print(f"== Step 1: upload {len(csvs)} immutable per-ATS company files")
+    for key, data in immutable_per_ats:
+        upload(
+            client,
+            bucket,
+            key,
+            data,
+            "text/csv",
+            cache_control=CACHE_CONTROL_IMMUTABLE,
+        )
 
     print("\n== Step 2: upload aggregated companies.{csv,parquet}")
     upload(
@@ -619,6 +630,7 @@ def main() -> None:
         aggregate_entry=aggregate_entry,
         by_ats_entries=by_ats_entries,
         aggregate_rows=agg_rows,
+        additional_aliases=tuple(per_ats_aliases),
     )
 
     # Disabled-source objects are deliberately retained as unadvertised

@@ -3,9 +3,10 @@
 Layout produced under ``<prefix>`` (default ``jobhive/v1``):
 
     jobhive/v1/manifest.json
-    jobhive/v1/all.{csv,parquet}     # full snapshot, both formats
-    jobhive/v1/<ats>/jobs.csv        # per-ATS jobs slice
-    jobhive/v1/<ats>/jobs.parquet    # idem in parquet
+    jobhive/v1/job-snapshots/<sha>.{csv,parquet}
+    jobhive/v1/<ats>/job-snapshots/<sha>.{csv,parquet}
+    jobhive/v1/all.{csv,parquet}     # backwards-compatible aliases
+    jobhive/v1/<ats>/jobs.{csv,parquet}  # backwards-compatible aliases
 
 Tenant lists (``<ats>/companies.csv`` and the aggregated
 ``companies.{csv,parquet}``) are owned by the GitHub Actions workflow
@@ -85,6 +86,7 @@ DEFAULT_PREFIX = "jobhive/v1"
 CACHE_CONTROL_LATEST = "public, max-age=300"  # manifest + latest data files
 CACHE_CONTROL_IMMUTABLE = "public, max-age=31536000, immutable"
 MANIFEST_WRITE_ATTEMPTS = 5
+ALIAS_COPY_ATTEMPTS = 3
 
 # ``all`` ships both formats — parquet for typed pandas / DuckDB
 # consumers, CSV (~2.3 GB at the current ~4M-row corpus) for
@@ -115,6 +117,13 @@ class PublishResult:
     total_jobs_raw: int = 0
     ats_count: int = 0
     duration_seconds: float = 0.0
+
+
+@dataclass(frozen=True)
+class AliasCopy:
+    source_key: str
+    destination_key: str
+    content_type: str
 
 
 class DatasetPublisher:
@@ -187,6 +196,7 @@ class DatasetPublisher:
         with ExitStack() as stack:
             per_ats_csv_paths: dict[str, Path] = {}
             per_ats_entries: dict[ATSType, dict[str, object]] = {}
+            alias_copies: list[AliasCopy] = []
             schema_union: list[str] = []
             seen_cols: set[str] = set()
 
@@ -237,11 +247,12 @@ class DatasetPublisher:
                 lf.sink_csv(csv_path)
                 per_ats_csv_paths[ats.value] = csv_path
 
-                entry, _ = self._upload_per_ats_streaming(
+                entry, _, aliases = self._upload_per_ats_streaming(
                     csv_path=csv_path,
                     base_key=f"{self._prefix}/{ats.value}/jobs",
                 )
                 per_ats_entries[ats] = entry
+                alias_copies.extend(aliases)
                 files_uploaded.extend(_collect_uploaded_keys(entry))
 
             if not any_csv_found:
@@ -264,12 +275,13 @@ class DatasetPublisher:
             )
 
             # ---- Pass 3: stream all.parquet from the per-ATS temp CSVs ------
-            all_entry = self._stream_write_all_polars(
+            all_entry, all_aliases = self._stream_write_all_polars(
                 per_ats_csv_paths=per_ats_csv_paths,
                 survivors=survivors,
                 schema_union=schema_union,
                 rows_total=n_kept,
             )
+            alias_copies.extend(all_aliases)
             files_uploaded.extend(_collect_uploaded_keys(all_entry))
 
             manifest_key = self._patch_and_upload_manifest(
@@ -287,6 +299,10 @@ class DatasetPublisher:
                 existing_manifest=existing_manifest,
             )
             files_uploaded.append(manifest_key)
+            self._refresh_job_aliases(alias_copies)
+            files_uploaded.extend(
+                alias.destination_key for alias in alias_copies
+            )
 
             deleted = self.prune_legacy_paths()
             if deleted:
@@ -330,7 +346,7 @@ class DatasetPublisher:
         *,
         csv_path: Path,
         base_key: str,
-    ) -> tuple[dict[str, object], int]:
+    ) -> tuple[dict[str, object], int, list[AliasCopy]]:
         """Upload a per-ATS slice from a sunk temp CSV.
 
         Hashes + uploads the CSV, then ``scan_csv`` → ``sink_parquet``
@@ -338,15 +354,18 @@ class DatasetPublisher:
         table in RAM). Returns the manifest entry and the row count.
         """
         entry: dict[str, object] = {}
+        aliases: list[AliasCopy] = []
 
-        csv_key = f"{base_key}.csv"
+        stable_csv_key = f"{base_key}.csv"
         csv_sha, csv_size = _file_sha_size(csv_path)
+        csv_key = f"{base_key}-snapshots/{csv_sha}.csv"
         self._r2.upload(
             csv_path,
             csv_key,
             content_type="text/csv",
-            cache_control=CACHE_CONTROL_LATEST,
+            cache_control=CACHE_CONTROL_IMMUTABLE,
         )
+        aliases.append(AliasCopy(csv_key, stable_csv_key, "text/csv"))
         entry["csv"] = self._public_or_key(csv_key)
         entry["size_bytes"] = csv_size
         entry["sha256"] = csv_sha
@@ -362,23 +381,33 @@ class DatasetPublisher:
         entry["rows"] = n_rows
 
         if self._write_parquet:
-            parquet_key = f"{base_key}.parquet"
+            stable_parquet_key = f"{base_key}.parquet"
             with _temp_file(".parquet") as pq_path:
                 pl.scan_csv(csv_path, **_SCAN_CSV_KWARGS).sink_parquet(
                     pq_path, compression="zstd"
                 )
                 pq_sha, pq_size = _file_sha_size(pq_path)
+                parquet_key = (
+                    f"{base_key}-snapshots/{pq_sha}.parquet"
+                )
                 self._r2.upload(
                     pq_path,
                     parquet_key,
                     content_type="application/vnd.apache.parquet",
-                    cache_control=CACHE_CONTROL_LATEST,
+                    cache_control=CACHE_CONTROL_IMMUTABLE,
                 )
+            aliases.append(
+                AliasCopy(
+                    parquet_key,
+                    stable_parquet_key,
+                    "application/vnd.apache.parquet",
+                )
+            )
             entry["parquet"] = self._public_or_key(parquet_key)
             entry["parquet_size_bytes"] = pq_size
             entry["parquet_sha256"] = pq_sha
 
-        return entry, n_rows
+        return entry, n_rows, aliases
 
     def _stream_write_all_polars(
         self,
@@ -387,7 +416,7 @@ class DatasetPublisher:
         survivors: dict[str, pl.DataFrame],
         schema_union: list[str],
         rows_total: int,
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], list[AliasCopy]]:
         """Stream the global ``all.parquet`` from the per-ATS temp CSVs.
 
         Three stages, all streaming:
@@ -409,6 +438,7 @@ class DatasetPublisher:
            materialized whole.
         """
         all_entry: dict[str, object] = {"rows": rows_total}
+        aliases: list[AliasCopy] = []
 
         with ExitStack() as stage_stack:
             per_ats_parquets: list[Path] = []
@@ -444,13 +474,23 @@ class DatasetPublisher:
                 ).write_parquet(all_pq, compression="zstd")
 
             if "parquet" in FORMATS_ALL and self._write_parquet:
-                pq_key = f"{self._prefix}/all.parquet"
+                stable_pq_key = f"{self._prefix}/all.parquet"
                 pq_sha, pq_size = _file_sha_size(all_pq)
+                pq_key = (
+                    f"{self._prefix}/job-snapshots/{pq_sha}.parquet"
+                )
                 self._r2.upload(
                     all_pq,
                     pq_key,
                     content_type="application/vnd.apache.parquet",
-                    cache_control=CACHE_CONTROL_LATEST,
+                    cache_control=CACHE_CONTROL_IMMUTABLE,
+                )
+                aliases.append(
+                    AliasCopy(
+                        pq_key,
+                        stable_pq_key,
+                        "application/vnd.apache.parquet",
+                    )
                 )
                 all_entry["parquet"] = self._public_or_key(pq_key)
                 all_entry["parquet_size_bytes"] = pq_size
@@ -459,16 +499,22 @@ class DatasetPublisher:
                 all_entry["sha256"] = pq_sha
 
             if "csv" in FORMATS_ALL and self._write_all_csv:
-                csv_key = f"{self._prefix}/all.csv"
+                stable_csv_key = f"{self._prefix}/all.csv"
                 with _temp_file(".csv") as all_csv:
                     pl.scan_parquet(all_pq).sink_csv(all_csv)
                     csv_sha, csv_size = _file_sha_size(all_csv)
+                    csv_key = (
+                        f"{self._prefix}/job-snapshots/{csv_sha}.csv"
+                    )
                     self._r2.upload(
                         all_csv,
                         csv_key,
                         content_type="text/csv",
-                        cache_control=CACHE_CONTROL_LATEST,
+                        cache_control=CACHE_CONTROL_IMMUTABLE,
                     )
+                aliases.append(
+                    AliasCopy(csv_key, stable_csv_key, "text/csv")
+                )
                 all_entry["csv"] = self._public_or_key(csv_key)
                 # CSV's size + sha live in the canonical ``size_bytes``
                 # / ``sha256`` slots (consumers default-fetching the
@@ -477,7 +523,32 @@ class DatasetPublisher:
                 all_entry["size_bytes"] = csv_size
                 all_entry["sha256"] = csv_sha
 
-        return all_entry
+        return all_entry, aliases
+
+    def _refresh_job_aliases(
+        self,
+        aliases: list[AliasCopy],
+    ) -> None:
+        for attempt in range(1, ALIAS_COPY_ATTEMPTS + 1):
+            try:
+                for alias in aliases:
+                    self._r2.copy(
+                        alias.source_key,
+                        alias.destination_key,
+                        content_type=alias.content_type,
+                        cache_control=CACHE_CONTROL_LATEST,
+                    )
+            except StorageError:
+                if attempt == ALIAS_COPY_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "Job alias refresh failed; retrying (%d/%d)",
+                    attempt,
+                    ALIAS_COPY_ATTEMPTS,
+                )
+                continue
+            return
+        raise AssertionError("unreachable")
 
     def _patch_and_upload_manifest(
         self,

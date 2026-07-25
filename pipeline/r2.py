@@ -1,7 +1,7 @@
 """Thin Cloudflare R2 client built on boto3's S3-compatible client.
 
-Kept narrow on purpose: upload/download/head/list. Anything more exotic should
-go through boto3 directly.
+Kept narrow on purpose: upload/copy/download/head/list. Anything more exotic
+should go through boto3 directly.
 """
 
 from __future__ import annotations
@@ -199,6 +199,38 @@ class R2Client:
         except Exception as exc:
             raise StorageError(f"R2 upload failed for {key}: {exc}") from exc
         return key
+
+    def copy(
+        self,
+        source_key: str,
+        destination_key: str,
+        *,
+        content_type: str | None = None,
+        cache_control: str | None = None,
+    ) -> str:
+        extra: dict[str, Any] = {
+            "CopySource": {
+                "Bucket": self.bucket,
+                "Key": source_key,
+            },
+            "MetadataDirective": "REPLACE",
+        }
+        if content_type:
+            extra["ContentType"] = content_type
+        if cache_control:
+            extra["CacheControl"] = cache_control
+        try:
+            self._client.copy_object(
+                Bucket=self.bucket,
+                Key=destination_key,
+                **extra,
+            )
+        except Exception as exc:
+            raise StorageError(
+                f"R2 copy failed for {source_key} → "
+                f"{destination_key}: {exc}"
+            ) from exc
+        return destination_key
 
     def head(self, key: str) -> dict[str, Any] | None:
         try:

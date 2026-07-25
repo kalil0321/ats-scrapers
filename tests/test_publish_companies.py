@@ -78,7 +78,16 @@ def test_disabled_company_artifact_is_left_unadvertised(
         csv_data: bytes,
         parquet_key: str,
         parquet_data: bytes,
+        additional_aliases: tuple[tuple[str, bytes, str], ...] = (),
     ) -> dict[str, tuple[bytes, str, str | None] | None]:
+        for key, data, content_type in additional_aliases:
+            record_upload(
+                _client,
+                _bucket,
+                key,
+                data,
+                content_type,
+            )
         record_upload(
             _client,
             _bucket,
@@ -123,18 +132,26 @@ def test_disabled_company_artifact_is_left_unadvertised(
         if key.startswith(f"{module.PREFIX}/company-aggregates/")
         and key.endswith(".parquet")
     )
+    per_ats_snapshot_key = next(
+        key for key in uploaded_keys
+        if key.startswith(
+            f"{module.PREFIX}/greenhouse/company-snapshots/"
+        )
+        and key.endswith(".csv")
+    )
     assert uploaded_keys == [
-        f"{module.PREFIX}/greenhouse/companies.csv",
+        per_ats_snapshot_key,
         aggregate_csv_key,
         aggregate_parquet_key,
+        f"{module.PREFIX}/manifest.json",
+        f"{module.PREFIX}/greenhouse/companies.csv",
         f"{module.PREFIX}/companies.csv",
         f"{module.PREFIX}/companies.parquet",
-        f"{module.PREFIX}/manifest.json",
     ]
     assert operations == [
-        *(f"upload:{key}" for key in uploaded_keys[:5]),
+        *(f"upload:{key}" for key in uploaded_keys[:3]),
         "fetch_manifest",
-        f"upload:{uploaded_keys[5]}",
+        *(f"upload:{key}" for key in uploaded_keys[3:]),
     ]
 
 
@@ -279,25 +296,23 @@ def test_stable_alias_rollback_retries_transient_failures(
     assert client.objects[parquet_key][0] == old_parquet
 
 
-def test_manifest_failure_restores_previous_alias_generation(
+def test_manifest_failure_does_not_refresh_stable_aliases(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _load_publish_companies()
     csv_key = f"{module.PREFIX}/companies.csv"
     parquet_key = f"{module.PREFIX}/companies.parquet"
-    snapshots = {
-        csv_key: (b"old csv", "text/csv", module.CACHE_CONTROL_LATEST),
-        parquet_key: (
-            b"old parquet",
-            "application/vnd.apache.parquet",
-            module.CACHE_CONTROL_LATEST,
-        ),
-    }
-    restored: list[dict[str, object]] = []
+    per_ats_key = f"{module.PREFIX}/greenhouse/companies.csv"
+    refreshed = False
+
+    def record_refresh(*_args: object, **_kwargs: object) -> None:
+        nonlocal refreshed
+        refreshed = True
+
     monkeypatch.setattr(
         module,
         "refresh_stable_aliases",
-        lambda *_args, **_kwargs: snapshots,
+        record_refresh,
     )
     monkeypatch.setattr(
         module,
@@ -305,11 +320,6 @@ def test_manifest_failure_restores_previous_alias_generation(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("manifest contention")
         ),
-    )
-    monkeypatch.setattr(
-        module,
-        "restore_stable_aliases",
-        lambda *_args, **kwargs: restored.append(kwargs),
     )
 
     with pytest.raises(RuntimeError, match="manifest contention"):
@@ -323,9 +333,12 @@ def test_manifest_failure_restores_previous_alias_generation(
             aggregate_entry={"rows": 1},
             by_ats_entries={"greenhouse": {"rows": 1}},
             aggregate_rows=1,
+            additional_aliases=(
+                (per_ats_key, b"new per ats csv", "text/csv"),
+            ),
         )
 
-    assert restored == [{"snapshots": snapshots}]
+    assert refreshed is False
 
 
 def test_manifest_patch_retries_after_concurrent_jobs_write(

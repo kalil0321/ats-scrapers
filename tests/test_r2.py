@@ -148,6 +148,7 @@ class FakeBoto3Client:
     def __init__(self) -> None:
         self.uploaded_files: list[tuple[str, str, str, dict]] = []
         self.put_objects: list[dict] = []
+        self.copy_objects: list[dict] = []
         self.head_responses: dict[str, dict] = {}
         self.get_responses: dict[str, dict] = {}
         self.delete_response: dict = {}
@@ -157,6 +158,9 @@ class FakeBoto3Client:
 
     def put_object(self, *, Bucket: str, Key: str, Body: bytes, **extra) -> None:  # noqa: N803
         self.put_objects.append({"Bucket": Bucket, "Key": Key, "Body": Body, **extra})
+
+    def copy_object(self, **kwargs) -> None:
+        self.copy_objects.append(kwargs)
 
     def head_object(self, *, Bucket: str, Key: str):  # noqa: N803
         if Key in self.head_responses:
@@ -254,6 +258,31 @@ def test_conditional_upload_uses_create_precondition(
         expected_etag=None,
     )
     assert fake.put_objects[0]["IfNoneMatch"] == "*"
+
+
+def test_copy_uses_server_side_object_copy(
+    fake_r2_client: tuple[R2Client, FakeBoto3Client],
+) -> None:
+    client, fake = fake_r2_client
+
+    client.copy(
+        "jobhive/v1/job-snapshots/source.csv",
+        "jobhive/v1/all.csv",
+        content_type="text/csv",
+        cache_control="public, max-age=300",
+    )
+
+    assert fake.copy_objects == [{
+        "Bucket": "bucket",
+        "Key": "jobhive/v1/all.csv",
+        "CopySource": {
+            "Bucket": "bucket",
+            "Key": "jobhive/v1/job-snapshots/source.csv",
+        },
+        "MetadataDirective": "REPLACE",
+        "ContentType": "text/csv",
+        "CacheControl": "public, max-age=300",
+    }]
 
 
 def test_get_bytes_with_etag(

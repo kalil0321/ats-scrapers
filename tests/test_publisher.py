@@ -3,7 +3,9 @@
 Covers the v2.0 layout:
 
     jobhive/v1/manifest.json
-    jobhive/v1/all.parquet
+    jobhive/v1/job-snapshots/<sha>.{csv,parquet}
+    jobhive/v1/<ats>/job-snapshots/<sha>.{csv,parquet}
+    jobhive/v1/all.{csv,parquet}
     jobhive/v1/<ats>/jobs.{csv,parquet}
 
 The publisher owns jobs entries in ``manifest.json``. Companies (top-level
@@ -22,7 +24,7 @@ import json
 import pandas as pd
 import pytest
 
-from ats_scrapers.exceptions import StorageError
+from ats_scrapers.exceptions import StorageConflictError, StorageError
 from pipeline.publisher import (
     CACHE_CONTROL_LATEST,
     DEFAULT_PREFIX,
@@ -181,9 +183,10 @@ def test_manifest_contains_expected_structure(ats_csv_dir, fake_r2) -> None:
     assert manifest["stats"]["ats_count"] == 3
     assert "greenhouse" in manifest["by_ats"]
     assert manifest["by_ats"]["greenhouse"]["rows"] == 3
-    # `all` lives at the top level now and ships both formats.
-    assert manifest["all"]["parquet"].endswith("/all.parquet")
-    assert manifest["all"]["csv"].endswith("/all.csv")
+    assert "/job-snapshots/" in manifest["all"]["parquet"]
+    assert manifest["all"]["parquet"].endswith(".parquet")
+    assert "/job-snapshots/" in manifest["all"]["csv"]
+    assert manifest["all"]["csv"].endswith(".csv")
 
 
 def test_manifest_includes_generator_string(ats_csv_dir, fake_r2) -> None:
@@ -222,8 +225,14 @@ def test_manifest_falls_back_to_keys_when_no_public_url(
     manifest = json.loads(
         fake_r2_no_public.uploads["jobhive/v1/manifest.json"]["data"]
     )
-    assert manifest["all"]["parquet"] == "jobhive/v1/all.parquet"
-    assert manifest["by_ats"]["greenhouse"]["csv"] == "jobhive/v1/greenhouse/jobs.csv"
+    assert manifest["all"]["parquet"] == (
+        "jobhive/v1/job-snapshots/"
+        f"{manifest['all']['parquet_sha256']}.parquet"
+    )
+    assert manifest["by_ats"]["greenhouse"]["csv"] == (
+        "jobhive/v1/greenhouse/jobs-snapshots/"
+        f"{manifest['by_ats']['greenhouse']['sha256']}.csv"
+    )
 
 
 def test_manifest_includes_schema_version_and_columns(ats_csv_dir, fake_r2) -> None:
@@ -312,7 +321,7 @@ def test_manifest_patch_preserves_companies_block(ats_csv_dir, fake_r2) -> None:
     assert manifest["by_ats_companies"] == pre_existing["by_ats_companies"]
     # And jobs entries got refreshed.
     assert manifest["by_ats"]["greenhouse"]["rows"] == 3
-    assert manifest["all"]["parquet"].endswith("/all.parquet")
+    assert "/job-snapshots/" in manifest["all"]["parquet"]
 
 
 def test_manifest_patch_drops_disabled_company_sources(
@@ -422,6 +431,51 @@ def test_manifest_patch_retries_after_concurrent_companies_write(
         "lever": {"rows": 1},
     }
     assert manifest["stats"]["total_companies"] == 4
+
+
+def test_manifest_contention_leaves_stable_job_aliases_unchanged(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    manifest_key = "jobhive/v1/manifest.json"
+    all_key = "jobhive/v1/all.csv"
+    greenhouse_key = "jobhive/v1/greenhouse/jobs.csv"
+    old_manifest = json.dumps({
+        "version": "2.0",
+        "all": {"csv": all_key, "rows": 2},
+        "by_ats": {
+            "greenhouse": {"csv": greenhouse_key, "rows": 2},
+        },
+    }).encode()
+    fake_r2.upload_bytes(old_manifest, manifest_key)
+    fake_r2.upload_bytes(b"old all", all_key, content_type="text/csv")
+    fake_r2.upload_bytes(
+        b"old greenhouse",
+        greenhouse_key,
+        content_type="text/csv",
+    )
+
+    def always_conflict(*_args, **_kwargs):
+        raise StorageConflictError("manifest writer won")
+
+    monkeypatch.setattr(
+        fake_r2,
+        "upload_bytes_if_current",
+        always_conflict,
+    )
+
+    with pytest.raises(StorageConflictError, match="manifest writer won"):
+        DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+            ats_csv_dir
+        )
+
+    assert fake_r2.uploads[manifest_key]["data"] == old_manifest
+    assert fake_r2.uploads[all_key]["data"] == b"old all"
+    assert fake_r2.uploads[greenhouse_key]["data"] == b"old greenhouse"
+    assert any(
+        "/job-snapshots/" in key or "/jobs-snapshots/" in key
+        for key in fake_r2.uploads
+    )
+    assert "jobhive/v1/lever/jobs.csv" not in fake_r2.uploads
 
 
 def test_disabled_company_filter_reloads_after_companies_race(
@@ -649,27 +703,28 @@ def test_manifest_content_type(ats_csv_dir, fake_r2) -> None:
 
 
 def test_manifest_uploaded_after_data_files(ats_csv_dir, fake_r2) -> None:
-    """The manifest must be uploaded last — a half-finished publish must
-    never expose a manifest pointing at missing files."""
+    """The manifest follows immutable data and precedes mutable aliases."""
     publisher = DatasetPublisher(fake_r2, write_parquet=True)
     publisher.publish_from_directory(ats_csv_dir)
-    keys = [
+    immutable_keys = [
         k
         for k in fake_r2.uploads
-        # Ignore the pre-existing manifest seeded by other tests'
-        # paths through this fixture.
-        if not k.endswith("/manifest.json")
+        if "/job-snapshots/" in k or "/jobs-snapshots/" in k
+    ]
+    alias_keys = [
+        "jobhive/v1/all.csv",
+        "jobhive/v1/all.parquet",
+        "jobhive/v1/greenhouse/jobs.csv",
+        "jobhive/v1/greenhouse/jobs.parquet",
     ]
     assert "jobhive/v1/manifest.json" in fake_r2.uploads
-    last_manifest_index = max(
-        i
-        for i, k in enumerate(fake_r2.uploads)
-        if k == "jobhive/v1/manifest.json"
+    upload_order = list(fake_r2.uploads)
+    manifest_index = upload_order.index("jobhive/v1/manifest.json")
+    last_immutable_index = max(
+        upload_order.index(key) for key in immutable_keys
     )
-    last_data_index = max(
-        i for i, k in enumerate(fake_r2.uploads) if k in keys
-    )
-    assert last_manifest_index > last_data_index
+    assert manifest_index > last_immutable_index
+    assert all(upload_order.index(key) > manifest_index for key in alias_keys)
 
 
 # --- Legacy cleanup ---------------------------------------------------------
@@ -840,8 +895,8 @@ def test_result_reports_counts_and_duration(ats_csv_dir, fake_r2) -> None:
     assert result.ats_count == 3
     assert result.duration_seconds >= 0.0
     assert result.manifest_key == "jobhive/v1/manifest.json"
-    # 3 ATS slices × 2 formats + all.{csv,parquet} + manifest.json = 9 files
-    assert len(result.files) == 9
+    # 8 immutable snapshots + manifest + 8 stable aliases.
+    assert len(result.files) == 17
 
 
 # --- Cross-ATS deduplication ------------------------------------------------
