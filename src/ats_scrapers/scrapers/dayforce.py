@@ -19,8 +19,6 @@ API_ROOT = "https://www.dayforcehcm.com/api"
 CAREERS_HOST = "jobs.dayforcehcm.com"
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _LOCALE_RE = re.compile(r"^[A-Za-z]{2}(?:-[A-Za-z]{2})?$")
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
-_WHITESPACE_RE = re.compile(r"[ \t\r\f\v]+")
 
 _EMPLOYMENT_TYPE_MAP: tuple[tuple[str, EmploymentType], ...] = (
     ("full time", "FULL_TIME"),
@@ -240,7 +238,17 @@ def _normalize_tenant_board(value: str) -> tuple[str, str]:
         segments = [segment for segment in parsed.path.split("/") if segment]
     else:
         segments = [segment for segment in raw.split("/") if segment]
-    if segments and _LOCALE_RE.fullmatch(segments[0]):
+    if (
+        segments
+        and _LOCALE_RE.fullmatch(segments[0])
+        and (
+            len(segments) == 3
+            or (
+                len(segments) in {5, 6}
+                and segments[3].casefold() == "jobs"
+            )
+        )
+    ):
         segments.pop(0)
     if len(segments) < 2:
         raise ValueError(f"Invalid Dayforce tenant/board: {value!r}")
@@ -269,27 +277,31 @@ def _validated_details_url(
 ) -> HttpUrl:
     if isinstance(value, str) and value.strip():
         candidate = value.strip()
-        parsed = urlparse(candidate)
-        segments = [segment for segment in parsed.path.split("/") if segment]
-        if segments and _LOCALE_RE.fullmatch(segments[0]):
-            segments.pop(0)
-        if (
-            parsed.scheme != "https"
-            or parsed.hostname != CAREERS_HOST
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.port not in (None, 443)
-            or len(segments) < 4
-            or len(segments) > 4
-            or segments[0].casefold() != tenant.casefold()
-            or segments[1].casefold() != board.casefold()
-            or segments[2].casefold() != "jobs"
-            or segments[3] != reference
-        ):
+        try:
+            parsed = urlparse(candidate)
+            segments = [segment for segment in parsed.path.split("/") if segment]
+            if len(segments) == 5 and _LOCALE_RE.fullmatch(segments[0]):
+                segments.pop(0)
+            if (
+                parsed.scheme != "https"
+                or parsed.hostname != CAREERS_HOST
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.port not in (None, 443)
+                or len(segments) != 4
+                or segments[0].casefold() != tenant.casefold()
+                or segments[1].casefold() != board.casefold()
+                or segments[2].casefold() != "jobs"
+                or segments[3] != reference
+            ):
+                raise ScraperError(
+                    f"Dayforce ({tenant}/{board}) returned an unsafe job URL"
+                )
+            return HttpUrl(candidate)
+        except (ValidationError, ValueError) as exc:
             raise ScraperError(
                 f"Dayforce ({tenant}/{board}) returned an unsafe job URL"
-            )
-        return HttpUrl(candidate)
+            ) from exc
     locale = culture if culture and _LOCALE_RE.fullmatch(culture) else "en-US"
     return HttpUrl(
         f"https://{CAREERS_HOST}/{locale}/{tenant}/{board}/jobs/{reference}"
@@ -309,7 +321,7 @@ def _validated_apply_url(
     try:
         parsed = urlparse(candidate)
         segments = [segment for segment in parsed.path.split("/") if segment]
-        if segments and _LOCALE_RE.fullmatch(segments[0]):
+        if len(segments) == 6 and _LOCALE_RE.fullmatch(segments[0]):
             segments.pop(0)
         if (
             parsed.scheme != "https"
@@ -357,13 +369,7 @@ def _employment_type(value: str | None) -> EmploymentType | None:
 def _clean_description(value: object) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
-    unescaped = html.unescape(value)
-    text = _HTML_TAG_RE.sub("\n", unescaped)
-    lines = [
-        _WHITESPACE_RE.sub(" ", line).strip()
-        for line in text.splitlines()
-    ]
-    return "\n".join(line for line in lines if line)[:25_000] or None
+    return html.unescape(value).strip()[:25_000] or None
 
 
 def _parse_date(value: object) -> datetime | None:

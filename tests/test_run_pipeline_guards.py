@@ -6,6 +6,7 @@ import csv
 import pytest
 
 import scripts.run_pipeline as runner
+from ats_scrapers.exceptions import CompanyNotFoundError
 from ats_scrapers.models import ATSType, Job
 
 
@@ -966,6 +967,70 @@ def test_required_shard_limit_preserves_previous_output(
 
     assert rc == 1
     assert out_path.read_text(encoding="utf-8") == previous
+    assert not (out_dir / ".jobs.csv.tmp").exists()
+
+
+@pytest.mark.parametrize("has_previous", [True, False])
+def test_required_not_found_shard_removes_partial_output(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    has_previous: bool,
+) -> None:
+    (tmp_path / "ats-companies").mkdir()
+    (tmp_path / "ats-companies" / "shards.csv").write_text(
+        "name,slug,url\nGood,good,https://good\nMissing,missing,https://missing\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "sharded"
+    out_dir.mkdir()
+    out_path = out_dir / "jobs.csv"
+    previous = (
+        "url,title,company,ats_type,ats_id\n"
+        "https://example.com/old,Old,Acme,custom,old\n"
+    )
+    if has_previous:
+        out_path.write_text(previous, encoding="utf-8")
+
+    class ShardedScraper:
+        def __init__(self, slug, **_kwargs) -> None:
+            self.slug = slug
+
+        def fetch(self):
+            if self.slug == "missing":
+                raise CompanyNotFoundError("board missing")
+            return [
+                Job(
+                    url="https://example.com/new",
+                    title="New",
+                    company="Acme",
+                    ats_type=ATSType.CUSTOM,
+                    ats_id="new",
+                )
+            ]
+
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "sharded",
+        {
+            "scraper": ShardedScraper,
+            "slug": lambda row: row["slug"],
+            "csv": "ats-companies/shards.csv",
+            "output": "sharded/jobs.csv",
+            "fail_closed_on_any_error": True,
+            "fail_closed_on_not_found": True,
+        },
+    )
+
+    rc = asyncio.run(
+        runner.run("sharded", concurrency=2, max_tenants=None, timeout=1)
+    )
+
+    assert rc == 1
+    if has_previous:
+        assert out_path.read_text(encoding="utf-8") == previous
+    else:
+        assert not out_path.exists()
     assert not (out_dir / ".jobs.csv.tmp").exists()
 
 

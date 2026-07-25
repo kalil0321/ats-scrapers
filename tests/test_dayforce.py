@@ -76,7 +76,9 @@ def test_fetches_and_maps_public_feed(httpx_mock) -> None:
     assert job.department == "Accounting"
     assert job.team == "Finance"
     assert job.language == "en"
-    assert job.description == "Lead finance operations.\nSupport patients."
+    assert job.description == (
+        "<p>Lead finance operations.</p><p>Support patients.</p>"
+    )
     assert job.posted_at is not None
     assert str(job.url).endswith("/mayfair/CANDIDATEPORTAL/jobs/3612")
     assert str(job.apply_url).endswith(
@@ -155,6 +157,7 @@ def test_duplicate_references_fail_closed(httpx_mock) -> None:
         "https://jobs.dayforcehcm.com/en-CA/other/CANDIDATEPORTAL/jobs/3612",
         "https://jobs.dayforcehcm.com/en-CA/mayfair/OTHER/jobs/3612",
         "https://jobs.dayforcehcm.com/en-CA/mayfair/CANDIDATEPORTAL/jobs/999",
+        "https://jobs.dayforcehcm.com:bad/en-CA/mayfair/CANDIDATEPORTAL/jobs/3612",
     ],
 )
 def test_unsafe_detail_url_fails_closed(httpx_mock, url: str) -> None:
@@ -179,6 +182,21 @@ def test_missing_detail_url_uses_canonical_fallback(httpx_mock) -> None:
         "https://jobs.dayforcehcm.com/en-CA/mayfair/"
         "CANDIDATEPORTAL/jobs/3612"
     )
+
+
+def test_description_preserves_html_for_pipeline_normalization(httpx_mock) -> None:
+    description = (
+        "<h2>Responsibilities</h2><ul><li>Build systems</li></ul>"
+        '<p><a href="https://example.com/team">Meet the team</a></p>'
+    )
+    httpx_mock.add_response(
+        url=API_URL,
+        json=[{**FIXTURE, "Description": description}],
+    )
+
+    job = DayforceScraper("mayfair/CANDIDATEPORTAL").fetch()[0]
+
+    assert job.description == description
 
 
 @pytest.mark.parametrize(
@@ -216,6 +234,8 @@ def test_scraper_is_registered() -> None:
     ("value", "expected"),
     [
         ("mayfair/CANDIDATEPORTAL", ("mayfair", "CANDIDATEPORTAL")),
+        ("fi/CANDIDATEPORTAL", ("fi", "CANDIDATEPORTAL")),
+        ("gm/CANDIDATEPORTAL", ("gm", "CANDIDATEPORTAL")),
         (
             "https://jobs.dayforcehcm.com/en-CA/mayfair/"
             "CANDIDATEPORTAL/jobs/3612",
@@ -224,6 +244,10 @@ def test_scraper_is_registered() -> None:
         (
             "https://jobs.dayforcehcm.com/mayfair/CANDIDATEPORTAL",
             ("mayfair", "CANDIDATEPORTAL"),
+        ),
+        (
+            "https://jobs.dayforcehcm.com/fi/CANDIDATEPORTAL/jobs/123",
+            ("fi", "CANDIDATEPORTAL"),
         ),
     ],
 )
