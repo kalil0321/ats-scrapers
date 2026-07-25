@@ -57,6 +57,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import polars as pl
 
@@ -123,6 +124,13 @@ class PublishResult:
 class AliasCopy:
     source_key: str
     destination_key: str
+    content_type: str
+
+
+@dataclass(frozen=True)
+class AliasSnapshot:
+    destination_key: str
+    rollback_key: str | None
     content_type: str
 
 
@@ -529,6 +537,7 @@ class DatasetPublisher:
         self,
         aliases: list[AliasCopy],
     ) -> None:
+        snapshots = self._snapshot_job_aliases(aliases)
         for attempt in range(1, ALIAS_COPY_ATTEMPTS + 1):
             try:
                 for alias in aliases:
@@ -539,16 +548,105 @@ class DatasetPublisher:
                         cache_control=CACHE_CONTROL_LATEST,
                     )
             except StorageError:
+                self._restore_job_aliases(snapshots)
                 if attempt == ALIAS_COPY_ATTEMPTS:
+                    self._cleanup_job_alias_snapshots(snapshots)
                     raise
                 logger.warning(
-                    "Job alias refresh failed; retrying (%d/%d)",
+                    "Job alias refresh failed and was rolled back; "
+                    "retrying (%d/%d)",
+                    attempt,
+                    ALIAS_COPY_ATTEMPTS,
+                )
+                continue
+            self._cleanup_job_alias_snapshots(snapshots)
+            return
+        raise AssertionError("unreachable")
+
+    def _snapshot_job_aliases(
+        self,
+        aliases: list[AliasCopy],
+    ) -> list[AliasSnapshot]:
+        generation = uuid4().hex
+        snapshots: list[AliasSnapshot] = []
+        try:
+            for index, alias in enumerate(aliases):
+                rollback_key: str | None = None
+                if self._r2.head(alias.destination_key) is not None:
+                    suffix = Path(alias.destination_key).suffix
+                    rollback_key = (
+                        f"{self._prefix}/job-alias-rollbacks/"
+                        f"{generation}/{index}{suffix}"
+                    )
+                    self._r2.copy(
+                        alias.destination_key,
+                        rollback_key,
+                        content_type=alias.content_type,
+                        cache_control=CACHE_CONTROL_IMMUTABLE,
+                    )
+                snapshots.append(
+                    AliasSnapshot(
+                        destination_key=alias.destination_key,
+                        rollback_key=rollback_key,
+                        content_type=alias.content_type,
+                    )
+                )
+        except StorageError:
+            self._cleanup_job_alias_snapshots(snapshots)
+            raise
+        return snapshots
+
+    def _restore_job_aliases(
+        self,
+        snapshots: list[AliasSnapshot],
+    ) -> None:
+        for attempt in range(1, ALIAS_COPY_ATTEMPTS + 1):
+            try:
+                missing: list[str] = []
+                for snapshot in snapshots:
+                    if snapshot.rollback_key is None:
+                        missing.append(snapshot.destination_key)
+                        continue
+                    self._r2.copy(
+                        snapshot.rollback_key,
+                        snapshot.destination_key,
+                        content_type=snapshot.content_type,
+                        cache_control=CACHE_CONTROL_LATEST,
+                    )
+                if missing:
+                    self._r2.delete_many(missing)
+            except StorageError as exc:
+                if attempt == ALIAS_COPY_ATTEMPTS:
+                    raise StorageError(
+                        "Stable job aliases could not be rolled back"
+                    ) from exc
+                logger.warning(
+                    "Job alias rollback failed; retrying (%d/%d)",
                     attempt,
                     ALIAS_COPY_ATTEMPTS,
                 )
                 continue
             return
         raise AssertionError("unreachable")
+
+    def _cleanup_job_alias_snapshots(
+        self,
+        snapshots: list[AliasSnapshot],
+    ) -> None:
+        keys = [
+            snapshot.rollback_key
+            for snapshot in snapshots
+            if snapshot.rollback_key is not None
+        ]
+        if not keys:
+            return
+        try:
+            self._r2.delete_many(keys)
+        except StorageError:
+            logger.warning(
+                "Could not delete %d temporary job alias snapshots",
+                len(keys),
+            )
 
     def _patch_and_upload_manifest(
         self,

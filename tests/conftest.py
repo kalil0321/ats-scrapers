@@ -107,6 +107,16 @@ class FakeR2:
             cache_control=cache_control,
         )
 
+    def head(self, key: str) -> dict[str, Any] | None:
+        entry = self.uploads.get(key)
+        if entry is None:
+            return None
+        return {
+            "ContentLength": len(entry["data"]),
+            "ContentType": entry["content_type"],
+            "CacheControl": entry["cache_control"],
+        }
+
     def list(self, prefix: str = ""):
         for key in self.uploads:
             if key.startswith(prefix):

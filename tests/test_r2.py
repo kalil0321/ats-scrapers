@@ -165,7 +165,15 @@ class FakeBoto3Client:
     def head_object(self, *, Bucket: str, Key: str):  # noqa: N803
         if Key in self.head_responses:
             return self.head_responses[Key]
-        raise Exception("404")
+        from botocore.exceptions import ClientError
+
+        raise ClientError(
+            {
+                "Error": {"Code": "NotFound"},
+                "ResponseMetadata": {"HTTPStatusCode": 404},
+            },
+            "HeadObject",
+        )
 
     def get_object(self, *, Bucket: str, Key: str):  # noqa: N803
         return self.get_responses[Key]
@@ -331,6 +339,21 @@ def test_head_returns_none_when_object_missing(
 ) -> None:
     client, _ = fake_r2_client
     assert client.head("missing/key") is None
+
+
+def test_head_raises_on_storage_failure(
+    fake_r2_client: tuple[R2Client, FakeBoto3Client],
+) -> None:
+    client, fake = fake_r2_client
+
+    def fail_head(*, Bucket: str, Key: str):  # noqa: N803
+        del Bucket, Key
+        raise RuntimeError("connection dropped")
+
+    fake.head_object = fail_head  # type: ignore[method-assign]
+
+    with pytest.raises(StorageError, match="connection dropped"):
+        client.head("jobhive/v1/all.csv")
 
 
 def test_list_iterates_paginated_results(

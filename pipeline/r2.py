@@ -233,10 +233,20 @@ class R2Client:
         return destination_key
 
     def head(self, key: str) -> dict[str, Any] | None:
+        from botocore.exceptions import ClientError
+
         try:
             return self._client.head_object(Bucket=self.bucket, Key=key)
-        except Exception:
-            return None
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            status = exc.response.get("ResponseMetadata", {}).get(
+                "HTTPStatusCode"
+            )
+            if status == 404 or code in {"404", "NoSuchKey", "NotFound"}:
+                return None
+            raise StorageError(f"R2 head failed for {key}: {exc}") from exc
+        except Exception as exc:
+            raise StorageError(f"R2 head failed for {key}: {exc}") from exc
 
     def get_bytes(self, key: str) -> bytes | None:
         """Return the object body, or ``None`` if the key doesn't exist.

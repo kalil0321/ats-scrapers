@@ -517,6 +517,61 @@ def test_lost_manifest_success_response_still_refreshes_job_aliases(
     )
 
 
+def test_persistent_alias_copy_failure_restores_every_stable_job_alias(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+    stable_keys = [
+        "jobhive/v1/all.csv",
+        "jobhive/v1/all.parquet",
+        *[
+            f"jobhive/v1/{ats}/jobs.{extension}"
+            for ats in ("ashby", "greenhouse", "lever")
+            for extension in ("csv", "parquet")
+        ],
+    ]
+    previous = {
+        key: fake_r2.uploads[key]["data"]
+        for key in stable_keys
+    }
+    ashby_csv = ats_csv_dir / "ashby" / "jobs.csv"
+    ashby_frame = pd.read_csv(ashby_csv)
+    ashby_frame.loc[0, "title"] = "Updated Engineer"
+    ashby_frame.to_csv(ashby_csv, index=False)
+    original_copy = fake_r2.copy
+
+    def fail_new_ashby_parquet(
+        source_key: str,
+        destination_key: str,
+        **kwargs,
+    ):
+        if (
+            destination_key == "jobhive/v1/ashby/jobs.parquet"
+            and "/jobs-snapshots/" in source_key
+        ):
+            raise StorageError("persistent copy failure")
+        return original_copy(
+            source_key,
+            destination_key,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(fake_r2, "copy", fail_new_ashby_parquet)
+
+    with pytest.raises(StorageError, match="persistent copy failure"):
+        publisher.publish_from_directory(ats_csv_dir)
+
+    assert {
+        key: fake_r2.uploads[key]["data"]
+        for key in stable_keys
+    } == previous
+    assert not any(
+        "/job-alias-rollbacks/" in key
+        for key in fake_r2.uploads
+    )
+
+
 def test_disabled_company_filter_reloads_after_companies_race(
     ats_csv_dir, fake_r2, monkeypatch
 ) -> None:
