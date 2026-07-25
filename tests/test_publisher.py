@@ -478,6 +478,45 @@ def test_manifest_contention_leaves_stable_job_aliases_unchanged(
     assert "jobhive/v1/lever/jobs.csv" not in fake_r2.uploads
 
 
+def test_lost_manifest_success_response_still_refreshes_job_aliases(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    manifest_key = "jobhive/v1/manifest.json"
+    original_upload = fake_r2.upload_bytes_if_current
+    attempts = 0
+
+    def commit_then_lose_response(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        original_upload(*args, **kwargs)
+        raise StorageError("response connection dropped")
+
+    monkeypatch.setattr(
+        fake_r2,
+        "upload_bytes_if_current",
+        commit_then_lose_response,
+    )
+
+    DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
+
+    manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
+    immutable_all_key = manifest["all"]["csv"].removeprefix(
+        "https://cdn.example.com/"
+    )
+    immutable_greenhouse_key = manifest["by_ats"]["greenhouse"][
+        "csv"
+    ].removeprefix("https://cdn.example.com/")
+    assert attempts == 1
+    assert fake_r2.uploads["jobhive/v1/all.csv"]["data"] == (
+        fake_r2.uploads[immutable_all_key]["data"]
+    )
+    assert fake_r2.uploads["jobhive/v1/greenhouse/jobs.csv"]["data"] == (
+        fake_r2.uploads[immutable_greenhouse_key]["data"]
+    )
+
+
 def test_disabled_company_filter_reloads_after_companies_race(
     ats_csv_dir, fake_r2, monkeypatch
 ) -> None:

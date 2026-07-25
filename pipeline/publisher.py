@@ -582,9 +582,10 @@ class DatasetPublisher:
             )
             manifest["stats"] = stats_factory(existing)
             manifest["all"] = all_entry
-            manifest["by_ats"] = {
+            expected_by_ats = {
                 ats.value: entry for ats, entry in by_ats.items()
             }
+            manifest["by_ats"] = expected_by_ats
 
             for legacy in ("by_date", "companies_by_ats"):
                 manifest.pop(legacy, None)
@@ -603,7 +604,22 @@ class DatasetPublisher:
                     content_type="application/json",
                     cache_control=CACHE_CONTROL_LATEST,
                 )
-            except StorageConflictError:
+            except StorageError as exc:
+                current, _current_etag = _load_existing_manifest_with_etag(
+                    self._r2,
+                    key,
+                )
+                if (
+                    current.get("all") == all_entry
+                    and current.get("by_ats") == expected_by_ats
+                ):
+                    logger.warning(
+                        "Manifest write response was ambiguous, but the "
+                        "intended jobs generation is current"
+                    )
+                    return key
+                if not isinstance(exc, StorageConflictError):
+                    raise
                 if attempt == MANIFEST_WRITE_ATTEMPTS:
                     raise
                 logger.warning(
