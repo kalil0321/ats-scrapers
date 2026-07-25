@@ -16,6 +16,8 @@ from ats_scrapers.scrapers import (
     GupyScraper,
     JobviteScraper,
     MokaScraper,
+    PageUpScraper,
+    UKGProScraper,
     WorkdayScraper,
 )
 
@@ -37,6 +39,23 @@ RESOLVES = [
         "https://jobs.jobvite.com/careers/loandepot/search?p=0",
         ATSType.JOBVITE,
         "careers/loandepot",
+    ),
+    (
+        "https://careers.pageuppeople.com/513/cw/en/listing/",
+        ATSType.PAGEUP,
+        "513/cw/en",
+    ),
+    (
+        "https://careers.pageuppeople.com/mob/1078/cw/en/job/123/title",
+        ATSType.PAGEUP,
+        "1078/cw/en",
+    ),
+    (
+        "https://recruiting2.ultipro.com/HEN1009HPCC/JobBoard/"
+        "b27ab828-18a9-4f10-8ee1-8259de6c9e73/OpportunityDetail",
+        ATSType.UKG,
+        "https://recruiting2.ultipro.com/HEN1009HPCC/JobBoard/"
+        "b27ab828-18a9-4f10-8ee1-8259de6c9e73",
     ),
     ("https://join.com/companies/acme", ATSType.JOIN_COM, "acme"),
     (
@@ -120,12 +139,18 @@ def test_icims_nonstandard_prefix_keeps_full_url() -> None:
         "https://careers.example.com/jobs",       # custom domain
         "https://www.linkedin.com/jobs/view/1",   # aggregator
         "https://jobs.ashbyhq.com",               # no slug in path
+        "https://jobs.jobvite.com/search",
+        "https://jobs.jobvite.com/jobs",
+        "https://jobs.jobvite.com/viewall",
+        "https://jobs.jobvite.com/careers/search",
         "https://join.com/about",                 # join.com non-company path
         "https://evil.recruitee.com.attacker.io", # suffix-spoofing host
         "https://bad_slug.darwinbox.in/ms/candidate/careers",
         f"https://{'a' * 64}.darwinbox.com/ms/candidate/careers",
         "https://trailing-.darwinbox.in/ms/candidate/careers",
         "https://bad_slug.zhiye.com/social/jobs",
+        "https://recruiting.ultipro.com/bad-tenant/JobBoard/"
+        "11111111-2222-3333-4444-555555555555",
         f"https://{'a' * 64}.zhiye.com/social/jobs",
         "not a url at all",
     ],
@@ -156,6 +181,19 @@ def test_get_scraper_for_url_builds_scraper() -> None:
             "https://jobs.jobvite.com/careers/loandepot/search"
         ).tenant_path
         == "careers/loandepot"
+    )
+    assert isinstance(
+        get_scraper_for_url(
+            "https://careers.pageuppeople.com/513/cw/en/listing/"
+        ),
+        PageUpScraper,
+    )
+    assert isinstance(
+        get_scraper_for_url(
+            "https://recruiting.ultipro.ca/ROY5000RCPS/JobBoard/"
+            "9a9d6241-e23f-47c0-80f3-e43a148972a0"
+        ),
+        UKGProScraper,
     )
     assert isinstance(
         get_scraper_for_url(

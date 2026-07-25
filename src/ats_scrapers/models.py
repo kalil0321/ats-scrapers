@@ -50,6 +50,7 @@ class ATSType(StrEnum):
     MERCOR = "mercor"
     MOKA = "moka"
     ORACLE = "oracle"
+    PAGEUP = "pageup"
     PERSONIO = "personio"
     PHENOM = "phenom"
     PINPOINT = "pinpoint"
@@ -57,6 +58,7 @@ class ATSType(StrEnum):
     RIPPLING = "rippling"
     SMARTRECRUITERS = "smartrecruiters"
     SUCCESSFACTORS = "successfactors"
+    UKG = "ukg"
     WORKABLE = "workable"
     WORKDAY = "workday"
     # Big-tech custom careers systems (single-tenant, bespoke APIs)

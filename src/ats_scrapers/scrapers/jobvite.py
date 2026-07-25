@@ -187,11 +187,12 @@ class JobviteScraper(BaseScraper):
                 )
         except ScraperError as exc:
             logger.warning(
-                "Dropping Jobvite job %s after detail failure: %s",
+                "Retaining Jobvite job %s without detail metadata after "
+                "detail failure: %s",
                 job.ats_id,
                 exc,
             )
-            return None
+            return job
         if response.status_code in {404, 410}:
             return None
         _apply_detail(job, response.text)
@@ -263,8 +264,7 @@ class JobviteScraper(BaseScraper):
             if self.tenant_path.startswith("careers/"):
                 accepted_tenant_paths.append(self.tenant_path.split("/", 1)[1])
             if (
-                parsed_url.scheme != "https"
-                or parsed_url.hostname != "jobs.jobvite.com"
+                not _is_trusted_jobvite_url(detail_url)
                 or not any(
                     parsed_url.path.startswith(f"/{tenant_path}/job/")
                     for tenant_path in accepted_tenant_paths
@@ -305,7 +305,7 @@ def _normalize_tenant_path(value: str) -> str:
         raise ValueError("Jobvite tenant path cannot be empty")
     if raw.startswith(("http://", "https://")):
         parsed = urlparse(raw)
-        if parsed.scheme != "https" or parsed.hostname != "jobs.jobvite.com":
+        if not _is_trusted_jobvite_url(raw):
             raise ValueError("Jobvite tenant URL must use https://jobs.jobvite.com")
         raw = parsed.path.strip("/")
     segments = [segment for segment in raw.split("/") if segment]
@@ -351,7 +351,10 @@ def _apply_detail(job: Job, html_text: str) -> None:
         employment_type = _employment_type(posting.get("employmentType"))
         if employment_type is not None:
             job.employment_type = employment_type
-        if _is_remote_job_location_type(posting.get("jobLocationType")):
+        structured_remote = _is_remote_job_location_type(
+            posting.get("jobLocationType")
+        )
+        if structured_remote:
             job.is_remote = True
 
         structured_location = _location_from_jsonld(posting.get("jobLocation"))
@@ -360,7 +363,9 @@ def _apply_detail(job: Job, html_text: str) -> None:
         ):
             job.location = structured_location
             job.is_remote = (
-                True if "remote" in structured_location.lower() else None
+                True
+                if structured_remote or "remote" in structured_location.lower()
+                else None
             )
 
         _apply_salary(job, posting.get("baseSalary"))
@@ -370,14 +375,21 @@ def _apply_detail(job: Job, html_text: str) -> None:
         job.department = department
     if location and (not job.location or _GENERIC_LOCATION_RE.match(job.location)):
         job.location = location
-        job.is_remote = True if "remote" in location.lower() else None
+        job.is_remote = (
+            True
+            if job.is_remote or "remote" in location.lower()
+            else None
+        )
 
     apply_link = soup.select_one("a.jv-button-apply[href]")
     if apply_link is not None:
         href = apply_link.get("href")
         if isinstance(href, str) and href:
             try:
-                job.apply_url = HttpUrl(urljoin(str(job.url), href))
+                apply_url = urljoin(str(job.url), href)
+                if not _is_trusted_jobvite_url(apply_url):
+                    raise ValueError("untrusted Jobvite apply URL")
+                job.apply_url = HttpUrl(apply_url)
             except (ValidationError, ValueError):
                 logger.warning(
                     "Ignoring invalid Jobvite apply URL for job %s",
@@ -408,6 +420,21 @@ def _parse_html(html_text: str) -> BeautifulSoup:
             "install `ats-scrapers[scrapers]`"
         ) from exc
     return BeautifulSoup(html_text, "html.parser")
+
+
+def _is_trusted_jobvite_url(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == "jobs.jobvite.com"
+        and parsed.username is None
+        and parsed.password is None
+        and port in {None, 443}
+    )
 
 
 def _find_job_posting(soup: BeautifulSoup) -> dict[str, Any] | None:

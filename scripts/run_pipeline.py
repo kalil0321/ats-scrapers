@@ -71,6 +71,7 @@ from ats_scrapers.scrapers import (
     MetaScraper,
     MokaScraper,
     OracleScraper,
+    PageUpScraper,
     PersonioScraper,
     PhenomScraper,
     PinpointScraper,
@@ -88,6 +89,7 @@ from ats_scrapers.scrapers import (
     TheHubScraper,
     TikTokScraper,
     UberScraper,
+    UKGProScraper,
     WantedScraper,
     WellfoundScraper,
     WeWorkRemotelyScraper,
@@ -460,6 +462,16 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/teamtailor.csv",
         "output": "teamtailor/jobs.csv",
     },
+    "ukg": {
+        "scraper": UKGProScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
+        "csv": "ats-companies/ukg.csv",
+        "output": "ukg/jobs.csv",
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+    },
     "jazzhr": {
         "scraper": JazzHRScraper,
         # JazzHR sites are Cloudflare-protected — the scraper auto-falls
@@ -474,6 +486,15 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
         "csv": "ats-companies/jobvite.csv",
         "output": "jobvite/jobs.csv",
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_empty": True,
+    },
+    "pageup": {
+        "scraper": PageUpScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
+        "csv": "ats-companies/pageup.csv",
+        "output": "pageup/jobs.csv",
         "fail_closed_on_any_error": True,
         "fail_closed_on_empty": True,
     },
@@ -1498,13 +1519,25 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                 )
             return 1
 
+        required_not_found = (
+            counts["not_found"]
+            if cfg.get("fail_closed_on_not_found")
+            else 0
+        )
         sharded_failure = (
-            bool(cfg.get("fail_closed_on_any_error"))
-            and (counts["error"] > 0 or omitted_required_shards > 0)
+            (
+                bool(cfg.get("fail_closed_on_any_error"))
+                and (counts["error"] > 0 or omitted_required_shards > 0)
+            )
+            or required_not_found > 0
         )
         if sharded_failure:
             tmp_output_path.unlink(missing_ok=True)
-            required_failures = counts["error"] + omitted_required_shards
+            required_failures = (
+                counts["error"]
+                + omitted_required_shards
+                + required_not_found
+            )
             if output_path.exists():
                 print(
                     f"[{ats}] ACTION keep_previous: {required_failures}/"

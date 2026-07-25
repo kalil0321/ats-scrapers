@@ -44,6 +44,7 @@ from ats_scrapers.scrapers.mercor import MercorScraper
 from ats_scrapers.scrapers.meta import MetaScraper
 from ats_scrapers.scrapers.moka import MokaScraper
 from ats_scrapers.scrapers.oracle import OracleScraper
+from ats_scrapers.scrapers.pageup import PageUpScraper
 from ats_scrapers.scrapers.personio import PersonioScraper
 from ats_scrapers.scrapers.phenom import PhenomScraper
 from ats_scrapers.scrapers.pinpoint import PinpointScraper
@@ -61,6 +62,7 @@ from ats_scrapers.scrapers.tesla import TeslaScraper
 from ats_scrapers.scrapers.thehub import TheHubScraper
 from ats_scrapers.scrapers.tiktok import TikTokScraper
 from ats_scrapers.scrapers.uber import UberScraper
+from ats_scrapers.scrapers.ukg import UKGProScraper
 from ats_scrapers.scrapers.usajobs import USAJobsScraper
 from ats_scrapers.scrapers.wanted import WantedScraper
 from ats_scrapers.scrapers.welcometothejungle import WTTJScraper
@@ -106,6 +108,7 @@ __all__ = [
     "MetaScraper",
     "MokaScraper",
     "OracleScraper",
+    "PageUpScraper",
     "PersonioScraper",
     "PhenomScraper",
     "PinpointScraper",
@@ -123,6 +126,7 @@ __all__ = [
     "TeslaScraper",
     "TheHubScraper",
     "TikTokScraper",
+    "UKGProScraper",
     "USAJobsScraper",
     "UberScraper",
     "WTTJScraper",

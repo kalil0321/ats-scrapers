@@ -251,7 +251,7 @@ def test_descriptionless_detail_is_dropped_without_aborting(httpx_mock) -> None:
     assert [job.ats_id for job in jobs] == ["a1"]
 
 
-def test_systemic_detail_request_failure_fails_closed(httpx_mock) -> None:
+def test_systemic_detail_request_failure_preserves_listing_job(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://jobs.jobvite.com/acme/search?p=0",
         text=_listing(
@@ -267,11 +267,13 @@ def test_systemic_detail_request_failure_fails_closed(httpx_mock) -> None:
         is_reusable=True,
     )
 
-    with pytest.raises(ScraperError, match="lost every listed job"):
-        JobviteScraper("acme").fetch()
+    jobs = JobviteScraper("acme").fetch()
+
+    assert [job.ats_id for job in jobs] == ["a1"]
+    assert jobs[0].description is None
 
 
-def test_detail_request_failure_drops_only_failed_job(httpx_mock) -> None:
+def test_detail_request_failure_preserves_listing_job(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://jobs.jobvite.com/acme/search?p=0",
         text=_listing(
@@ -296,7 +298,9 @@ def test_detail_request_failure_drops_only_failed_job(httpx_mock) -> None:
 
     jobs = JobviteScraper("acme").fetch()
 
-    assert [job.ats_id for job in jobs] == ["a1"]
+    assert [job.ats_id for job in jobs] == ["a1", "a2"]
+    assert jobs[0].description is not None
+    assert jobs[1].description is None
 
 
 def test_table_listing_layout_reads_title_and_location(httpx_mock) -> None:
@@ -349,6 +353,29 @@ def test_careers_tenant_accepts_canonical_detail_path(httpx_mock) -> None:
     ],
 )
 def test_rejects_unsafe_detail_urls(httpx_mock, href: str) -> None:
+    html_text = _listing(
+        [("a1", "Engineer", "Paris")],
+        start=1,
+        end=1,
+        total=1,
+    ).replace("/acme/job/a1", href)
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        text=html_text,
+    )
+
+    with pytest.raises(ScraperError, match="unsafe job URL"):
+        JobviteScraper("acme", include_descriptions=False).fetch()
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "https://jobs.jobvite.com:444/acme/job/a1",
+        "https://user@jobs.jobvite.com/acme/job/a1",
+    ],
+)
+def test_rejects_unsafe_detail_authorities(httpx_mock, href: str) -> None:
     html_text = _listing(
         [("a1", "Engineer", "Paris")],
         start=1,
@@ -629,7 +656,60 @@ def test_structured_telecommute_marker_updates_remote_status() -> None:
     assert job.is_remote is True
 
 
-@pytest.mark.parametrize("href", ["javascript:void(0)", "https://["])
+def test_telecommute_survives_generic_location_replacement() -> None:
+    job = Job(
+        url="https://jobs.jobvite.com/acme/job/a1",
+        title="Engineer",
+        company="Acme",
+        ats_type=ATSType.JOBVITE,
+        ats_id="a1",
+        location="2 Locations",
+    )
+
+    _apply_detail(
+        job,
+        _detail("a1", job_location_type="TELECOMMUTE"),
+    )
+
+    assert job.location == "Paris, France"
+    assert job.is_remote is True
+
+
+def test_telecommute_survives_detail_meta_location_replacement() -> None:
+    job = Job(
+        url="https://jobs.jobvite.com/acme/job/a1",
+        title="Engineer",
+        company="Acme",
+        ats_type=ATSType.JOBVITE,
+        ats_id="a1",
+        location="2 Locations",
+    )
+    html_text = _detail(
+        "a1",
+        locations=[],
+        job_location_type="TELECOMMUTE",
+    ).replace(
+        "</body>",
+        '<div class="jv-job-detail-meta">Engineering | Paris, France</div>'
+        "</body>",
+    )
+
+    _apply_detail(job, html_text)
+
+    assert job.location == "Paris, France"
+    assert job.is_remote is True
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "javascript:void(0)",
+        "https://[",
+        "https://evil.example/apply",
+        "https://jobs.jobvite.com:444/acme/job/a1/apply",
+        "https://user@jobs.jobvite.com/acme/job/a1/apply",
+    ],
+)
 def test_invalid_apply_link_is_ignored(href: str) -> None:
     job = Job(
         url="https://jobs.jobvite.com/acme/job/a1",
@@ -673,6 +753,8 @@ def test_get_description_uses_detail_page(httpx_mock) -> None:
         "",
         "http://jobs.jobvite.com/acme",
         "https://example.com/acme",
+        "https://jobs.jobvite.com:444/acme",
+        "https://user@jobs.jobvite.com/acme",
         "careers",
         "careers/acme/extra",
         "../acme",

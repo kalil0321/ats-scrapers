@@ -89,6 +89,17 @@ _WORKDAY_HOST_RE = re.compile(r"^[^.]+\.wd\d+\.myworkdayjobs\.com$")
 _TALEO_HOST_RE = re.compile(r"^[^.]+\.tbe\.taleo\.net$")
 _ICIMS_HOST_RE = re.compile(r"^(?P<prefix>[a-z0-9-]+)\.icims\.com$", re.IGNORECASE)
 _JOBVITE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_JOBVITE_RESERVED_SEGMENTS = frozenset({"jobs", "search", "viewall"})
+_PAGEUP_CLIENT_RE = re.compile(r"^\d+$")
+_PAGEUP_SEGMENT_RE = re.compile(r"^[A-Za-z0-9-]+$")
+_PAGEUP_LOCALE_RE = re.compile(r"^[A-Za-z]{2}(?:-[A-Za-z]{2})?$")
+_UKG_HOST_RE = re.compile(r"^recruiting\d*\.ultipro\.(?:com|ca)$", re.IGNORECASE)
+_UKG_TENANT_RE = re.compile(r"^[A-Za-z0-9]+$")
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
@@ -116,6 +127,7 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         if (
             len(segments) >= 2
             and segments[0] == "careers"
+            and segments[1].casefold() not in _JOBVITE_RESERVED_SEGMENTS
             and _JOBVITE_SEGMENT_RE.fullmatch(segments[1])
         ):
             return ResolvedCareersUrl(
@@ -125,9 +137,40 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         if (
             segments
             and segments[0] != "careers"
+            and segments[0].casefold() not in _JOBVITE_RESERVED_SEGMENTS
             and _JOBVITE_SEGMENT_RE.fullmatch(segments[0])
         ):
             return ResolvedCareersUrl(ATSType.JOBVITE, segments[0])
+        return None
+
+    if host == "careers.pageuppeople.com":
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if segments and segments[0].lower() == "mob":
+            segments.pop(0)
+        if (
+            len(segments) >= 3
+            and _PAGEUP_CLIENT_RE.fullmatch(segments[0])
+            and _PAGEUP_SEGMENT_RE.fullmatch(segments[1])
+            and _PAGEUP_LOCALE_RE.fullmatch(segments[2])
+        ):
+            return ResolvedCareersUrl(
+                ATSType.PAGEUP,
+                "/".join(segments[:3]),
+            )
+        return None
+
+    if _UKG_HOST_RE.fullmatch(host):
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            len(segments) >= 3
+            and _UKG_TENANT_RE.fullmatch(segments[0])
+            and segments[1].casefold() == "jobboard"
+            and _UUID_RE.fullmatch(segments[2])
+        ):
+            return ResolvedCareersUrl(
+                ATSType.UKG,
+                f"https://{host}/{segments[0]}/JobBoard/{segments[2]}",
+            )
         return None
 
     # join.com/companies/{slug}
