@@ -78,7 +78,7 @@ def test_disabled_company_artifact_is_left_unadvertised(
         csv_data: bytes,
         parquet_key: str,
         parquet_data: bytes,
-    ) -> None:
+    ) -> dict[str, tuple[bytes, str, str | None] | None]:
         record_upload(
             _client,
             _bucket,
@@ -93,11 +93,17 @@ def test_disabled_company_artifact_is_left_unadvertised(
             parquet_data,
             "application/vnd.apache.parquet",
         )
+        return {csv_key: None, parquet_key: None}
 
     monkeypatch.setattr(
         module,
         "refresh_stable_aliases",
         record_alias_refresh,
+    )
+    monkeypatch.setattr(
+        module,
+        "restore_stable_aliases",
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         module,
@@ -202,6 +208,124 @@ def test_stable_alias_failure_rolls_back_both_files(
 
     assert client.objects[csv_key][0] == old_csv
     assert client.objects[parquet_key][0] == old_parquet
+
+
+def test_stable_alias_rollback_retries_transient_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_publish_companies()
+    csv_key = f"{module.PREFIX}/companies.csv"
+    parquet_key = f"{module.PREFIX}/companies.parquet"
+    old_csv = b"old csv"
+    old_parquet = b"old parquet"
+    new_csv = b"new csv"
+    new_parquet = b"new parquet"
+    client = _AliasClient({
+        csv_key: (old_csv, "text/csv", module.CACHE_CONTROL_LATEST),
+        parquet_key: (
+            old_parquet,
+            "application/vnd.apache.parquet",
+            module.CACHE_CONTROL_LATEST,
+        ),
+    })
+    rollback_csv_failures = 0
+
+    def fail_publish_and_first_csv_rollback(
+        _client: _AliasClient,
+        _bucket: str,
+        key: str,
+        body: bytes,
+        content_type: str,
+        *,
+        cache_control: str | None = None,
+        **_kwargs: object,
+    ) -> None:
+        nonlocal rollback_csv_failures
+        if key == parquet_key and body == new_parquet:
+            raise ClientError(
+                {"Error": {"Code": "InternalError"}},
+                "PutObject",
+            )
+        if (
+            key == csv_key
+            and body == old_csv
+            and rollback_csv_failures == 0
+        ):
+            rollback_csv_failures += 1
+            raise ClientError(
+                {"Error": {"Code": "SlowDown"}},
+                "PutObject",
+            )
+        client.objects[key] = (body, content_type, cache_control)
+
+    monkeypatch.setattr(
+        module,
+        "upload",
+        fail_publish_and_first_csv_rollback,
+    )
+
+    with pytest.raises(ClientError):
+        module.refresh_stable_aliases(
+            client,
+            "bucket",
+            csv_key=csv_key,
+            csv_data=new_csv,
+            parquet_key=parquet_key,
+            parquet_data=new_parquet,
+        )
+
+    assert rollback_csv_failures == 1
+    assert client.objects[csv_key][0] == old_csv
+    assert client.objects[parquet_key][0] == old_parquet
+
+
+def test_manifest_failure_restores_previous_alias_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_publish_companies()
+    csv_key = f"{module.PREFIX}/companies.csv"
+    parquet_key = f"{module.PREFIX}/companies.parquet"
+    snapshots = {
+        csv_key: (b"old csv", "text/csv", module.CACHE_CONTROL_LATEST),
+        parquet_key: (
+            b"old parquet",
+            "application/vnd.apache.parquet",
+            module.CACHE_CONTROL_LATEST,
+        ),
+    }
+    restored: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        module,
+        "refresh_stable_aliases",
+        lambda *_args, **_kwargs: snapshots,
+    )
+    monkeypatch.setattr(
+        module,
+        "patch_manifest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("manifest contention")
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "restore_stable_aliases",
+        lambda *_args, **kwargs: restored.append(kwargs),
+    )
+
+    with pytest.raises(RuntimeError, match="manifest contention"):
+        module.publish_aggregate_generation(
+            object(),
+            "bucket",
+            csv_key=csv_key,
+            csv_data=b"new csv",
+            parquet_key=parquet_key,
+            parquet_data=b"new parquet",
+            aggregate_entry={"rows": 1},
+            by_ats_entries={"greenhouse": {"rows": 1}},
+            aggregate_rows=1,
+        )
+
+    assert restored == [{"snapshots": snapshots}]
 
 
 def test_manifest_patch_retries_after_concurrent_jobs_write(

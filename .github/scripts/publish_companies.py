@@ -11,7 +11,9 @@ tenant CSV under ``ats-companies/`` lands on ``main``. Behaviour:
 3. Refresh the stable
    ``s3://<bucket>/jobhive/v1/companies.{csv,parquet}`` aliases for
    backwards compatibility. A failed pair update restores both aliases
-   to their previous generation before retrying or failing.
+   to their previous generation before retrying or failing. Rollback
+   itself is retried, and a subsequent manifest failure also restores
+   the previous aliases.
 4. Patch ``manifest.json`` in place: refresh the top-level
    ``companies`` entry and the per-ATS ``by_ats_companies`` map. Other
    fields (``by_ats`` for jobs, ``all``, ``stats``…) are preserved
@@ -64,6 +66,7 @@ CACHE_CONTROL_IMMUTABLE = "public, max-age=31536000, immutable"
 MIN_MANIFEST_VERSION = "2.0"
 MANIFEST_WRITE_ATTEMPTS = 5
 ALIAS_WRITE_ATTEMPTS = 3
+ALIAS_ROLLBACK_ATTEMPTS = 3
 
 
 def env(name: str) -> str:
@@ -322,6 +325,35 @@ def restore_object_snapshot(
     )
 
 
+def restore_stable_aliases(
+    client,
+    bucket: str,
+    *,
+    snapshots: dict[str, tuple[bytes, str, str | None] | None],
+) -> None:
+    for attempt in range(1, ALIAS_ROLLBACK_ATTEMPTS + 1):
+        try:
+            for key, snapshot in snapshots.items():
+                restore_object_snapshot(
+                    client,
+                    bucket,
+                    key,
+                    snapshot,
+                )
+        except Exception as rollback_exc:
+            if attempt == ALIAS_ROLLBACK_ATTEMPTS:
+                raise RuntimeError(
+                    "stable company aliases could not be rolled back"
+                ) from rollback_exc
+            print(
+                "  stable alias rollback failed; "
+                f"retrying ({attempt}/{ALIAS_ROLLBACK_ATTEMPTS})"
+            )
+            continue
+        return
+    raise AssertionError("unreachable")
+
+
 def refresh_stable_aliases(
     client,
     bucket: str,
@@ -330,7 +362,7 @@ def refresh_stable_aliases(
     csv_data: bytes,
     parquet_key: str,
     parquet_data: bytes,
-) -> None:
+) -> dict[str, tuple[bytes, str, str | None] | None]:
     aliases = (
         (csv_key, csv_data, "text/csv"),
         (
@@ -356,13 +388,11 @@ def refresh_stable_aliases(
                 )
         except Exception:
             try:
-                for key, _data, _content_type in aliases:
-                    restore_object_snapshot(
-                        client,
-                        bucket,
-                        key,
-                        snapshots[key],
-                    )
+                restore_stable_aliases(
+                    client,
+                    bucket,
+                    snapshots=snapshots,
+                )
             except Exception as rollback_exc:
                 raise RuntimeError(
                     "stable company aliases failed to publish and rollback"
@@ -374,8 +404,47 @@ def refresh_stable_aliases(
                 f"retrying ({attempt}/{ALIAS_WRITE_ATTEMPTS})"
             )
             continue
-        return
+        return snapshots
     raise AssertionError("unreachable")
+
+
+def publish_aggregate_generation(
+    client,
+    bucket: str,
+    *,
+    csv_key: str,
+    csv_data: bytes,
+    parquet_key: str,
+    parquet_data: bytes,
+    aggregate_entry: dict[str, Any],
+    by_ats_entries: dict[str, dict[str, Any]],
+    aggregate_rows: int,
+) -> None:
+    print("\n== Step 3: refresh stable aggregate aliases")
+    snapshots = refresh_stable_aliases(
+        client,
+        bucket,
+        csv_key=csv_key,
+        csv_data=csv_data,
+        parquet_key=parquet_key,
+        parquet_data=parquet_data,
+    )
+    try:
+        print("\n== Step 4: patch manifest.json")
+        patch_manifest(
+            client,
+            bucket,
+            aggregate_entry=aggregate_entry,
+            by_ats_entries=by_ats_entries,
+            aggregate_rows=aggregate_rows,
+        )
+    except Exception:
+        restore_stable_aliases(
+            client,
+            bucket,
+            snapshots=snapshots,
+        )
+        raise
 
 
 def delete_legacy(client, bucket: str) -> None:
@@ -506,20 +575,13 @@ def main() -> None:
         "parquet_sha256": parquet_sha256,
     }
 
-    print("\n== Step 3: refresh stable aggregate aliases")
-    refresh_stable_aliases(
+    publish_aggregate_generation(
         client,
         bucket,
         csv_key=stable_csv_key,
         csv_data=agg_csv,
         parquet_key=stable_parquet_key,
         parquet_data=agg_parquet,
-    )
-
-    print("\n== Step 4: patch manifest.json")
-    patch_manifest(
-        client,
-        bucket,
         aggregate_entry=aggregate_entry,
         by_ats_entries=by_ats_entries,
         aggregate_rows=agg_rows,
