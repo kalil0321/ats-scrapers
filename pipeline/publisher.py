@@ -44,6 +44,7 @@ DataFrame is ever materialized.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
 import os
@@ -488,9 +489,19 @@ class DatasetPublisher:
         """Replace jobs fields and preserve enabled CI-owned companies."""
         key = f"{self._prefix}/manifest.json"
         del existing_manifest
+        companies_override: dict[str, object] | None = None
         for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
             existing, etag = _load_existing_manifest_with_etag(self._r2, key)
+            if (
+                companies_override is None
+                and _has_disabled_company_sources(existing)
+            ):
+                companies_override = self._filter_disabled_company_aggregate(
+                    existing
+                )
             existing = _without_disabled_company_sources(existing)
+            if companies_override is not None:
+                existing["companies"] = companies_override
 
             manifest: dict[str, object] = {**existing}
             manifest["version"] = "2.0"
@@ -533,6 +544,66 @@ class DatasetPublisher:
                 continue
             return key
         raise AssertionError("unreachable")
+
+    def _filter_disabled_company_aggregate(
+        self,
+        manifest: dict[str, object],
+    ) -> dict[str, object] | None:
+        aggregate = manifest.get("companies")
+        if not isinstance(aggregate, dict):
+            return None
+
+        csv_key = f"{self._prefix}/companies.csv"
+        csv_bytes = self._r2.get_bytes(csv_key)
+        if csv_bytes is None:
+            raise StorageError(
+                "Cannot remove disabled company sources because the "
+                f"advertised aggregate {csv_key} is missing"
+            )
+        try:
+            frame = pl.read_csv(io.BytesIO(csv_bytes))
+        except Exception as exc:
+            raise StorageError(
+                f"Could not parse advertised company aggregate {csv_key}: {exc}"
+            ) from exc
+        if "ats" not in frame.columns:
+            raise StorageError(
+                f"Company aggregate {csv_key} omitted the ats column"
+            )
+
+        disabled_names = [ats.value for ats in DISABLED_JOB_SOURCES]
+        filtered = frame.filter(
+            ~pl.col("ats")
+            .cast(pl.String)
+            .str.to_lowercase()
+            .is_in(disabled_names)
+        )
+        filtered_csv = filtered.write_csv().encode("utf-8")
+        parquet_buffer = io.BytesIO()
+        filtered.write_parquet(parquet_buffer)
+        filtered_parquet = parquet_buffer.getvalue()
+        parquet_key = f"{self._prefix}/companies.parquet"
+        self._r2.upload_bytes(
+            filtered_csv,
+            csv_key,
+            content_type="text/csv",
+            cache_control=CACHE_CONTROL_LATEST,
+        )
+        self._r2.upload_bytes(
+            filtered_parquet,
+            parquet_key,
+            content_type="application/vnd.apache.parquet",
+            cache_control=CACHE_CONTROL_LATEST,
+        )
+        return {
+            "csv": self._public_or_key(csv_key),
+            "parquet": self._public_or_key(parquet_key),
+            "rows": filtered.height,
+            "size_bytes": len(filtered_csv),
+            "sha256": hashlib.sha256(filtered_csv).hexdigest(),
+            "parquet_size_bytes": len(filtered_parquet),
+            "parquet_sha256": hashlib.sha256(filtered_parquet).hexdigest(),
+        }
 
     def _public_or_key(self, key: str) -> str:
         return self._r2.public_url(key) or key
@@ -1164,6 +1235,13 @@ def _without_disabled_company_sources(
 
     sanitized["by_ats_companies"] = enabled
     return sanitized
+
+
+def _has_disabled_company_sources(manifest: dict[str, object]) -> bool:
+    block = manifest.get("by_ats_companies")
+    if not isinstance(block, dict):
+        return False
+    return any(ats.value in block for ats in DISABLED_JOB_SOURCES)
 
 
 def _guard_suspicious_empty_job_slices(

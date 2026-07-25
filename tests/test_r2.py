@@ -21,6 +21,11 @@ R2_VARS = (
 )
 
 
+def test_pipeline_requires_conditional_put_boto3_floor() -> None:
+    requirements = Path("pipeline/requirements.txt").read_text().splitlines()
+    assert "boto3>=1.35.69" in requirements
+
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for var in R2_VARS:

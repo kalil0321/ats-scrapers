@@ -318,6 +318,22 @@ def test_manifest_patch_preserves_companies_block(ats_csv_dir, fake_r2) -> None:
 def test_manifest_patch_drops_disabled_company_sources(
     ats_csv_dir, fake_r2
 ) -> None:
+    aggregate_csv = (
+        b"ats,name,slug,url\n"
+        b"greenhouse,Acme 1,acme-1,https://example.com/acme-1\n"
+        b"greenhouse,Acme 2,acme-2,https://example.com/acme-2\n"
+        b"greenhouse,Acme 3,acme-3,https://example.com/acme-3\n"
+        b"seek,Other 1,other-1,https://example.com/other-1\n"
+        b"seek,Other 2,other-2,https://example.com/other-2\n"
+        b"seek,Other 3,other-3,https://example.com/other-3\n"
+        b"seek,Other 4,other-4,https://example.com/other-4\n"
+        b"seek,Other 5,other-5,https://example.com/other-5\n"
+    )
+    fake_r2.upload_bytes(
+        aggregate_csv,
+        "jobhive/v1/companies.csv",
+        content_type="text/csv",
+    )
     pre_existing = {
         "companies": {
             "csv": "https://cdn.example.com/jobhive/v1/companies.csv",
@@ -341,8 +357,13 @@ def test_manifest_patch_drops_disabled_company_sources(
     assert manifest["by_ats_companies"] == {
         "greenhouse": {"csv": "...", "rows": 3}
     }
-    assert manifest["companies"] == pre_existing["companies"]
+    assert manifest["companies"]["rows"] == 3
     assert manifest["stats"]["total_companies"] == 3
+    published_companies = fake_r2.uploads[
+        "jobhive/v1/companies.csv"
+    ]["data"].decode()
+    assert "greenhouse,Acme 1" in published_companies
+    assert "seek,Other 1" not in published_companies
 
 
 def test_manifest_patch_retries_after_concurrent_companies_write(
