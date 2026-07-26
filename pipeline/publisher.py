@@ -336,7 +336,7 @@ class DatasetPublisher:
                     publication=manifest_publication,
                 )
             except StorageError:
-                current = _load_existing_manifest(
+                current = _load_manifest_strict(
                     self._r2,
                     manifest_publication.key,
                 )
@@ -589,10 +589,15 @@ class DatasetPublisher:
             try:
                 self._copy_job_aliases(aliases)
             except StorageError:
-                current = _load_existing_manifest(
-                    self._r2,
-                    publication.key,
-                )
+                try:
+                    current = _load_manifest_strict(
+                        self._r2,
+                        publication.key,
+                    )
+                except StorageError:
+                    self._restore_job_aliases(snapshots)
+                    self._cleanup_job_alias_snapshots(snapshots)
+                    raise
                 if not _has_jobs_manifest_fields(
                     current,
                     intended=publication.intended,
@@ -604,10 +609,14 @@ class DatasetPublisher:
                     self._cleanup_job_alias_snapshots(snapshots)
                     return
                 self._restore_job_aliases(snapshots)
-                current = _load_existing_manifest(
-                    self._r2,
-                    publication.key,
-                )
+                try:
+                    current = _load_manifest_strict(
+                        self._r2,
+                        publication.key,
+                    )
+                except StorageError:
+                    self._cleanup_job_alias_snapshots(snapshots)
+                    raise
                 if not _has_jobs_manifest_fields(
                     current,
                     intended=publication.intended,
@@ -628,10 +637,15 @@ class DatasetPublisher:
                     ALIAS_COPY_ATTEMPTS,
                 )
                 continue
-            current = _load_existing_manifest(
-                self._r2,
-                publication.key,
-            )
+            try:
+                current = _load_manifest_strict(
+                    self._r2,
+                    publication.key,
+                )
+            except StorageError:
+                self._restore_job_aliases(snapshots)
+                self._cleanup_job_alias_snapshots(snapshots)
+                raise
             if not _has_jobs_manifest_fields(
                 current,
                 intended=publication.intended,
@@ -666,7 +680,18 @@ class DatasetPublisher:
             try:
                 self._copy_job_aliases(aliases)
             except StorageError as exc:
-                latest = _load_existing_manifest(self._r2, manifest_key)
+                try:
+                    latest = _load_manifest_strict(
+                        self._r2,
+                        manifest_key,
+                    )
+                except StorageError as manifest_exc:
+                    if attempt == MANIFEST_WRITE_ATTEMPTS:
+                        raise StorageError(
+                            "Stable job aliases could not be aligned because "
+                            "the current jobs manifest could not be read"
+                        ) from manifest_exc
+                    continue
                 if not _has_jobs_manifest_fields(
                     latest,
                     intended=target,
@@ -680,7 +705,15 @@ class DatasetPublisher:
                     ) from exc
                 continue
 
-            latest = _load_existing_manifest(self._r2, manifest_key)
+            try:
+                latest = _load_manifest_strict(self._r2, manifest_key)
+            except StorageError as exc:
+                if attempt == MANIFEST_WRITE_ATTEMPTS:
+                    raise StorageError(
+                        "Stable job aliases were copied but the current jobs "
+                        "manifest could not be verified"
+                    ) from exc
+                continue
             if _has_jobs_manifest_fields(latest, intended=target):
                 logger.warning(
                     "Jobs manifest changed during alias refresh; stable "
@@ -938,12 +971,40 @@ class DatasetPublisher:
                 "manifest omitted its company aggregate"
             )
 
-        csv_key = f"{self._prefix}/companies.csv"
+        csv_key = _manifest_artifact_key(aggregate.get("csv"))
+        stable_csv_key = f"{self._prefix}/companies.csv"
+        immutable_prefix = f"{self._prefix}/company-aggregates/"
+        if (
+            csv_key != stable_csv_key
+            and not csv_key.startswith(immutable_prefix)
+        ):
+            raise StorageError(
+                "Cannot remove disabled company sources because the "
+                f"manifest references an unexpected aggregate {csv_key}"
+            )
         csv_bytes = self._r2.get_bytes(csv_key)
         if csv_bytes is None:
             raise StorageError(
                 "Cannot remove disabled company sources because the "
                 f"advertised aggregate {csv_key} is missing"
+            )
+        csv_sha256 = hashlib.sha256(csv_bytes).hexdigest()
+        expected_sha256 = aggregate.get("sha256")
+        if (
+            not isinstance(expected_sha256, str)
+            or csv_sha256 != expected_sha256
+        ):
+            raise StorageError(
+                "Cannot remove disabled company sources because the "
+                f"advertised aggregate {csv_key} failed its SHA-256 check"
+            )
+        if (
+            csv_key.startswith(immutable_prefix)
+            and Path(csv_key).stem != csv_sha256
+        ):
+            raise StorageError(
+                "Cannot remove disabled company sources because the "
+                f"immutable aggregate key {csv_key} does not match its bytes"
             )
         try:
             frame = pl.read_csv(io.BytesIO(csv_bytes))
@@ -954,6 +1015,12 @@ class DatasetPublisher:
         if "ats" not in frame.columns:
             raise StorageError(
                 f"Company aggregate {csv_key} omitted the ats column"
+            )
+        expected_rows = aggregate.get("rows")
+        if not isinstance(expected_rows, int) or frame.height != expected_rows:
+            raise StorageError(
+                "Cannot remove disabled company sources because the "
+                f"advertised aggregate {csv_key} failed its row-count check"
             )
 
         disabled_names = [ats.value for ats in DISABLED_JOB_SOURCES]
@@ -1917,6 +1984,22 @@ def _load_existing_manifest(r2_client: R2Client, key: str) -> dict[str, object]:
             "Existing manifest %s root is not an object; starting fresh", key
         )
         return {}
+    return loaded
+
+
+def _load_manifest_strict(
+    r2_client: R2Client,
+    key: str,
+) -> dict[str, object]:
+    body = r2_client.get_bytes(key)
+    if not body:
+        raise StorageError(f"Manifest {key} is missing")
+    try:
+        loaded = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise StorageError(f"Manifest {key} is not valid JSON") from exc
+    if not isinstance(loaded, dict):
+        raise StorageError(f"Manifest {key} root is not an object")
     return loaded
 
 

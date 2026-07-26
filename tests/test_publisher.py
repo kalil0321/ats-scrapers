@@ -343,10 +343,12 @@ def test_manifest_patch_drops_disabled_company_sources(
         "jobhive/v1/companies.csv",
         content_type="text/csv",
     )
+    aggregate_sha = hashlib.sha256(aggregate_csv).hexdigest()
     pre_existing = {
         "companies": {
             "csv": "https://cdn.example.com/jobhive/v1/companies.csv",
             "rows": 8,
+            "sha256": aggregate_sha,
         },
         "by_ats_companies": {
             "greenhouse": {"csv": "...", "rows": 3},
@@ -855,9 +857,14 @@ def test_disabled_company_filter_reloads_after_companies_race(
         "jobhive/v1/companies.csv",
         content_type="text/csv",
     )
+    stale_sha = hashlib.sha256(stale_csv).hexdigest()
     fake_r2.upload_bytes(
         json.dumps({
-            "companies": {"csv": "...", "rows": 2},
+            "companies": {
+                "csv": "https://cdn.example.com/jobhive/v1/companies.csv",
+                "rows": 2,
+                "sha256": stale_sha,
+            },
             "by_ats_companies": {
                 "greenhouse": {"rows": 1},
                 "seek": {"rows": 1},
@@ -891,7 +898,9 @@ def test_disabled_company_filter_reloads_after_companies_race(
             fake_r2.upload_bytes(
                 json.dumps({
                     "companies": {
-                        "csv": current_key,
+                        "csv": (
+                            f"https://cdn.example.com/{current_key}"
+                        ),
                         "rows": 2,
                         "sha256": current_sha,
                     },
@@ -902,11 +911,6 @@ def test_disabled_company_filter_reloads_after_companies_race(
                 }).encode(),
                 manifest_key,
                 content_type="application/json",
-            )
-            fake_r2.upload_bytes(
-                current_csv,
-                "jobhive/v1/companies.csv",
-                content_type="text/csv",
             )
         return original_upload(*args, **kwargs)
 
@@ -929,7 +933,85 @@ def test_disabled_company_filter_reloads_after_companies_race(
     }
     assert manifest["stats"]["total_companies"] == 2
     stable_csv = fake_r2.uploads["jobhive/v1/companies.csv"]["data"]
-    assert stable_csv == current_csv
+    assert stable_csv == stale_csv
+    immutable_csv_key = manifest["companies"]["csv"].removeprefix(
+        "https://cdn.example.com/"
+    )
+    assert fake_r2.uploads[immutable_csv_key]["data"] == current_csv
+
+
+def test_alias_failure_restores_snapshots_when_manifest_read_fails(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+    manifest_key = "jobhive/v1/manifest.json"
+    stable_keys = [
+        "jobhive/v1/all.csv",
+        "jobhive/v1/all.parquet",
+        *[
+            f"jobhive/v1/{ats}/jobs.{extension}"
+            for ats in ("ashby", "greenhouse", "lever")
+            for extension in ("csv", "parquet")
+        ],
+    ]
+    previous_aliases = {
+        key: fake_r2.uploads[key]["data"]
+        for key in stable_keys
+    }
+    previous_manifest = fake_r2.uploads[manifest_key]["data"]
+    ashby_csv = ats_csv_dir / "ashby" / "jobs.csv"
+    ashby_frame = pd.read_csv(ashby_csv)
+    ashby_frame.loc[0, "title"] = "Updated Engineer"
+    ashby_frame.to_csv(ashby_csv, index=False)
+
+    original_copy = fake_r2.copy
+    alias_failed = False
+
+    def fail_after_partial_alias_refresh(
+        source_key: str,
+        destination_key: str,
+        **kwargs,
+    ):
+        nonlocal alias_failed
+        if (
+            destination_key == "jobhive/v1/ashby/jobs.parquet"
+            and "/job-snapshots/" in source_key
+        ):
+            alias_failed = True
+            raise StorageError("alias copy failed")
+        return original_copy(source_key, destination_key, **kwargs)
+
+    original_get_bytes = fake_r2.get_bytes
+    manifest_read_failed = False
+
+    def fail_first_manifest_read_after_alias_error(key: str):
+        nonlocal manifest_read_failed
+        if (
+            alias_failed
+            and not manifest_read_failed
+            and key == manifest_key
+        ):
+            manifest_read_failed = True
+            raise StorageError("manifest read failed")
+        return original_get_bytes(key)
+
+    monkeypatch.setattr(fake_r2, "copy", fail_after_partial_alias_refresh)
+    monkeypatch.setattr(
+        fake_r2,
+        "get_bytes",
+        fail_first_manifest_read_after_alias_error,
+    )
+
+    with pytest.raises(StorageError, match="manifest read failed"):
+        publisher.publish_from_directory(ats_csv_dir)
+
+    assert manifest_read_failed
+    assert {
+        key: fake_r2.uploads[key]["data"]
+        for key in stable_keys
+    } == previous_aliases
+    assert fake_r2.uploads[manifest_key]["data"] == previous_manifest
 
 
 def test_manifest_patch_drops_legacy_fields(ats_csv_dir, fake_r2) -> None:
