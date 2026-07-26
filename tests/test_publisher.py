@@ -614,6 +614,75 @@ def test_lost_jobs_manifest_response_accepts_concurrent_company_patch(
     assert manifest["updated_at"] == "2099-01-01T00:00:00Z"
 
 
+def test_alias_refresh_converges_to_newer_remote_jobs_generation(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+    manifest_key = "jobhive/v1/manifest.json"
+    original_copy = fake_r2.copy
+    remote_source = (
+        "jobhive/v1/job-snapshots/"
+        "remote-generation.csv"
+    )
+    fake_r2.upload_bytes(
+        b"remote generation\n",
+        remote_source,
+        content_type="text/csv",
+    )
+    remote_committed = False
+
+    def commit_remote_generation_before_old_alias_copy(
+        source_key: str,
+        destination_key: str,
+        **kwargs,
+    ):
+        nonlocal remote_committed
+        if (
+            not remote_committed
+            and destination_key == "jobhive/v1/all.csv"
+            and "/job-snapshots/" in source_key
+        ):
+            remote_committed = True
+            remote_manifest = json.loads(
+                fake_r2.uploads[manifest_key]["data"]
+            )
+            remote_manifest["generated_at"] = (
+                "2099-01-01T00:00:00+00:00"
+            )
+            remote_manifest["all"]["csv"] = (
+                f"https://cdn.example.com/{remote_source}"
+            )
+            remote_manifest["all"]["sha256"] = "remote-generation"
+            fake_r2.upload_bytes(
+                json.dumps(remote_manifest).encode(),
+                manifest_key,
+                content_type="application/json",
+            )
+        return original_copy(
+            source_key,
+            destination_key,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        fake_r2,
+        "copy",
+        commit_remote_generation_before_old_alias_copy,
+    )
+
+    publisher.publish_from_directory(ats_csv_dir)
+
+    manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
+    assert remote_committed
+    assert manifest["all"]["csv"] == (
+        f"https://cdn.example.com/{remote_source}"
+    )
+    assert fake_r2.uploads["jobhive/v1/all.csv"]["data"] == (
+        b"remote generation\n"
+    )
+
+
 def test_persistent_alias_copy_failure_restores_every_stable_job_alias(
     ats_csv_dir, fake_r2, monkeypatch
 ) -> None:
@@ -1159,7 +1228,7 @@ def test_publish_reuses_manifest_loaded_for_empty_slice_guard(
 
     DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(ats_csv_dir)
 
-    assert calls == 1
+    assert calls == 2
 
 
 def test_publish_without_pyarrow_raises(monkeypatch, fake_r2) -> None:

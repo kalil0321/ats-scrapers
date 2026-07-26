@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
 import polars as pl
@@ -330,15 +331,26 @@ class DatasetPublisher:
             manifest_key = manifest_publication.key
             files_uploaded.append(manifest_key)
             try:
-                self._refresh_job_aliases(alias_copies)
+                self._refresh_job_aliases(
+                    alias_copies,
+                    publication=manifest_publication,
+                )
             except StorageError:
-                try:
-                    self._rollback_jobs_manifest(manifest_publication)
-                except StorageError as rollback_exc:
-                    raise StorageError(
-                        "Stable job aliases failed and the jobs manifest "
-                        "generation could not be rolled back"
-                    ) from rollback_exc
+                current = _load_existing_manifest(
+                    self._r2,
+                    manifest_publication.key,
+                )
+                if _has_jobs_manifest_fields(
+                    current,
+                    intended=manifest_publication.intended,
+                ):
+                    try:
+                        self._rollback_jobs_manifest(manifest_publication)
+                    except StorageError as rollback_exc:
+                        raise StorageError(
+                            "Stable job aliases failed and the jobs manifest "
+                            "generation could not be rolled back"
+                        ) from rollback_exc
                 raise
             files_uploaded.extend(
                 alias.destination_key for alias in alias_copies
@@ -569,19 +581,43 @@ class DatasetPublisher:
     def _refresh_job_aliases(
         self,
         aliases: list[AliasCopy],
+        *,
+        publication: ManifestPublication,
     ) -> None:
         snapshots = self._snapshot_job_aliases(aliases)
         for attempt in range(1, ALIAS_COPY_ATTEMPTS + 1):
             try:
-                for alias in aliases:
-                    self._r2.copy(
-                        alias.source_key,
-                        alias.destination_key,
-                        content_type=alias.content_type,
-                        cache_control=CACHE_CONTROL_LATEST,
-                    )
+                self._copy_job_aliases(aliases)
             except StorageError:
+                current = _load_existing_manifest(
+                    self._r2,
+                    publication.key,
+                )
+                if not _has_jobs_manifest_fields(
+                    current,
+                    intended=publication.intended,
+                ):
+                    self._converge_job_aliases(
+                        publication.key,
+                        current,
+                    )
+                    self._cleanup_job_alias_snapshots(snapshots)
+                    return
                 self._restore_job_aliases(snapshots)
+                current = _load_existing_manifest(
+                    self._r2,
+                    publication.key,
+                )
+                if not _has_jobs_manifest_fields(
+                    current,
+                    intended=publication.intended,
+                ):
+                    self._converge_job_aliases(
+                        publication.key,
+                        current,
+                    )
+                    self._cleanup_job_alias_snapshots(snapshots)
+                    return
                 if attempt == ALIAS_COPY_ATTEMPTS:
                     self._cleanup_job_alias_snapshots(snapshots)
                     raise
@@ -592,9 +628,69 @@ class DatasetPublisher:
                     ALIAS_COPY_ATTEMPTS,
                 )
                 continue
+            current = _load_existing_manifest(
+                self._r2,
+                publication.key,
+            )
+            if not _has_jobs_manifest_fields(
+                current,
+                intended=publication.intended,
+            ):
+                self._converge_job_aliases(
+                    publication.key,
+                    current,
+                )
             self._cleanup_job_alias_snapshots(snapshots)
             return
         raise AssertionError("unreachable")
+
+    def _copy_job_aliases(self, aliases: list[AliasCopy]) -> None:
+        for alias in aliases:
+            self._r2.copy(
+                alias.source_key,
+                alias.destination_key,
+                content_type=alias.content_type,
+                cache_control=CACHE_CONTROL_LATEST,
+            )
+
+    def _converge_job_aliases(
+        self,
+        manifest_key: str,
+        target: dict[str, object],
+    ) -> None:
+        for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
+            aliases = _job_aliases_from_manifest(
+                target,
+                prefix=self._prefix,
+            )
+            try:
+                self._copy_job_aliases(aliases)
+            except StorageError as exc:
+                latest = _load_existing_manifest(self._r2, manifest_key)
+                if not _has_jobs_manifest_fields(
+                    latest,
+                    intended=target,
+                ):
+                    target = latest
+                    continue
+                if attempt == MANIFEST_WRITE_ATTEMPTS:
+                    raise StorageError(
+                        "Stable job aliases could not be aligned with the "
+                        "current jobs manifest generation"
+                    ) from exc
+                continue
+
+            latest = _load_existing_manifest(self._r2, manifest_key)
+            if _has_jobs_manifest_fields(latest, intended=target):
+                logger.warning(
+                    "Jobs manifest changed during alias refresh; stable "
+                    "aliases were aligned with the winning generation"
+                )
+                return
+            target = latest
+        raise StorageError(
+            "Jobs manifest kept changing while stable aliases were aligned"
+        )
 
     def _snapshot_job_aliases(
         self,
@@ -983,6 +1079,91 @@ def _replace_jobs_manifest_fields(
     else:
         rollback.pop("stats", None)
     return rollback
+
+
+def _job_aliases_from_manifest(
+    manifest: dict[str, object],
+    *,
+    prefix: str,
+) -> list[AliasCopy]:
+    all_entry = manifest.get("all")
+    by_ats = manifest.get("by_ats")
+    if not isinstance(all_entry, dict) or not isinstance(by_ats, dict):
+        raise StorageError(
+            "Current jobs manifest generation omitted all or by_ats"
+        )
+
+    aliases: list[AliasCopy] = []
+    aliases.extend(
+        _job_entry_aliases(
+            all_entry,
+            destination_base=f"{prefix}/all",
+            source_prefix=f"{prefix}/job-snapshots/",
+        )
+    )
+    for ats_name, entry in sorted(by_ats.items()):
+        if not isinstance(ats_name, str) or not isinstance(entry, dict):
+            raise StorageError(
+                "Current jobs manifest generation has invalid by_ats entries"
+            )
+        aliases.extend(
+            _job_entry_aliases(
+                entry,
+                destination_base=f"{prefix}/{ats_name}/jobs",
+                source_prefix=f"{prefix}/{ats_name}/job-snapshots/",
+            )
+        )
+    if not aliases:
+        raise StorageError(
+            "Current jobs manifest generation omitted job artifacts"
+        )
+    return aliases
+
+
+def _job_entry_aliases(
+    entry: dict[str, object],
+    *,
+    destination_base: str,
+    source_prefix: str,
+) -> list[AliasCopy]:
+    aliases: list[AliasCopy] = []
+    for extension, content_type in (
+        ("csv", "text/csv"),
+        ("parquet", "application/vnd.apache.parquet"),
+    ):
+        value = entry.get(extension)
+        if value is None:
+            continue
+        source_key = _manifest_artifact_key(value)
+        if not source_key.startswith(source_prefix):
+            raise StorageError(
+                "Current jobs manifest generation references a mutable or "
+                f"unexpected artifact: {source_key}"
+            )
+        aliases.append(
+            AliasCopy(
+                source_key,
+                f"{destination_base}.{extension}",
+                content_type,
+            )
+        )
+    return aliases
+
+
+def _manifest_artifact_key(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise StorageError(
+            "Current jobs manifest generation has an invalid artifact URL"
+        )
+    parsed = urlsplit(value)
+    path = unquote(parsed.path).lstrip("/")
+    if parsed.scheme or parsed.netloc:
+        if not path:
+            raise StorageError(
+                "Current jobs manifest generation has an invalid artifact URL"
+            )
+        return path
+    return value.lstrip("/")
 
 
 @contextmanager
