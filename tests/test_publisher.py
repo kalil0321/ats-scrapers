@@ -28,6 +28,7 @@ from ats_scrapers.exceptions import StorageConflictError, StorageError
 from pipeline.publisher import (
     CACHE_CONTROL_LATEST,
     DEFAULT_PREFIX,
+    MANIFEST_WRITE_ATTEMPTS,
     DatasetPublisher,
 )
 
@@ -682,6 +683,101 @@ def test_alias_refresh_converges_to_newer_remote_jobs_generation(
     )
     assert fake_r2.uploads["jobhive/v1/all.csv"]["data"] == (
         b"remote generation\n"
+    )
+
+
+def test_failed_alias_convergence_restores_consistent_generation(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+    manifest_key = "jobhive/v1/manifest.json"
+    stable_keys = [
+        "jobhive/v1/all.csv",
+        "jobhive/v1/all.parquet",
+        *[
+            f"jobhive/v1/{ats}/jobs.{extension}"
+            for ats in ("ashby", "greenhouse", "lever")
+            for extension in ("csv", "parquet")
+        ],
+    ]
+    previous_aliases = {
+        key: fake_r2.uploads[key]["data"]
+        for key in stable_keys
+    }
+    remote_source = (
+        "jobhive/v1/job-snapshots/"
+        "remote-generation.csv"
+    )
+    fake_r2.upload_bytes(
+        b"remote generation\n",
+        remote_source,
+        content_type="text/csv",
+    )
+    original_copy = fake_r2.copy
+    remote_committed = False
+    converging = False
+    convergence_failures = 0
+
+    def commit_remote_then_fail_convergence(
+        source_key: str,
+        destination_key: str,
+        **kwargs,
+    ):
+        nonlocal remote_committed, converging, convergence_failures
+        if (
+            not remote_committed
+            and destination_key == "jobhive/v1/all.csv"
+            and "/job-snapshots/" in source_key
+        ):
+            remote_committed = True
+            remote_manifest = json.loads(
+                fake_r2.uploads[manifest_key]["data"]
+            )
+            remote_manifest["generated_at"] = (
+                "2099-01-01T00:00:00+00:00"
+            )
+            remote_manifest["all"]["csv"] = (
+                f"https://cdn.example.com/{remote_source}"
+            )
+            remote_manifest["all"]["sha256"] = "remote-generation"
+            fake_r2.upload_bytes(
+                json.dumps(remote_manifest).encode(),
+                manifest_key,
+                content_type="application/json",
+            )
+        if source_key == remote_source:
+            converging = True
+        if (
+            converging
+            and destination_key == "jobhive/v1/greenhouse/jobs.csv"
+            and "/job-snapshots/" in source_key
+        ):
+            convergence_failures += 1
+            raise StorageError("persistent convergence failure")
+        return original_copy(source_key, destination_key, **kwargs)
+
+    monkeypatch.setattr(
+        fake_r2,
+        "copy",
+        commit_remote_then_fail_convergence,
+    )
+
+    with pytest.raises(
+        StorageError,
+        match="current jobs manifest generation",
+    ):
+        publisher.publish_from_directory(ats_csv_dir)
+
+    assert remote_committed
+    assert convergence_failures == MANIFEST_WRITE_ATTEMPTS
+    assert {
+        key: fake_r2.uploads[key]["data"]
+        for key in stable_keys
+    } == previous_aliases
+    assert not any(
+        "/job-alias-rollbacks/" in key
+        for key in fake_r2.uploads
     )
 
 

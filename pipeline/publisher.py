@@ -602,11 +602,14 @@ class DatasetPublisher:
                     current,
                     intended=publication.intended,
                 ):
-                    self._converge_job_aliases(
-                        publication.key,
-                        current,
-                    )
-                    self._cleanup_job_alias_snapshots(snapshots)
+                    self._restore_job_aliases(snapshots)
+                    try:
+                        self._converge_job_aliases(
+                            publication.key,
+                            current,
+                        )
+                    finally:
+                        self._cleanup_job_alias_snapshots(snapshots)
                     return
                 self._restore_job_aliases(snapshots)
                 try:
@@ -621,11 +624,13 @@ class DatasetPublisher:
                     current,
                     intended=publication.intended,
                 ):
-                    self._converge_job_aliases(
-                        publication.key,
-                        current,
-                    )
-                    self._cleanup_job_alias_snapshots(snapshots)
+                    try:
+                        self._converge_job_aliases(
+                            publication.key,
+                            current,
+                        )
+                    finally:
+                        self._cleanup_job_alias_snapshots(snapshots)
                     return
                 if attempt == ALIAS_COPY_ATTEMPTS:
                     self._cleanup_job_alias_snapshots(snapshots)
@@ -650,10 +655,14 @@ class DatasetPublisher:
                 current,
                 intended=publication.intended,
             ):
-                self._converge_job_aliases(
-                    publication.key,
-                    current,
-                )
+                try:
+                    self._converge_job_aliases(
+                        publication.key,
+                        current,
+                    )
+                finally:
+                    self._cleanup_job_alias_snapshots(snapshots)
+                return
             self._cleanup_job_alias_snapshots(snapshots)
             return
         raise AssertionError("unreachable")
@@ -677,9 +686,12 @@ class DatasetPublisher:
                 target,
                 prefix=self._prefix,
             )
+            snapshots = self._snapshot_job_aliases(aliases)
             try:
                 self._copy_job_aliases(aliases)
             except StorageError as exc:
+                self._restore_job_aliases(snapshots)
+                self._cleanup_job_alias_snapshots(snapshots)
                 try:
                     latest = _load_manifest_strict(
                         self._r2,
@@ -708,6 +720,8 @@ class DatasetPublisher:
             try:
                 latest = _load_manifest_strict(self._r2, manifest_key)
             except StorageError as exc:
+                self._restore_job_aliases(snapshots)
+                self._cleanup_job_alias_snapshots(snapshots)
                 if attempt == MANIFEST_WRITE_ATTEMPTS:
                     raise StorageError(
                         "Stable job aliases were copied but the current jobs "
@@ -715,11 +729,13 @@ class DatasetPublisher:
                     ) from exc
                 continue
             if _has_jobs_manifest_fields(latest, intended=target):
+                self._cleanup_job_alias_snapshots(snapshots)
                 logger.warning(
                     "Jobs manifest changed during alias refresh; stable "
                     "aliases were aligned with the winning generation"
                 )
                 return
+            self._cleanup_job_alias_snapshots(snapshots)
             target = latest
         raise StorageError(
             "Jobs manifest kept changing while stable aliases were aligned"
