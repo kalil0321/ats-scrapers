@@ -607,6 +607,7 @@ class DatasetPublisher:
                         self._converge_job_aliases(
                             publication.key,
                             current,
+                            recovery=publication.previous,
                         )
                     finally:
                         self._cleanup_job_alias_snapshots(snapshots)
@@ -628,6 +629,7 @@ class DatasetPublisher:
                         self._converge_job_aliases(
                             publication.key,
                             current,
+                            recovery=publication.previous,
                         )
                     finally:
                         self._cleanup_job_alias_snapshots(snapshots)
@@ -659,6 +661,7 @@ class DatasetPublisher:
                     self._converge_job_aliases(
                         publication.key,
                         current,
+                        recovery=publication.intended,
                     )
                 finally:
                     self._cleanup_job_alias_snapshots(snapshots)
@@ -680,6 +683,8 @@ class DatasetPublisher:
         self,
         manifest_key: str,
         target: dict[str, object],
+        *,
+        recovery: dict[str, object],
     ) -> None:
         for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
             aliases = _job_aliases_from_manifest(
@@ -689,7 +694,7 @@ class DatasetPublisher:
             snapshots = self._snapshot_job_aliases(aliases)
             try:
                 self._copy_job_aliases(aliases)
-            except StorageError as exc:
+            except StorageError:
                 self._restore_job_aliases(snapshots)
                 self._cleanup_job_alias_snapshots(snapshots)
                 try:
@@ -711,10 +716,19 @@ class DatasetPublisher:
                     target = latest
                     continue
                 if attempt == MANIFEST_WRITE_ATTEMPTS:
-                    raise StorageError(
-                        "Stable job aliases could not be aligned with the "
-                        "current jobs manifest generation"
-                    ) from exc
+                    self._rollback_jobs_manifest(
+                        ManifestPublication(
+                            manifest_key,
+                            recovery,
+                            target,
+                        )
+                    )
+                    logger.warning(
+                        "Stable job aliases could not be aligned; the jobs "
+                        "manifest was restored to the last complete alias "
+                        "generation"
+                    )
+                    return
                 continue
 
             try:
@@ -736,6 +750,7 @@ class DatasetPublisher:
                 )
                 return
             self._cleanup_job_alias_snapshots(snapshots)
+            recovery = target
             target = latest
         raise StorageError(
             "Jobs manifest kept changing while stable aliases were aligned"

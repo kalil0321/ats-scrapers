@@ -686,7 +686,7 @@ def test_alias_refresh_converges_to_newer_remote_jobs_generation(
     )
 
 
-def test_failed_alias_convergence_restores_consistent_generation(
+def test_failed_later_alias_convergence_restores_last_complete_generation(
     ats_csv_dir, fake_r2, monkeypatch
 ) -> None:
     publisher = DatasetPublisher(fake_r2, write_parquet=True)
@@ -701,30 +701,33 @@ def test_failed_alias_convergence_restores_consistent_generation(
             for extension in ("csv", "parquet")
         ],
     ]
-    previous_aliases = {
-        key: fake_r2.uploads[key]["data"]
-        for key in stable_keys
-    }
-    remote_source = (
-        "jobhive/v1/job-snapshots/"
-        "remote-generation.csv"
-    )
+    remote_source = "jobhive/v1/job-snapshots/generation-b.csv"
+    newer_source = "jobhive/v1/job-snapshots/generation-c.csv"
     fake_r2.upload_bytes(
-        b"remote generation\n",
+        b"generation b\n",
         remote_source,
         content_type="text/csv",
     )
+    fake_r2.upload_bytes(
+        b"generation c\n",
+        newer_source,
+        content_type="text/csv",
+    )
     original_copy = fake_r2.copy
+    original_get_bytes = fake_r2.get_bytes
     remote_committed = False
-    converging = False
+    remote_copied = False
+    newer_committed = False
+    newer_copying = False
     convergence_failures = 0
 
-    def commit_remote_then_fail_convergence(
+    def commit_remote_then_fail_newer_convergence(
         source_key: str,
         destination_key: str,
         **kwargs,
     ):
-        nonlocal remote_committed, converging, convergence_failures
+        nonlocal remote_committed, remote_copied
+        nonlocal newer_copying, convergence_failures
         if (
             not remote_committed
             and destination_key == "jobhive/v1/all.csv"
@@ -740,16 +743,18 @@ def test_failed_alias_convergence_restores_consistent_generation(
             remote_manifest["all"]["csv"] = (
                 f"https://cdn.example.com/{remote_source}"
             )
-            remote_manifest["all"]["sha256"] = "remote-generation"
+            remote_manifest["all"]["sha256"] = "generation-b"
             fake_r2.upload_bytes(
                 json.dumps(remote_manifest).encode(),
                 manifest_key,
                 content_type="application/json",
             )
         if source_key == remote_source:
-            converging = True
+            remote_copied = True
+        if source_key == newer_source:
+            newer_copying = True
         if (
-            converging
+            newer_copying
             and destination_key == "jobhive/v1/greenhouse/jobs.csv"
             and "/job-snapshots/" in source_key
         ):
@@ -757,27 +762,56 @@ def test_failed_alias_convergence_restores_consistent_generation(
             raise StorageError("persistent convergence failure")
         return original_copy(source_key, destination_key, **kwargs)
 
+    def commit_newer_generation_after_remote_aliases(key: str):
+        nonlocal newer_committed
+        if (
+            key == manifest_key
+            and remote_copied
+            and not newer_committed
+        ):
+            newer_committed = True
+            newer_manifest = json.loads(
+                fake_r2.uploads[manifest_key]["data"]
+            )
+            newer_manifest["generated_at"] = (
+                "2099-01-02T00:00:00+00:00"
+            )
+            newer_manifest["all"]["csv"] = (
+                f"https://cdn.example.com/{newer_source}"
+            )
+            newer_manifest["all"]["sha256"] = "generation-c"
+            fake_r2.upload_bytes(
+                json.dumps(newer_manifest).encode(),
+                manifest_key,
+                content_type="application/json",
+            )
+        return original_get_bytes(key)
+
     monkeypatch.setattr(
         fake_r2,
         "copy",
-        commit_remote_then_fail_convergence,
+        commit_remote_then_fail_newer_convergence,
+    )
+    monkeypatch.setattr(
+        fake_r2,
+        "get_bytes",
+        commit_newer_generation_after_remote_aliases,
     )
 
-    with pytest.raises(
-        StorageError,
-        match="current jobs manifest generation",
-    ):
-        publisher.publish_from_directory(ats_csv_dir)
+    publisher.publish_from_directory(ats_csv_dir)
 
     assert remote_committed
-    assert convergence_failures == MANIFEST_WRITE_ATTEMPTS
-    assert {
-        key: fake_r2.uploads[key]["data"]
-        for key in stable_keys
-    } == previous_aliases
+    assert newer_committed
+    assert convergence_failures == MANIFEST_WRITE_ATTEMPTS - 1
+    assert fake_r2.uploads["jobhive/v1/all.csv"]["data"] == b"generation b\n"
+    assert all(key in fake_r2.uploads for key in stable_keys)
     assert not any(
         "/job-alias-rollbacks/" in key
         for key in fake_r2.uploads
+    )
+    manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
+    assert manifest["all"]["csv"] == (
+        f"https://cdn.example.com/{remote_source}"
     )
 
 
@@ -1055,7 +1089,9 @@ def test_alias_failure_restores_snapshots_when_manifest_read_fails(
         key: fake_r2.uploads[key]["data"]
         for key in stable_keys
     }
-    previous_manifest = fake_r2.uploads[manifest_key]["data"]
+    previous_manifest = json.loads(
+        fake_r2.uploads[manifest_key]["data"]
+    )
     ashby_csv = ats_csv_dir / "ashby" / "jobs.csv"
     ashby_frame = pd.read_csv(ashby_csv)
     ashby_frame.loc[0, "title"] = "Updated Engineer"
@@ -1107,7 +1143,21 @@ def test_alias_failure_restores_snapshots_when_manifest_read_fails(
         key: fake_r2.uploads[key]["data"]
         for key in stable_keys
     } == previous_aliases
-    assert fake_r2.uploads[manifest_key]["data"] == previous_manifest
+    rolled_back_manifest = json.loads(
+        fake_r2.uploads[manifest_key]["data"]
+    )
+    for field in ("generator", "generated_at", "all", "by_ats"):
+        assert rolled_back_manifest[field] == previous_manifest[field]
+    for field in (
+        "total_jobs",
+        "total_jobs_raw",
+        "ats_count",
+        "schema_version",
+        "schema_columns",
+    ):
+        assert rolled_back_manifest["stats"][field] == (
+            previous_manifest["stats"][field]
+        )
 
 
 def test_manifest_patch_drops_legacy_fields(ats_csv_dir, fake_r2) -> None:
