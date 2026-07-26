@@ -743,7 +743,7 @@ class DatasetPublisher:
                 )
                 if (
                     current_etag != etag
-                    and _has_complete_manifest_generation(
+                    and _has_committed_jobs_manifest_generation(
                         current,
                         intended=manifest,
                     )
@@ -905,12 +905,18 @@ class DatasetPublisher:
         return self._r2.public_url(key) or key
 
 
-def _has_complete_manifest_generation(
+def _has_committed_jobs_manifest_generation(
     current: dict[str, object],
     *,
     intended: dict[str, object],
 ) -> bool:
-    return current == intended
+    if current.get("version") != intended.get("version"):
+        return False
+    if not _has_jobs_manifest_fields(current, intended=intended):
+        return False
+    if any(key in current for key in ("by_date", "companies_by_ats")):
+        return False
+    return not _has_disabled_company_sources(current)
 
 
 _JOB_MANIFEST_FIELDS = ("generator", "generated_at", "all", "by_ats")

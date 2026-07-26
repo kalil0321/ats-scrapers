@@ -567,6 +567,53 @@ def test_ambiguous_readback_requires_complete_intended_manifest(
         publisher.publish_from_directory(ats_csv_dir)
 
 
+def test_lost_jobs_manifest_response_accepts_concurrent_company_patch(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    manifest_key = "jobhive/v1/manifest.json"
+    original_upload = fake_r2.upload_bytes_if_current
+
+    def commit_then_company_patch_then_fail(*args, **kwargs):
+        original_upload(*args, **kwargs)
+        current = json.loads(fake_r2.uploads[manifest_key]["data"])
+        current["companies"] = {"rows": 4}
+        current["by_ats_companies"] = {
+            "greenhouse": {"rows": 4},
+        }
+        current["stats"]["total_companies"] = 4
+        current["updated_at"] = "2099-01-01T00:00:00Z"
+        fake_r2.upload_bytes(
+            json.dumps(current).encode(),
+            manifest_key,
+            content_type="application/json",
+        )
+        raise StorageError("response connection dropped")
+
+    monkeypatch.setattr(
+        fake_r2,
+        "upload_bytes_if_current",
+        commit_then_company_patch_then_fail,
+    )
+
+    DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
+
+    manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
+    immutable_all_key = manifest["all"]["csv"].removeprefix(
+        "https://cdn.example.com/"
+    )
+    assert fake_r2.uploads["jobhive/v1/all.csv"]["data"] == (
+        fake_r2.uploads[immutable_all_key]["data"]
+    )
+    assert manifest["companies"] == {"rows": 4}
+    assert manifest["by_ats_companies"] == {
+        "greenhouse": {"rows": 4},
+    }
+    assert manifest["stats"]["total_companies"] == 4
+    assert manifest["updated_at"] == "2099-01-01T00:00:00Z"
+
+
 def test_persistent_alias_copy_failure_restores_every_stable_job_alias(
     ats_csv_dir, fake_r2, monkeypatch
 ) -> None:
