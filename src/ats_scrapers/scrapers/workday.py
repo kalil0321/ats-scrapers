@@ -439,7 +439,32 @@ class WorkdayScraper(BaseScraper):
                     f"Workday site not found: {self.company_slug}"
                 )
             if response.status_code == 200:
-                return response.json()
+                try:
+                    payload = response.json()
+                except ValueError:
+                    content_type = response.headers.get(
+                        "Content-Type",
+                        "unknown",
+                    )
+                    last_exc = ScraperError(
+                        "Workday returned a non-JSON success response for "
+                        f"{self.company_slug} (offset={offset}, "
+                        f"content-type={content_type})"
+                    )
+                    await asyncio.sleep(
+                        min(MAX_RETRY_DELAY, RETRY_BACKOFF ** attempt)
+                    )
+                    continue
+                if not isinstance(payload, dict):
+                    last_exc = ScraperError(
+                        "Workday returned an unexpected JSON payload for "
+                        f"{self.company_slug} (offset={offset})"
+                    )
+                    await asyncio.sleep(
+                        min(MAX_RETRY_DELAY, RETRY_BACKOFF ** attempt)
+                    )
+                    continue
+                return payload
             if response.status_code in retryable_statuses:
                 # Exponential backoff respects Retry-After when present.
                 retry_after = response.headers.get("Retry-After")
