@@ -284,6 +284,32 @@ def test_mismatched_detail_item_id_is_ignored(httpx_mock) -> None:
     assert job.description is None
 
 
+def test_detail_without_item_id_is_ignored(httpx_mock) -> None:
+    detail = _detail()
+    detail.pop("itemID")
+    httpx_mock.add_response(url=LISTING_RE, json=_page([_item()]))
+    httpx_mock.add_response(url=DETAIL_RE, json=detail)
+
+    [job] = ADPWorkforceNowScraper(CAREERS_URL).fetch()
+
+    assert job.description is None
+
+
+def test_placeholder_language_defaults_to_en_us(httpx_mock) -> None:
+    httpx_mock.add_response(url=LISTING_RE, json=_page([_item()]))
+    url = CAREERS_URL.replace("lang=en_US", "lang=undefined")
+
+    [job] = ADPWorkforceNowScraper(
+        url,
+        include_descriptions=False,
+    ).fetch()
+
+    assert job.language == "en"
+    [request] = httpx_mock.get_requests()
+    assert request.headers["locale"] == "en_US"
+    assert request.url.params["lang"] == "en_US"
+
+
 def test_multiple_locations_preserved_and_remote_detected(httpx_mock) -> None:
     item = _item()
     item["requisitionLocations"] = [

@@ -272,7 +272,7 @@ class ADPWorkforceNowScraper(BaseScraper):
         if not isinstance(detail, dict):
             return
         detail_item_id = _string(detail.get("itemID"))
-        if item_id and detail_item_id and detail_item_id != item_id:
+        if not item_id or detail_item_id != item_id:
             return
         description = detail.get("requisitionDescription")
         if isinstance(description, str) and description.strip():
@@ -350,7 +350,9 @@ def _parse_target(raw_url: str) -> ADPTarget:
     query = parse_qs(parsed.query)
     cid = _first_query_value(query, "cid")
     career_center_id = _first_query_value(query, "ccId")
-    language = _first_query_value(query, "lang") or "en_US"
+    language = _first_query_value(query, "lang")
+    if not language or language.casefold() in {"none", "null", "undefined"}:
+        language = "en_US"
     if not cid or not career_center_id:
         raise ScraperError("ADP recruitment URL must include cid and ccId")
     return ADPTarget(
