@@ -34,6 +34,28 @@ def test_job_to_row_preserves_structured_location_metadata() -> None:
     assert row["lon"] == 100.5018
 
 
+def test_oracle_dedupes_same_tenant_job_across_named_sites() -> None:
+    first = Job(
+        url="https://oracle.example/sites/english/jobs/1",
+        title="Engineer",
+        company="Named English Site",
+        ats_type=ATSType.ORACLE,
+        ats_id="tenant.oraclecloud.com:1",
+    )
+    second = first.model_copy(
+        update={
+            "url": "https://oracle.example/sites/french/jobs/1",
+            "company": "Named French Site",
+        }
+    )
+
+    oracle_config = runner.CONFIGS["oracle"]
+    assert runner._job_dedupe_key(first, oracle_config) == (
+        runner._job_dedupe_key(second, oracle_config)
+    )
+    assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
+
+
 def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
     sf_row = {
         "name": "Ace1950",
@@ -63,6 +85,10 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
         runner._oracle_slug(oracle_row)
         == "https://eiqg.fa.us2.oraclecloud.com?site_number=CX_1"
     )
+    assert runner.CONFIGS["oracle"]["kwargs"](oracle_row) == {
+        "company_name": "ABM US"
+    }
+    assert runner.CONFIGS["oracle"]["dedupe_by_ats_id"] is True
 
     cornerstone_row = {
         "name": "AAK",

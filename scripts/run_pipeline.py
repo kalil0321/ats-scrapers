@@ -399,6 +399,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "oracle": {
         "scraper": OracleScraper,
         "slug": _oracle_slug,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "dedupe_by_ats_id": True,
         "csv": "ats-companies/oracle.csv",
         "output": "oracle/jobs.csv",
     },
@@ -1091,6 +1095,16 @@ def _description_keys(job: Job) -> list[tuple[str, str]]:
     return keys
 
 
+def _job_dedupe_key(
+    job: Job,
+    config: dict[str, Any],
+) -> tuple[str, str]:
+    ats_id = job.ats_id or ""
+    if config.get("dedupe_by_ats_id"):
+        return "", ats_id
+    return job.company, ats_id
+
+
 def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
     company = (row.get("company") or "").strip()
@@ -1450,7 +1464,7 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                         "error": 0,
                     }
                     for job in jobs:
-                        key = (job.company, job.ats_id)
+                        key = _job_dedupe_key(job, cfg)
                         if key in seen_keys:
                             continue
                         seen_keys.add(key)

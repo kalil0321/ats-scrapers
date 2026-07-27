@@ -112,6 +112,23 @@ class OracleScraper(BaseScraper):
 
     default_headers: ClassVar[dict[str, str]] = {"Accept": "application/json"}
 
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        company_name: str | None = None,
+        timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
+    ) -> None:
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
+        self.company_name = company_name
+
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
@@ -151,24 +168,22 @@ class OracleScraper(BaseScraper):
                 if job.ats_id and job.ats_id not in seen:
                     seen.add(job.ats_id)
                     all_jobs.append(job)
-            if total is None or total <= len(items):
-                return all_jobs
-
-            # Paginate the rest. Use `len(items)` as the actual page size
-            # (Oracle may return less than the requested limit on the first
-            # page, e.g. 198 instead of 200).
-            page_size = max(len(items), 1)
-            offsets = list(range(page_size, total, page_size))
-            for offset in offsets:
-                payload = await self._fetch_page(fetch, api, site, offset=offset)
-                page_items, _ = _unwrap(payload)
-                if not page_items:
-                    break
-                for it in page_items:
-                    job = self._parse_job(it, base, site)
-                    if job.ats_id and job.ats_id not in seen:
-                        seen.add(job.ats_id)
-                        all_jobs.append(job)
+            if total is not None and total > len(items):
+                # Paginate the rest. Use `len(items)` as the actual page size
+                # (Oracle may return less than the requested limit on the first
+                # page, e.g. 198 instead of 200).
+                page_size = max(len(items), 1)
+                offsets = list(range(page_size, total, page_size))
+                for offset in offsets:
+                    payload = await self._fetch_page(fetch, api, site, offset=offset)
+                    page_items, _ = _unwrap(payload)
+                    if not page_items:
+                        break
+                    for it in page_items:
+                        job = self._parse_job(it, base, site)
+                        if job.ats_id and job.ats_id not in seen:
+                            seen.add(job.ats_id)
+                            all_jobs.append(job)
 
             if self.include_descriptions and all_jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
@@ -191,14 +206,15 @@ class OracleScraper(BaseScraper):
     ) -> None:
         # Best-effort: detail failures keep the listing-derived row
         # (CompanyNotFoundError subclasses ScraperError).
-        if not job.ats_id or job.description:
+        source_id = _oracle_source_id(job)
+        if not source_id or job.description:
             return
         async with sem:
             try:
                 response = await fetch.request(
                     "GET",
                     detail_url,
-                    params={"finder": f"ById;Id={job.ats_id}", "onlyData": "true"},
+                    params={"finder": f"ById;Id={source_id}", "onlyData": "true"},
                 )
             except ScraperError:
                 return
@@ -247,8 +263,10 @@ class OracleScraper(BaseScraper):
         return await fetch.get_json(api, params=params)
 
     def _parse_job(self, item: dict[str, Any], base: str, site: str) -> Job:
-        ats_id = str(item.get("Id") or item.get("RequisitionNumber") or "")
-        company = urlparse(base).hostname or self.company_slug
+        source_id = str(item.get("Id") or item.get("RequisitionNumber") or "")
+        host = urlparse(base).hostname or self.company_slug
+        ats_id = f"{host.casefold()}:{source_id}" if source_id else ""
+        company = self.company_name or host
         title = item.get("Title") or "Untitled"
 
         # Description from the listing's ``ShortDescriptionStr`` when
@@ -312,7 +330,7 @@ class OracleScraper(BaseScraper):
             else None
         )
 
-        raw: dict[str, Any] = {}
+        raw: dict[str, Any] = {"oracle_id": source_id} if source_id else {}
         for k in ("Category", "JobFamily", "JobFamilyName",
                   "JobFunction", "JobFunctionCode", "WorkLocation",
                   "WorkerType", "WorkerCategory", "WorkplaceTypeCode",
@@ -325,7 +343,7 @@ class OracleScraper(BaseScraper):
 
         return Job(
             url=item.get("ExternalURL")
-            or f"{base}/?keyword=&mode=jobs&lang=en&site_number={site}#{ats_id}",
+            or f"{base}/?keyword=&mode=jobs&lang=en&site_number={site}#{source_id}",
             title=title,
             company=company,
             ats_type=ATSType.ORACLE,
@@ -342,6 +360,16 @@ class OracleScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _oracle_source_id(job: Job) -> str | None:
+    if job.raw:
+        raw_id = job.raw.get("oracle_id")
+        if raw_id is not None and str(raw_id).strip():
+            return str(raw_id).strip()
+    if not job.ats_id:
+        return None
+    return job.ats_id.rsplit(":", 1)[-1].strip() or None
 
 
 def _unwrap(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], int | None]:

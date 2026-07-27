@@ -520,9 +520,86 @@ def test_oracle_with_default_site(httpx_mock) -> None:
             }]
         },
     )
-    jobs = OracleScraper(base).fetch()
+    jobs = OracleScraper(
+        base,
+        company_name="Oracle Test Tenant",
+        include_descriptions=False,
+    ).fetch()
     assert jobs[0].title == "DBA"
     assert jobs[0].location == "Redwood Shores"
+    assert jobs[0].company == "Oracle Test Tenant"
+    assert jobs[0].ats_id == "eeho.fa.us2.oraclecloud.com:001"
+    assert jobs[0].global_id == "oracle:eeho.fa.us2.oraclecloud.com:001"
+    assert jobs[0].raw is not None
+    assert jobs[0].raw["oracle_id"] == "001"
+
+
+def test_oracle_scopes_job_ids_to_tenant_not_site() -> None:
+    item = {"Id": "1071", "Title": "Finance Manager"}
+    acme = OracleScraper(
+        "https://acme.fa.em2.oraclecloud.com",
+        include_descriptions=False,
+    )
+    other = OracleScraper(
+        "https://other.fa.em2.oraclecloud.com",
+        include_descriptions=False,
+    )
+
+    acme_english = acme._parse_job(
+        item,
+        "https://acme.fa.em2.oraclecloud.com",
+        "CX_1",
+    )
+    acme_french = acme._parse_job(
+        item,
+        "https://acme.fa.em2.oraclecloud.com",
+        "CX_2",
+    )
+    other_job = other._parse_job(
+        item,
+        "https://other.fa.em2.oraclecloud.com",
+        "CX_1",
+    )
+
+    assert acme_english.ats_id == acme_french.ats_id
+    assert acme_english.ats_id != other_job.ats_id
+
+
+def test_oracle_enriches_single_page_job_with_raw_source_id(httpx_mock) -> None:
+    base = "https://eeho.fa.us2.oraclecloud.com"
+    listing_api = (
+        f"{base}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
+    )
+    detail_api = (
+        f"{base}/hcmRestApi/resources/latest/"
+        "recruitingCEJobRequisitionDetails"
+    )
+    httpx_mock.add_response(
+        url=(
+            f"{listing_api}?onlyData=true"
+            f"&finder=findReqs%3BsiteNumber%3DCX_1%2Climit%3D200%2Coffset%3D0"
+            f"&expand=requisitionList"
+        ),
+        json={
+            "items": [{
+                "TotalJobsCount": 1,
+                "requisitionList": [{"Id": "001", "Title": "DBA"}],
+            }]
+        },
+    )
+    httpx_mock.add_response(
+        url=f"{detail_api}?finder=ById%3BId%3D001&onlyData=true",
+        json={
+            "items": [{
+                "ExternalDescriptionStr": "<p>Maintain databases.</p>",
+                "ExternalResponsibilitiesStr": "<p>Ship backups.</p>",
+            }]
+        },
+    )
+
+    [job] = OracleScraper(base).fetch()
+
+    assert job.description == "Maintain databases.\n\nShip backups."
 
 
 def test_oracle_extracts_site_number_from_query(httpx_mock) -> None:
