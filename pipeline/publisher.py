@@ -686,7 +686,8 @@ class DatasetPublisher:
         *,
         recovery: dict[str, object],
     ) -> None:
-        for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
+        failure_attempts = 0
+        while True:
             aliases = _job_aliases_from_manifest(
                 target,
                 prefix=self._prefix,
@@ -697,13 +698,14 @@ class DatasetPublisher:
             except StorageError:
                 self._restore_job_aliases(snapshots)
                 self._cleanup_job_alias_snapshots(snapshots)
+                failure_attempts += 1
                 try:
                     latest = _load_manifest_strict(
                         self._r2,
                         manifest_key,
                     )
                 except StorageError as manifest_exc:
-                    if attempt == MANIFEST_WRITE_ATTEMPTS:
+                    if failure_attempts == MANIFEST_WRITE_ATTEMPTS:
                         raise StorageError(
                             "Stable job aliases could not be aligned because "
                             "the current jobs manifest could not be read"
@@ -714,8 +716,9 @@ class DatasetPublisher:
                     intended=target,
                 ):
                     target = latest
+                    failure_attempts = 0
                     continue
-                if attempt == MANIFEST_WRITE_ATTEMPTS:
+                if failure_attempts == MANIFEST_WRITE_ATTEMPTS:
                     self._rollback_jobs_manifest(
                         ManifestPublication(
                             manifest_key,
@@ -736,7 +739,8 @@ class DatasetPublisher:
             except StorageError as exc:
                 self._restore_job_aliases(snapshots)
                 self._cleanup_job_alias_snapshots(snapshots)
-                if attempt == MANIFEST_WRITE_ATTEMPTS:
+                failure_attempts += 1
+                if failure_attempts == MANIFEST_WRITE_ATTEMPTS:
                     raise StorageError(
                         "Stable job aliases were copied but the current jobs "
                         "manifest could not be verified"
@@ -749,26 +753,10 @@ class DatasetPublisher:
                     "aliases were aligned with the winning generation"
                 )
                 return
-            if attempt == MANIFEST_WRITE_ATTEMPTS:
-                try:
-                    self._rollback_jobs_manifest(
-                        ManifestPublication(
-                            manifest_key,
-                            target,
-                            latest,
-                        )
-                    )
-                finally:
-                    self._cleanup_job_alias_snapshots(snapshots)
-                logger.warning(
-                    "Jobs manifest kept changing during alias refresh; it "
-                    "was restored to the last complete alias generation"
-                )
-                return
             self._cleanup_job_alias_snapshots(snapshots)
             recovery = target
             target = latest
-        raise AssertionError("unreachable")
+            failure_attempts = 0
 
     def _snapshot_job_aliases(
         self,

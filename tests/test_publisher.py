@@ -802,7 +802,7 @@ def test_failed_later_alias_convergence_restores_last_complete_generation(
 
     assert remote_committed
     assert newer_committed
-    assert convergence_failures == MANIFEST_WRITE_ATTEMPTS - 1
+    assert convergence_failures == MANIFEST_WRITE_ATTEMPTS
     assert fake_r2.uploads["jobhive/v1/all.csv"]["data"] == b"generation b\n"
     assert all(key in fake_r2.uploads for key in stable_keys)
     assert not any(
@@ -815,7 +815,7 @@ def test_failed_later_alias_convergence_restores_last_complete_generation(
     )
 
 
-def test_convergence_exhaustion_restores_last_complete_generation(
+def test_convergence_follows_manifest_beyond_retry_budget(
     ats_csv_dir, fake_r2, monkeypatch
 ) -> None:
     publisher = DatasetPublisher(fake_r2, write_parquet=True)
@@ -894,9 +894,9 @@ def test_convergence_exhaustion_restores_last_complete_generation(
 
     publisher.publish_from_directory(ats_csv_dir)
 
-    expected_generation = MANIFEST_WRITE_ATTEMPTS
+    expected_generation = MANIFEST_WRITE_ATTEMPTS + 1
     assert copied_generation == expected_generation
-    assert committed_generation == expected_generation + 1
+    assert committed_generation == expected_generation
     assert fake_r2.uploads["jobhive/v1/all.csv"]["data"] == (
         f"generation {expected_generation}\n".encode()
     )
