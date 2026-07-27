@@ -715,16 +715,23 @@ class DatasetPublisher:
                     latest,
                     intended=target,
                 ):
-                    target = latest
-                    failure_attempts = 0
-                    continue
-                if failure_attempts == MANIFEST_WRITE_ATTEMPTS:
-                    self._rollback_jobs_manifest(
-                        ManifestPublication(
+                    if failure_attempts >= MANIFEST_WRITE_ATTEMPTS:
+                        self._restore_jobs_manifest_generation(
                             manifest_key,
                             recovery,
-                            target,
                         )
+                        logger.warning(
+                            "Stable job aliases could not be aligned; the "
+                            "jobs manifest was restored to the last complete "
+                            "alias generation"
+                        )
+                        return
+                    target = latest
+                    continue
+                if failure_attempts >= MANIFEST_WRITE_ATTEMPTS:
+                    self._restore_jobs_manifest_generation(
+                        manifest_key,
+                        recovery,
                     )
                     logger.warning(
                         "Stable job aliases could not be aligned; the jobs "
@@ -757,6 +764,63 @@ class DatasetPublisher:
             recovery = target
             target = latest
             failure_attempts = 0
+
+    def _restore_jobs_manifest_generation(
+        self,
+        manifest_key: str,
+        recovery: dict[str, object],
+    ) -> None:
+        while True:
+            current, etag = _load_existing_manifest_with_etag(
+                self._r2,
+                manifest_key,
+            )
+            if _has_jobs_manifest_fields(
+                current,
+                intended=recovery,
+            ):
+                return
+            restored = _replace_jobs_manifest_fields(
+                current,
+                previous=recovery,
+            )
+            body = json.dumps(
+                restored,
+                indent=2,
+                sort_keys=True,
+                default=str,
+            ).encode()
+            try:
+                self._r2.upload_bytes_if_current(
+                    body,
+                    manifest_key,
+                    expected_etag=etag,
+                    content_type="application/json",
+                    cache_control=CACHE_CONTROL_LATEST,
+                )
+            except StorageError as exc:
+                reloaded, reloaded_etag = (
+                    _load_existing_manifest_with_etag(
+                        self._r2,
+                        manifest_key,
+                    )
+                )
+                if _has_jobs_manifest_fields(
+                    reloaded,
+                    intended=recovery,
+                ):
+                    return
+                if (
+                    isinstance(exc, StorageConflictError)
+                    and reloaded_etag != etag
+                ):
+                    logger.warning(
+                        "Jobs manifest changed during alias recovery; "
+                        "retrying against the newer generation"
+                    )
+                    continue
+                raise
+            return
 
     def _snapshot_job_aliases(
         self,

@@ -815,6 +815,136 @@ def test_failed_later_alias_convergence_restores_last_complete_generation(
     )
 
 
+def test_copy_failures_across_manifest_changes_restore_complete_generation(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+    manifest_key = "jobhive/v1/manifest.json"
+    stable_keys = [
+        "jobhive/v1/all.csv",
+        "jobhive/v1/all.parquet",
+        *[
+            f"jobhive/v1/{ats}/jobs.{extension}"
+            for ats in ("ashby", "greenhouse", "lever")
+            for extension in ("csv", "parquet")
+        ],
+    ]
+    generation_sources = {
+        index: f"jobhive/v1/job-snapshots/failing-{index}.csv"
+        for index in range(1, MANIFEST_WRITE_ATTEMPTS + 2)
+    }
+    for index, source_key in generation_sources.items():
+        fake_r2.upload_bytes(
+            f"failing generation {index}\n".encode(),
+            source_key,
+            content_type="text/csv",
+        )
+
+    original_copy = fake_r2.copy
+    original_get_bytes = fake_r2.get_bytes
+    recovery_manifest = None
+    recovery_aliases = None
+    committed_generation = 0
+    copying_generation = 0
+    copy_failures = 0
+
+    def commit_generation(index: int) -> None:
+        nonlocal committed_generation
+        manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
+        manifest["generated_at"] = f"2099-02-{index:02d}T00:00:00+00:00"
+        manifest["all"]["csv"] = (
+            f"https://cdn.example.com/{generation_sources[index]}"
+        )
+        manifest["all"]["sha256"] = f"failing-generation-{index}"
+        manifest["companies"] = {"rows": index}
+        manifest.setdefault("stats", {})["total_companies"] = index
+        fake_r2.upload_bytes(
+            json.dumps(manifest).encode(),
+            manifest_key,
+            content_type="application/json",
+        )
+        committed_generation = index
+
+    def commit_first_generation_then_fail_every_target(
+        source_key: str,
+        destination_key: str,
+        **kwargs,
+    ):
+        nonlocal recovery_manifest, recovery_aliases
+        nonlocal copying_generation, copy_failures
+        if (
+            recovery_manifest is None
+            and destination_key == "jobhive/v1/all.csv"
+            and "/job-snapshots/" in source_key
+        ):
+            recovery_manifest = json.loads(
+                fake_r2.uploads[manifest_key]["data"]
+            )
+            commit_generation(1)
+        for index, generation_source in generation_sources.items():
+            if source_key == generation_source:
+                if recovery_aliases is None:
+                    recovery_aliases = {
+                        key: fake_r2.uploads[key]["data"]
+                        for key in stable_keys
+                    }
+                copying_generation = index
+                break
+        if (
+            copying_generation
+            and destination_key == "jobhive/v1/greenhouse/jobs.csv"
+            and "/job-snapshots/" in source_key
+        ):
+            copy_failures += 1
+            raise StorageError("persistent moving-target copy failure")
+        return original_copy(source_key, destination_key, **kwargs)
+
+    def advance_manifest_after_each_copy_failure(key: str):
+        if (
+            key == manifest_key
+            and copy_failures == committed_generation
+            and committed_generation < MANIFEST_WRITE_ATTEMPTS + 1
+        ):
+            commit_generation(committed_generation + 1)
+        return original_get_bytes(key)
+
+    monkeypatch.setattr(
+        fake_r2,
+        "copy",
+        commit_first_generation_then_fail_every_target,
+    )
+    monkeypatch.setattr(
+        fake_r2,
+        "get_bytes",
+        advance_manifest_after_each_copy_failure,
+    )
+
+    publisher.publish_from_directory(ats_csv_dir)
+
+    assert copy_failures == MANIFEST_WRITE_ATTEMPTS
+    assert committed_generation == MANIFEST_WRITE_ATTEMPTS + 1
+    assert recovery_manifest is not None
+    assert recovery_aliases is not None
+    assert {
+        key: fake_r2.uploads[key]["data"]
+        for key in stable_keys
+    } == recovery_aliases
+    manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
+    assert manifest["all"] == recovery_manifest["all"]
+    assert manifest["by_ats"] == recovery_manifest["by_ats"]
+    assert manifest["companies"] == {
+        "rows": MANIFEST_WRITE_ATTEMPTS + 1,
+    }
+    assert manifest["stats"]["total_companies"] == (
+        MANIFEST_WRITE_ATTEMPTS + 1
+    )
+    assert not any(
+        "/job-alias-rollbacks/" in key
+        for key in fake_r2.uploads
+    )
+
+
 def test_convergence_follows_manifest_beyond_retry_budget(
     ats_csv_dir, fake_r2, monkeypatch
 ) -> None:
