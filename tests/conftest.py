@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +10,8 @@ from typing import Any
 
 import pandas as pd
 import pytest
+
+from ats_scrapers.exceptions import StorageConflictError
 
 
 @dataclass
@@ -33,12 +36,35 @@ class FakeR2:
         content_type: str | None = None,
         cache_control: str | None = None,
     ) -> str:
+        etag = f'"{hashlib.sha256(data).hexdigest()}"'
         self.uploads[key] = {
             "data": data,
             "content_type": content_type,
             "cache_control": cache_control,
+            "etag": etag,
         }
         return key
+
+    def upload_bytes_if_current(
+        self,
+        data: bytes,
+        key: str,
+        *,
+        expected_etag: str | None,
+        content_type: str | None = None,
+        cache_control: str | None = None,
+    ) -> str:
+        current = self.uploads.get(key)
+        current_etag = current["etag"] if current else None
+        if current_etag != expected_etag:
+            raise StorageConflictError(f"conditional write conflict for {key}")
+        self.upload_bytes(
+            data,
+            key,
+            content_type=content_type,
+            cache_control=cache_control,
+        )
+        return self.uploads[key]["etag"]
 
     def upload(
         self,
@@ -56,6 +82,36 @@ class FakeR2:
             cache_control=cache_control,
         )
 
+    def copy(
+        self,
+        source_key: str,
+        destination_key: str,
+        *,
+        expected_destination_etag: str | None,
+        content_type: str | None = None,
+        cache_control: str | None = None,
+    ) -> str:
+        destination = self.uploads.get(destination_key)
+        current_etag = destination["etag"] if destination else None
+        if current_etag != expected_destination_etag:
+            raise StorageConflictError(
+                f"conditional copy conflict for {destination_key}"
+            )
+        source = self.uploads[source_key]
+        self.upload_bytes(
+            source["data"],
+            destination_key,
+            content_type=content_type,
+            cache_control=cache_control,
+        )
+        return destination_key
+
+    def head(self, key: str) -> dict[str, Any] | None:
+        entry = self.uploads.get(key)
+        if entry is None:
+            return None
+        return {"ETag": entry["etag"], "ContentLength": len(entry["data"])}
+
     def list(self, prefix: str = ""):
         for key in self.uploads:
             if key.startswith(prefix):
@@ -64,6 +120,15 @@ class FakeR2:
     def get_bytes(self, key: str) -> bytes | None:
         entry = self.uploads.get(key)
         return entry["data"] if entry else None
+
+    def get_bytes_with_etag(
+        self,
+        key: str,
+    ) -> tuple[bytes | None, str | None]:
+        entry = self.uploads.get(key)
+        if entry is None:
+            return None, None
+        return entry["data"], entry["etag"]
 
     def delete_many(self, keys: list[str]) -> int:
         for k in keys:

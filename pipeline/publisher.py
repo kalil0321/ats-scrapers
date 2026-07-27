@@ -3,9 +3,10 @@
 Layout produced under ``<prefix>`` (default ``jobhive/v1``):
 
     jobhive/v1/manifest.json
-    jobhive/v1/all.{csv,parquet}     # full snapshot, both formats
-    jobhive/v1/<ats>/jobs.csv        # per-ATS jobs slice
-    jobhive/v1/<ats>/jobs.parquet    # idem in parquet
+    jobhive/v1/job-snapshots/<sha>.{csv,parquet}
+    jobhive/v1/<ats>/job-snapshots/<sha>.{csv,parquet}
+    jobhive/v1/all.{csv,parquet}     # compatibility aliases
+    jobhive/v1/<ats>/jobs.{csv,parquet}  # compatibility aliases
 
 Tenant lists (``<ats>/companies.csv`` and the aggregated
 ``companies.{csv,parquet}``) are owned by the GitHub Actions workflow
@@ -49,17 +50,20 @@ import logging
 import os
 import re
 import tempfile
+import time
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from math import ceil
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import polars as pl
 
 from ats_scrapers._version import __version__
 from ats_scrapers.enrichment import infer_is_remote, parse_salary_range
-from ats_scrapers.exceptions import StorageError
+from ats_scrapers.exceptions import StorageConflictError, StorageError
 from ats_scrapers.models import ATSType
 
 # Pull the keyword list used by ``infer_is_remote`` so the lazy
@@ -73,7 +77,7 @@ except ImportError:
     _REMOTE_KEYWORDS = ()
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from pipeline.r2 import R2Client
 
@@ -81,6 +85,18 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PREFIX = "jobhive/v1"
 CACHE_CONTROL_LATEST = "public, max-age=300"  # manifest + latest data files
+CACHE_CONTROL_IMMUTABLE = "public, max-age=31536000, immutable"
+MANIFEST_WRITE_ATTEMPTS = 5
+ALIAS_COPY_ATTEMPTS = 3
+PUBLICATION_LEASE_TTL = timedelta(minutes=20)
+PUBLICATION_LEASE_POLL_SECONDS = 5.0
+PUBLICATION_LEASE_WAIT_ATTEMPTS = (
+    ceil(
+        PUBLICATION_LEASE_TTL.total_seconds()
+        / PUBLICATION_LEASE_POLL_SECONDS
+    )
+    + 1
+)
 
 # ``all`` ships both formats — parquet for typed pandas / DuckDB
 # consumers, CSV (~2.3 GB at the current ~4M-row corpus) for
@@ -110,6 +126,13 @@ class PublishResult:
     total_jobs_raw: int = 0
     ats_count: int = 0
     duration_seconds: float = 0.0
+
+
+@dataclass(frozen=True)
+class AliasCopy:
+    source_key: str
+    destination_key: str
+    content_type: str
 
 
 class DatasetPublisher:
@@ -181,6 +204,7 @@ class DatasetPublisher:
         with ExitStack() as stack:
             per_ats_csv_paths: dict[str, Path] = {}
             per_ats_entries: dict[ATSType, dict[str, object]] = {}
+            alias_copies: list[AliasCopy] = []
             schema_union: list[str] = []
             seen_cols: set[str] = set()
 
@@ -231,11 +255,12 @@ class DatasetPublisher:
                 lf.sink_csv(csv_path)
                 per_ats_csv_paths[ats.value] = csv_path
 
-                entry, _ = self._upload_per_ats_streaming(
+                entry, _, aliases = self._upload_per_ats_streaming(
                     csv_path=csv_path,
                     base_key=f"{self._prefix}/{ats.value}/jobs",
                 )
                 per_ats_entries[ats] = entry
+                alias_copies.extend(aliases)
                 files_uploaded.extend(_collect_uploaded_keys(entry))
 
             if not any_csv_found:
@@ -258,15 +283,16 @@ class DatasetPublisher:
             )
 
             # ---- Pass 3: stream all.parquet from the per-ATS temp CSVs ------
-            all_entry = self._stream_write_all_polars(
+            all_entry, all_aliases = self._stream_write_all_polars(
                 per_ats_csv_paths=per_ats_csv_paths,
                 survivors=survivors,
                 schema_union=schema_union,
                 rows_total=n_kept,
             )
+            alias_copies.extend(all_aliases)
             files_uploaded.extend(_collect_uploaded_keys(all_entry))
 
-            manifest_key = self._patch_and_upload_manifest(
+            manifest_key = self._commit_job_publication(
                 generated_at=started,
                 stats_factory=lambda existing: {
                     "total_jobs": n_kept,
@@ -279,8 +305,12 @@ class DatasetPublisher:
                 all_entry=all_entry,
                 by_ats=per_ats_entries,
                 existing_manifest=existing_manifest,
+                aliases=alias_copies,
             )
             files_uploaded.append(manifest_key)
+            files_uploaded.extend(
+                alias.destination_key for alias in alias_copies
+            )
 
             deleted = self.prune_legacy_paths()
             if deleted:
@@ -324,7 +354,7 @@ class DatasetPublisher:
         *,
         csv_path: Path,
         base_key: str,
-    ) -> tuple[dict[str, object], int]:
+    ) -> tuple[dict[str, object], int, list[AliasCopy]]:
         """Upload a per-ATS slice from a sunk temp CSV.
 
         Hashes + uploads the CSV, then ``scan_csv`` → ``sink_parquet``
@@ -332,15 +362,21 @@ class DatasetPublisher:
         table in RAM). Returns the manifest entry and the row count.
         """
         entry: dict[str, object] = {}
+        aliases: list[AliasCopy] = []
 
-        csv_key = f"{base_key}.csv"
+        stable_csv_key = f"{base_key}.csv"
         csv_sha, csv_size = _file_sha_size(csv_path)
+        snapshot_prefix = (
+            f"{base_key.removesuffix('/jobs')}/job-snapshots"
+        )
+        csv_key = f"{snapshot_prefix}/{csv_sha}.csv"
         self._r2.upload(
             csv_path,
             csv_key,
             content_type="text/csv",
-            cache_control=CACHE_CONTROL_LATEST,
+            cache_control=CACHE_CONTROL_IMMUTABLE,
         )
+        aliases.append(AliasCopy(csv_key, stable_csv_key, "text/csv"))
         entry["csv"] = self._public_or_key(csv_key)
         entry["size_bytes"] = csv_size
         entry["sha256"] = csv_sha
@@ -356,23 +392,31 @@ class DatasetPublisher:
         entry["rows"] = n_rows
 
         if self._write_parquet:
-            parquet_key = f"{base_key}.parquet"
+            stable_parquet_key = f"{base_key}.parquet"
             with _temp_file(".parquet") as pq_path:
                 pl.scan_csv(csv_path, **_SCAN_CSV_KWARGS).sink_parquet(
                     pq_path, compression="zstd"
                 )
                 pq_sha, pq_size = _file_sha_size(pq_path)
+                parquet_key = f"{snapshot_prefix}/{pq_sha}.parquet"
                 self._r2.upload(
                     pq_path,
                     parquet_key,
                     content_type="application/vnd.apache.parquet",
-                    cache_control=CACHE_CONTROL_LATEST,
+                    cache_control=CACHE_CONTROL_IMMUTABLE,
                 )
+            aliases.append(
+                AliasCopy(
+                    parquet_key,
+                    stable_parquet_key,
+                    "application/vnd.apache.parquet",
+                )
+            )
             entry["parquet"] = self._public_or_key(parquet_key)
             entry["parquet_size_bytes"] = pq_size
             entry["parquet_sha256"] = pq_sha
 
-        return entry, n_rows
+        return entry, n_rows, aliases
 
     def _stream_write_all_polars(
         self,
@@ -381,7 +425,7 @@ class DatasetPublisher:
         survivors: dict[str, pl.DataFrame],
         schema_union: list[str],
         rows_total: int,
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], list[AliasCopy]]:
         """Stream the global ``all.parquet`` from the per-ATS temp CSVs.
 
         Three stages, all streaming:
@@ -403,6 +447,7 @@ class DatasetPublisher:
            materialized whole.
         """
         all_entry: dict[str, object] = {"rows": rows_total}
+        aliases: list[AliasCopy] = []
 
         with ExitStack() as stage_stack:
             per_ats_parquets: list[Path] = []
@@ -438,13 +483,23 @@ class DatasetPublisher:
                 ).write_parquet(all_pq, compression="zstd")
 
             if "parquet" in FORMATS_ALL and self._write_parquet:
-                pq_key = f"{self._prefix}/all.parquet"
+                stable_pq_key = f"{self._prefix}/all.parquet"
                 pq_sha, pq_size = _file_sha_size(all_pq)
+                pq_key = (
+                    f"{self._prefix}/job-snapshots/{pq_sha}.parquet"
+                )
                 self._r2.upload(
                     all_pq,
                     pq_key,
                     content_type="application/vnd.apache.parquet",
-                    cache_control=CACHE_CONTROL_LATEST,
+                    cache_control=CACHE_CONTROL_IMMUTABLE,
+                )
+                aliases.append(
+                    AliasCopy(
+                        pq_key,
+                        stable_pq_key,
+                        "application/vnd.apache.parquet",
+                    )
                 )
                 all_entry["parquet"] = self._public_or_key(pq_key)
                 all_entry["parquet_size_bytes"] = pq_size
@@ -453,16 +508,22 @@ class DatasetPublisher:
                 all_entry["sha256"] = pq_sha
 
             if "csv" in FORMATS_ALL and self._write_all_csv:
-                csv_key = f"{self._prefix}/all.csv"
+                stable_csv_key = f"{self._prefix}/all.csv"
                 with _temp_file(".csv") as all_csv:
                     pl.scan_parquet(all_pq).sink_csv(all_csv)
                     csv_sha, csv_size = _file_sha_size(all_csv)
+                    csv_key = (
+                        f"{self._prefix}/job-snapshots/{csv_sha}.csv"
+                    )
                     self._r2.upload(
                         all_csv,
                         csv_key,
                         content_type="text/csv",
-                        cache_control=CACHE_CONTROL_LATEST,
+                        cache_control=CACHE_CONTROL_IMMUTABLE,
                     )
+                aliases.append(
+                    AliasCopy(csv_key, stable_csv_key, "text/csv")
+                )
                 all_entry["csv"] = self._public_or_key(csv_key)
                 # CSV's size + sha live in the canonical ``size_bytes``
                 # / ``sha256`` slots (consumers default-fetching the
@@ -471,7 +532,86 @@ class DatasetPublisher:
                 all_entry["size_bytes"] = csv_size
                 all_entry["sha256"] = csv_sha
 
-        return all_entry
+        return all_entry, aliases
+
+    def _commit_job_publication(
+        self,
+        *,
+        generated_at: datetime,
+        stats_factory,
+        all_entry: dict[str, object],
+        by_ats: dict[ATSType, dict[str, object]],
+        existing_manifest: dict[str, object],
+        aliases: list[AliasCopy],
+    ) -> str:
+        """Commit one jobs generation and refresh compatibility aliases.
+
+        The manifest is the atomic contract: it references only immutable
+        content-addressed objects. Stable paths are compatibility aliases,
+        refreshed after the manifest commit without trying to make a set of
+        independent R2 objects transactional.
+        """
+        with _distributed_publication_lease(
+            self._r2,
+            prefix=self._prefix,
+        ) as renew_lease:
+            renew_lease()
+            manifest_key = self._patch_and_upload_manifest(
+                generated_at=generated_at,
+                stats_factory=stats_factory,
+                all_entry=all_entry,
+                by_ats=by_ats,
+                existing_manifest=existing_manifest,
+            )
+            try:
+                self._refresh_job_aliases(
+                    aliases,
+                    renew_lease=renew_lease,
+                )
+            except StorageError as exc:
+                raise StorageError(
+                    "Jobs manifest committed to immutable artifacts, but "
+                    "stable compatibility aliases could not be refreshed"
+                ) from exc
+            return manifest_key
+
+    def _refresh_job_aliases(
+        self,
+        aliases: list[AliasCopy],
+        *,
+        renew_lease: Callable[[], None],
+    ) -> None:
+        for attempt in range(1, ALIAS_COPY_ATTEMPTS + 1):
+            try:
+                for alias in aliases:
+                    renew_lease()
+                    destination = self._r2.head(alias.destination_key)
+                    expected_etag: str | None = None
+                    if destination is not None:
+                        expected_etag = destination.get("ETag")
+                        if not isinstance(expected_etag, str) or not expected_etag:
+                            raise StorageError(
+                                "R2 alias destination omitted ETag for "
+                                f"{alias.destination_key}"
+                            )
+                    self._r2.copy(
+                        alias.source_key,
+                        alias.destination_key,
+                        expected_destination_etag=expected_etag,
+                        content_type=alias.content_type,
+                        cache_control=CACHE_CONTROL_LATEST,
+                    )
+            except StorageError:
+                if attempt == ALIAS_COPY_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "Stable job alias refresh failed; retrying (%d/%d)",
+                    attempt,
+                    ALIAS_COPY_ATTEMPTS,
+                )
+                continue
+            return
+        raise AssertionError("unreachable")
 
     def _patch_and_upload_manifest(
         self,
@@ -482,46 +622,85 @@ class DatasetPublisher:
         by_ats: dict[ATSType, dict[str, object]],
         existing_manifest: dict[str, object] | None = None,
     ) -> str:
-        """Read existing manifest, replace jobs-related fields, preserve
-        the companies block written by the CI."""
+        """CAS-update jobs fields while preserving the latest CI fields."""
         key = f"{self._prefix}/manifest.json"
-        existing = (
-            existing_manifest
-            if existing_manifest is not None
-            else _load_existing_manifest(self._r2, key)
-        )
+        del existing_manifest
+        intended_by_ats = {
+            ats.value: entry for ats, entry in by_ats.items()
+        }
 
-        manifest: dict[str, object] = {**existing}
-        manifest["version"] = "2.0"
-        manifest["generator"] = f"ats-scrapers/{__version__}"
-        manifest["generated_at"] = generated_at.isoformat()
-        # ``updated_at`` is the "manifest last touched" timestamp; both
-        # writers (publisher + CI companies workflow) bump it so a
-        # client like the homepage that reads only ``updated_at`` for
-        # the freshness badge sees the latest write regardless of which
-        # writer ran most recently. Format matches what the CI script
-        # writes: UTC ``Z``-suffixed seconds.
-        manifest["updated_at"] = generated_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-        manifest["stats"] = stats_factory(existing)
-        manifest["all"] = all_entry
-        manifest["by_ats"] = {ats.value: entry for ats, entry in by_ats.items()}
+        for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
+            existing, etag = _load_existing_manifest_with_etag(
+                self._r2,
+                key,
+            )
+            current_generated_at = _manifest_generated_at(existing)
+            if (
+                current_generated_at is not None
+                and current_generated_at > generated_at
+            ):
+                raise StorageConflictError(
+                    "Refusing to replace a newer jobs generation "
+                    f"({current_generated_at.isoformat()}) with "
+                    f"{generated_at.isoformat()}"
+                )
+            manifest: dict[str, object] = {**existing}
+            manifest["version"] = "2.0"
+            manifest["generator"] = f"ats-scrapers/{__version__}"
+            manifest["generated_at"] = generated_at.isoformat()
+            manifest["updated_at"] = generated_at.strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            manifest["stats"] = stats_factory(existing)
+            manifest["all"] = all_entry
+            manifest["by_ats"] = intended_by_ats
 
-        # Drop fields from the pre-2.0 layout if they survived the
-        # legacy-path prune. Their data is gone so the entries point
-        # nowhere.
-        for legacy in ("by_date", "companies_by_ats"):
-            manifest.pop(legacy, None)
+            for legacy in ("by_date", "companies_by_ats"):
+                manifest.pop(legacy, None)
 
-        body = json.dumps(manifest, indent=2, sort_keys=True, default=str).encode(
-            "utf-8"
-        )
-        self._r2.upload_bytes(
-            body,
-            key,
-            content_type="application/json",
-            cache_control=CACHE_CONTROL_LATEST,
-        )
-        return key
+            body = json.dumps(
+                manifest,
+                indent=2,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+            try:
+                self._r2.upload_bytes_if_current(
+                    body,
+                    key,
+                    expected_etag=etag,
+                    content_type="application/json",
+                    cache_control=CACHE_CONTROL_LATEST,
+                )
+            except StorageError as exc:
+                current, _current_etag = _load_existing_manifest_with_etag(
+                    self._r2,
+                    key,
+                )
+                if _jobs_manifest_matches(
+                    current,
+                    all_entry=all_entry,
+                    by_ats=intended_by_ats,
+                ):
+                    logger.warning(
+                        "Manifest write response was ambiguous, but the "
+                        "intended jobs generation is current"
+                    )
+                    return key
+                if not isinstance(exc, StorageConflictError):
+                    raise
+                if attempt == MANIFEST_WRITE_ATTEMPTS:
+                    raise StorageError(
+                        "Manifest kept changing during jobs publication"
+                    ) from exc
+                logger.warning(
+                    "Manifest changed during jobs patch; retrying (%d/%d)",
+                    attempt,
+                    MANIFEST_WRITE_ATTEMPTS,
+                )
+                continue
+            return key
+        raise AssertionError("unreachable")
 
     def _public_or_key(self, key: str) -> str:
         return self._r2.public_url(key) or key
@@ -1236,6 +1415,210 @@ def _load_existing_manifest(r2_client: R2Client, key: str) -> dict[str, object]:
         )
         return {}
     return loaded
+
+
+def _load_existing_manifest_with_etag(
+    r2_client: R2Client,
+    key: str,
+) -> tuple[dict[str, object], str | None]:
+    body, etag = r2_client.get_bytes_with_etag(key)
+    if not body:
+        return {}, etag
+    try:
+        loaded = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "Existing manifest %s did not parse as JSON (%s); starting fresh",
+            key,
+            exc,
+        )
+        return {}, etag
+    if not isinstance(loaded, dict):
+        logger.warning(
+            "Existing manifest %s root is not an object; starting fresh", key
+        )
+        return {}, etag
+    return loaded, etag
+
+
+def _jobs_manifest_matches(
+    manifest: dict[str, object],
+    *,
+    all_entry: dict[str, object],
+    by_ats: dict[str, dict[str, object]],
+) -> bool:
+    return (
+        manifest.get("all") == all_entry
+        and manifest.get("by_ats") == by_ats
+    )
+
+
+def _manifest_generated_at(
+    manifest: dict[str, object],
+) -> datetime | None:
+    value = manifest.get("generated_at")
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        generated_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("Existing manifest has invalid generated_at: %r", value)
+        return None
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=UTC)
+    return generated_at.astimezone(UTC)
+
+
+@contextmanager
+def _distributed_publication_lease(
+    r2_client: R2Client,
+    *,
+    prefix: str,
+) -> Iterator[Callable[[], None]]:
+    """Serialize the short jobs commit phase across pipeline hosts.
+
+    Missing leases are created with ``If-None-Match``. Expired leases
+    are replaced with ``If-Match``. Release is also a conditional
+    overwrite, so an expired owner can never delete or release a newer
+    owner's lease.
+    """
+    key = f"{prefix}/.locks/jobs-publication.json"
+    owner = uuid4().hex
+    lease_etag: str | None = None
+
+    for attempt in range(1, PUBLICATION_LEASE_WAIT_ATTEMPTS + 1):
+        body, etag = r2_client.get_bytes_with_etag(key)
+        now = datetime.now(tz=UTC)
+        if body is not None:
+            lease_owner, expires_at = _parse_publication_lease(body, key)
+            if lease_owner != owner and expires_at > now:
+                if attempt == PUBLICATION_LEASE_WAIT_ATTEMPTS:
+                    raise StorageError(
+                        "Timed out waiting for the distributed jobs "
+                        "publication lease"
+                    )
+                time.sleep(PUBLICATION_LEASE_POLL_SECONDS)
+                continue
+
+        lease = json.dumps(
+            {
+                "owner": owner,
+                "expires_at": (now + PUBLICATION_LEASE_TTL).isoformat(),
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+        try:
+            lease_etag = r2_client.upload_bytes_if_current(
+                lease,
+                key,
+                expected_etag=etag,
+                content_type="application/json",
+                cache_control="no-store",
+            )
+        except StorageConflictError as exc:
+            if attempt == PUBLICATION_LEASE_WAIT_ATTEMPTS:
+                raise StorageError(
+                    "Could not acquire the distributed jobs publication "
+                    "lease because it kept changing"
+                ) from exc
+            continue
+        break
+    else:
+        raise AssertionError("unreachable")
+
+    def renew() -> None:
+        nonlocal lease_etag
+
+        body, current_etag = r2_client.get_bytes_with_etag(key)
+        if body is None or current_etag is None:
+            raise StorageConflictError(
+                "Distributed jobs publication lease disappeared"
+            )
+        lease_owner, _expires_at = _parse_publication_lease(body, key)
+        if lease_owner != owner or current_etag != lease_etag:
+            raise StorageConflictError(
+                "Distributed jobs publication lease ownership changed"
+            )
+        renewed = json.dumps(
+            {
+                "owner": owner,
+                "expires_at": (
+                    datetime.now(tz=UTC) + PUBLICATION_LEASE_TTL
+                ).isoformat(),
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+        lease_etag = r2_client.upload_bytes_if_current(
+            renewed,
+            key,
+            expected_etag=current_etag,
+            content_type="application/json",
+            cache_control="no-store",
+        )
+
+    try:
+        yield renew
+    finally:
+        try:
+            body, current_etag = r2_client.get_bytes_with_etag(key)
+            if body is None or current_etag is None:
+                logger.warning(
+                    "Distributed jobs publication lease disappeared "
+                    "before release"
+                )
+            else:
+                lease_owner, _expires_at = _parse_publication_lease(
+                    body,
+                    key,
+                )
+                if lease_owner != owner or current_etag != lease_etag:
+                    logger.warning(
+                        "Distributed jobs publication lease ownership "
+                        "changed before release"
+                    )
+                else:
+                    released = json.dumps(
+                        {
+                            "owner": owner,
+                            "expires_at": datetime.now(tz=UTC).isoformat(),
+                        },
+                        sort_keys=True,
+                    ).encode("utf-8")
+                    r2_client.upload_bytes_if_current(
+                        released,
+                        key,
+                        expected_etag=current_etag,
+                        content_type="application/json",
+                        cache_control="no-store",
+                    )
+        except StorageError:
+            logger.warning(
+                "Could not release the distributed jobs publication lease",
+                exc_info=True,
+            )
+
+
+def _parse_publication_lease(
+    body: bytes,
+    key: str,
+) -> tuple[str, datetime]:
+    try:
+        payload = json.loads(body)
+        owner = payload["owner"]
+        expires_at = datetime.fromisoformat(payload["expires_at"])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise StorageError(
+            f"Distributed jobs publication lease is invalid: {key}"
+        ) from exc
+    if (
+        not isinstance(owner, str)
+        or not owner
+        or expires_at.tzinfo is None
+    ):
+        raise StorageError(
+            f"Distributed jobs publication lease is invalid: {key}"
+        )
+    return owner, expires_at
 
 
 @contextmanager
