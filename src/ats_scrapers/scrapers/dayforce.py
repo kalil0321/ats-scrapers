@@ -233,7 +233,12 @@ def _select_job_variant(
         cultures_to_titles.setdefault(culture, set()).add(
             " ".join(job.title.split()).casefold()
         )
-        companies.add(" ".join(job.company.split()).casefold())
+        feed_company = (
+            _string(item.get("CompanyName"))
+            or _string(item.get("ParentCompanyName"))
+            or ""
+        )
+        companies.add(" ".join(feed_company.split()).casefold())
 
     if len(companies) != 1 or any(
         len(titles) != 1 for titles in cultures_to_titles.values()
@@ -271,10 +276,10 @@ def _variant_rank(job: Job, item: dict[str, Any]) -> tuple[bool, bool, bool, boo
     culture = (_string(item.get("CultureCode")) or "").casefold()
     country = (_string(item.get("Country")) or "").upper()
     return (
+        bool(job.description),
         culture == "en-us",
         culture.startswith("en-"),
         country in _COUNTRY_METADATA,
-        bool(job.description),
     )
 
 
