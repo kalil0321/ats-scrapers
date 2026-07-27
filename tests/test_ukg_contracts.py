@@ -28,5 +28,5 @@ def test_ukg_has_direct_employer_dedup_priority() -> None:
 def test_ukg_seed_catalogue_is_provider_only() -> None:
     rows = Path("ats-companies/ukg.csv").read_text().splitlines()
 
-    assert len(rows) == 20
+    assert len(rows) == 108
     assert all("ultipro." in row for row in rows[1:])
