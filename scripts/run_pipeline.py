@@ -37,6 +37,7 @@ from urllib.parse import parse_qs, urlparse
 from ats_scrapers.exceptions import CompanyNotFoundError
 from ats_scrapers.models import Job
 from ats_scrapers.scrapers import (
+    ADPWorkforceNowScraper,
     AmazonScraper,
     AppleScraper,
     ArbetsformedlingenScraper,
@@ -341,6 +342,24 @@ def _icims_slug(row: dict[str, Any]) -> str | None:
 #   is ``ats-companies/{ats}.csv`` with columns ``name,url``)
 # - output: jobs CSV output path (per-ATS jobs dataset under ``{ats}/``)
 CONFIGS: dict[str, dict[str, Any]] = {
+    "adp": {
+        "scraper": ADPWorkforceNowScraper,
+        "slug": lambda r: (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/adp.csv",
+        "output": "adp/jobs.csv",
+        "defer_descriptions_to_cache": True,
+        "description_cache_path": "adp/descriptions.sqlite3",
+        "description_cache_compress": True,
+        "max_concurrency": 1,
+        "tenant_delay_seconds": 0.5,
+        "description_concurrency": 1,
+        "description_delay_seconds": 0.5,
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_empty": True,
+    },
     "cornerstone": {
         "scraper": CornerstoneScraper,
         # Scraper accepts either a bare slug OR the full career URL.
@@ -1280,6 +1299,9 @@ async def _run_scraper(
 
 async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: float) -> int:
     cfg = CONFIGS[ats]
+    configured_max_concurrency = cfg.get("max_concurrency")
+    if isinstance(configured_max_concurrency, int):
+        concurrency = min(concurrency, max(1, configured_max_concurrency))
 
     targets: list[tuple[str, dict[str, Any]]] = []
     if cfg.get("singleton"):
@@ -1310,6 +1332,12 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
 
     print(f"[{ats}] Scraping {len(targets)} tenants (concurrency={concurrency}, timeout={timeout}s)")
     sem = asyncio.Semaphore(concurrency)
+    description_concurrency = cfg.get("description_concurrency", concurrency)
+    if not isinstance(description_concurrency, int):
+        description_concurrency = concurrency
+    description_sem = asyncio.Semaphore(max(1, description_concurrency))
+    tenant_delay = float(cfg.get("tenant_delay_seconds", 0))
+    description_delay = float(cfg.get("description_delay_seconds", 0))
     counts = {"success": 0, "not_found": 0, "error": 0, "jobs": 0}
 
     output_path = DATA_ROOT / cfg["output"]
@@ -1432,18 +1460,22 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                     print(f"  [{ats}] streaming failed: {type(exc).__name__}: "
                           f"{str(exc)[:200]}")
             else:
-                async def task(slug: str, kw: dict[str, Any]) -> None:
+                async def scrape_tenant(slug: str, kw: dict[str, Any]) -> None:
                     started = time.time()
                     async with sem:
-                        _, scraper, jobs, err = await _run_scraper(
-                            cfg["scraper"],
-                            slug,
-                            kw,
-                            timeout,
-                            include_descriptions=not bool(
-                                cfg.get("defer_descriptions_to_cache")
-                            ),
-                        )
+                        try:
+                            _, scraper, jobs, err = await _run_scraper(
+                                cfg["scraper"],
+                                slug,
+                                kw,
+                                timeout,
+                                include_descriptions=not bool(
+                                    cfg.get("defer_descriptions_to_cache")
+                                ),
+                            )
+                        finally:
+                            if tenant_delay:
+                                await asyncio.sleep(tenant_delay)
                     if err == "not_found":
                         counts["not_found"] += 1
                         return
@@ -1469,9 +1501,19 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                             continue
                         seen_keys.add(key)
                         if scraper is not None and not cfg.get("skip_description_enrichment"):
-                            desc_status = await _ensure_description(
-                                scraper, job, description_cache
-                            )
+                            if _cached_description(job, description_cache) or job.description:
+                                desc_status = await _ensure_description(
+                                    scraper, job, description_cache
+                                )
+                            else:
+                                async with description_sem:
+                                    try:
+                                        desc_status = await _ensure_description(
+                                            scraper, job, description_cache
+                                        )
+                                    finally:
+                                        if description_delay:
+                                            await asyncio.sleep(description_delay)
                             desc_stats[desc_status] += 1
                         writer.writerow(_job_to_row(job))
                         counts["jobs"] += 1
@@ -1491,7 +1533,7 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                 batch_size = 50
                 for i in range(0, len(targets), batch_size):
                     batch = targets[i:i + batch_size]
-                    await asyncio.gather(*(task(s, kw) for s, kw in batch))
+                    await asyncio.gather(*(scrape_tenant(s, kw) for s, kw in batch))
                     f.flush()
                     elapsed = time.time() - t0
                     print(

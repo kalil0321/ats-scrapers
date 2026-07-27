@@ -8,6 +8,7 @@ from ats_scrapers.scrapers import BreezyScraper, SmartRecruitersScraper, Workabl
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 TWO_STEP_PROVIDERS = {
+    ATSType.ADP,
     ATSType.AVATURE,
     ATSType.BAMBOOHR,
     ATSType.BREEZY,

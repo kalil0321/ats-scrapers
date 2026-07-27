@@ -59,6 +59,7 @@ Examples:
 - Gem: `"jobs.gem.com/" "am9icG9zd"`
 - Eightfold: `site:eightfold.ai/careers "domain" "configPath"`
 - Oracle: `"CandidateExperience" "recruitingCEJobRequisitions"`
+- ADP Workforce Now: `"workforcenow.adp.com" "recruitment.html?cid="`
 - SuccessFactors: `"sitemal.xml" "successfactors"`
 
 Search results are discovery hints only. They are not validation.
@@ -212,6 +213,23 @@ Validation:
 4. Require non-empty requisition items.
 5. Reject duplicate locale paths, expired single requisition links, and generic
    Oracle Cloud pages.
+
+### ADP Workforce Now
+
+Rows must use the public Workforce Now recruitment URL with both the tenant
+``cid`` and career-center ``ccId`` query parameters.
+
+Validation:
+
+1. Call the public ``job-requisitions`` endpoint with the candidate ``cid``,
+   ``ccId``, locale, ``$skip``, and ``$top`` values.
+2. Require HTTP 200, a non-empty ``jobRequisitions`` list, and a numeric
+   ``meta.totalNumber``.
+3. Fetch at least one posting through its ``ExternalJobID`` detail endpoint.
+4. Require the detail ``itemID`` to match the listing and require a non-empty
+   real ``requisitionDescription``.
+5. Reject login-only pages, internal career centers, expired tenant IDs, and
+   duplicate URLs that differ only by ``jobId`` or tracking parameters.
 
 ### SuccessFactors
 

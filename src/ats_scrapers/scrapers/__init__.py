@@ -8,6 +8,7 @@ kept outside the public scraper API so each scraper stays usable on its own.
 >>> jobs = GreenhouseScraper("anthropic").fetch()
 """
 
+from ats_scrapers.scrapers.adp import ADPWorkforceNowScraper
 from ats_scrapers.scrapers.amazon import AmazonScraper
 from ats_scrapers.scrapers.apple import AppleScraper
 from ats_scrapers.scrapers.arbetsformedlingen import ArbetsformedlingenScraper
@@ -74,6 +75,7 @@ from ats_scrapers.scrapers.workday import WorkdayScraper
 from ats_scrapers.scrapers.ycombinator import YCombinatorScraper
 
 __all__ = [
+    "ADPWorkforceNowScraper",
     "AmazonScraper",
     "AppleScraper",
     "ArbetsformedlingenScraper",

@@ -33,6 +33,7 @@ class ATSType(StrEnum):
     strings so newly published sources do not break older clients.
     """
 
+    ADP = "adp"
     ASHBY = "ashby"
     AVATURE = "avature"
     BEISEN = "beisen"

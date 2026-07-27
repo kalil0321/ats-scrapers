@@ -56,6 +56,69 @@ def test_oracle_dedupes_same_tenant_job_across_named_sites() -> None:
     assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
 
 
+def test_provider_max_concurrency_caps_requested_value(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "ats-companies").mkdir()
+    (tmp_path / "ats-companies" / "paced.csv").write_text(
+        "name,slug,url\n"
+        "One,one,https://example.com/one\n"
+        "Two,two,https://example.com/two\n"
+        "Three,three,https://example.com/three\n",
+        encoding="utf-8",
+    )
+    active = 0
+    max_active = 0
+
+    async def fake_run_scraper(
+        _scraper_cls,
+        slug,
+        _kwargs=None,
+        _timeout=30,
+        *,
+        include_descriptions=True,
+    ):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return (
+            slug,
+            object(),
+            [
+                Job(
+                    url=f"https://example.com/jobs/{slug}",
+                    title="Engineer",
+                    company=slug,
+                    ats_type=ATSType.CUSTOM,
+                    ats_id=slug,
+                )
+            ],
+            None,
+        )
+
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(runner, "_run_scraper", fake_run_scraper)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "paced",
+        {
+            "scraper": object,
+            "slug": lambda row: row["slug"],
+            "csv": "ats-companies/paced.csv",
+            "output": "paced/jobs.csv",
+            "max_concurrency": 1,
+            "skip_description_enrichment": True,
+        },
+    )
+
+    rc = asyncio.run(runner.run("paced", concurrency=20, max_tenants=None, timeout=1))
+
+    assert rc == 0
+    assert max_active == 1
+
+
 def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
     sf_row = {
         "name": "Ace1950",
