@@ -850,7 +850,7 @@ def test_copy_failures_across_manifest_changes_restore_complete_generation(
     committed_generation = 0
     copying_generation = 0
     copy_failures = 0
-    concurrent_aliases_written = False
+    concurrent_alias_rewrites = 0
 
     def commit_generation(index: int) -> None:
         nonlocal committed_generation
@@ -896,7 +896,8 @@ def test_copy_failures_across_manifest_changes_restore_complete_generation(
                 break
         if (
             copying_generation
-            and copy_failures < MANIFEST_WRITE_ATTEMPTS
+            and copy_failures
+            < MANIFEST_WRITE_ATTEMPTS * MANIFEST_WRITE_ATTEMPTS
             and destination_key == "jobhive/v1/greenhouse/jobs.csv"
             and "/job-snapshots/" in source_key
         ):
@@ -911,6 +912,15 @@ def test_copy_failures_across_manifest_changes_restore_complete_generation(
             and committed_generation < MANIFEST_WRITE_ATTEMPTS + 1
         ):
             commit_generation(committed_generation + 1)
+        elif (
+            key == manifest_key
+            and recovery_manifest is not None
+            and copy_failures
+            and copy_failures % MANIFEST_WRITE_ATTEMPTS == 0
+        ):
+            current = json.loads(fake_r2.uploads[manifest_key]["data"])
+            if current["all"] == recovery_manifest["all"]:
+                commit_generation(MANIFEST_WRITE_ATTEMPTS + 1)
         return original_get_bytes(key)
 
     def complete_concurrent_aliases_before_recovery(
@@ -921,15 +931,14 @@ def test_copy_failures_across_manifest_changes_restore_complete_generation(
         content_type: str | None = None,
         cache_control: str | None = None,
     ):
-        nonlocal concurrent_aliases_written
+        nonlocal concurrent_alias_rewrites
         if (
             key == manifest_key
             and recovery_manifest is not None
-            and not concurrent_aliases_written
         ):
             candidate = json.loads(data)
             if candidate["all"] == recovery_manifest["all"]:
-                concurrent_aliases_written = True
+                concurrent_alias_rewrites += 1
                 for stable_key in stable_keys:
                     fake_r2.upload_bytes(
                         b"concurrently completed generation\n",
@@ -961,17 +970,33 @@ def test_copy_failures_across_manifest_changes_restore_complete_generation(
 
     publisher.publish_from_directory(ats_csv_dir)
 
-    assert copy_failures == MANIFEST_WRITE_ATTEMPTS
+    assert copy_failures == (
+        MANIFEST_WRITE_ATTEMPTS * MANIFEST_WRITE_ATTEMPTS
+    )
     assert committed_generation == MANIFEST_WRITE_ATTEMPTS + 1
-    assert concurrent_aliases_written
+    assert concurrent_alias_rewrites == MANIFEST_WRITE_ATTEMPTS
     assert recovery_manifest is not None
     assert recovery_aliases is not None
     assert {
         key: fake_r2.uploads[key]["data"]
         for key in stable_keys
-    } == recovery_aliases
+        if key != "jobhive/v1/all.csv"
+    } == {
+        key: data
+        for key, data in recovery_aliases.items()
+        if key != "jobhive/v1/all.csv"
+    }
+    assert fake_r2.uploads["jobhive/v1/all.csv"]["data"] == (
+        f"failing generation {MANIFEST_WRITE_ATTEMPTS + 1}\n".encode()
+    )
     manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
-    assert manifest["all"] == recovery_manifest["all"]
+    assert manifest["all"]["csv"] == (
+        "https://cdn.example.com/"
+        f"{generation_sources[MANIFEST_WRITE_ATTEMPTS + 1]}"
+    )
+    assert manifest["all"]["sha256"] == (
+        f"failing-generation-{MANIFEST_WRITE_ATTEMPTS + 1}"
+    )
     assert manifest["by_ats"] == recovery_manifest["by_ats"]
     assert manifest["companies"] == {
         "rows": MANIFEST_WRITE_ATTEMPTS + 1,

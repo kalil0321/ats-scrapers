@@ -717,6 +717,11 @@ class DatasetPublisher:
                     intended=target,
                 ):
                     if failure_attempts >= MANIFEST_WRITE_ATTEMPTS:
+                        if recovery_cycles >= MANIFEST_WRITE_ATTEMPTS:
+                            raise StorageError(
+                                "Stable job aliases could not be aligned "
+                                "after repeated manifest recovery"
+                            ) from None
                         self._restore_jobs_manifest_generation(
                             manifest_key,
                             recovery,
@@ -727,17 +732,17 @@ class DatasetPublisher:
                             "retried from the last complete generation"
                         )
                         recovery_cycles += 1
-                        if recovery_cycles >= MANIFEST_WRITE_ATTEMPTS:
-                            raise StorageError(
-                                "Stable job aliases could not be aligned "
-                                "after repeated manifest recovery"
-                            ) from None
                         target = recovery
                         failure_attempts = 0
                         continue
                     target = latest
                     continue
                 if failure_attempts >= MANIFEST_WRITE_ATTEMPTS:
+                    if recovery_cycles >= MANIFEST_WRITE_ATTEMPTS:
+                        raise StorageError(
+                            "Stable job aliases could not be aligned after "
+                            "repeated manifest recovery"
+                        ) from None
                     self._restore_jobs_manifest_generation(
                         manifest_key,
                         recovery,
@@ -748,11 +753,6 @@ class DatasetPublisher:
                         "from the last complete generation"
                     )
                     recovery_cycles += 1
-                    if recovery_cycles >= MANIFEST_WRITE_ATTEMPTS:
-                        raise StorageError(
-                            "Stable job aliases could not be aligned after "
-                            "repeated manifest recovery"
-                        ) from None
                     target = recovery
                     failure_attempts = 0
                     continue
