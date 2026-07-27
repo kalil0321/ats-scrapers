@@ -815,6 +815,102 @@ def test_failed_later_alias_convergence_restores_last_complete_generation(
     )
 
 
+def test_convergence_exhaustion_restores_last_complete_generation(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+    manifest_key = "jobhive/v1/manifest.json"
+    generation_sources = {
+        index: f"jobhive/v1/job-snapshots/generation-{index}.csv"
+        for index in range(1, MANIFEST_WRITE_ATTEMPTS + 2)
+    }
+    for index, source_key in generation_sources.items():
+        fake_r2.upload_bytes(
+            f"generation {index}\n".encode(),
+            source_key,
+            content_type="text/csv",
+        )
+
+    original_copy = fake_r2.copy
+    original_get_bytes = fake_r2.get_bytes
+    first_generation_committed = False
+    copied_generation = 0
+    committed_generation = 0
+
+    def commit_generation(index: int) -> None:
+        nonlocal committed_generation
+        manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
+        manifest["generated_at"] = f"2099-01-{index:02d}T00:00:00+00:00"
+        manifest["all"]["csv"] = (
+            f"https://cdn.example.com/{generation_sources[index]}"
+        )
+        manifest["all"]["sha256"] = f"generation-{index}"
+        fake_r2.upload_bytes(
+            json.dumps(manifest).encode(),
+            manifest_key,
+            content_type="application/json",
+        )
+        committed_generation = index
+
+    def commit_first_generation_then_track_copies(
+        source_key: str,
+        destination_key: str,
+        **kwargs,
+    ):
+        nonlocal first_generation_committed, copied_generation
+        if (
+            not first_generation_committed
+            and destination_key == "jobhive/v1/all.csv"
+            and "/job-snapshots/" in source_key
+        ):
+            first_generation_committed = True
+            commit_generation(1)
+        for index, generation_source in generation_sources.items():
+            if source_key == generation_source:
+                copied_generation = index
+                break
+        return original_copy(source_key, destination_key, **kwargs)
+
+    def advance_manifest_after_each_complete_copy(key: str):
+        if (
+            key == manifest_key
+            and copied_generation == committed_generation
+            and committed_generation < MANIFEST_WRITE_ATTEMPTS + 1
+        ):
+            commit_generation(committed_generation + 1)
+        return original_get_bytes(key)
+
+    monkeypatch.setattr(
+        fake_r2,
+        "copy",
+        commit_first_generation_then_track_copies,
+    )
+    monkeypatch.setattr(
+        fake_r2,
+        "get_bytes",
+        advance_manifest_after_each_complete_copy,
+    )
+
+    publisher.publish_from_directory(ats_csv_dir)
+
+    expected_generation = MANIFEST_WRITE_ATTEMPTS
+    assert copied_generation == expected_generation
+    assert committed_generation == expected_generation + 1
+    assert fake_r2.uploads["jobhive/v1/all.csv"]["data"] == (
+        f"generation {expected_generation}\n".encode()
+    )
+    manifest = json.loads(fake_r2.uploads[manifest_key]["data"])
+    assert manifest["all"]["csv"] == (
+        "https://cdn.example.com/"
+        f"{generation_sources[expected_generation]}"
+    )
+    assert not any(
+        "/job-alias-rollbacks/" in key
+        for key in fake_r2.uploads
+    )
+
+
 def test_persistent_alias_copy_failure_restores_every_stable_job_alias(
     ats_csv_dir, fake_r2, monkeypatch
 ) -> None:

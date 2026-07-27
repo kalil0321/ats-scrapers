@@ -749,12 +749,26 @@ class DatasetPublisher:
                     "aliases were aligned with the winning generation"
                 )
                 return
+            if attempt == MANIFEST_WRITE_ATTEMPTS:
+                try:
+                    self._rollback_jobs_manifest(
+                        ManifestPublication(
+                            manifest_key,
+                            target,
+                            latest,
+                        )
+                    )
+                finally:
+                    self._cleanup_job_alias_snapshots(snapshots)
+                logger.warning(
+                    "Jobs manifest kept changing during alias refresh; it "
+                    "was restored to the last complete alias generation"
+                )
+                return
             self._cleanup_job_alias_snapshots(snapshots)
             recovery = target
             target = latest
-        raise StorageError(
-            "Jobs manifest kept changing while stable aliases were aligned"
-        )
+        raise AssertionError("unreachable")
 
     def _snapshot_job_aliases(
         self,
