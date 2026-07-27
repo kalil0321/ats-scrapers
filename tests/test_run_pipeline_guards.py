@@ -10,6 +10,11 @@ from ats_scrapers.exceptions import CompanyNotFoundError
 from ats_scrapers.models import ATSType, Job
 
 
+def test_seek_is_not_scheduled_for_pipeline_ingestion() -> None:
+    assert "seek" not in runner.CONFIGS
+    assert "jobbankca" in runner.CONFIGS
+
+
 def test_job_to_row_preserves_structured_location_metadata() -> None:
     row = runner._job_to_row(
         Job(
