@@ -751,6 +751,7 @@ def test_failed_later_alias_convergence_restores_last_complete_generation(
             )
         if source_key == remote_source:
             remote_copied = True
+            newer_copying = False
         if source_key == newer_source:
             newer_copying = True
         if (
@@ -843,11 +844,13 @@ def test_copy_failures_across_manifest_changes_restore_complete_generation(
 
     original_copy = fake_r2.copy
     original_get_bytes = fake_r2.get_bytes
+    original_upload_bytes_if_current = fake_r2.upload_bytes_if_current
     recovery_manifest = None
     recovery_aliases = None
     committed_generation = 0
     copying_generation = 0
     copy_failures = 0
+    concurrent_aliases_written = False
 
     def commit_generation(index: int) -> None:
         nonlocal committed_generation
@@ -893,6 +896,7 @@ def test_copy_failures_across_manifest_changes_restore_complete_generation(
                 break
         if (
             copying_generation
+            and copy_failures < MANIFEST_WRITE_ATTEMPTS
             and destination_key == "jobhive/v1/greenhouse/jobs.csv"
             and "/job-snapshots/" in source_key
         ):
@@ -909,6 +913,36 @@ def test_copy_failures_across_manifest_changes_restore_complete_generation(
             commit_generation(committed_generation + 1)
         return original_get_bytes(key)
 
+    def complete_concurrent_aliases_before_recovery(
+        data: bytes,
+        key: str,
+        *,
+        expected_etag: str | None,
+        content_type: str | None = None,
+        cache_control: str | None = None,
+    ):
+        nonlocal concurrent_aliases_written
+        if (
+            key == manifest_key
+            and recovery_manifest is not None
+            and not concurrent_aliases_written
+        ):
+            candidate = json.loads(data)
+            if candidate["all"] == recovery_manifest["all"]:
+                concurrent_aliases_written = True
+                for stable_key in stable_keys:
+                    fake_r2.upload_bytes(
+                        b"concurrently completed generation\n",
+                        stable_key,
+                    )
+        return original_upload_bytes_if_current(
+            data,
+            key,
+            expected_etag=expected_etag,
+            content_type=content_type,
+            cache_control=cache_control,
+        )
+
     monkeypatch.setattr(
         fake_r2,
         "copy",
@@ -919,11 +953,17 @@ def test_copy_failures_across_manifest_changes_restore_complete_generation(
         "get_bytes",
         advance_manifest_after_each_copy_failure,
     )
+    monkeypatch.setattr(
+        fake_r2,
+        "upload_bytes_if_current",
+        complete_concurrent_aliases_before_recovery,
+    )
 
     publisher.publish_from_directory(ats_csv_dir)
 
     assert copy_failures == MANIFEST_WRITE_ATTEMPTS
     assert committed_generation == MANIFEST_WRITE_ATTEMPTS + 1
+    assert concurrent_aliases_written
     assert recovery_manifest is not None
     assert recovery_aliases is not None
     assert {
@@ -943,6 +983,66 @@ def test_copy_failures_across_manifest_changes_restore_complete_generation(
         "/job-alias-rollbacks/" in key
         for key in fake_r2.uploads
     )
+
+
+def test_manifest_recovery_conflicts_are_bounded(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+    manifest_key = "jobhive/v1/manifest.json"
+    recovery = json.loads(fake_r2.uploads[manifest_key]["data"])
+    current = json.loads(fake_r2.uploads[manifest_key]["data"])
+    current["generated_at"] = "2099-03-01T00:00:00+00:00"
+    current["all"]["sha256"] = "concurrent-generation-0"
+    fake_r2.upload_bytes(
+        json.dumps(current).encode(),
+        manifest_key,
+        content_type="application/json",
+    )
+    conflicts = 0
+
+    def always_advance_before_recovery(
+        data: bytes,
+        key: str,
+        *,
+        expected_etag: str | None,
+        content_type: str | None = None,
+        cache_control: str | None = None,
+    ):
+        del data, expected_etag, content_type, cache_control
+        nonlocal conflicts
+        conflicts += 1
+        advanced = json.loads(fake_r2.uploads[key]["data"])
+        advanced["generated_at"] = (
+            f"2099-03-{conflicts + 1:02d}T00:00:00+00:00"
+        )
+        advanced["all"]["sha256"] = (
+            f"concurrent-generation-{conflicts}"
+        )
+        fake_r2.upload_bytes(
+            json.dumps(advanced).encode(),
+            key,
+            content_type="application/json",
+        )
+        raise StorageConflictError("manifest advanced")
+
+    monkeypatch.setattr(
+        fake_r2,
+        "upload_bytes_if_current",
+        always_advance_before_recovery,
+    )
+
+    with pytest.raises(
+        StorageError,
+        match="kept changing during alias recovery",
+    ):
+        publisher._restore_jobs_manifest_generation(
+            manifest_key,
+            recovery,
+        )
+
+    assert conflicts == MANIFEST_WRITE_ATTEMPTS
 
 
 def test_convergence_follows_manifest_beyond_retry_budget(

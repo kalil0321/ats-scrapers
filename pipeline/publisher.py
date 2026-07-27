@@ -687,6 +687,7 @@ class DatasetPublisher:
         recovery: dict[str, object],
     ) -> None:
         failure_attempts = 0
+        recovery_cycles = 0
         while True:
             aliases = _job_aliases_from_manifest(
                 target,
@@ -722,10 +723,18 @@ class DatasetPublisher:
                         )
                         logger.warning(
                             "Stable job aliases could not be aligned; the "
-                            "jobs manifest was restored to the last complete "
-                            "alias generation"
+                            "jobs manifest was restored and aliases will be "
+                            "retried from the last complete generation"
                         )
-                        return
+                        recovery_cycles += 1
+                        if recovery_cycles >= MANIFEST_WRITE_ATTEMPTS:
+                            raise StorageError(
+                                "Stable job aliases could not be aligned "
+                                "after repeated manifest recovery"
+                            ) from None
+                        target = recovery
+                        failure_attempts = 0
+                        continue
                     target = latest
                     continue
                 if failure_attempts >= MANIFEST_WRITE_ATTEMPTS:
@@ -735,10 +744,18 @@ class DatasetPublisher:
                     )
                     logger.warning(
                         "Stable job aliases could not be aligned; the jobs "
-                        "manifest was restored to the last complete alias "
-                        "generation"
+                        "manifest was restored and aliases will be retried "
+                        "from the last complete generation"
                     )
-                    return
+                    recovery_cycles += 1
+                    if recovery_cycles >= MANIFEST_WRITE_ATTEMPTS:
+                        raise StorageError(
+                            "Stable job aliases could not be aligned after "
+                            "repeated manifest recovery"
+                        ) from None
+                    target = recovery
+                    failure_attempts = 0
+                    continue
                 continue
 
             try:
@@ -764,13 +781,14 @@ class DatasetPublisher:
             recovery = target
             target = latest
             failure_attempts = 0
+            recovery_cycles = 0
 
     def _restore_jobs_manifest_generation(
         self,
         manifest_key: str,
         recovery: dict[str, object],
     ) -> None:
-        while True:
+        for attempt in range(1, MANIFEST_WRITE_ATTEMPTS + 1):
             current, etag = _load_existing_manifest_with_etag(
                 self._r2,
                 manifest_key,
@@ -814,13 +832,21 @@ class DatasetPublisher:
                     isinstance(exc, StorageConflictError)
                     and reloaded_etag != etag
                 ):
+                    if attempt == MANIFEST_WRITE_ATTEMPTS:
+                        raise StorageError(
+                            "Jobs manifest kept changing during alias "
+                            "recovery"
+                        ) from exc
                     logger.warning(
                         "Jobs manifest changed during alias recovery; "
-                        "retrying against the newer generation"
+                        "retrying against the newer generation (%d/%d)",
+                        attempt,
+                        MANIFEST_WRITE_ATTEMPTS,
                     )
                     continue
                 raise
             return
+        raise AssertionError("unreachable")
 
     def _snapshot_job_aliases(
         self,
