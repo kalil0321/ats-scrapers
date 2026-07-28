@@ -180,6 +180,7 @@ class SuccessFactorsScraper(BaseScraper):
         parsed_feed = urlparse(feed_url)
         feed_host = parsed_feed.hostname or ""
         company = self.company_name or company_id
+        day_first_dates = _legacy_dates_are_day_first(root)
         jobs: list[Job] = []
         seen: set[str] = set()
         for item in root.findall("./Job"):
@@ -224,7 +225,8 @@ class SuccessFactorsScraper(BaseScraper):
                     requisition_id=requisition_id,
                     description=description,
                     posted_at=_parse_legacy_date(
-                        item.findtext("Posted-Date")
+                        item.findtext("Posted-Date"),
+                        day_first=day_first_dates,
                     ),
                     fetched_at=datetime.now(UTC),
                 )
@@ -425,10 +427,33 @@ def _parse_pubdate(value: object) -> datetime | None:
         return None
 
 
-def _parse_legacy_date(value: object) -> datetime | None:
+def _legacy_dates_are_day_first(root: ET.Element) -> bool:
+    day_first_votes = 0
+    month_first_votes = 0
+    for value in root.iterfind("./Job/Posted-Date"):
+        parts = (value.text or "").strip().split("/")
+        if len(parts) != 3:
+            continue
+        try:
+            first, second = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        if first > 12 >= second:
+            day_first_votes += 1
+        elif second > 12 >= first:
+            month_first_votes += 1
+    return day_first_votes > month_first_votes
+
+
+def _parse_legacy_date(
+    value: object,
+    *,
+    day_first: bool = False,
+) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
-    for date_format in ("%m/%d/%Y", "%Y-%m-%d"):
+    slash_format = "%d/%m/%Y" if day_first else "%m/%d/%Y"
+    for date_format in (slash_format, "%Y-%m-%d"):
         try:
             return datetime.strptime(value.strip(), date_format).replace(
                 tzinfo=UTC

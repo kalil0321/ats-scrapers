@@ -157,6 +157,8 @@ def test_legacy_catalog_urls_use_production_hosts() -> None:
             (
                 ".successfactors.com",
                 ".successfactors.eu",
+                ".sapsf.com",
+                ".sapsf.eu",
                 ".sapsf.cn",
             )
         )
@@ -292,6 +294,48 @@ def test_legacy_feed_ignores_invalid_posted_date(httpx_mock) -> None:
     )
     jobs = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()
     assert jobs[0].posted_at is None
+
+
+def test_legacy_feed_infers_day_first_dates(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([
+            _legacy_item(
+                requisition_id="day-first-signal",
+                posted_date="27/07/2026",
+            ),
+            _legacy_item(
+                requisition_id="ambiguous",
+                posted_date="08/07/2026",
+            ),
+        ]),
+    )
+    jobs = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()
+    assert [job.posted_at.isoformat() for job in jobs if job.posted_at] == [
+        "2026-07-27T00:00:00+00:00",
+        "2026-07-08T00:00:00+00:00",
+    ]
+
+
+def test_legacy_feed_keeps_month_first_dates(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([
+            _legacy_item(
+                requisition_id="month-first-signal",
+                posted_date="07/27/2026",
+            ),
+            _legacy_item(
+                requisition_id="ambiguous",
+                posted_date="07/08/2026",
+            ),
+        ]),
+    )
+    jobs = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()
+    assert [job.posted_at.isoformat() for job in jobs if job.posted_at] == [
+        "2026-07-27T00:00:00+00:00",
+        "2026-07-08T00:00:00+00:00",
+    ]
 
 
 def test_legacy_feed_removes_invalid_empty_name_elements(httpx_mock) -> None:

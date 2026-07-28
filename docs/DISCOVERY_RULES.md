@@ -235,12 +235,18 @@ Validation:
 
 Validation:
 
-1. Validate the exact host from the CSV.
-2. Fetch `https://{host}/sitemal.xml`.
-3. Require HTTP 200.
-4. Parse XML/RSS successfully.
-5. Require at least one `<item>` or live job entry.
-6. Reject stage, QA, sandbox, and test hosts even when they return XML.
+1. Identify whether the row is a Recruiting Marketing host or a legacy
+   Recruiting Management URL with a `company` query parameter.
+2. For Recruiting Marketing, fetch `https://{host}/sitemal.xml`, parse RSS,
+   and require at least one `<item>`.
+3. For legacy Recruiting Management, call `/career` with the exact `company`
+   ID, `career_ns=job_listing_summary`, and `resultType=XML`.
+4. Require HTTP 200, a `<Job-Listing>` root, and at least one `<Job>` with a
+   non-empty `ReqId`, `JobTitle`, and real `Job-Description`.
+5. Deduplicate legacy rows by the stable `company` ID and remove superseded
+   empty Recruiting Marketing feeds for the same employer.
+6. Reject login-only responses, generic career shells, stage, QA, sandbox,
+   and test tenants even when they return HTTP 200.
 
 ### Recruitee
 
