@@ -169,6 +169,9 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
     }
     assert runner.CONFIGS["darwinbox"]["scraper"] is runner.DarwinboxScraper
     assert runner.CONFIGS["darwinbox"]["slug"](darwinbox_row) == "pwc.com"
+    assert runner.CONFIGS["darwinbox"]["kwargs"](darwinbox_row) == {
+        "company_name": "PwC Asia"
+    }
     assert runner.CONFIGS["darwinbox"]["output"] == "darwinbox/jobs.csv"
 
     moka_row = {
