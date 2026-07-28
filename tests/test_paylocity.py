@@ -158,15 +158,33 @@ def test_hydrates_legacy_detail_sections_without_json_ld(httpx_mock) -> None:
     )
 
 
-def test_detail_without_supported_content_fails_closed(httpx_mock) -> None:
-    httpx_mock.add_response(url=LISTING_URL, text=_listing([_row(4363000)]))
+def test_malformed_detail_retains_listing_and_adjacent_job_enriches(
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(
+        url=LISTING_URL,
+        text=_listing([
+            _row(4363000),
+            _row(4363001, title="Designer"),
+        ]),
+    )
     httpx_mock.add_response(
         url="https://recruiting.paylocity.com/Recruiting/Jobs/Details/4363000",
         text="<html><div class='job-preview-details'></div></html>",
     )
+    httpx_mock.add_response(
+        url="https://recruiting.paylocity.com/Recruiting/Jobs/Details/4363001",
+        text=_detail(title="Product Designer"),
+    )
 
-    with pytest.raises(ScraperError, match="omitted job content"):
-        PaylocityScraper(BOARD_ID, company_name="Acme").fetch()
+    jobs = PaylocityScraper(BOARD_ID, company_name="Acme").fetch()
+
+    assert len(jobs) == 2
+    assert jobs[0].company == "Acme"
+    assert jobs[0].description is None
+    assert jobs[0].location == "Houston, TX, US"
+    assert jobs[1].title == "Product Designer"
+    assert jobs[1].description == "<p>Build reliable systems.</p>"
 
 
 def test_include_descriptions_false_skips_detail(httpx_mock) -> None:

@@ -249,7 +249,15 @@ class PaylocityScraper(BaseScraper):
             return job
         if response.status_code in {404, 410}:
             return None
-        _apply_detail(job, response.text)
+        try:
+            _apply_detail(job, response.text)
+        except ScraperError as exc:
+            logger.warning(
+                "Retaining Paylocity job %s without detail metadata after "
+                "detail parsing failure: %s",
+                job.ats_id,
+                exc,
+            )
         return job
 
 
