@@ -1,10 +1,14 @@
 """Tests for the SAP SuccessFactors scraper.
 
-The scraper fetches the public RSS 2.0 feed at ``{host}/sitemal.xml``.
-These tests pin XML parsing, title/location splitting, dedup, and retry.
+The scraper fetches public RSS 2.0 and legacy Recruiting Management XML feeds.
+These tests pin URL resolution, XML parsing, field extraction, and retry.
 """
 
 from __future__ import annotations
+
+import csv
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -16,6 +20,11 @@ from ats_scrapers.scrapers import ScraperRegistry, SuccessFactorsScraper
 # conftest.py — the shared fetch layer replaced per-scraper retry constants.
 
 FEED_URL = "https://job.acme.com/sitemal.xml"
+LEGACY_CAREER_URL = "https://career8.successfactors.com/career?company=amkor"
+LEGACY_FEED_URL = (
+    "https://career8.successfactors.com/career"
+    "?company=amkor&career_ns=job_listing_summary&resultType=XML"
+)
 
 
 def _rss(items: list[str], company: str = "Acme") -> str:
@@ -47,6 +56,30 @@ def _item(
 </item>"""
 
 
+def _legacy_feed(items: list[str]) -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Job-Listing>
+{''.join(items)}
+</Job-Listing>"""
+
+
+def _legacy_item(
+    *,
+    title: str = "Account Manager",
+    requisition_id: str = "29023",
+    description: str = "<![CDATA[<p>Manage customer accounts.</p>]]>",
+    filters: str = "",
+    posted_date: str = "",
+) -> str:
+    return f"""<Job>
+<JobTitle>{title}</JobTitle>
+<Job-Description>{description}</Job-Description>
+<ReqId>{requisition_id}</ReqId>
+<Posted-Date>{posted_date}</Posted-Date>
+{filters}
+</Job>"""
+
+
 # --- Registry ---------------------------------------------------------------
 
 
@@ -70,6 +103,74 @@ def test_full_url_accepted() -> None:
 def test_bare_slug_assumes_job_dot_slug_dot_com() -> None:
     s = SuccessFactorsScraper("acme")
     assert s._resolve_feed_url() == "https://job.acme.com/sitemal.xml"
+
+
+def test_legacy_url_resolves_xml_feed() -> None:
+    scraper = SuccessFactorsScraper(LEGACY_CAREER_URL)
+    assert scraper._resolve_feed_target() == (LEGACY_FEED_URL, "amkor")
+
+
+def test_legacy_url_preserves_locale() -> None:
+    scraper = SuccessFactorsScraper(
+        f"{LEGACY_CAREER_URL}&rcm_site_locale=de_DE&career_ns=job_listing"
+    )
+    assert scraper._resolve_feed_target() == (
+        f"{LEGACY_FEED_URL}&rcm_site_locale=de_DE",
+        "amkor",
+    )
+
+
+def test_china_legacy_host_resolves_xml_feed() -> None:
+    scraper = SuccessFactorsScraper(
+        "https://career15.sapsf.cn/career?company=volkswag09"
+    )
+    assert scraper._resolve_feed_target() == (
+        "https://career15.sapsf.cn/career"
+        "?company=volkswag09&career_ns=job_listing_summary&resultType=XML",
+        "volkswag09",
+    )
+
+
+def test_legacy_url_discards_userinfo_and_port() -> None:
+    scraper = SuccessFactorsScraper(
+        "https://ignored@career8.successfactors.com:8443/career?company=amkor"
+    )
+    assert scraper._resolve_feed_target() == (LEGACY_FEED_URL, "amkor")
+
+
+def test_successfactors_catalog_urls_are_unique() -> None:
+    catalog = Path("ats-companies/successfactors.csv")
+    with catalog.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    urls = [row["url"].rstrip("/") for row in rows]
+    assert len(urls) == len(set(urls))
+
+
+def test_legacy_catalog_urls_use_production_hosts() -> None:
+    catalog = Path("ats-companies/successfactors.csv")
+    with catalog.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    legacy_rows = [
+        row
+        for row in rows
+        if (urlparse(row["url"]).hostname or "").endswith(
+            (
+                ".successfactors.com",
+                ".successfactors.eu",
+                ".sapsf.cn",
+            )
+        )
+    ]
+    assert legacy_rows
+    for row in legacy_rows:
+        parsed = urlparse(row["url"])
+        assert parsed.scheme == "https"
+        assert parsed.path == "/career"
+        assert len(parse_qs(parsed.query).get("company", [])) == 1
+        assert not any(
+            marker in (parsed.hostname or "")
+            for marker in ("preview", "salesdemo", "stage")
+        )
 
 
 # --- Happy path -------------------------------------------------------------
@@ -113,6 +214,95 @@ def test_skips_item_without_link(httpx_mock) -> None:
 <link></link>
 </item>"""]))
     assert SuccessFactorsScraper("job.acme.com").fetch() == []
+
+
+def test_parses_legacy_xml_feed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([
+            _legacy_item(
+                title="R&amp;D Manager",
+                posted_date="07/26/2026",
+                description=(
+                    "<![CDATA[<p>Manage [[id]] in [[filter2]] "
+                    "for [[missing]].</p>]]>"
+                ),
+                filters="<filter2>Paris</filter2>",
+            )
+        ]),
+    )
+    jobs = SuccessFactorsScraper(
+        LEGACY_CAREER_URL,
+        company_name="Amkor Technology",
+    ).fetch()
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job.ats_id == "amkor:29023"
+    assert job.requisition_id == "29023"
+    assert job.title == "R&D Manager"
+    assert job.company == "Amkor Technology"
+    assert job.description == "Manage 29023 in Paris for ."
+    assert job.posted_at is not None
+    assert job.posted_at.isoformat() == "2026-07-26T00:00:00+00:00"
+    assert str(job.url) == (
+        "https://career8.successfactors.com/sfcareer/jobreqcareer"
+        "?jobId=29023&company=amkor"
+    )
+
+
+def test_legacy_feed_uses_company_id_as_fallback_name(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([_legacy_item()]),
+    )
+    jobs = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()
+    assert jobs[0].company == "amkor"
+
+
+def test_legacy_feed_dedupes_and_skips_incomplete_jobs(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([
+            _legacy_item(),
+            _legacy_item(title="Duplicate"),
+            "<Job><JobTitle>No requisition</JobTitle></Job>",
+            "<Job><ReqId>123</ReqId></Job>",
+        ]),
+    )
+    jobs = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()
+    assert [job.title for job in jobs] == ["Account Manager"]
+
+
+def test_legacy_feed_can_omit_descriptions(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([_legacy_item()]),
+    )
+    jobs = SuccessFactorsScraper(
+        LEGACY_CAREER_URL,
+        include_descriptions=False,
+    ).fetch()
+    assert jobs[0].description is None
+
+
+def test_legacy_feed_ignores_invalid_posted_date(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([_legacy_item(posted_date="not-a-date")]),
+    )
+    jobs = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()
+    assert jobs[0].posted_at is None
+
+
+def test_legacy_feed_removes_invalid_empty_name_elements(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([
+            _legacy_item().replace("</Job>", "<>250</></Job>")
+        ]),
+    )
+    jobs = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()
+    assert [job.ats_id for job in jobs] == ["amkor:29023"]
 
 
 # --- Title / location extraction --------------------------------------------
@@ -193,3 +383,9 @@ def test_html_response_treated_as_non_rss(httpx_mock) -> None:
     httpx_mock.add_response(url=FEED_URL, text="<html><body>nope</body></html>")
     with pytest.raises(ScraperError, match="non-RSS"):
         SuccessFactorsScraper("job.acme.com").fetch()
+
+
+def test_non_job_listing_legacy_xml_raises_clean_error(httpx_mock) -> None:
+    httpx_mock.add_response(url=LEGACY_FEED_URL, text="<rss></rss>")
+    with pytest.raises(ScraperError, match="non-job-listing"):
+        SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()

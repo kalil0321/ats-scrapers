@@ -399,6 +399,9 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "successfactors": {
         "scraper": SuccessFactorsScraper,
         "slug": _successfactors_slug,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
         "csv": "ats-companies/successfactors.csv",
         "output": "successfactors/jobs.csv",
     },
