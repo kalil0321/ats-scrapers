@@ -176,6 +176,7 @@ def delete_legacy(client, bucket: str) -> None:
         f"{PREFIX}/companies/by-ats/",
         f"{PREFIX}/companies/all.csv",
         f"{PREFIX}/ats-companies/",  # transient prefix from an earlier draft
+        f"{PREFIX}/seek/companies.csv",  # disabled scheduled source
     ]
     paginator = client.get_paginator("list_objects_v2")
     for prefix in legacy_prefixes:

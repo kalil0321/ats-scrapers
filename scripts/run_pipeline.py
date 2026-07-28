@@ -83,7 +83,6 @@ from ats_scrapers.scrapers import (
     RecruiterboxScraper,
     RemoteOKScraper,
     RipplingScraper,
-    SeekScraper,
     SmartRecruitersScraper,
     SuccessFactorsScraper,
     TaleoScraper,
@@ -763,13 +762,6 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "scraper": JobBankCAScraper, "singleton": True,
         "output": "jobbankca/jobs.csv",
         "fail_closed_on_empty": True,
-    },
-    "seek": {
-        "scraper": SeekScraper,
-        "slug": lambda r: _slug_col(r) or None,
-        "csv": "ats-companies/seek.csv",
-        "output": "seek/jobs.csv",
-        "fail_closed_on_any_error": True,
     },
     "jobs_cz": {
         # jobs.cz - Czech Republic's largest direct-posting board. ~10k live via seeded search.
