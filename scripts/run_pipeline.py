@@ -586,6 +586,9 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "beisen": {
         "scraper": BeisenScraper,
         "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
         "csv": "ats-companies/beisen.csv",
         "output": "beisen/jobs.csv",
     },

@@ -109,6 +109,18 @@ def test_parses_nested_config_and_current_listing(httpx_mock) -> None:
     }
 
 
+def test_uses_catalog_company_name(httpx_mock) -> None:
+    add_register(httpx_mock)
+    httpx_mock.add_response(url=SEARCH_URL, json=payload([listing()]))
+
+    [result] = BeisenScraper(
+        "fixturecorp",
+        company_name="Fixture Corporation",
+    ).fetch()
+
+    assert result.company == "Fixture Corporation"
+
+
 def test_include_descriptions_false_omits_embedded_content(httpx_mock) -> None:
     add_register(httpx_mock)
     httpx_mock.add_response(url=SEARCH_URL, json=payload([listing()]))

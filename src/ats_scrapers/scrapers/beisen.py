@@ -70,6 +70,7 @@ class BeisenScraper(BaseScraper):
         business_type: int | None = None,
         language: str = "zh",
         country_iso: str = "CN",
+        company_name: str | None = None,
     ) -> None:
         super().__init__(
             company_slug,
@@ -89,6 +90,11 @@ class BeisenScraper(BaseScraper):
         self.business_type = business_type
         self.language = language
         self.country_iso = country_iso.upper()
+        self.company_name = (
+            company_name.strip()
+            if isinstance(company_name, str) and company_name.strip()
+            else None
+        )
         self.base_url = f"https://{slug}.zhiye.com"
         self.portal_id: str | None = None
         self.tenant_id: str | None = None
@@ -254,7 +260,7 @@ class BeisenScraper(BaseScraper):
         return Job(
             url=HttpUrl(f"{self.base_url}/portal/jobs/{ats_id}"),
             title=title,
-            company=self.tenant_name or self.slug,
+            company=self.company_name or self.tenant_name or self.slug,
             ats_type=ATSType.BEISEN,
             ats_id=ats_id,
             location=_format_location(item.get("LocNames"))

@@ -196,6 +196,9 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
     }
     assert runner.CONFIGS["beisen"]["scraper"] is runner.BeisenScraper
     assert runner.CONFIGS["beisen"]["slug"](beisen_row) == "mengniu"
+    assert runner.CONFIGS["beisen"]["kwargs"](beisen_row) == {
+        "company_name": "Mengniu Dairy"
+    }
     assert runner.CONFIGS["beisen"]["output"] == "beisen/jobs.csv"
 
     legacy_row = {
