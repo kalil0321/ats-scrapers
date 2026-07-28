@@ -174,6 +174,19 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             )
         return None
 
+    if host == "recruiting.paylocity.com":
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            len(segments) == 4
+            and [segment.casefold() for segment in segments[:3]]
+            == ["recruiting", "jobs", "all"]
+            and _UUID_RE.fullmatch(segments[3])
+            and not parsed.query
+            and not parsed.fragment
+        ):
+            return ResolvedCareersUrl(ATSType.PAYLOCITY, segments[3].lower())
+        return None
+
     # join.com/companies/{slug}
     if host == "join.com":
         segments = [s for s in parsed.path.split("/") if s]

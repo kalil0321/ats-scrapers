@@ -74,6 +74,7 @@ from ats_scrapers.scrapers import (
     MokaScraper,
     OracleScraper,
     PageUpScraper,
+    PaylocityScraper,
     PersonioScraper,
     PhenomScraper,
     PinpointScraper,
@@ -533,6 +534,17 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/pageup.csv",
         "output": "pageup/jobs.csv",
         "fail_closed_on_any_error": True,
+        "fail_closed_on_empty": True,
+    },
+    "paylocity": {
+        "scraper": PaylocityScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
+        "csv": "ats-companies/paylocity.csv",
+        "output": "paylocity/jobs.csv",
+        "max_concurrency": 1,
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
     },
     "recruitee": {
@@ -1275,6 +1287,15 @@ def _job_to_row(job: Job) -> dict[str, Any]:
     }
 
 
+def _bounded_concurrency(cfg: dict[str, Any], requested: int) -> int:
+    if requested < 1:
+        raise ValueError("concurrency must be at least 1")
+    configured = cfg.get("max_concurrency")
+    if isinstance(configured, int) and configured > 0:
+        return min(requested, configured)
+    return requested
+
+
 async def _run_scraper(
     scraper_cls,
     slug,
@@ -1302,6 +1323,7 @@ async def _run_scraper(
 
 async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: float) -> int:
     cfg = CONFIGS[ats]
+    concurrency = _bounded_concurrency(cfg, concurrency)
     configured_max_concurrency = cfg.get("max_concurrency")
     if isinstance(configured_max_concurrency, int):
         concurrency = min(concurrency, max(1, configured_max_concurrency))

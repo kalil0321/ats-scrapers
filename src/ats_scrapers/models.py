@@ -53,6 +53,7 @@ class ATSType(StrEnum):
     MOKA = "moka"
     ORACLE = "oracle"
     PAGEUP = "pageup"
+    PAYLOCITY = "paylocity"
     PERSONIO = "personio"
     PHENOM = "phenom"
     PINPOINT = "pinpoint"

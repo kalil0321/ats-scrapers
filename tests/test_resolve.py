@@ -18,6 +18,7 @@ from ats_scrapers.scrapers import (
     JobviteScraper,
     MokaScraper,
     PageUpScraper,
+    PaylocityScraper,
     UKGProScraper,
     WorkdayScraper,
 )
@@ -57,6 +58,12 @@ RESOLVES = [
         ATSType.UKG,
         "https://recruiting2.ultipro.com/HEN1009HPCC/JobBoard/"
         "b27ab828-18a9-4f10-8ee1-8259de6c9e73",
+    ),
+    (
+        "https://recruiting.paylocity.com/Recruiting/Jobs/All/"
+        "8e0feae7-e42f-437e-97b1-53b917185eed",
+        ATSType.PAYLOCITY,
+        "8e0feae7-e42f-437e-97b1-53b917185eed",
     ),
     ("https://join.com/companies/acme", ATSType.JOIN_COM, "acme"),
     (
@@ -167,6 +174,7 @@ def test_icims_nonstandard_prefix_keeps_full_url() -> None:
         "https://bad_slug.zhiye.com/social/jobs",
         "https://recruiting.ultipro.com/bad-tenant/JobBoard/"
         "11111111-2222-3333-4444-555555555555",
+        "https://recruiting.paylocity.com/Recruiting/Jobs/Details/4363000",
         "https://jobs.dayforcehcm.com/en-CA/mayfair/"
         "CANDIDATEPORTAL/search",
         f"https://{'a' * 64}.zhiye.com/social/jobs",
@@ -212,6 +220,13 @@ def test_get_scraper_for_url_builds_scraper() -> None:
             "9a9d6241-e23f-47c0-80f3-e43a148972a0"
         ),
         UKGProScraper,
+    )
+    assert isinstance(
+        get_scraper_for_url(
+            "https://recruiting.paylocity.com/Recruiting/Jobs/All/"
+            "8e0feae7-e42f-437e-97b1-53b917185eed"
+        ),
+        PaylocityScraper,
     )
     assert isinstance(
         get_scraper_for_url(
