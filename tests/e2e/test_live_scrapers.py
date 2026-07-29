@@ -25,6 +25,7 @@ from ats_scrapers.scrapers import (
     BambooHRScraper,
     BreezyScraper,
     GreenhouseScraper,
+    HerpScraper,
     LeverScraper,
     PinpointScraper,
     RecruiteeScraper,
@@ -53,6 +54,7 @@ TIMEOUT = 150.0
 # are essentially never empty.
 CASES = [
     ("greenhouse-anthropic", lambda: GreenhouseScraper("anthropic"), True),
+    ("herp-herpinc", lambda: HerpScraper("herpinc", include_descriptions=False), True),
     ("lever-palantir", lambda: LeverScraper("palantir"), True),
     ("ashby-openai", lambda: AshbyScraper("openai", include_descriptions=False), True),
     ("smartrecruiters-10pearls",

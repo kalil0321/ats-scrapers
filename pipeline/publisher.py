@@ -538,7 +538,7 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "beisen_legacy": 1,
     "breezy": 1, "cornerstone": 1,
     "darwinbox": 1, "dayforce": 1,
-    "greenhouse": 1, "gupy": 1, "icims": 1, "jazzhr": 1, "join_com": 1, "jobvite": 1,
+    "greenhouse": 1, "gupy": 1, "herp": 1, "icims": 1, "jazzhr": 1, "join_com": 1, "jobvite": 1,
     "lever": 1,
     "moka": 1, "oracle": 1, "pageup": 1, "paylocity": 1, "personio": 1, "phenom": 1, "pinpoint": 1,
     "recruitee": 1,

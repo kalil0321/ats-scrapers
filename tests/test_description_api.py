@@ -17,6 +17,7 @@ TWO_STEP_PROVIDERS = {
     ATSType.EURES,
     ATSType.GEM,
     ATSType.GOOGLE,
+    ATSType.HERP,
     ATSType.ICIMS,
     ATSType.JAZZHR,
     ATSType.JOBSCH,

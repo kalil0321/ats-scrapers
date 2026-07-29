@@ -123,6 +123,12 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             return ResolvedCareersUrl(_PATH_HOSTS[host], slug)
         return None
 
+    if host == "herp.careers":
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if len(segments) >= 2 and segments[0] == "v1" and _DNS_LABEL_RE.fullmatch(segments[1]):
+            return ResolvedCareersUrl(ATSType.HERP, segments[1])
+        return None
+
     if host == "jobs.jobvite.com":
         segments = [segment for segment in parsed.path.split("/") if segment]
         if (
