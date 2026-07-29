@@ -48,6 +48,7 @@ from ats_scrapers.scrapers.meta import MetaScraper
 from ats_scrapers.scrapers.moka import MokaScraper
 from ats_scrapers.scrapers.oracle import OracleScraper
 from ats_scrapers.scrapers.pageup import PageUpScraper
+from ats_scrapers.scrapers.paycom import PaycomScraper
 from ats_scrapers.scrapers.paylocity import PaylocityScraper
 from ats_scrapers.scrapers.personio import PersonioScraper
 from ats_scrapers.scrapers.phenom import PhenomScraper
@@ -116,6 +117,7 @@ __all__ = [
     "MokaScraper",
     "OracleScraper",
     "PageUpScraper",
+    "PaycomScraper",
     "PaylocityScraper",
     "PersonioScraper",
     "PhenomScraper",

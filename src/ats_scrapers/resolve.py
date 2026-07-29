@@ -101,6 +101,7 @@ _UUID_RE = re.compile(
     r"[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+_PAYCOM_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
 
 
 def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
@@ -127,6 +128,16 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         segments = [segment for segment in parsed.path.split("/") if segment]
         if len(segments) >= 2 and segments[0] == "v1" and _DNS_LABEL_RE.fullmatch(segments[1]):
             return ResolvedCareersUrl(ATSType.HERP, segments[1])
+        return None
+
+    if host in {"paycomonline.net", "www.paycomonline.net"}:
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            len(segments) >= 5
+            and segments[:4] == ["v4", "ats", "web.php", "portal"]
+            and _PAYCOM_TOKEN_RE.fullmatch(segments[4])
+        ):
+            return ResolvedCareersUrl(ATSType.PAYCOM, segments[4].lower())
         return None
 
     if host == "jobs.jobvite.com":

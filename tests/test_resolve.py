@@ -19,6 +19,7 @@ from ats_scrapers.scrapers import (
     JobviteScraper,
     MokaScraper,
     PageUpScraper,
+    PaycomScraper,
     PaylocityScraper,
     UKGProScraper,
     WorkdayScraper,
@@ -39,6 +40,18 @@ RESOLVES = [
     ("https://ats.rippling.com/acme/jobs", ATSType.RIPPLING, "acme"),
     ("https://herp.careers/v1/herpinc", ATSType.HERP, "herpinc"),
     ("https://herp.careers/v1/herpinc/abc123", ATSType.HERP, "herpinc"),
+    (
+        "https://www.paycomonline.net/v4/ats/web.php/portal/"
+        "00F1F305D986350F2A5DF3D1AE79350F/career-page",
+        ATSType.PAYCOM,
+        "00f1f305d986350f2a5df3d1ae79350f",
+    ),
+    (
+        "https://www.paycomonline.net/v4/ats/web.php/portal/"
+        "00F1F305D986350F2A5DF3D1AE79350F/jobs/466263",
+        ATSType.PAYCOM,
+        "00f1f305d986350f2a5df3d1ae79350f",
+    ),
     ("https://jobs.jobvite.com/sitecore", ATSType.JOBVITE, "sitecore"),
     (
         "https://jobs.jobvite.com/careers/loandepot/search?p=0",
@@ -172,6 +185,7 @@ def test_icims_nonstandard_prefix_keeps_full_url() -> None:
         "https://join.com/about",                 # join.com non-company path
         "https://herp.careers/careers/jobs/abc",
         "https://herp.careers/v1/bad_slug",
+        "https://www.paycomonline.net/v4/ats/web.php/portal/not-a-token/jobs/1",
         "https://evil.recruitee.com.attacker.io", # suffix-spoofing host
         "https://bad_slug.darwinbox.in/ms/candidate/careers",
         f"https://{'a' * 64}.darwinbox.com/ms/candidate/careers",
@@ -205,6 +219,13 @@ def test_get_scraper_for_url_builds_scraper() -> None:
     assert isinstance(
         get_scraper_for_url("https://herp.careers/v1/herpinc"),
         HerpScraper,
+    )
+    assert isinstance(
+        get_scraper_for_url(
+            "https://www.paycomonline.net/v4/ats/web.php/portal/"
+            "00F1F305D986350F2A5DF3D1AE79350F/career-page"
+        ),
+        PaycomScraper,
     )
     assert isinstance(get_scraper_for_url("https://petz.gupy.io"), GupyScraper)
     assert isinstance(

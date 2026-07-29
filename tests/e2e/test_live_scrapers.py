@@ -27,6 +27,7 @@ from ats_scrapers.scrapers import (
     GreenhouseScraper,
     HerpScraper,
     LeverScraper,
+    PaycomScraper,
     PinpointScraper,
     RecruiteeScraper,
     RemoteOKScraper,
@@ -55,6 +56,15 @@ TIMEOUT = 150.0
 CASES = [
     ("greenhouse-anthropic", lambda: GreenhouseScraper("anthropic"), True),
     ("herp-herpinc", lambda: HerpScraper("herpinc", include_descriptions=False), True),
+    (
+        "paycom-ymca-rockies",
+        lambda: PaycomScraper(
+            "00f1f305d986350f2a5df3d1ae79350f",
+            include_descriptions=False,
+            company_name="YMCA OF THE ROCKIES",
+        ),
+        True,
+    ),
     ("lever-palantir", lambda: LeverScraper("palantir"), True),
     ("ashby-openai", lambda: AshbyScraper("openai", include_descriptions=False), True),
     ("smartrecruiters-10pearls",

@@ -1,6 +1,6 @@
 # Provider Description Matrix
 
-This table covers the 48 providers configured in `scripts/run_pipeline.py`.
+This table covers the 49 providers configured in `scripts/run_pipeline.py`.
 `API/feed` means the data comes from a machine-readable endpoint such as JSON,
 XML, RSS, GraphQL, or a markdown endpoint. `HTML` means the scraper parses a
 page/rendered page rather than a structured job payload.
@@ -33,6 +33,7 @@ page/rendered page rather than a structured job payload.
 | `mercor` | Yes | No | API/feed | API/feed |
 | `meta` | Yes | Yes | HTML / browser | HTML |
 | `oracle` | Yes | Yes | API/feed | API/feed |
+| `paycom` | Yes | Yes | HTML bootstrap + API | API |
 | `personio` | Yes | Yes | API | HTML |
 | `phenom` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `pinpoint` | Yes | No | API/feed | API/feed |
