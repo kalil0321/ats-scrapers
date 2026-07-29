@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import csv
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import pytest
 
@@ -148,9 +150,36 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
         runner._oracle_slug(oracle_row)
         == "https://eiqg.fa.us2.oraclecloud.com?site_number=CX_1"
     )
+
+    lever_row = {
+        "name": "OpenPayd",
+        "slug": "openpayd",
+        "url": "https://jobs.lever.co/OpenPayd",
+    }
+    assert runner._lever_slug(lever_row) == "OpenPayd"
+
+    lever_slug_only_row = {
+        "name": "OpenPayd",
+        "slug": "OpenPayd",
+        "url": "",
+    }
+    assert runner._lever_slug(lever_slug_only_row) == "OpenPayd"
     assert runner.CONFIGS["oracle"]["kwargs"](oracle_row) == {
         "company_name": "ABM US"
     }
+
+
+def test_lever_catalog_slugs_preserve_canonical_url_case() -> None:
+    with Path("ats-companies/lever.csv").open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    mismatches = []
+    for row in rows:
+        canonical = unquote(urlparse(row["url"]).path.strip("/").split("/", 1)[0])
+        if row["slug"] != canonical:
+            mismatches.append((row["slug"], canonical, row["url"]))
+
+    assert mismatches == []
     assert runner.CONFIGS["oracle"]["dedupe_by_ats_id"] is True
 
     cornerstone_row = {

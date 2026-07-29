@@ -32,7 +32,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from ats_scrapers.exceptions import CompanyNotFoundError
 from ats_scrapers.models import Job
@@ -225,13 +225,13 @@ def _workable_slug(row: dict[str, Any]) -> str | None:
 
 
 def _lever_slug(row: dict[str, Any]) -> str | None:
-    if (slug := _slug_col(row)):
-        return slug.lower()
     url = (row.get("url") or "").strip()
     if url.startswith("http"):
         m = re.match(r"https?://jobs\.lever\.co/([^/?#]+)", url, re.IGNORECASE)
         if m:
-            return m.group(1).lower()
+            return unquote(m.group(1))
+    if (slug := _slug_col(row)):
+        return slug
     name = (row.get("name") or "").strip()
     return name or None
 
