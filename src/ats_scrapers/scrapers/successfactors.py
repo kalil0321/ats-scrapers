@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 _TAG_RE = re.compile(r"<[^>]+>")
 _TEMPLATE_TOKEN_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
 _INVALID_EMPTY_ELEMENT_RE = re.compile(r"<>\s*[^<]*?</>")
+_EMPTY_LEGACY_VALUES = {"", "n/a", "na", "none", "not applicable"}
 # Job titles are often `"Title (City, State, Country)"` — extract location
 # from the trailing parens when no other source is available.
 _TITLE_LOCATION_RE = re.compile(r"^(?P<title>.+?)\s*\((?P<loc>[^()]+)\)\s*$")
@@ -185,9 +186,12 @@ class SuccessFactorsScraper(BaseScraper):
         seen: set[str] = set()
         for item in root.findall("./Job"):
             requisition_id = _first_text(item.findtext("ReqId"))
-            title = _first_text(item.findtext("JobTitle"))
-            if not requisition_id or not title or requisition_id in seen:
+            title_raw = _first_text(item.findtext("JobTitle"))
+            if not requisition_id or not title_raw or requisition_id in seen:
                 continue
+            title, title_location = _split_title_location(
+                html.unescape(title_raw)
+            )
             seen.add(requisition_id)
             job_url = urlunparse(
                 (
@@ -206,7 +210,7 @@ class SuccessFactorsScraper(BaseScraper):
                 replacements = {
                     child.tag: value
                     for child in item
-                    if (value := _first_text(child.text))
+                    if (value := _legacy_field_value(child))
                 }
                 replacements["id"] = requisition_id
                 description = _clean_description(
@@ -218,12 +222,14 @@ class SuccessFactorsScraper(BaseScraper):
             jobs.append(
                 Job(
                     url=job_url,
-                    title=html.unescape(title),
+                    title=title,
                     company=company,
                     ats_type=ATSType.SUCCESSFACTORS,
                     ats_id=f"{company_id}:{requisition_id}",
                     requisition_id=requisition_id,
+                    location=_legacy_location(item) or title_location,
                     description=description,
+                    department=_legacy_department(item),
                     posted_at=_parse_legacy_date(
                         item.findtext("Posted-Date"),
                         day_first=day_first_dates,
@@ -371,6 +377,86 @@ def _split_title_location(raw: str) -> tuple[str, str | None]:
 def _first_text(value: object) -> str | None:
     if isinstance(value, str):
         return value.strip() or None
+    return None
+
+
+def _legacy_field_value(element: ET.Element) -> str | None:
+    return _first_text(element.text) or _first_text(element.findtext("value"))
+
+
+def _legacy_labeled_fields(item: ET.Element) -> list[tuple[str, str]]:
+    fields: list[tuple[str, str]] = []
+    for child in item:
+        label = _first_text(child.findtext("label"))
+        value = _first_text(child.findtext("value"))
+        if (
+            not label
+            or not value
+            or _legacy_value_is_empty(value)
+        ):
+            continue
+        fields.append((label, value))
+    return fields
+
+
+def _legacy_value_is_empty(value: str) -> bool:
+    normalized = re.sub(r"\s+", " ", value).strip().casefold()
+    return (
+        normalized in _EMPTY_LEGACY_VALUES
+        or "not applicable" in normalized
+    )
+
+
+def _legacy_location(item: ET.Element) -> str | None:
+    direct = _first_text(item.findtext("Location"))
+    if direct and not _legacy_value_is_empty(direct):
+        return html.unescape(direct)
+
+    generic_locations: list[str] = []
+    specific_locations: list[str] = []
+    cities: list[str] = []
+    states: list[str] = []
+    countries: list[str] = []
+    for label, value in _legacy_labeled_fields(item):
+        normalized = re.sub(r"[^a-z]+", " ", label.casefold()).strip()
+        if "additional" in normalized:
+            continue
+        if normalized == "location":
+            generic_locations.append(value)
+        elif "location" in normalized:
+            specific_locations.append(value)
+        elif "city" in normalized or "town" in normalized:
+            cities.append(value)
+        elif "state" in normalized or "province" in normalized:
+            states.append(value)
+        elif "country" in normalized or normalized == "region":
+            countries.append(value)
+
+    if specific_locations:
+        return html.unescape(specific_locations[0])
+
+    components: list[str] = []
+    seen_components: set[str] = set()
+    for value in (*cities, *states, *countries, *generic_locations):
+        normalized = value.casefold()
+        if normalized not in seen_components:
+            components.append(value)
+            seen_components.add(normalized)
+    if not components:
+        return None
+    return html.unescape(", ".join(components))
+
+
+def _legacy_department(item: ET.Element) -> str | None:
+    direct = _first_text(item.findtext("Department")) or _first_text(
+        item.findtext("Division")
+    )
+    if direct:
+        return html.unescape(direct)
+    for label, value in _legacy_labeled_fields(item):
+        normalized = re.sub(r"[^a-z]+", " ", label.casefold()).strip()
+        if normalized in {"department", "job function", "function"}:
+            return html.unescape(value)
     return None
 
 

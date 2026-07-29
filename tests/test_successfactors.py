@@ -70,12 +70,16 @@ def _legacy_item(
     description: str = "<![CDATA[<p>Manage customer accounts.</p>]]>",
     filters: str = "",
     posted_date: str = "",
+    location: str = "",
+    department: str = "",
 ) -> str:
     return f"""<Job>
 <JobTitle>{title}</JobTitle>
 <Job-Description>{description}</Job-Description>
 <ReqId>{requisition_id}</ReqId>
 <Posted-Date>{posted_date}</Posted-Date>
+<Location>{location}</Location>
+<Department>{department}</Department>
 {filters}
 </Job>"""
 
@@ -230,6 +234,8 @@ def test_parses_legacy_xml_feed(httpx_mock) -> None:
                     "for [[missing]].</p>]]>"
                 ),
                 filters="<filter2>Paris</filter2>",
+                location="Paris, France",
+                department="Sales",
             )
         ]),
     )
@@ -244,12 +250,91 @@ def test_parses_legacy_xml_feed(httpx_mock) -> None:
     assert job.title == "R&D Manager"
     assert job.company == "Amkor Technology"
     assert job.description == "Manage 29023 in Paris for ."
+    assert job.location == "Paris, France"
+    assert job.department == "Sales"
     assert job.posted_at is not None
     assert job.posted_at.isoformat() == "2026-07-26T00:00:00+00:00"
     assert str(job.url) == (
         "https://career8.successfactors.com/sfcareer/jobreqcareer"
         "?jobId=29023&company=amkor"
     )
+
+
+def test_parses_legacy_labeled_location_and_template_value(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([
+            _legacy_item(
+                description="Work in [[filter2]].",
+                filters="""<filter2>
+<label>Posting Country</label>
+<value>United Arab Emirates</value>
+</filter2>
+<mfield3>
+<label>State/Province</label>
+<value>Abu Dhabi</value>
+</mfield3>""",
+            )
+        ]),
+    )
+    job = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()[0]
+    assert job.location == "Abu Dhabi, United Arab Emirates"
+    assert job.description == "Work in United Arab Emirates."
+
+
+def test_prefers_specific_legacy_work_location(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([
+            _legacy_item(
+                filters="""<filter2>
+<label>Posting Country</label>
+<value>United States</value>
+</filter2>
+<filter8>
+<label>Work Location</label>
+<value>US-Lake Oswego</value>
+</filter8>""",
+            )
+        ]),
+    )
+    job = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()[0]
+    assert job.location == "US-Lake Oswego"
+
+
+def test_legacy_title_location_is_a_fallback(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([
+            _legacy_item(
+                title="Account Manager (Dallas, TX, US)",
+                location="N/A",
+            )
+        ]),
+    )
+    job = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()[0]
+    assert job.title == "Account Manager"
+    assert job.location == "Dallas, TX, US"
+
+
+def test_legacy_location_ignores_not_applicable_component(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([
+            _legacy_item(
+                filters="""<filter2>
+<label>Posting Country</label>
+<value>Poland</value>
+</filter2>
+<filter8>
+<label>Location</label>
+<value>Other/Not Applicable</value>
+</filter8>""",
+            )
+        ]),
+    )
+    job = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()[0]
+    assert job.location == "Poland"
 
 
 def test_legacy_feed_uses_company_id_as_fallback_name(httpx_mock) -> None:
