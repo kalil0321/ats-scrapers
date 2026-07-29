@@ -26,6 +26,7 @@ from ats_scrapers.scrapers import (
     BreezyScraper,
     GreenhouseScraper,
     HerpScraper,
+    HrmosScraper,
     LeverScraper,
     PaycomScraper,
     PinpointScraper,
@@ -57,6 +58,7 @@ TIMEOUT = 150.0
 CASES = [
     ("greenhouse-anthropic", lambda: GreenhouseScraper("anthropic"), True),
     ("herp-herpinc", lambda: HerpScraper("herpinc", include_descriptions=False), True),
+    ("hrmos-ykk", lambda: HrmosScraper("ykk"), True),
     (
         "paycom-ymca-rockies",
         lambda: PaycomScraper(

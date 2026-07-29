@@ -16,6 +16,7 @@ from ats_scrapers.scrapers import (
     GreenhouseScraper,
     GupyScraper,
     HerpScraper,
+    HrmosScraper,
     JobviteScraper,
     MokaScraper,
     PageUpScraper,
@@ -41,6 +42,8 @@ RESOLVES = [
     ("https://ats.rippling.com/acme/jobs", ATSType.RIPPLING, "acme"),
     ("https://herp.careers/v1/herpinc", ATSType.HERP, "herpinc"),
     ("https://herp.careers/v1/herpinc/abc123", ATSType.HERP, "herpinc"),
+    ("https://hrmos.co/pages/ykk/jobs", ATSType.HRMOS, "ykk"),
+    ("https://hrmos.co/pages/ykk/jobs/00-KU-001", ATSType.HRMOS, "ykk"),
     (
         "https://www.paycomonline.net/v4/ats/web.php/portal/"
         "00F1F305D986350F2A5DF3D1AE79350F/career-page",
@@ -191,6 +194,7 @@ def test_icims_nonstandard_prefix_keeps_full_url() -> None:
         "https://join.com/about",                 # join.com non-company path
         "https://herp.careers/careers/jobs/abc",
         "https://herp.careers/v1/bad_slug",
+        "https://hrmos.co/pages/bad_slug/jobs",
         "https://www.paycomonline.net/v4/ats/web.php/portal/not-a-token/jobs/1",
         "https://evil.recruitee.com.attacker.io", # suffix-spoofing host
         "https://evil.career.softgarden.de.attacker.io/jobs/1",
@@ -226,6 +230,10 @@ def test_get_scraper_for_url_builds_scraper() -> None:
     assert isinstance(
         get_scraper_for_url("https://herp.careers/v1/herpinc"),
         HerpScraper,
+    )
+    assert isinstance(
+        get_scraper_for_url("https://hrmos.co/pages/ykk/jobs"),
+        HrmosScraper,
     )
     assert isinstance(
         get_scraper_for_url(

@@ -131,6 +131,16 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             return ResolvedCareersUrl(ATSType.HERP, segments[1])
         return None
 
+    if host == "hrmos.co":
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            len(segments) >= 2
+            and segments[0] == "pages"
+            and _DNS_LABEL_RE.fullmatch(segments[1])
+        ):
+            return ResolvedCareersUrl(ATSType.HRMOS, segments[1])
+        return None
+
     if host in {"paycomonline.net", "www.paycomonline.net"}:
         segments = [segment for segment in parsed.path.split("/") if segment]
         if (
