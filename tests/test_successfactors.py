@@ -317,6 +317,27 @@ def test_legacy_title_location_is_a_fallback(httpx_mock) -> None:
     assert job.location == "Dallas, TX, US"
 
 
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Manager (IT Security)",
+        "Director (HR Operations)",
+        "Lead (Sales, Enterprise)",
+    ],
+)
+def test_legacy_title_preserves_non_location_suffixes(
+    httpx_mock,
+    title: str,
+) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([_legacy_item(title=title)]),
+    )
+    job = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()[0]
+    assert job.title == title
+    assert job.location is None
+
+
 def test_legacy_location_ignores_not_applicable_component(httpx_mock) -> None:
     httpx_mock.add_response(
         url=LEGACY_FEED_URL,
@@ -335,6 +356,44 @@ def test_legacy_location_ignores_not_applicable_component(httpx_mock) -> None:
     )
     job = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()[0]
     assert job.location == "Poland"
+
+
+def test_legacy_location_prefers_composite_value(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([
+            _legacy_item(
+                filters="""<filter2>
+<label>Country</label>
+<value>France</value>
+</filter2>
+<filter3>
+<label>City</label>
+<value>Paris</value>
+</filter3>
+<filter8>
+<label>Location</label>
+<value>Paris, France</value>
+</filter8>""",
+            )
+        ]),
+    )
+    job = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()[0]
+    assert job.location == "Paris, France"
+
+
+def test_legacy_department_skips_placeholder_for_division(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=_legacy_feed([
+            _legacy_item(
+                department="Not Applicable",
+                filters="<Division>Engineering</Division>",
+            )
+        ]),
+    )
+    job = SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()[0]
+    assert job.department == "Engineering"
 
 
 def test_legacy_feed_uses_company_id_as_fallback_name(httpx_mock) -> None:

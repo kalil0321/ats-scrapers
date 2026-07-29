@@ -44,6 +44,35 @@ _EMPTY_LEGACY_VALUES = {"", "n/a", "na", "none", "not applicable"}
 # Job titles are often `"Title (City, State, Country)"` — extract location
 # from the trailing parens when no other source is available.
 _TITLE_LOCATION_RE = re.compile(r"^(?P<title>.+?)\s*\((?P<loc>[^()]+)\)\s*$")
+_LEGACY_LOCATION_COUNTRIES = {
+    "australia",
+    "brazil",
+    "canada",
+    "china",
+    "denmark",
+    "france",
+    "germany",
+    "india",
+    "ireland",
+    "italy",
+    "japan",
+    "malaysia",
+    "mexico",
+    "netherlands",
+    "poland",
+    "romania",
+    "singapore",
+    "south africa",
+    "spain",
+    "sweden",
+    "switzerland",
+    "taiwan",
+    "thailand",
+    "united arab emirates",
+    "united kingdom",
+    "united states",
+    "vietnam",
+}
 # Google Merchant namespace
 _GOOGLE_NS = {"g": "http://base.google.com/ns/1.0"}
 
@@ -189,7 +218,7 @@ class SuccessFactorsScraper(BaseScraper):
             title_raw = _first_text(item.findtext("JobTitle"))
             if not requisition_id or not title_raw or requisition_id in seen:
                 continue
-            title, title_location = _split_title_location(
+            title, title_location = _split_legacy_title_location(
                 html.unescape(title_raw)
             )
             seen.add(requisition_id)
@@ -374,6 +403,27 @@ def _split_title_location(raw: str) -> tuple[str, str | None]:
     return raw, None
 
 
+def _split_legacy_title_location(raw: str) -> tuple[str, str | None]:
+    match = _TITLE_LOCATION_RE.match(raw)
+    if not match:
+        return raw, None
+    inner = match.group("loc").strip()
+    parts = [part.strip() for part in inner.split(",")]
+    if len(parts) < 2:
+        return raw, None
+    tail = parts[-1]
+    is_country = tail.casefold() in _LEGACY_LOCATION_COUNTRIES
+    is_three_letter_code = re.fullmatch(r"[A-Z]{3}", tail) is not None
+    has_state_and_country_codes = (
+        len(parts) >= 3
+        and re.fullmatch(r"[A-Z]{2}", parts[-2]) is not None
+        and re.fullmatch(r"[A-Z]{2}", tail) is not None
+    )
+    if not (is_country or is_three_letter_code or has_state_and_country_codes):
+        return raw, None
+    return match.group("title").strip(), inner
+
+
 def _first_text(value: object) -> str | None:
     if isinstance(value, str):
         return value.strip() or None
@@ -435,6 +485,19 @@ def _legacy_location(item: ET.Element) -> str | None:
     if specific_locations:
         return html.unescape(specific_locations[0])
 
+    if generic_locations:
+        generic = generic_locations[0]
+        generic_normalized = generic.casefold()
+        atomic_values = [*cities, *states, *countries]
+        if "," in generic or (
+            len(atomic_values) >= 2
+            and all(
+                value.casefold() in generic_normalized
+                for value in atomic_values
+            )
+        ):
+            return html.unescape(generic)
+
     components: list[str] = []
     seen_components: set[str] = set()
     for value in (*cities, *states, *countries, *generic_locations):
@@ -448,11 +511,10 @@ def _legacy_location(item: ET.Element) -> str | None:
 
 
 def _legacy_department(item: ET.Element) -> str | None:
-    direct = _first_text(item.findtext("Department")) or _first_text(
-        item.findtext("Division")
-    )
-    if direct:
-        return html.unescape(direct)
+    for tag in ("Department", "Division"):
+        direct = _first_text(item.findtext(tag))
+        if direct and not _legacy_value_is_empty(direct):
+            return html.unescape(direct)
     for label, value in _legacy_labeled_fields(item):
         normalized = re.sub(r"[^a-z]+", " ", label.casefold()).strip()
         if normalized in {"department", "job function", "function"}:
