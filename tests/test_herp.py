@@ -95,6 +95,27 @@ def test_default_fetch_hydrates_public_json_ld(httpx_mock) -> None:
     assert job.posted_at.isoformat() == "2026-07-28T06:59:00+00:00"
 
 
+def test_detail_hydration_retries_transient_failures(httpx_mock) -> None:
+    httpx_mock.add_response(url="https://herp.careers/v1/acme", text=LISTING_HTML)
+    httpx_mock.add_response(
+        url="https://herp.careers/v1/acme/Job-123",
+        status_code=503,
+    )
+    httpx_mock.add_response(
+        url="https://herp.careers/v1/acme/Job-123",
+        status_code=503,
+    )
+    httpx_mock.add_response(
+        url="https://herp.careers/v1/acme/Job-123",
+        text=DETAIL_HTML,
+    )
+
+    job = HerpScraper("acme").fetch()[0]
+
+    assert job.description.startswith("<h2>Role</h2>")
+    assert job.location == "東京都渋谷区"
+
+
 def test_get_description_hydrates_missing_detail_fields(httpx_mock) -> None:
     httpx_mock.add_response(url="https://herp.careers/v1/acme", text=LISTING_HTML)
     job = HerpScraper("acme", include_descriptions=False).fetch()[0]

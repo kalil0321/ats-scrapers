@@ -17,8 +17,9 @@ def test_herp_pipeline_uses_validated_tenant_catalog() -> None:
     assert config["slug"](row) == "herpinc"
     assert config["csv"] == "ats-companies/herp.csv"
     assert config["output"] == "herp/jobs.csv"
-    assert config["defer_descriptions_to_cache"] is True
-    assert config["description_cache_path"] == "herp/descriptions.sqlite3"
+    assert "defer_descriptions_to_cache" not in config
+    assert "description_cache_path" not in config
+    assert config["max_concurrency"] == 4
     assert config["fail_closed_on_empty"] is True
 
 

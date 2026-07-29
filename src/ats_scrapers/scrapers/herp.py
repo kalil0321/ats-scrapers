@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 BASE_URL = "https://herp.careers/v1/{slug}"
 DETAIL_URL = f"{BASE_URL}/{{job_id}}"
 DETAIL_CONCURRENCY = 8
-_DETAIL_HANDLED = frozenset(range(400, 600))
+_DETAIL_HANDLED = frozenset({404, 410})
 _EMPLOYMENT_TYPE_MAP = {
     "FULL_TIME": "FULL_TIME",
     "PART_TIME": "PART_TIME",

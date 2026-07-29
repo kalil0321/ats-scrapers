@@ -403,10 +403,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
         "csv": "ats-companies/herp.csv",
         "output": "herp/jobs.csv",
-        "defer_descriptions_to_cache": True,
-        "description_cache_path": "herp/descriptions.sqlite3",
-        "description_cache_compress": True,
-        "description_concurrency": 12,
+        "max_concurrency": 4,
         "fail_closed_on_empty": True,
     },
     "successfactors": {
