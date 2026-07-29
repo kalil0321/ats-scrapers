@@ -83,6 +83,7 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
     ".applytojob.com": ATSType.JAZZHR,
     ".avature.net": ATSType.AVATURE,
     ".eightfold.ai": ATSType.EIGHTFOLD,
+    ".career.softgarden.de": ATSType.SOFTGARDEN,
 }
 
 # Full-URL tenants: the scraper's slug IS the careers URL.

@@ -60,6 +60,7 @@ from ats_scrapers.scrapers.remoteok import RemoteOKScraper
 from ats_scrapers.scrapers.rippling import RipplingScraper
 from ats_scrapers.scrapers.seek import SeekScraper
 from ats_scrapers.scrapers.smartrecruiters import SmartRecruitersScraper
+from ats_scrapers.scrapers.softgarden import SoftgardenScraper
 from ats_scrapers.scrapers.successfactors import SuccessFactorsScraper
 from ats_scrapers.scrapers.taleo import TaleoScraper
 from ats_scrapers.scrapers.teamtailor import TeamtailorScraper
@@ -130,6 +131,7 @@ __all__ = [
     "ScraperRegistry",
     "SeekScraper",
     "SmartRecruitersScraper",
+    "SoftgardenScraper",
     "SuccessFactorsScraper",
     "TaleoScraper",
     "TeamtailorScraper",

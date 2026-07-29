@@ -1,6 +1,6 @@
 # Provider Description Matrix
 
-This table covers the 49 providers configured in `scripts/run_pipeline.py`.
+This table covers the 50 providers configured in `scripts/run_pipeline.py`.
 `API/feed` means the data comes from a machine-readable endpoint such as JSON,
 XML, RSS, GraphQL, or a markdown endpoint. `HTML` means the scraper parses a
 page/rendered page rather than a structured job payload.
@@ -43,6 +43,7 @@ page/rendered page rather than a structured job payload.
 | `remoteok` | Yes | No | API/feed | API/feed |
 | `rippling` | Yes | Yes | API/feed | API/feed |
 | `smartrecruiters` | Yes | Yes | API/feed | API/feed |
+| `softgarden` | Yes | No | API/feed | API/feed |
 | `successfactors` | Yes | No | API/feed (RSS/XML) | API/feed (RSS/XML) |
 | `taleo` | Yes | Yes | HTML | HTML |
 | `teamtailor` | Yes | No | API/feed (RSS/XML) | API/feed (RSS/XML) |

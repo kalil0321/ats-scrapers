@@ -21,6 +21,7 @@ from ats_scrapers.scrapers import (
     PageUpScraper,
     PaycomScraper,
     PaylocityScraper,
+    SoftgardenScraper,
     UKGProScraper,
     WorkdayScraper,
 )
@@ -51,6 +52,11 @@ RESOLVES = [
         "00F1F305D986350F2A5DF3D1AE79350F/jobs/466263",
         ATSType.PAYCOM,
         "00f1f305d986350f2a5df3d1ae79350f",
+    ),
+    (
+        "https://abeking.career.softgarden.de/jobs/60111660/example",
+        ATSType.SOFTGARDEN,
+        "abeking",
     ),
     ("https://jobs.jobvite.com/sitecore", ATSType.JOBVITE, "sitecore"),
     (
@@ -187,6 +193,7 @@ def test_icims_nonstandard_prefix_keeps_full_url() -> None:
         "https://herp.careers/v1/bad_slug",
         "https://www.paycomonline.net/v4/ats/web.php/portal/not-a-token/jobs/1",
         "https://evil.recruitee.com.attacker.io", # suffix-spoofing host
+        "https://evil.career.softgarden.de.attacker.io/jobs/1",
         "https://bad_slug.darwinbox.in/ms/candidate/careers",
         f"https://{'a' * 64}.darwinbox.com/ms/candidate/careers",
         "https://trailing-.darwinbox.in/ms/candidate/careers",
@@ -231,6 +238,10 @@ def test_get_scraper_for_url_builds_scraper() -> None:
     assert isinstance(
         get_scraper_for_url("https://jobs.jobvite.com/sitecore"),
         JobviteScraper,
+    )
+    assert isinstance(
+        get_scraper_for_url("https://abeking.career.softgarden.de/jobs"),
+        SoftgardenScraper,
     )
     assert (
         get_scraper_for_url(

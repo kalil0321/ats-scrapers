@@ -62,6 +62,7 @@ class ATSType(StrEnum):
     RECRUITERBOX = "recruiterbox"
     RIPPLING = "rippling"
     SMARTRECRUITERS = "smartrecruiters"
+    SOFTGARDEN = "softgarden"
     SUCCESSFACTORS = "successfactors"
     UKG = "ukg"
     WORKABLE = "workable"

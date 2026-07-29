@@ -87,6 +87,7 @@ from ats_scrapers.scrapers import (
     RipplingScraper,
     SeekScraper,
     SmartRecruitersScraper,
+    SoftgardenScraper,
     SuccessFactorsScraper,
     TaleoScraper,
     TeamtailorScraper,
@@ -654,6 +655,15 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
         "csv": "ats-companies/smartrecruiters.csv",
         "output": "smartrecruiters/jobs.csv",
+    },
+    "softgarden": {
+        "scraper": SoftgardenScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "csv": "ats-companies/softgarden.csv",
+        "output": "softgarden/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 8,
+        "fail_closed_on_empty": True,
     },
     "personio": {
         "scraper": PersonioScraper,
