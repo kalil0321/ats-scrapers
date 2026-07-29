@@ -135,6 +135,43 @@ def test_multiple_locations_are_preserved(httpx_mock) -> None:
     assert job.region is None
 
 
+def test_unresolved_location_clears_country_for_multi_location_job(
+    httpx_mock,
+) -> None:
+    row = _job(1)
+    row["jobLocation"] = [
+        {
+            "address": {
+                "addressLocality": "Berlin",
+                "addressCountry": "Deutschland",
+            }
+        },
+        {
+            "address": {
+                "addressLocality": "Sydney",
+                "addressCountry": "Australia",
+            }
+        },
+    ]
+    httpx_mock.add_response(url=FEED_URL, json=_feed([row]))
+
+    job = SoftgardenScraper(TENANT).fetch()[0]
+
+    assert job.location == "Berlin, Deutschland; Sydney, Australia"
+    assert job.country_iso is None
+    assert job.region is None
+
+
+def test_description_prose_does_not_infer_remote_status(httpx_mock) -> None:
+    row = _job(1)
+    row["description"] = "<p>Remote work is not possible for this role.</p>"
+    httpx_mock.add_response(url=FEED_URL, json=_feed([row]))
+
+    job = SoftgardenScraper(TENANT).fetch()[0]
+
+    assert job.is_remote is None
+
+
 def test_count_mismatch_fails_closed(httpx_mock) -> None:
     httpx_mock.add_response(url=FEED_URL, json=_feed([_job(1)], count=2))
 

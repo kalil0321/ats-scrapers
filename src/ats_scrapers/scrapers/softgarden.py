@@ -217,9 +217,7 @@ class SoftgardenScraper(BaseScraper):
         employment_raw = _string(item.get("employmentType"))
         employment_type = _employment_type(employment_raw)
         remote_text = " ".join(
-            part
-            for part in (title, location, description)
-            if isinstance(part, str)
+            part for part in (title, location) if isinstance(part, str)
         )
         raw = {
             key: value
@@ -315,7 +313,7 @@ def _trusted_job_url(value: object, job_id: str) -> str:
 def _locations(value: object) -> tuple[str | None, str | None]:
     raw_locations = value if isinstance(value, list) else [value]
     rendered: list[str] = []
-    countries: set[str] = set()
+    country_codes: list[str | None] = []
     for location in raw_locations:
         if not isinstance(location, dict) or not isinstance(
             location.get("address"), dict
@@ -324,8 +322,6 @@ def _locations(value: object) -> tuple[str | None, str | None]:
         address = location["address"]
         country_raw = _string(address.get("addressCountry"))
         country_iso = _country_code(country_raw)
-        if country_iso:
-            countries.add(country_iso)
         locality = " ".join(
             part
             for part in (
@@ -346,7 +342,15 @@ def _locations(value: object) -> tuple[str | None, str | None]:
         ]
         if parts:
             rendered.append(", ".join(dict.fromkeys(parts)))
-    country_iso = next(iter(countries)) if len(countries) == 1 else None
+            country_codes.append(country_iso)
+    resolved_codes = {code for code in country_codes if code}
+    country_iso = (
+        next(iter(resolved_codes))
+        if country_codes
+        and all(country_codes)
+        and len(resolved_codes) == 1
+        else None
+    )
     return "; ".join(dict.fromkeys(rendered)) or None, country_iso
 
 

@@ -664,6 +664,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "dedupe_by_ats_id": True,
         "max_concurrency": 8,
         "fail_closed_on_empty": True,
+        "fail_closed_on_any_error": True,
     },
     "personio": {
         "scraper": PersonioScraper,

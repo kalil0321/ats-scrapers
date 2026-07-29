@@ -23,6 +23,7 @@ def test_softgarden_pipeline_uses_validated_tenant_catalog() -> None:
     assert config["dedupe_by_ats_id"] is True
     assert config["max_concurrency"] == 8
     assert config["fail_closed_on_empty"] is True
+    assert config["fail_closed_on_any_error"] is True
     assert "defer_descriptions_to_cache" not in config
 
 
