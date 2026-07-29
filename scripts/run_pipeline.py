@@ -554,6 +554,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "output": "paycom/jobs.csv",
         "dedupe_by_ats_id": True,
         "max_concurrency": 3,
+        "fail_closed_on_any_error": True,
         "fail_closed_on_empty": True,
     },
     "paylocity": {

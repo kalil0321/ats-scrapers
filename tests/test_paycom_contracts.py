@@ -26,6 +26,7 @@ def test_paycom_pipeline_uses_validated_tenant_catalog() -> None:
     assert config["output"] == "paycom/jobs.csv"
     assert config["dedupe_by_ats_id"] is True
     assert config["max_concurrency"] == 3
+    assert config["fail_closed_on_any_error"] is True
     assert config["fail_closed_on_empty"] is True
     assert "defer_descriptions_to_cache" not in config
 
