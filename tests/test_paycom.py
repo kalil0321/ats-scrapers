@@ -297,6 +297,53 @@ def test_malformed_detail_retains_valid_listing(httpx_mock) -> None:
     assert job.description == "Maintain safe and welcoming grounds."
 
 
+def test_malformed_google_metadata_preserves_direct_details(httpx_mock) -> None:
+    _mock_listing(httpx_mock, [_preview(1)])
+    payload = _detail(1)
+    payload["jobPosting"]["googleJobJson"] = "{invalid"
+    httpx_mock.add_response(
+        url=(
+            "https://portal-applicant-tracking.us-cent.paycomonline.net"
+            "/api/ats/job-postings/1"
+        ),
+        json=payload,
+    )
+
+    job = PaycomScraper(TOKEN, company_name="Acme").fetch()[0]
+
+    assert job.company == "Acme"
+    assert job.title == "Grounds Maintenance Staff"
+    assert job.description.startswith("<h2>Description</h2>")
+    assert job.location.startswith("Estes Park Center")
+    assert job.salary_summary == "$15.16 - $18.50 Hourly"
+    assert job.department == "Buildings and Grounds"
+
+
+def test_single_value_salary_populates_both_bounds(httpx_mock) -> None:
+    _mock_listing(httpx_mock, [_preview(1)])
+    payload = _detail(1)
+    google_job = json.loads(payload["jobPosting"]["googleJobJson"])
+    google_job["baseSalary"]["value"] = {
+        "@type": "QuantitativeValue",
+        "value": 19.5,
+        "unitText": "HOUR",
+    }
+    payload["jobPosting"]["googleJobJson"] = json.dumps(google_job)
+    httpx_mock.add_response(
+        url=(
+            "https://portal-applicant-tracking.us-cent.paycomonline.net"
+            "/api/ats/job-postings/1"
+        ),
+        json=payload,
+    )
+
+    job = PaycomScraper(TOKEN).fetch()[0]
+
+    assert job.salary_min == 19.5
+    assert job.salary_max == 19.5
+    assert job.salary_period == "HOUR"
+
+
 def test_untrusted_bootstrap_service_is_rejected(httpx_mock) -> None:
     httpx_mock.add_response(
         url=PORTAL_URL,

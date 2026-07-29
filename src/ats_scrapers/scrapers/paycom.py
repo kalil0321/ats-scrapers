@@ -464,7 +464,16 @@ def _apply_detail(job: Job, payload: object) -> None:
     if not isinstance(payload, dict) or not isinstance(payload.get("jobPosting"), dict):
         raise ScraperError(f"Paycom detail for {job.ats_id} omitted jobPosting")
     detail = payload["jobPosting"]
-    google_job = _google_job_payload(detail.get("googleJobJson"))
+    try:
+        google_job = _google_job_payload(detail.get("googleJobJson"))
+    except ScraperError as exc:
+        logger.warning(
+            "Ignoring malformed optional Google Jobs metadata for Paycom "
+            "job %s: %s",
+            job.ats_id,
+            exc,
+        )
+        google_job = {}
 
     title = _string(detail.get("jobTitle")) or _string(google_job.get("title"))
     if title:
@@ -620,9 +629,16 @@ def _apply_google_salary(
     job.salary_currency = currency.upper()
     minimum = amount.get("minValue")
     maximum = amount.get("maxValue")
-    if isinstance(minimum, int | float):
+    exact = amount.get("value")
+    if (
+        not isinstance(exact, bool)
+        and isinstance(exact, int | float)
+    ):
+        minimum = exact if minimum is None else minimum
+        maximum = exact if maximum is None else maximum
+    if not isinstance(minimum, bool) and isinstance(minimum, int | float):
         job.salary_min = float(minimum)
-    if isinstance(maximum, int | float):
+    if not isinstance(maximum, bool) and isinstance(maximum, int | float):
         job.salary_max = float(maximum)
     unit = _string(amount.get("unitText"))
     job.salary_period = _salary_period(unit or salary_summary)
