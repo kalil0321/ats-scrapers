@@ -93,7 +93,7 @@ def test_parses_nested_config_and_current_listing(httpx_mock) -> None:
     assert result.region == "Asia"
     assert result.description == "构建可靠平台。\n\n三年以上经验。\n熟悉 Python。"
     assert result.salary_summary == "20-30K"
-    assert result.department == "社会招聘"
+    assert result.department == "研发中心"
     assert result.posted_at is not None and result.posted_at.tzinfo is UTC
     assert result.fetched_at.tzinfo is UTC
     assert str(result.url) == "https://fixturecorp.zhiye.com/portal/jobs/123"
@@ -121,6 +121,17 @@ def test_uses_catalog_company_name(httpx_mock) -> None:
     assert result.company == "Fixture Corporation"
 
 
+def test_department_falls_back_to_recruitment_category(httpx_mock) -> None:
+    add_register(httpx_mock)
+    item = listing()
+    item["Org"] = ""
+    httpx_mock.add_response(url=SEARCH_URL, json=payload([item]))
+
+    [result] = BeisenScraper("fixturecorp").fetch()
+
+    assert result.department == "社会招聘"
+
+
 def test_include_descriptions_false_omits_embedded_content(httpx_mock) -> None:
     add_register(httpx_mock)
     httpx_mock.add_response(url=SEARCH_URL, json=payload([listing()]))
@@ -144,8 +155,8 @@ def test_request_body_matches_public_api(httpx_mock) -> None:
         "DisplayFields": [
             "Category",
             "Description",
-            "Location",
-            "Department",
+            "LocId",
+            "Org",
             "Salary",
         ],
         "Category": ["1"],

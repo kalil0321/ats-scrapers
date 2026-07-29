@@ -187,8 +187,8 @@ class BeisenScraper(BaseScraper):
             "DisplayFields": [
                 "Category",
                 "Description",
-                "Location",
-                "Department",
+                "LocId",
+                "Org",
                 "Salary",
             ],
         }
@@ -269,7 +269,8 @@ class BeisenScraper(BaseScraper):
             region="Asia" if self.country_iso in {"CN", "HK", "MO", "TW"} else None,
             description=description,
             salary_summary=_clean_text(item.get("Salary")),
-            department=_clean_text(item.get("Category")),
+            department=_clean_text(item.get("Org"))
+            or _clean_text(item.get("Category")),
             posted_at=_parse_date(item.get("ChangeDate"))
             or _parse_date(item.get("PostDate")),
             fetched_at=datetime.now(UTC),
