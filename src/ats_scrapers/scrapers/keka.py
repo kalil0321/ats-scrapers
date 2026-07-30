@@ -396,16 +396,10 @@ def _locations(value: object) -> tuple[str | None, str | None]:
         if not isinstance(item, dict):
             continue
         country_name = _string(item.get("countryName"))
-        raw_code = _string(item.get("countryCode"))
-        country_iso = (
-            _COUNTRY_BY_NAME.get(country_name.casefold())
-            if country_name
-            else None
+        country_iso = _location_country_iso(
+            country_name,
+            _string(item.get("countryCode")),
         )
-        if country_iso is None and raw_code:
-            candidate = raw_code.upper()
-            if re.fullmatch(r"[A-Z]{2}", candidate):
-                country_iso = candidate
         if country_iso:
             countries.add(country_iso)
         pieces: list[str] = []
@@ -433,22 +427,10 @@ def _salary(
     summary_value: object,
 ) -> dict[str, object]:
     if not isinstance(value, dict):
-        return {
-            "minimum": None,
-            "maximum": None,
-            "currency": None,
-            "period": None,
-            "summary": _string(summary_value),
-        }
+        return _empty_salary(_string(summary_value))
     raw_period = value.get("salaryPeriod")
     if raw_period == 0:
-        return {
-            "minimum": None,
-            "maximum": None,
-            "currency": None,
-            "period": None,
-            "summary": None,
-        }
+        return _empty_salary()
     minimum = _number(value.get("minimum"))
     maximum = _number(value.get("maximum"))
     summary = _string(summary_value)
@@ -466,6 +448,28 @@ def _salary(
         "maximum": maximum,
         "currency": currency.upper() if currency else None,
         "period": period,
+        "summary": summary,
+    }
+
+
+def _location_country_iso(
+    country_name: str | None,
+    raw_code: str | None,
+) -> str | None:
+    if country_name:
+        mapped = _COUNTRY_BY_NAME.get(country_name.casefold())
+        if mapped:
+            return mapped
+    candidate = (raw_code or "").upper()
+    return candidate if re.fullmatch(r"[A-Z]{2}", candidate) else None
+
+
+def _empty_salary(summary: str | None = None) -> dict[str, object]:
+    return {
+        "minimum": None,
+        "maximum": None,
+        "currency": None,
+        "period": None,
         "summary": summary,
     }
 
