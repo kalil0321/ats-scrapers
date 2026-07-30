@@ -87,7 +87,13 @@ class WorkableScraper(BaseScraper):
             payload = await fetch.get_json(
                 url, headers={"Accept": "application/json"},
             )
-            jobs = [self._parse_job(item) for item in payload.get("jobs", [])]
+            company_name = payload.get("name")
+            if not isinstance(company_name, str) or not company_name.strip():
+                company_name = self.company_slug
+            jobs = [
+                self._parse_job(item, company_name.strip())
+                for item in payload.get("jobs", [])
+            ]
 
             if self.include_descriptions and jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
@@ -138,7 +144,7 @@ class WorkableScraper(BaseScraper):
         if description:
             job.description = description
 
-    def _parse_job(self, item: dict[str, Any]) -> Job:
+    def _parse_job(self, item: dict[str, Any], company_name: str) -> Job:
         url = item.get("url") or item.get("application_url")
         apply_url = item.get("application_url")
         # Workable's "type" mirrors employment shape (full-time, contract, etc.)
@@ -174,7 +180,7 @@ class WorkableScraper(BaseScraper):
         return Job(
             url=url,
             title=item["title"],
-            company=self.company_slug,
+            company=company_name,
             ats_type=ATSType.WORKABLE,
             ats_id=item.get("shortcode") or item.get("code") or str(item.get("id", "")),
             location=_extract_location(item),

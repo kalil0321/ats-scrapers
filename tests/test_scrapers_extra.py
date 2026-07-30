@@ -80,6 +80,7 @@ def test_workable_happy_path(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://apply.workable.com/api/v1/widget/accounts/acme",
         json={
+            "name": "Acme Corporation",
             "jobs": [
                 {
                     "shortcode": "ABC123",
@@ -93,8 +94,28 @@ def test_workable_happy_path(httpx_mock) -> None:
     )
     jobs = WorkableScraper("acme").fetch()
     assert jobs[0].title == "Backend Dev"
+    assert jobs[0].company == "Acme Corporation"
     assert jobs[0].location == "Paris, France"
     assert jobs[0].ats_id == "ABC123"
+
+
+def test_workable_falls_back_to_slug_without_company_name(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://apply.workable.com/api/v1/widget/accounts/acme",
+        json={
+            "jobs": [
+                {
+                    "shortcode": "ABC123",
+                    "title": "Backend Dev",
+                    "url": "https://apply.workable.com/acme/j/ABC123",
+                }
+            ]
+        },
+    )
+
+    jobs = WorkableScraper("acme").fetch()
+
+    assert jobs[0].company == "acme"
 
 
 def test_workable_404(httpx_mock) -> None:
