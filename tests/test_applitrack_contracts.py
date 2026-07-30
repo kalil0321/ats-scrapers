@@ -5,7 +5,11 @@ from pathlib import Path
 
 from ats_scrapers.scrapers import AppliTrackScraper
 from pipeline.publisher import ATS_DEDUP_PRIORITY
-from scripts.run_pipeline import CONFIGS, _bounded_concurrency
+from scripts.run_pipeline import (
+    CONFIGS,
+    _bounded_concurrency,
+    _bounded_timeout,
+)
 
 
 def test_applitrack_pipeline_uses_validated_tenant_catalog() -> None:
@@ -28,6 +32,7 @@ def test_applitrack_pipeline_uses_validated_tenant_catalog() -> None:
     assert config["dedupe_by_ats_id"] is True
     assert config["dedupe_by_content"] is True
     assert config["max_concurrency"] == 4
+    assert config["min_timeout"] == 120.0
     assert config["fail_closed_on_any_error"] is True
     assert config["fail_closed_on_empty"] is True
     assert "defer_descriptions_to_cache" not in config
@@ -35,6 +40,7 @@ def test_applitrack_pipeline_uses_validated_tenant_catalog() -> None:
 
 def test_applitrack_concurrency_cap_is_enforced() -> None:
     assert _bounded_concurrency(CONFIGS["applitrack"], 24) == 4
+    assert _bounded_timeout(CONFIGS["applitrack"], 30.0) == 120.0
 
 
 def test_applitrack_is_a_direct_employer_ats_for_deduplication() -> None:
