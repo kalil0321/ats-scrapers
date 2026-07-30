@@ -380,6 +380,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "icims": {
         "scraper": iCIMSScraper,
         "slug": _icims_slug,
+        "kwargs": lambda r: {
+            "company_name": (r.get("company_name") or "").strip() or None,
+        },
+        "dedupe_by_url": True,
         "csv": "ats-companies/icims.csv",
         "output": "icims/jobs.csv",
     },
@@ -1177,11 +1181,13 @@ class DescriptionCache:
 
 def _description_keys(job: Job) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
+    url = str(job.url).strip()
+    if job.ats_type.value == "icims":
+        return [("url", url)] if url else []
     company = (job.company or "").strip()
     ats_id = (job.ats_id or "").strip()
     if company and ats_id:
         keys.append(("company_ats_id", f"{company}\0{ats_id}"))
-    url = str(job.url).strip()
     if url:
         keys.append(("url", url))
     return keys
@@ -1191,6 +1197,13 @@ def _job_dedupe_key(
     job: Job,
     config: dict[str, Any],
 ) -> tuple[str, str]:
+    if config.get("dedupe_by_url"):
+        parsed = urlparse(str(job.url))
+        canonical_url = (
+            f"{(parsed.hostname or '').casefold()}"
+            f"{parsed.path.rstrip('/').casefold()}"
+        )
+        return "", canonical_url
     ats_id = job.ats_id or ""
     if config.get("dedupe_by_ats_id"):
         return "", ats_id
@@ -1199,11 +1212,13 @@ def _job_dedupe_key(
 
 def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
+    url = (row.get("url") or "").strip()
+    if (row.get("ats_type") or "").strip().casefold() == "icims":
+        return [("url", url)] if url else []
     company = (row.get("company") or "").strip()
     ats_id = (row.get("ats_id") or "").strip()
     if company and ats_id:
         keys.append(("company_ats_id", f"{company}\0{ats_id}"))
-    url = (row.get("url") or "").strip()
     if url:
         keys.append(("url", url))
     return keys

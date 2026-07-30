@@ -138,6 +138,7 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
         self,
         company_slug: str,
         *,
+        company_name: str | None = None,
         timeout: float = 30.0,
         include_descriptions: bool = True,
         proxy: str | None = None,
@@ -153,6 +154,7 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
             self.company_slug = require_http_url(slug, provider="iCIMSScraper")
         else:
             self.company_slug = require_host_label(slug, provider="iCIMSScraper")
+        self._configured_company_name = (company_name or "").strip() or None
         self.base_url = self._resolve_base_url(self.company_slug)
 
     def get_description(self, job: Job) -> str | None:
@@ -257,6 +259,8 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
         return jobs
 
     def _company_name(self) -> str:
+        if self._configured_company_name:
+            return self._configured_company_name
         # `careers-peraton.icims.com` → `peraton`
         # `uscareers-rws.icims.com` → `rws`
         host = self.base_url.replace("https://", "").replace("http://", "")

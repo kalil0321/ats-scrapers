@@ -82,6 +82,38 @@ def test_oracle_dedupes_same_tenant_job_across_named_sites() -> None:
     assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
 
 
+def test_icims_dedupes_exact_job_url_across_named_portals() -> None:
+    first = Job(
+        url="https://careers-acme.icims.com/jobs/1/engineer/job?in_iframe=1",
+        title="Engineer",
+        company="Acme",
+        ats_type=ATSType.ICIMS,
+        ats_id="1",
+    )
+    second = first.model_copy(update={"company": "Acme Subsidiary"})
+
+    icims_config = runner.CONFIGS["icims"]
+    assert runner._job_dedupe_key(first, icims_config) == (
+        runner._job_dedupe_key(second, icims_config)
+    )
+    assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
+
+
+def test_icims_description_cache_uses_url_only() -> None:
+    job = Job(
+        url="https://careers-acme.icims.com/jobs/1/engineer/job?in_iframe=1",
+        title="Engineer",
+        company="Acme",
+        ats_type=ATSType.ICIMS,
+        ats_id="1",
+    )
+
+    assert runner._description_keys(job) == [("url", str(job.url))]
+    assert runner._row_description_keys(runner._job_to_row(job)) == [
+        ("url", str(job.url))
+    ]
+
+
 def test_provider_max_concurrency_caps_requested_value(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -155,12 +187,23 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
 
     icims_custom_host_row = {
         "name": "Accion International",
+        "company_name": "Accion International",
         "slug": "jobs-accion",
         "url": "https://jobs-accion.icims.com",
     }
     assert runner._icims_slug(icims_custom_host_row) == (
         "https://jobs-accion.icims.com"
     )
+    assert runner.CONFIGS["icims"]["kwargs"](icims_custom_host_row) == {
+        "company_name": "Accion International"
+    }
+    assert runner.CONFIGS["icims"]["kwargs"](
+        {
+            "name": "Job Listings",
+            "slug": "pulice",
+            "url": "https://careers-pulice.icims.com",
+        }
+    ) == {"company_name": None}
 
     oracle_row = {
         "name": "ABM US",
