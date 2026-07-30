@@ -145,6 +145,20 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             return ResolvedCareersUrl(ATSType.HRMOS, segments[1])
         return None
 
+    if host in {"open.talentio.com", "recruit.talentio.co.jp"}:
+        if parsed.query or parsed.fragment:
+            return None
+        match = re.fullmatch(
+            r"/r/1/c/[A-Za-z0-9._-]+/homes/[1-9]\d*/?",
+            parsed.path,
+        )
+        if match:
+            return ResolvedCareersUrl(
+                ATSType.TALENTIO,
+                parsed._replace(path=parsed.path.rstrip("/")).geturl(),
+            )
+        return None
+
     if host.endswith(".keka.com"):
         tenant = host.removesuffix(".keka.com")
         segments = [segment for segment in parsed.path.split("/") if segment]

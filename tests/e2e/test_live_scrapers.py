@@ -34,6 +34,7 @@ from ats_scrapers.scrapers import (
     RemoteOKScraper,
     SmartRecruitersScraper,
     SoftgardenScraper,
+    TalentioScraper,
     TeamtailorScraper,
     TheHubScraper,
     UberScraper,
@@ -73,6 +74,14 @@ CASES = [
     ("smartrecruiters-10pearls",
      lambda: SmartRecruitersScraper("10pearls", include_descriptions=False), False),
     ("softgarden-abeking", lambda: SoftgardenScraper("abeking"), True),
+    (
+        "talentio-viewn",
+        lambda: TalentioScraper(
+            "https://open.talentio.com/r/1/c/viewn/homes/2635",
+            include_descriptions=False,
+        ),
+        True,
+    ),
     ("workable-0x", lambda: WorkableScraper("0x", include_descriptions=False), False),
     ("recruitee-12build",
      lambda: RecruiteeScraper("12build", include_descriptions=False), False),

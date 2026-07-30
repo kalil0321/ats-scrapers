@@ -64,6 +64,7 @@ from ats_scrapers.scrapers.seek import SeekScraper
 from ats_scrapers.scrapers.smartrecruiters import SmartRecruitersScraper
 from ats_scrapers.scrapers.softgarden import SoftgardenScraper
 from ats_scrapers.scrapers.successfactors import SuccessFactorsScraper
+from ats_scrapers.scrapers.talentio import TalentioScraper
 from ats_scrapers.scrapers.taleo import TaleoScraper
 from ats_scrapers.scrapers.teamtailor import TeamtailorScraper
 from ats_scrapers.scrapers.tesla import TeslaScraper
@@ -137,6 +138,7 @@ __all__ = [
     "SmartRecruitersScraper",
     "SoftgardenScraper",
     "SuccessFactorsScraper",
+    "TalentioScraper",
     "TaleoScraper",
     "TeamtailorScraper",
     "TeslaScraper",
