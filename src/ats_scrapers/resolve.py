@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, NamedTuple
-from urllib.parse import ParseResult, urlparse
+from urllib.parse import ParseResult, unquote, urlparse
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
@@ -122,6 +122,17 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         return None
     if host.startswith("www."):
         host = host.removeprefix("www.")
+
+    if host == "careers.hireology.com":
+        raw_slug = _first_path_segment(parsed)
+        slug = unquote(raw_slug) if raw_slug else None
+        if (
+            slug
+            and len(slug) <= 200
+            and not any(character in slug for character in "/\\?#")
+        ):
+            return ResolvedCareersUrl(ATSType.HIREOLOGY, slug)
+        return None
 
     if host in _PATH_HOSTS:
         slug = _first_path_segment(parsed)

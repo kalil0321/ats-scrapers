@@ -26,6 +26,7 @@ from ats_scrapers.scrapers import (
     BreezyScraper,
     GreenhouseScraper,
     HerpScraper,
+    HireologyScraper,
     HrmosScraper,
     LeverScraper,
     PaycomScraper,
@@ -56,6 +57,14 @@ TIMEOUT = 150.0
 # (id, factory, expect_jobs) — expect_jobs=True only for boards that
 # are essentially never empty.
 CASES = [
+    (
+        "hireology-anderson",
+        lambda: HireologyScraper(
+            "andersonautogroup",
+            include_descriptions=False,
+        ),
+        True,
+    ),
     ("greenhouse-anthropic", lambda: GreenhouseScraper("anthropic"), True),
     ("herp-herpinc", lambda: HerpScraper("herpinc", include_descriptions=False), True),
     ("hrmos-ykk", lambda: HrmosScraper("ykk"), True),

@@ -62,6 +62,7 @@ from ats_scrapers.scrapers import (
     GreenhouseScraper,
     GupyScraper,
     HerpScraper,
+    HireologyScraper,
     HrmosScraper,
     InfoJobsSpainScraper,
     JazzHRScraper,
@@ -414,6 +415,19 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "output": "herp/jobs.csv",
         "max_concurrency": 4,
         "fail_closed_on_empty": True,
+    },
+    "hireology": {
+        "scraper": HireologyScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/hireology.csv",
+        "output": "hireology/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 8,
+        "fail_closed_on_empty": True,
+        "fail_closed_on_any_error": True,
     },
     "hrmos": {
         "scraper": HrmosScraper,
