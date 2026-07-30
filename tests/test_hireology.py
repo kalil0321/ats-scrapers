@@ -118,7 +118,9 @@ def test_accepts_safe_path_punctuation() -> None:
 def test_fetches_structured_public_jobs(httpx_mock) -> None:
     _mock_listing(httpx_mock, [_job()])
 
+    before_fetch = datetime.now(UTC)
     job = HireologyScraper(TENANT).fetch()[0]
+    after_fetch = datetime.now(UTC)
 
     assert job.ats_type is ATSType.HIREOLOGY
     assert job.ats_id == "2827500"
@@ -153,7 +155,9 @@ def test_fetches_structured_public_jobs(httpx_mock) -> None:
         370_000,
         tzinfo=UTC,
     )
-    assert job.language == "en"
+    assert job.language is None
+    assert job.fetched_at is not None
+    assert before_fetch <= job.fetched_at <= after_fetch
     assert job.raw == {
         "organization_id": 21_165,
         "organization_type": "Location",
@@ -211,6 +215,26 @@ def test_remote_canadian_single_salary_maps_geography(httpx_mock) -> None:
     assert job.employment_type == "CONTRACT"
 
 
+def test_absent_compensation_does_not_emit_empty_salary(httpx_mock) -> None:
+    item = _job()
+    item["compensation"] = {
+        "is_comp_range": True,
+        "comp_range_min": "0",
+        "comp_range_max": "0",
+        "comp_period": "hour",
+    }
+    _mock_listing(httpx_mock, [item])
+
+    job = HireologyScraper(TENANT).fetch()[0]
+
+    assert job.salary is None
+    assert job.salary_currency is None
+    assert job.salary_period is None
+    assert job.salary_summary is None
+    assert job.salary_min is None
+    assert job.salary_max is None
+
+
 def test_empty_active_listing_returns_empty(httpx_mock) -> None:
     _mock_listing(httpx_mock, [])
 
@@ -253,7 +277,9 @@ def test_duplicate_job_ids_fail_closed(httpx_mock) -> None:
         HireologyScraper(TENANT).fetch()
 
 
-def test_semantic_duplicates_keep_newest_open_posting(httpx_mock) -> None:
+def test_matching_display_fields_preserve_distinct_requisitions(
+    httpx_mock,
+) -> None:
     older = _job()
     older["created_at"] = "2026-07-01T10:00:00Z"
     newer = _job(2_827_501)
@@ -262,7 +288,10 @@ def test_semantic_duplicates_keep_newest_open_posting(httpx_mock) -> None:
 
     jobs = HireologyScraper(TENANT).fetch()
 
-    assert [job.requisition_id for job in jobs] == ["2827501"]
+    assert [job.requisition_id for job in jobs] == [
+        "2827500",
+        "2827501",
+    ]
 
 
 def test_non_open_job_fails_closed(httpx_mock) -> None:

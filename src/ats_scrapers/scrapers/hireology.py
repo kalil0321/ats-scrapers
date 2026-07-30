@@ -167,7 +167,7 @@ class HireologyScraper(BaseScraper):
                 )
             seen.add(str(job.ats_id))
             jobs.append(job)
-        return _deduplicate_postings(jobs)
+        return jobs
 
     async def _fetch_all(self, fetch: Any) -> list[dict[str, Any]]:
         first = await fetch.get_json(
@@ -259,6 +259,7 @@ class HireologyScraper(BaseScraper):
             salary_max,
             salary_period,
         )
+        has_salary = salary_min is not None or salary_max is not None
         employment = _clean_text(item.get("employment_status"))
         job_family = item.get("job_family")
         if not isinstance(job_family, dict):
@@ -295,12 +296,12 @@ class HireologyScraper(BaseScraper):
             ),
             salary_currency=(
                 "CAD"
-                if country_iso == "CA"
+                if has_salary and country_iso == "CA"
                 else "USD"
-                if country_iso == "US"
+                if has_salary and country_iso == "US"
                 else None
             ),
-            salary_period=salary_period,
+            salary_period=salary_period if has_salary else None,
             salary_summary=salary_summary,
             salary_min=salary_min,
             salary_max=salary_max,
@@ -311,7 +312,7 @@ class HireologyScraper(BaseScraper):
             commitment=employment,
             description=description[:25_000] if description else None,
             posted_at=_parse_datetime(item.get("created_at")),
-            language="en",
+            fetched_at=datetime.now(UTC),
             raw=raw,
         )
 
@@ -556,21 +557,3 @@ def _parse_datetime(value: object) -> datetime | None:
     except ValueError:
         return None
     return parsed.astimezone(UTC)
-
-
-def _deduplicate_postings(jobs: list[Job]) -> list[Job]:
-    selected: dict[tuple[str, str, str], Job] = {}
-    for job in jobs:
-        key = (
-            job.company.casefold().strip(),
-            job.title.casefold().strip(),
-            (job.location or "").casefold().strip(),
-        )
-        existing = selected.get(key)
-        if existing is None or _posted_sort_key(job) > _posted_sort_key(existing):
-            selected[key] = job
-    return list(selected.values())
-
-
-def _posted_sort_key(job: Job) -> datetime:
-    return job.posted_at or datetime.min.replace(tzinfo=UTC)
