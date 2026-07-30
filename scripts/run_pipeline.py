@@ -7,7 +7,8 @@ Used by ``full_pipeline.sh`` for ATSes that don't have a legacy
 Reads ``ats-companies/{ats}.csv`` (the canonical tenant list — single
 source of truth, columns ``name,url``), scrapes each tenant via the
 appropriate ats-scrapers scraper class, dedupes, and writes a flat
-``data/{ats}/jobs.csv``.
+``{repo}/{ats}/jobs.csv`` by default. Set ``ATS_SCRAPERS_JOBS_ROOT`` (or
+the legacy ``JOBHIVE_JOBS_ROOT``) to write into a separate publication tree.
 
 Usage:
     python scripts/run_pipeline.py cornerstone
@@ -908,6 +909,14 @@ def _eightfold_kwargs(row: dict[str, Any]) -> dict[str, Any]:
 
 DATA_ROOT = Path(__file__).resolve().parent.parent  # → repo root
 
+
+def _jobs_output_root() -> Path:
+    configured = os.environ.get("ATS_SCRAPERS_JOBS_ROOT") or os.environ.get(
+        "JOBHIVE_JOBS_ROOT"
+    )
+    return Path(configured).expanduser() if configured else DATA_ROOT
+
+
 JOB_CSV_FIELDS = [
     "url", "title", "company", "ats_type", "ats_id", "location",
     "country_iso", "region", "language", "lat", "lon",
@@ -1414,7 +1423,8 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
     description_delay = float(cfg.get("description_delay_seconds", 0))
     counts = {"success": 0, "not_found": 0, "error": 0, "jobs": 0}
 
-    output_path = DATA_ROOT / cfg["output"]
+    jobs_output_root = _jobs_output_root()
+    output_path = jobs_output_root / cfg["output"]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if cfg.get("publish_previous_while_running"):
         tmp_output_path = output_path.with_name(
@@ -1425,7 +1435,9 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
     uses_streaming = bool(cfg.get("singleton") and hasattr(cfg["scraper"], "fetch_stream"))
     cache_cap = cfg.get("skip_description_cache_if_max_len_lte")
     persistent_path_rel = cfg.get("description_cache_path")
-    persistent_path = (DATA_ROOT / persistent_path_rel) if persistent_path_rel else None
+    persistent_path = (
+        jobs_output_root / persistent_path_rel if persistent_path_rel else None
+    )
     cache_compress = bool(cfg.get("description_cache_compress"))
     if isinstance(cache_cap, int) and _descriptions_look_capped(output_path, cache_cap):
         print(

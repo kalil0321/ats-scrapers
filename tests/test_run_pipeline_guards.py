@@ -12,6 +12,30 @@ from ats_scrapers.exceptions import CompanyNotFoundError
 from ats_scrapers.models import ATSType, Job
 
 
+def test_jobs_output_root_defaults_to_repository_root(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ATS_SCRAPERS_JOBS_ROOT", raising=False)
+    monkeypatch.delenv("JOBHIVE_JOBS_ROOT", raising=False)
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+
+    assert runner._jobs_output_root() == tmp_path
+
+
+def test_jobs_output_root_supports_current_and_legacy_environment_names(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy_root = tmp_path / "legacy"
+    current_root = tmp_path / "current"
+    monkeypatch.setenv("JOBHIVE_JOBS_ROOT", str(legacy_root))
+
+    assert runner._jobs_output_root() == legacy_root
+
+    monkeypatch.setenv("ATS_SCRAPERS_JOBS_ROOT", str(current_root))
+
+    assert runner._jobs_output_root() == current_root
+
+
 def test_job_to_row_preserves_structured_location_metadata() -> None:
     row = runner._job_to_row(
         Job(
