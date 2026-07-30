@@ -159,6 +159,11 @@ RESOLVES = [
     ("https://10xfounders.jobs.personio.com", ATSType.PERSONIO, "10xfounders"),
     ("https://aawdc.pinpointhq.com", ATSType.PINPOINT, "aawdc"),
     ("https://acme.applytojob.com/apply", ATSType.JAZZHR, "acme"),
+    (
+        "https://kirkhill.applicantpro.com/jobs/4124648",
+        ATSType.APPLICANTPRO,
+        "kirkhill",
+    ),
     ("https://bloomberg.avature.net/careers", ATSType.AVATURE, "bloomberg"),
     ("https://nvidia.eightfold.ai/careers", ATSType.EIGHTFOLD, "nvidia"),
     ("https://petz.gupy.io/jobs/123", ATSType.GUPY, "petz"),
