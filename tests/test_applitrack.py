@@ -217,14 +217,50 @@ def test_missing_title_fails_closed(httpx_mock) -> None:
         AppliTrackScraper(TENANT).fetch()
 
 
-def test_duplicate_composite_ids_fail_closed(httpx_mock) -> None:
+def test_identical_duplicate_composite_ids_are_collapsed(httpx_mock) -> None:
     posting = _posting(job_id="123", district_id="456")
     httpx_mock.add_response(
         url=LISTING_URL,
         text=_payload(posting, posting),
     )
 
-    with pytest.raises(ScraperError, match="duplicate posting ID"):
+    jobs = AppliTrackScraper(TENANT).fetch()
+
+    assert len(jobs) == 1
+    assert jobs[0].ats_id == "456:123"
+
+
+def test_duplicate_id_keeps_available_position_type(httpx_mock) -> None:
+    posting = _posting(job_id="123", district_id="456")
+    uncategorized = posting.replace(
+        "<span class='normal'>Teaching / Elementary</span>",
+        "<span class='normal'></span>",
+    )
+    httpx_mock.add_response(
+        url=LISTING_URL,
+        text=_payload(uncategorized, posting),
+    )
+
+    job = AppliTrackScraper(TENANT).fetch()[0]
+
+    assert job.department == "Teaching / Elementary"
+    assert job.raw is not None
+    assert job.raw["position_type"] == "Teaching / Elementary"
+
+
+def test_conflicting_duplicate_id_fails_closed(httpx_mock) -> None:
+    posting = _posting(job_id="123", district_id="456")
+    conflict = _posting(
+        job_id="123",
+        district_id="456",
+        title="Different Job",
+    )
+    httpx_mock.add_response(
+        url=LISTING_URL,
+        text=_payload(posting, conflict),
+    )
+
+    with pytest.raises(ScraperError, match="conflicting duplicate"):
         AppliTrackScraper(TENANT).fetch()
 
 

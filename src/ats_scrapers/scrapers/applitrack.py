@@ -146,8 +146,7 @@ class AppliTrackScraper(BaseScraper):
                 f"AppliTrack ({self.tenant}) advertised {advertised} "
                 f"openings but exposed {len(matches)} posting blocks"
             )
-        jobs: list[Job] = []
-        seen_ids: set[str] = set()
+        jobs_by_id: dict[str, Job] = {}
         for index, match in enumerate(matches):
             end = (
                 matches[index + 1].start()
@@ -159,14 +158,17 @@ class AppliTrackScraper(BaseScraper):
                 match.group("job"),
                 match.group("district"),
             )
-            if job.ats_id in seen_ids:
-                raise ScraperError(
-                    f"AppliTrack ({self.tenant}) returned duplicate "
-                    f"posting ID {job.ats_id}"
+            ats_id = job.ats_id or ""
+            existing = jobs_by_id.get(ats_id)
+            if existing is not None:
+                jobs_by_id[ats_id] = _merge_duplicate_job(
+                    existing,
+                    job,
+                    self.tenant,
                 )
-            seen_ids.add(job.ats_id or "")
-            jobs.append(job)
-        return jobs
+                continue
+            jobs_by_id[ats_id] = job
+        return list(jobs_by_id.values())
 
     def _parse_block(
         self,
@@ -305,6 +307,51 @@ def _normalize_tenant(value: str) -> tuple[str, str]:
             f"AppliTrackScraper rejected untrusted URL: {value!r}"
         )
     return host, segments[0].casefold()
+
+
+def _merge_duplicate_job(
+    existing: Job,
+    duplicate: Job,
+    tenant: str,
+) -> Job:
+    excluded = {"fetched_at", "department", "raw"}
+    if (
+        existing.model_dump(exclude=excluded)
+        != duplicate.model_dump(exclude=excluded)
+    ):
+        raise ScraperError(
+            f"AppliTrack ({tenant}) returned conflicting duplicate "
+            f"posting ID {existing.ats_id}"
+        )
+
+    existing_raw = dict(existing.raw or {})
+    duplicate_raw = dict(duplicate.raw or {})
+    existing_position = existing_raw.pop("position_type", None)
+    duplicate_position = duplicate_raw.pop("position_type", None)
+    if existing_raw != duplicate_raw:
+        raise ScraperError(
+            f"AppliTrack ({tenant}) returned conflicting duplicate "
+            f"posting metadata for ID {existing.ats_id}"
+        )
+
+    positions = list(
+        dict.fromkeys(
+            value
+            for value in (existing_position, duplicate_position)
+            if value
+        )
+    )
+    merged_raw = existing_raw
+    if positions:
+        merged_raw["position_type"] = positions[0]
+    if len(positions) > 1:
+        merged_raw["position_types"] = positions
+    return existing.model_copy(
+        update={
+            "department": positions[0] if positions else None,
+            "raw": merged_raw or None,
+        }
+    )
 
 
 def _field(block: str, label: str) -> str | None:
