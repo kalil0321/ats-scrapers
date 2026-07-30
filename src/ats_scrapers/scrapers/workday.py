@@ -182,7 +182,6 @@ class WorkdayScraper(BaseScraper):
             return await self._fetch_all(
                 api,
                 base,
-                company,
                 display_company,
                 detail_prefix,
             )
@@ -222,7 +221,6 @@ class WorkdayScraper(BaseScraper):
         self,
         api: str,
         base: str,
-        tenant: str,
         display_company: str,
         detail_prefix: str,
     ) -> list[Job]:
@@ -238,9 +236,10 @@ class WorkdayScraper(BaseScraper):
                     job = self._parse_job(
                         posting,
                         base,
-                        tenant,
                         display_company,
                     )
+                    if job is None:
+                        continue
                     key = job.ats_id or str(job.url)
                     if key in seen:
                         continue
@@ -499,11 +498,12 @@ class WorkdayScraper(BaseScraper):
         self,
         item: dict[str, Any],
         base_url: str,
-        tenant: str,
         company: str,
-    ) -> Job:
+    ) -> Job | None:
         external_path = item.get("externalPath", "") or ""
-        ats_id = _job_identity(tenant, external_path)
+        ats_id = _job_identity(base_url, external_path)
+        if ats_id is None:
+            return None
         requisition_id = _requisition_id(
             item.get("bulletFields"),
             external_path,
@@ -602,15 +602,14 @@ def _external_path(url: object) -> str | None:
     return s[idx:] if idx >= 0 else None
 
 
-def _job_identity(tenant: str, external_path: object) -> str:
+def _job_identity(base_url: str, external_path: object) -> str | None:
     if not isinstance(external_path, str) or not external_path.strip():
-        raise ScraperError("Workday posting omitted externalPath")
+        return None
     path = external_path.strip()
     if not path.startswith("/job/"):
-        raise ScraperError(
-            f"Workday posting had an invalid externalPath: {external_path!r}"
-        )
-    return f"{tenant}:{path}"
+        return None
+    namespace = base_url.removeprefix("https://").rstrip("/")
+    return f"{namespace}{path}"
 
 
 def _requisition_id(

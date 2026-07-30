@@ -508,7 +508,7 @@ class EightfoldScraper(BaseScraper):
 
         # Eightfold typically wraps a Workday or other underlying ATS — its
         # ``atsJobId`` / ``displayJobId`` is the upstream requisition id and
-        # collides with the underlying ATS's bulletFields[0]. That's the
+        # matches the underlying ATS's employer requisition id. That's the
         # signal the cross-ATS dedup pass uses (Pass 3).
         requisition_id = (
             item.get("atsJobId")

@@ -701,8 +701,8 @@ def _dedup_from_per_ats_csvs(
     not the corpus) before we run the eager dedup on it. This is the
     key memory win vs an in-memory ``pl.concat([..]).collect()``: the
     per-ATS scans are pulled in one ATS at a time, and the keys
-    parquet on disk is small (~80 MB / million rows for the nine
-    thin string columns we project).
+    parquet on disk is small because only the thin deduplication
+    columns are projected.
 
     Returns ``(survivors_by_ats, n_raw, n_kept)``.
     """
@@ -738,6 +738,9 @@ def _dedup_from_per_ats_csvs(
                 .str.to_uppercase()
                 .alias("country_iso"),
                 _key_col_or_empty(schema_names, "ats_id").alias("ats_id"),
+                _key_col_or_empty(
+                    schema_names, "requisition_id"
+                ).alias("requisition_id"),
             ]
         )
         key_lfs.append(klf)
@@ -764,12 +767,12 @@ def _decide_dedup_survivors_polars(
     fuzzy_threshold: int = 90,
     fuzzy_max_block_size: int = 5000,
 ) -> dict[str, pl.DataFrame]:
-    """Run the five-pass cross-ATS dedup.
+    """Run the six-pass cross-ATS dedup.
 
-    Passes 1-3 are exact-match window-function passes (cheap). Pass 4
+    Passes 1-4 are exact-match window-function passes (cheap). Pass 5
     is the normalisation pass that catches aggregator formatting
     variations (eures NUTS-code locations vs Bundesagentur full text,
-    trailing Berufenet tags on titles). Pass 5 layers rapidfuzz over
+    trailing Berufenet tags on titles). Pass 6 layers rapidfuzz over
     the remaining cross-ATS pairs within ``(company_norm, country_iso)``
     blocks to catch typo / minor-wording dups.
 
@@ -826,12 +829,41 @@ def _decide_dedup_survivors_polars(
     )
     work = work.filter(ctl_keep).drop("_dedup_key")
 
-    # ---- Pass 3: cross-ATS (company_norm, ats_id) dedup -------------------
+    # ---- Pass 3: cross-ATS (company_norm, requisition_id) dedup -----------
     work = work.with_columns(
         pl.col("company")
         .str.replace_all(r"[^a-z0-9]", "")
         .alias("_company_norm")
     )
+    if "requisition_id" not in work.columns:
+        work = work.with_columns(
+            pl.lit("", dtype=pl.String).alias("requisition_id")
+        )
+    work = work.with_columns(
+        (
+            pl.col("_company_norm")
+            + pl.lit("|")
+            + pl.col("requisition_id")
+        ).alias("_rid_key")
+    )
+    rid_valid = (
+        (pl.col("_company_norm").str.len_bytes() > 0)
+        & (pl.col("requisition_id").str.len_bytes() > 0)
+    )
+    n_ats_in_valid_rid = (
+        pl.when(rid_valid)
+        .then(pl.col("ats_type"))
+        .otherwise(None)
+        .n_unique()
+        .over("_rid_key")
+    )
+    is_cross_rid = rid_valid & (n_ats_in_valid_rid > 1)
+    rid_keep = ~is_cross_rid | (
+        pl.col("_orig_idx") == pl.col("_orig_idx").first().over("_rid_key")
+    )
+    work = work.filter(rid_keep).drop("_rid_key")
+
+    # ---- Pass 4: cross-ATS (company_norm, ats_id) dedup -------------------
     work = work.with_columns(
         (pl.col("_company_norm") + pl.lit("|") + pl.col("ats_id")).alias("_cid_key")
     )
@@ -852,7 +884,7 @@ def _decide_dedup_survivors_polars(
     )
     work = work.filter(cid_keep).drop("_cid_key")
 
-    # ---- Pass 4 (Phase 1): cross-ATS (company_norm, title_core, country) -
+    # ---- Pass 5 (Phase 1): cross-ATS (company_norm, title_core, country) -
     # ``title_core`` strips the trailing parenthesised Berufenet tag
     # that eures appends but Bundesagentur doesn't. ``country_iso`` is
     # prefers the scraper's structured value and falls back to extracting
@@ -904,7 +936,7 @@ def _decide_dedup_survivors_polars(
     )
     work = work.filter(p1_keep).drop("_p1_key")
 
-    # ---- Pass 5 (Phase 2): fuzzy within (company_norm, country) blocks ---
+    # ---- Pass 6 (Phase 2): fuzzy within (company_norm, country) blocks ---
     drop_orig_idxs = _phase2_fuzzy_drops(
         work,
         threshold=fuzzy_threshold,

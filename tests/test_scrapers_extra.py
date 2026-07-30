@@ -311,7 +311,9 @@ def test_workday_parses_url_and_paginates(httpx_mock) -> None:
     assert len(jobs) == 21
     titles = {j.title for j in jobs}
     assert "Last One" in titles
-    assert jobs[0].ats_id == "accenture:/job/0"
+    assert jobs[0].ats_id == (
+        "accenture.wd103.myworkdayjobs.com/accenturecareers/job/0"
+    )
 
 
 def test_workday_dedupes_overlapping_pages(httpx_mock) -> None:
@@ -374,7 +376,9 @@ def test_workday_uses_configured_company_name(httpx_mock) -> None:
     ).fetch()
 
     assert jobs[0].company == "Acme Health"
-    assert jobs[0].ats_id == "acme:/job/1"
+    assert jobs[0].ats_id == (
+        "acme.wd1.myworkdayjobs.com/External/job/1"
+    )
 
 
 def test_workday_uses_external_path_when_bullet_fields_start_with_location(
@@ -423,11 +427,11 @@ def test_workday_uses_external_path_when_bullet_fields_start_with_location(
 
     assert [job.ats_id for job in jobs] == [
         (
-            "minor:/job/Bnh-nh-Vietnam/"
+            "minor.wd102.myworkdayjobs.com/careers/job/Bnh-nh-Vietnam/"
             "Complex-F-B-Manager_JR109533"
         ),
         (
-            "minor:/job/Bnh-nh-Vietnam/"
+            "minor.wd102.myworkdayjobs.com/careers/job/Bnh-nh-Vietnam/"
             "Restaurant-Manager_JR109534"
         ),
     ]
@@ -469,9 +473,73 @@ def test_workday_scopes_job_ids_to_tenant(httpx_mock) -> None:
         include_descriptions=False,
     ).fetch()[0]
 
-    assert first.ats_id == "first:/job/USA/Engineer_R-1"
-    assert second.ats_id == "second:/job/USA/Engineer_R-1"
+    assert first.ats_id == (
+        "first.wd1.myworkdayjobs.com/external/job/USA/Engineer_R-1"
+    )
+    assert second.ats_id == (
+        "second.wd1.myworkdayjobs.com/external/job/USA/Engineer_R-1"
+    )
     assert first.global_id != second.global_id
+
+
+def test_workday_scopes_job_ids_to_instance(httpx_mock) -> None:
+    posting = {
+        "title": "Engineer",
+        "externalPath": "/job/USA/Engineer_R-1",
+        "bulletFields": ["R-1"],
+    }
+    for instance in ("wd1", "wd5"):
+        httpx_mock.add_response(
+            url=(
+                f"https://acme.{instance}.myworkdayjobs.com/"
+                "wday/cxs/acme/external/jobs"
+            ),
+            json={"jobPostings": [posting], "total": 1},
+        )
+
+    first = WorkdayScraper(
+        "https://acme.wd1.myworkdayjobs.com/external",
+        include_descriptions=False,
+    ).fetch()[0]
+    second = WorkdayScraper(
+        "https://acme.wd5.myworkdayjobs.com/external",
+        include_descriptions=False,
+    ).fetch()[0]
+
+    assert first.ats_id != second.ats_id
+    assert first.global_id != second.global_id
+
+
+def test_workday_skips_only_rows_without_a_valid_external_path(
+    httpx_mock,
+) -> None:
+    api = "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs"
+    httpx_mock.add_response(
+        url=api,
+        json={
+            "jobPostings": [
+                {"title": "Missing", "bulletFields": ["R-0"]},
+                {
+                    "title": "Valid",
+                    "externalPath": "/job/USA/Valid_R-1",
+                    "bulletFields": ["R-1"],
+                },
+                {
+                    "title": "Malformed",
+                    "externalPath": "/not-a-job/R-2",
+                    "bulletFields": ["R-2"],
+                },
+            ],
+            "total": 3,
+        },
+    )
+
+    jobs = WorkdayScraper(
+        "https://acme.wd1.myworkdayjobs.com/External",
+        include_descriptions=False,
+    ).fetch()
+
+    assert [job.title for job in jobs] == ["Valid"]
 
 
 def test_workday_invalid_url_raises() -> None:

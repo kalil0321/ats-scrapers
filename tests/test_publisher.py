@@ -603,6 +603,47 @@ def test_cross_ats_dedup_keeps_higher_priority_ats(
     assert df["url"].str.contains("workday.com").all()
 
 
+def test_cross_ats_dedup_uses_employer_requisition_id(tmp_path) -> None:
+    import pipeline.publisher as publisher_module
+
+    workday_path = tmp_path / "workday.csv"
+    eightfold_path = tmp_path / "eightfold.csv"
+    pd.DataFrame([
+        {
+            "url": "https://acme.wd1.myworkdayjobs.com/jobs/1",
+            "title": "Senior Software Engineer",
+            "company": "Acme",
+            "location": "New York, NY",
+            "ats_id": "acme.wd1.myworkdayjobs.com/jobs/1",
+            "requisition_id": "R-123",
+        },
+    ]).to_csv(workday_path, index=False)
+    pd.DataFrame([
+        {
+            "url": "https://acme.eightfold.ai/careers/job/1",
+            "title": "Software Engineer III",
+            "company": "Acme",
+            "location": "United States",
+            "ats_id": "R-123",
+            "requisition_id": "R-123",
+        },
+    ]).to_csv(eightfold_path, index=False)
+
+    survivors, raw_count, kept_count = (
+        publisher_module._dedup_from_per_ats_csvs(
+            {
+                "workday": workday_path,
+                "eightfold": eightfold_path,
+            }
+        )
+    )
+
+    assert raw_count == 2
+    assert kept_count == 1
+    assert survivors["workday"].height == 1
+    assert "eightfold" not in survivors
+
+
 def test_cross_ats_dedup_prefers_structured_country_iso(tmp_path) -> None:
     import pipeline.publisher as publisher_module
 
