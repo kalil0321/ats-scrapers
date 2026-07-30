@@ -250,6 +250,49 @@ def test_valid_additional_iso3_code_is_preserved_and_mapped(
     assert job.raw["country_iso3"] == "ARG"
 
 
+@pytest.mark.parametrize(
+    ("iso3", "iso2", "region", "currency"),
+    [
+        ("BFA", "BF", "Africa", "XOF"),
+        ("BMU", "BM", "North America", "BMD"),
+        ("BOL", "BO", "South America", "BOB"),
+        ("ISL", "IS", "Europe", "ISK"),
+        ("JOR", "JO", "Asia", "JOD"),
+        ("LBN", "LB", "Asia", "LBP"),
+        ("MAR", "MA", "Africa", "MAD"),
+        ("MLI", "ML", "Africa", "XOF"),
+        ("MNP", "MP", "Oceania", "USD"),
+        ("MWI", "MW", "Africa", "MWK"),
+        ("PRI", "PR", "North America", "USD"),
+        ("SLE", "SL", "Africa", "SLE"),
+        ("SLV", "SV", "North America", "USD"),
+        ("TZA", "TZ", "Africa", "TZS"),
+        ("UKR", "UA", "Europe", "UAH"),
+    ],
+)
+def test_all_observed_iso3_codes_map_to_region_and_currency(
+    httpx_mock,
+    iso3: str,
+    iso2: str,
+    region: str,
+    currency: str,
+) -> None:
+    item = _job()
+    item.update(
+        iso3=iso3,
+        jobLocation=f"Example, {iso3}",
+        minSalary="10",
+        maxSalary="20",
+    )
+    _mock_listing(httpx_mock, [item])
+
+    job = ApplicantProScraper(TENANT, include_descriptions=False).fetch()[0]
+
+    assert job.country_iso == iso2
+    assert job.region == region
+    assert job.salary_currency == currency
+
+
 def test_no_compensation_emits_no_currency_or_period_only_summary(
     httpx_mock,
 ) -> None:

@@ -44,6 +44,9 @@ _ISO3_TO_ISO2 = {
     "AUS": "AU",
     "AUT": "AT",
     "BEL": "BE",
+    "BFA": "BF",
+    "BMU": "BM",
+    "BOL": "BO",
     "BRA": "BR",
     "CAN": "CA",
     "CHE": "CH",
@@ -69,11 +72,18 @@ _ISO3_TO_ISO2 = {
     "IDN": "ID",
     "IND": "IN",
     "IRL": "IE",
+    "ISL": "IS",
     "ISR": "IL",
     "ITA": "IT",
     "JPN": "JP",
+    "JOR": "JO",
     "KOR": "KR",
+    "LBN": "LB",
+    "MAR": "MA",
     "MEX": "MX",
+    "MLI": "ML",
+    "MNP": "MP",
+    "MWI": "MW",
     "MYS": "MY",
     "NLD": "NL",
     "NGA": "NG",
@@ -84,14 +94,19 @@ _ISO3_TO_ISO2 = {
     "PHL": "PH",
     "POL": "PL",
     "PRT": "PT",
+    "PRI": "PR",
     "ROU": "RO",
     "SAU": "SA",
     "SGP": "SG",
+    "SLE": "SL",
+    "SLV": "SV",
     "SWE": "SE",
     "THA": "TH",
     "TCA": "TC",
     "TUR": "TR",
     "TWN": "TW",
+    "TZA": "TZ",
+    "UKR": "UA",
     "USA": "US",
     "VNM": "VN",
     "ZAF": "ZA",
@@ -112,6 +127,7 @@ _EUROPE_CODES = {
     "GR",
     "HU",
     "IE",
+    "IS",
     "IT",
     "NL",
     "NO",
@@ -119,6 +135,7 @@ _EUROPE_CODES = {
     "PT",
     "RO",
     "SE",
+    "UA",
 }
 _ASIA_CODES = {
     "AE",
@@ -128,7 +145,9 @@ _ASIA_CODES = {
     "IL",
     "IN",
     "JP",
+    "JO",
     "KR",
+    "LB",
     "MY",
     "NP",
     "PAK",
@@ -140,19 +159,23 @@ _ASIA_CODES = {
     "TW",
     "VN",
 }
-_SOUTH_AMERICA_CODES = {"AR", "BR", "CL", "CO", "EC"}
+_SOUTH_AMERICA_CODES = {"AR", "BO", "BR", "CL", "CO", "EC"}
 _CURRENCY_BY_COUNTRY = {
     "AE": "AED",
     "AR": "ARS",
     "AU": "AUD",
     "AT": "EUR",
     "BE": "EUR",
+    "BF": "XOF",
+    "BM": "BMD",
+    "BO": "BOB",
     "BR": "BRL",
     "CA": "CAD",
     "CH": "CHF",
     "CL": "CLP",
     "CN": "CNY",
     "CO": "COP",
+    "CD": "CDF",
     "CR": "CRC",
     "CU": "CUP",
     "CZ": "CZK",
@@ -172,11 +195,18 @@ _CURRENCY_BY_COUNTRY = {
     "IE": "EUR",
     "IL": "ILS",
     "IN": "INR",
+    "IS": "ISK",
     "IT": "EUR",
     "JP": "JPY",
+    "JO": "JOD",
     "KR": "KRW",
     "KY": "KYD",
+    "LB": "LBP",
+    "MA": "MAD",
     "MX": "MXN",
+    "ML": "XOF",
+    "MP": "USD",
+    "MW": "MWK",
     "MY": "MYR",
     "NG": "NGN",
     "NL": "EUR",
@@ -187,14 +217,19 @@ _CURRENCY_BY_COUNTRY = {
     "PK": "PKR",
     "PL": "PLN",
     "PT": "EUR",
+    "PR": "USD",
     "RO": "RON",
     "SA": "SAR",
     "SE": "SEK",
     "SG": "SGD",
+    "SL": "SLE",
+    "SV": "USD",
     "TC": "USD",
     "TH": "THB",
     "TR": "TRY",
     "TW": "TWD",
+    "TZ": "TZS",
+    "UA": "UAH",
     "US": "USD",
     "VN": "VND",
     "ZA": "ZAR",
@@ -586,9 +621,7 @@ def _salary_summary(item: dict[str, Any]) -> str | None:
 
 
 def _region(country_iso: str | None) -> str | None:
-    if country_iso in {"US", "CA", "MX"}:
-        return "North America"
-    if country_iso in {"CR", "CU", "KY", "TC"}:
+    if country_iso in {"BM", "CA", "CR", "CU", "KY", "MX", "PR", "SV", "TC", "US"}:
         return "North America"
     if country_iso in _EUROPE_CODES:
         return "Europe"
@@ -596,9 +629,9 @@ def _region(country_iso: str | None) -> str | None:
         return "Asia"
     if country_iso in _SOUTH_AMERICA_CODES:
         return "South America"
-    if country_iso in {"AU", "GU", "NZ"}:
+    if country_iso in {"AU", "GU", "MP", "NZ"}:
         return "Oceania"
-    if country_iso in {"CD", "EG", "NG", "ZA"}:
+    if country_iso in {"BF", "CD", "EG", "MA", "ML", "MW", "NG", "SL", "TZ", "ZA"}:
         return "Africa"
     if country_iso == "AQ":
         return "Antarctica"
