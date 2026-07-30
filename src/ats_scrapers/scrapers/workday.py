@@ -626,9 +626,13 @@ def _requisition_id(
         cleaned = value.strip()
         marker = cleaned.casefold()
         if (
-            final_segment == marker
-            or final_segment.endswith(f"_{marker}")
-            or f"_{marker}_" in f"_{final_segment}_"
+            len(cleaned) <= 64
+            and any(character.isdigit() for character in cleaned)
+            and re.fullmatch(r"[A-Za-z0-9._-]+", cleaned)
+            and (
+                final_segment == marker
+                or final_segment.endswith(f"_{marker}")
+            )
         ):
             candidates.append(cleaned)
     return max(candidates, key=len) if candidates else None

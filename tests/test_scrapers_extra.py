@@ -510,6 +510,39 @@ def test_workday_scopes_job_ids_to_instance(httpx_mock) -> None:
     assert first.global_id != second.global_id
 
 
+def test_workday_requisition_id_ignores_embedded_title_metadata(
+    httpx_mock,
+) -> None:
+    api = "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs"
+    httpx_mock.add_response(
+        url=api,
+        json={
+            "jobPostings": [
+                {
+                    "title": "Senior Software Engineer",
+                    "externalPath": (
+                        "/job/USA/Senior_Software_Engineer_"
+                        "Acme_Corporation_REQ-2026-0042"
+                    ),
+                    "bulletFields": [
+                        "Senior_Software_Engineer",
+                        "Acme_Corporation",
+                        "REQ-2026-0042",
+                    ],
+                },
+            ],
+            "total": 1,
+        },
+    )
+
+    job = WorkdayScraper(
+        "https://acme.wd1.myworkdayjobs.com/External",
+        include_descriptions=False,
+    ).fetch()[0]
+
+    assert job.requisition_id == "REQ-2026-0042"
+
+
 def test_workday_skips_only_rows_without_a_valid_external_path(
     httpx_mock,
 ) -> None:
