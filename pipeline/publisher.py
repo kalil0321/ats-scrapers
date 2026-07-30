@@ -858,8 +858,9 @@ def _decide_dedup_survivors_polars(
         .over("_rid_key")
     )
     is_cross_rid = rid_valid & (n_ats_in_valid_rid > 1)
+    winning_rid_ats = pl.col("ats_type").first().over("_rid_key")
     rid_keep = ~is_cross_rid | (
-        pl.col("_orig_idx") == pl.col("_orig_idx").first().over("_rid_key")
+        pl.col("ats_type") == winning_rid_ats
     )
     work = work.filter(rid_keep).drop("_rid_key")
 
@@ -879,8 +880,9 @@ def _decide_dedup_survivors_polars(
         .over("_cid_key")
     )
     is_cross_cid = cid_valid & (n_ats_in_valid_cid > 1)
+    winning_cid_ats = pl.col("ats_type").first().over("_cid_key")
     cid_keep = ~is_cross_cid | (
-        pl.col("_orig_idx") == pl.col("_orig_idx").first().over("_cid_key")
+        pl.col("ats_type") == winning_cid_ats
     )
     work = work.filter(cid_keep).drop("_cid_key")
 

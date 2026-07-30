@@ -540,7 +540,7 @@ class EightfoldScraper(BaseScraper):
             location=_format_location(item),
             is_remote=_extract_remote(item),
             department=item.get("department"),
-            requisition_id=str(requisition_id) if requisition_id and str(requisition_id) != ats_id else None,
+            requisition_id=str(requisition_id) if requisition_id else None,
             description=_strip_html(item.get("job_description") or "") or None,
             posted_at=_parse_ts(
                 item.get("postedTs")

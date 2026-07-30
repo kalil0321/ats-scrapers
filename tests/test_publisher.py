@@ -644,6 +644,59 @@ def test_cross_ats_dedup_uses_employer_requisition_id(tmp_path) -> None:
     assert "eightfold" not in survivors
 
 
+def test_cross_ats_requisition_dedup_keeps_winning_ats_variants(tmp_path) -> None:
+    import pipeline.publisher as publisher_module
+
+    amazon_path = tmp_path / "amazon.csv"
+    eightfold_path = tmp_path / "eightfold.csv"
+    pd.DataFrame(
+        [
+            {
+                "url": "https://amazon.jobs/en/jobs/1/new-york",
+                "title": "Software Engineer - New York",
+                "company": "Amazon",
+                "location": "New York, NY",
+                "ats_id": "1:new-york",
+                "requisition_id": "1",
+            },
+            {
+                "url": "https://amazon.jobs/en/jobs/1/seattle",
+                "title": "Software Engineer - Seattle",
+                "company": "Amazon",
+                "location": "Seattle, WA",
+                "ats_id": "1:seattle",
+                "requisition_id": "1",
+            },
+        ]
+    ).to_csv(amazon_path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "url": "https://amazon.eightfold.ai/careers/job/1",
+                "title": "Software Engineer",
+                "company": "Amazon",
+                "location": "United States",
+                "ats_id": "1",
+                "requisition_id": "1",
+            },
+        ]
+    ).to_csv(eightfold_path, index=False)
+
+    survivors, raw_count, kept_count = (
+        publisher_module._dedup_from_per_ats_csvs(
+            {
+                "amazon": amazon_path,
+                "eightfold": eightfold_path,
+            }
+        )
+    )
+
+    assert raw_count == 3
+    assert kept_count == 2
+    assert survivors["amazon"].height == 2
+    assert "eightfold" not in survivors
+
+
 def test_cross_ats_dedup_prefers_structured_country_iso(tmp_path) -> None:
     import pipeline.publisher as publisher_module
 

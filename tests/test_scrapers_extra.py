@@ -525,6 +525,10 @@ def test_workday_requisition_id_ignores_embedded_title_metadata(
                         "Acme_Corporation_REQ-2026-0042"
                     ),
                     "bulletFields": [
+                        (
+                            "Senior_Software_Engineer_"
+                            "Acme_Corporation_REQ-2026-0042"
+                        ),
                         "Senior_Software_Engineer",
                         "Acme_Corporation",
                         "REQ-2026-0042",

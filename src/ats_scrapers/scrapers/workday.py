@@ -619,23 +619,26 @@ def _requisition_id(
     if not isinstance(bullet_fields, list):
         return None
     final_segment = external_path.rstrip("/").rsplit("/", 1)[-1].casefold()
-    candidates: list[str] = []
+    suffix_candidates: list[str] = []
+    exact_candidate: str | None = None
     for value in bullet_fields:
         if not isinstance(value, str) or not value.strip():
             continue
         cleaned = value.strip()
         marker = cleaned.casefold()
-        if (
+        if not (
             len(cleaned) <= 64
             and any(character.isdigit() for character in cleaned)
             and re.fullmatch(r"[A-Za-z0-9._-]+", cleaned)
-            and (
-                final_segment == marker
-                or final_segment.endswith(f"_{marker}")
-            )
         ):
-            candidates.append(cleaned)
-    return max(candidates, key=len) if candidates else None
+            continue
+        if final_segment.endswith(f"_{marker}"):
+            suffix_candidates.append(cleaned)
+        elif final_segment == marker:
+            exact_candidate = cleaned
+    if suffix_candidates:
+        return min(suffix_candidates, key=len)
+    return exact_candidate
 
 
 def _format_locations(primary: object, additional: object) -> str | None:
