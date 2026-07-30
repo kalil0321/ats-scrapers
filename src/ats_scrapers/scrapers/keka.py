@@ -434,8 +434,13 @@ def _salary(
     minimum = _number(value.get("minimum"))
     maximum = _number(value.get("maximum"))
     summary = _string(summary_value)
-    has_salary = minimum is not None or maximum is not None or summary is not None
-    currency = _string(value.get("currency")) if has_salary else None
+    salary_is_present = any(
+        candidate is not None
+        for candidate in (minimum, maximum, summary)
+    )
+    currency = (
+        _string(value.get("currency")) if salary_is_present else None
+    )
     if currency and len(currency) != 3:
         currency = None
     period = (
