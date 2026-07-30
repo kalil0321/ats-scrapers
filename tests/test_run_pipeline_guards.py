@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -80,6 +81,35 @@ def test_oracle_dedupes_same_tenant_job_across_named_sites() -> None:
         runner._job_dedupe_key(second, oracle_config)
     )
     assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
+
+
+def test_content_dedupe_key_normalizes_exact_reposts() -> None:
+    first = Job(
+        url="https://www.applitrack.com/one/jobs/1",
+        title="Elementary Teacher",
+        company="Example School District",
+        ats_type=ATSType.APPLITRACK,
+        ats_id="one:1",
+        location="Austin, TX",
+        description="Teach and support students.",
+        posted_at=datetime(2026, 7, 29, tzinfo=UTC),
+    )
+    second = first.model_copy(
+        update={
+            "url": "https://www.applitrack.com/network/jobs/2",
+            "ats_id": "district:2",
+            "company": " example  school district ",
+            "title": "ELEMENTARY TEACHER",
+            "location": "Austin,   TX",
+            "description": "Teach  and support students.",
+            "posted_at": datetime(2026, 7, 29, 12, tzinfo=UTC),
+        }
+    )
+
+    assert (
+        runner._job_content_dedupe_key(first)
+        == runner._job_content_dedupe_key(second)
+    )
 
 
 def test_icims_dedupes_exact_job_url_across_named_portals() -> None:

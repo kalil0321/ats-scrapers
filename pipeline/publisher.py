@@ -534,7 +534,7 @@ class DatasetPublisher:
 # we keep the row from the highest-priority ATS (lowest number wins).
 ATS_DEDUP_PRIORITY: dict[str, int] = {
     # Direct employer ATSes
-    "adp": 1, "ashby": 1, "avature": 1, "bamboohr": 1, "beisen": 1,
+    "adp": 1, "applitrack": 1, "ashby": 1, "avature": 1, "bamboohr": 1, "beisen": 1,
     "beisen_legacy": 1,
     "breezy": 1, "cornerstone": 1,
     "darwinbox": 1, "dayforce": 1,

@@ -107,6 +107,10 @@ _KEKA_PORTAL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$", re.IGNORECASE)
 _KEKA_RESERVED_SEGMENTS = frozenset(
     {"api", "applyjob", "content", "jobdetails"}
 )
+_APPLITRACK_TENANT_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+    re.IGNORECASE,
+)
 
 
 def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
@@ -122,6 +126,20 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         return None
     if host.startswith("www."):
         host = host.removeprefix("www.")
+
+    if host == "applitrack.com" or host.endswith(".applitrack.com"):
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            len(segments) >= 2
+            and _APPLITRACK_TENANT_RE.fullmatch(segments[0])
+            and segments[1].casefold() == "onlineapp"
+        ):
+            tenant = segments[0].casefold()
+            return ResolvedCareersUrl(
+                ATSType.APPLITRACK,
+                f"https://www.applitrack.com/{tenant}/onlineapp",
+            )
+        return None
 
     if host in _PATH_HOSTS:
         slug = _first_path_segment(parsed)
