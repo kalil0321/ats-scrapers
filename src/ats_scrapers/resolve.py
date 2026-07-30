@@ -40,6 +40,12 @@ if TYPE_CHECKING:
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._\-]*$", re.IGNORECASE)
 _DNS_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
 _DAYFORCE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_HOTJOB_HOST_RE = re.compile(r"(?:[a-z0-9-]+\.)*hotjob\.cn", re.IGNORECASE)
+_HOTJOB_SUITE_RE = re.compile(r"SU[a-f0-9]{24}", re.IGNORECASE)
+_HOTJOB_TENANT_RE = re.compile(
+    r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?",
+    re.IGNORECASE,
+)
 
 
 class ResolvedCareersUrl(NamedTuple):
@@ -117,7 +123,8 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
     the exact form the matching scraper's constructor expects.
     """
     parsed = urlparse(url if "//" in url else f"https://{url}")
-    host = (parsed.hostname or "").lower()
+    input_host = (parsed.hostname or "").lower()
+    host = input_host
     if not host:
         return None
     if host.startswith("www."):
@@ -320,6 +327,29 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             and (slug := resolve_segments(segments[1:])) is not None
         ):
             return ResolvedCareersUrl(ATSType.DAYFORCE, slug)
+        return None
+
+    if _HOTJOB_HOST_RE.fullmatch(host):
+        portal_host = (
+            input_host
+            if _HOTJOB_HOST_RE.fullmatch(input_host)
+            else host
+        )
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if segments and _HOTJOB_SUITE_RE.fullmatch(segments[0]):
+            return ResolvedCareersUrl(
+                ATSType.WINTALENT,
+                f"https://{portal_host}/{segments[0]}",
+            )
+        if (
+            len(segments) >= 2
+            and segments[0].casefold() == "wt"
+            and _HOTJOB_TENANT_RE.fullmatch(segments[1])
+        ):
+            return ResolvedCareersUrl(
+                ATSType.WINTALENT,
+                f"https://{portal_host}/wt/{segments[1]}",
+            )
         return None
 
     for suffix, tld in ((".darwinbox.in", "in"), (".darwinbox.com", "com")):
