@@ -99,7 +99,8 @@ def _detail(job_id: int = 4124648) -> dict[str, object]:
             "endDateRef": "22-Jun-2031",
             "description": "<p>Fallback description.</p>",
             "advertisingDescriptionHtml": (
-                "<h2>Summary</h2><p>Lead aircraft product development.</p>"
+                "<h2>Summary</h2><p>Lead <strong>aircraft</strong> "
+                "product development.</p>"
             ),
             "hideFromIndeed": 0,
             "untilFilled": 1,
@@ -142,12 +143,16 @@ def test_fetches_structured_public_jobs(httpx_mock) -> None:
     assert job.department == "Engineering"
     assert job.team == "Product"
     assert job.requisition_id == "4124648"
-    assert job.description == "Summary\nLead aircraft product development."
+    assert job.description == (
+        "<h2>Summary</h2><p>Lead <strong>aircraft</strong> "
+        "product development.</p>"
+    )
     assert job.posted_at == datetime(2026, 6, 22, tzinfo=UTC)
-    assert job.language == "en"
+    assert job.language is None
     assert job.raw == {
         "domain_id": DOMAIN_ID,
         "site_id": 19218,
+        "country_iso3": "USA",
         "end_date": "Jun 22, 2031",
         "until_filled": 1,
         "classification": "Operations",
@@ -197,6 +202,79 @@ def test_remote_canadian_job_maps_geography_and_salary(httpx_mock) -> None:
     assert job.employment_type == "CONTRACT"
 
 
+def test_euro_salary_uses_mapped_currency(httpx_mock) -> None:
+    item = _job()
+    item.update(
+        iso3="DEU",
+        abbreviation="BE",
+        jobLocation="Berlin, DEU",
+        minSalary="80,000",
+        maxSalary="100,000",
+    )
+    _mock_listing(httpx_mock, [item])
+
+    job = ApplicantProScraper(
+        TENANT,
+        include_descriptions=False,
+    ).fetch()[0]
+
+    assert job.country_iso == "DE"
+    assert job.region == "Europe"
+    assert job.salary_currency == "EUR"
+    assert job.salary_min == 80_000
+    assert job.salary_max == 100_000
+
+
+def test_valid_additional_iso3_code_is_preserved_and_mapped(
+    httpx_mock,
+) -> None:
+    item = _job()
+    item.update(
+        iso3="ARG",
+        abbreviation="C",
+        jobLocation="Buenos Aires, ARG",
+        minSalary=None,
+        maxSalary=None,
+        payTypeFrame=None,
+        payDetails=None,
+    )
+    _mock_listing(httpx_mock, [item])
+
+    job = ApplicantProScraper(
+        TENANT,
+        include_descriptions=False,
+    ).fetch()[0]
+
+    assert job.country_iso == "AR"
+    assert job.region == "South America"
+    assert job.raw["country_iso3"] == "ARG"
+
+
+def test_no_compensation_emits_no_currency_or_period_only_summary(
+    httpx_mock,
+) -> None:
+    item = _job()
+    item.update(
+        minSalary=None,
+        maxSalary=None,
+        payTypeFrame="per year",
+        payDetails=None,
+    )
+    _mock_listing(httpx_mock, [item])
+
+    job = ApplicantProScraper(
+        TENANT,
+        include_descriptions=False,
+    ).fetch()[0]
+
+    assert job.salary_currency is None
+    assert job.salary_period is None
+    assert job.salary_min is None
+    assert job.salary_max is None
+    assert job.salary_summary is None
+    assert job.salary is None
+
+
 def test_empty_active_listing_returns_empty(httpx_mock) -> None:
     _mock_listing(httpx_mock, [])
 
@@ -223,6 +301,39 @@ def test_job_disappearing_before_detail_is_dropped(httpx_mock) -> None:
     httpx_mock.add_response(url=DETAIL_URL, status_code=404)
 
     assert ApplicantProScraper(TENANT).fetch() == []
+
+
+def test_transient_detail_failure_retains_listing_data(httpx_mock) -> None:
+    _mock_listing(httpx_mock, [_job()])
+    for _ in range(3):
+        httpx_mock.add_response(url=DETAIL_URL, status_code=500)
+
+    job = ApplicantProScraper(TENANT).fetch()[0]
+
+    assert job.ats_id == "kirkhill:4124648"
+    assert job.description is None
+
+
+def test_unsuccessful_detail_payload_fails_closed(httpx_mock) -> None:
+    _mock_listing(httpx_mock, [_job()])
+    httpx_mock.add_response(
+        url=DETAIL_URL,
+        json={"success": False, "data": None},
+    )
+
+    with pytest.raises(ScraperError, match="unsuccessful detail"):
+        ApplicantProScraper(TENANT).fetch()
+
+
+def test_malformed_detail_json_fails_closed(httpx_mock) -> None:
+    _mock_listing(httpx_mock, [_job()])
+    httpx_mock.add_response(
+        url=DETAIL_URL,
+        text="<html>maintenance</html>",
+    )
+
+    with pytest.raises(ScraperError, match="not valid JSON"):
+        ApplicantProScraper(TENANT).fetch()
 
 
 def test_detail_id_mismatch_fails_closed(httpx_mock) -> None:

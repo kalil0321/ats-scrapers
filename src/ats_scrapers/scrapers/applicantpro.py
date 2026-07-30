@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from bs4 import BeautifulSoup
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.fetch import MalformedJSONError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
 from ats_scrapers.scrapers._slug import require_host_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -39,6 +40,7 @@ _EMPLOYMENT_PATTERNS: tuple[tuple[str, EmploymentType], ...] = (
 )
 _ISO3_TO_ISO2 = {
     "ARE": "AE",
+    "ARG": "AR",
     "AUS": "AU",
     "AUT": "AT",
     "BEL": "BE",
@@ -48,13 +50,20 @@ _ISO3_TO_ISO2 = {
     "CHL": "CL",
     "CHN": "CN",
     "COL": "CO",
+    "COD": "CD",
+    "CRI": "CR",
+    "CUB": "CU",
+    "CYM": "KY",
     "CZE": "CZ",
     "DEU": "DE",
     "DNK": "DK",
     "ESP": "ES",
+    "EGY": "EG",
     "FIN": "FI",
     "FRA": "FR",
     "GBR": "GB",
+    "GRC": "GR",
+    "GUM": "GU",
     "HKG": "HK",
     "HUN": "HU",
     "IDN": "ID",
@@ -67,8 +76,10 @@ _ISO3_TO_ISO2 = {
     "MEX": "MX",
     "MYS": "MY",
     "NLD": "NL",
+    "NGA": "NG",
     "NOR": "NO",
     "NZL": "NZ",
+    "NPL": "NP",
     "PAK": "PK",
     "PHL": "PH",
     "POL": "PL",
@@ -78,11 +89,14 @@ _ISO3_TO_ISO2 = {
     "SGP": "SG",
     "SWE": "SE",
     "THA": "TH",
+    "TCA": "TC",
     "TUR": "TR",
     "TWN": "TW",
     "USA": "US",
     "VNM": "VN",
     "ZAF": "ZA",
+    "ATA": "AQ",
+    "ECU": "EC",
 }
 _EUROPE_CODES = {
     "AT",
@@ -95,6 +109,7 @@ _EUROPE_CODES = {
     "FI",
     "FR",
     "GB",
+    "GR",
     "HU",
     "IE",
     "IT",
@@ -115,6 +130,7 @@ _ASIA_CODES = {
     "JP",
     "KR",
     "MY",
+    "NP",
     "PAK",
     "PH",
     "SA",
@@ -124,14 +140,64 @@ _ASIA_CODES = {
     "TW",
     "VN",
 }
-_SOUTH_AMERICA_CODES = {"BR", "CL", "CO"}
+_SOUTH_AMERICA_CODES = {"AR", "BR", "CL", "CO", "EC"}
 _CURRENCY_BY_COUNTRY = {
+    "AE": "AED",
+    "AR": "ARS",
     "AU": "AUD",
+    "AT": "EUR",
+    "BE": "EUR",
+    "BR": "BRL",
     "CA": "CAD",
     "CH": "CHF",
+    "CL": "CLP",
+    "CN": "CNY",
+    "CO": "COP",
+    "CR": "CRC",
+    "CU": "CUP",
+    "CZ": "CZK",
+    "DE": "EUR",
+    "DK": "DKK",
+    "EC": "USD",
+    "EG": "EGP",
+    "ES": "EUR",
+    "FI": "EUR",
+    "FR": "EUR",
     "GB": "GBP",
+    "GR": "EUR",
+    "GU": "USD",
+    "HK": "HKD",
+    "HU": "HUF",
+    "ID": "IDR",
+    "IE": "EUR",
+    "IL": "ILS",
+    "IN": "INR",
+    "IT": "EUR",
+    "JP": "JPY",
+    "KR": "KRW",
+    "KY": "KYD",
+    "MX": "MXN",
+    "MY": "MYR",
+    "NG": "NGN",
+    "NL": "EUR",
+    "NO": "NOK",
     "NZ": "NZD",
+    "NP": "NPR",
+    "PH": "PHP",
+    "PK": "PKR",
+    "PL": "PLN",
+    "PT": "EUR",
+    "RO": "RON",
+    "SA": "SAR",
+    "SE": "SEK",
+    "SG": "SGD",
+    "TC": "USD",
+    "TH": "THB",
+    "TR": "TRY",
+    "TW": "TWD",
     "US": "USD",
+    "VN": "VND",
+    "ZA": "ZAR",
 }
 
 
@@ -282,6 +348,15 @@ class ApplicantProScraper(BaseScraper):
             item.get("payType"),
         )
         salary_summary = _salary_summary(item)
+        salary_currency = (
+            _CURRENCY_BY_COUNTRY.get(country_iso or "")
+            if salary_min is not None or salary_max is not None
+            else None
+        )
+        if salary_currency is None:
+            salary_min = None
+            salary_max = None
+            salary_period = None
         workplace = _clean_text(item.get("workplaceType"))
         department = _clean_text(item.get("orgTitle"))
         team = _clean_text(item.get("parentTitle"))
@@ -290,6 +365,7 @@ class ApplicantProScraper(BaseScraper):
         raw = {
             "domain_id": domain_id,
             "site_id": item.get("siteId"),
+            "country_iso3": _clean_text(item.get("iso3")),
             "end_date": _clean_text(item.get("endDateRef")),
             "until_filled": item.get("untilFilled"),
             "classification": _clean_text(item.get("classification")),
@@ -306,7 +382,7 @@ class ApplicantProScraper(BaseScraper):
             country_iso=country_iso,
             region=_region(country_iso),
             is_remote=_is_remote(workplace),
-            salary_currency=_CURRENCY_BY_COUNTRY.get(country_iso or ""),
+            salary_currency=salary_currency,
             salary_period=salary_period,
             salary_summary=salary_summary,
             salary_min=salary_min,
@@ -318,7 +394,6 @@ class ApplicantProScraper(BaseScraper):
             apply_url=url,
             commitment=commitment,
             posted_at=posted_at,
-            language="en",
             raw=raw,
         )
 
@@ -342,18 +417,28 @@ class ApplicantProScraper(BaseScraper):
                 payload = await fetch.get_json(url)
             except CompanyNotFoundError:
                 return False
+            except MalformedJSONError:
+                raise
+            except ScraperError:
+                return True
         if not isinstance(payload, dict) or payload.get("success") is not True:
-            return False
+            raise ScraperError(
+                f"ApplicantPro ({self.company_slug}) returned an "
+                f"unsuccessful detail for {job_id!r}"
+            )
         data = payload.get("data")
         if not isinstance(data, dict):
-            return False
+            raise ScraperError(
+                f"ApplicantPro ({self.company_slug}) returned malformed "
+                f"detail data for {job_id!r}"
+            )
         detail_id = _clean_text(data.get("id"))
         if detail_id != job_id:
             raise ScraperError(
                 f"ApplicantPro ({self.company_slug}) detail id "
                 f"{detail_id!r} did not match {job_id!r}"
             )
-        description = _html_text(
+        description = _html_description(
             data.get("advertisingDescriptionHtml")
             or data.get("description")
             or data.get("advertisingDescription")
@@ -397,11 +482,11 @@ def _clean_text(value: object) -> str | None:
     return cleaned or None
 
 
-def _html_text(value: object) -> str | None:
-    cleaned = _clean_text(value)
-    if not cleaned:
+def _html_description(value: object) -> str | None:
+    if value is None:
         return None
-    return BeautifulSoup(cleaned, "html.parser").get_text("\n", strip=True)
+    cleaned = str(value).strip()
+    return cleaned or None
 
 
 def _parse_date(value: object) -> datetime | None:
@@ -493,7 +578,7 @@ def _salary_summary(item: dict[str, Any]) -> str | None:
     frame = _clean_text(item.get("payTypeFrame"))
     details = _clean_text(item.get("payDetails"))
     base = f"{minimum} - {maximum}" if minimum and maximum else minimum or maximum or ""
-    if frame:
+    if frame and base:
         base = f"{base} {frame}".strip()
     if details and details.casefold() not in {"doe", "depending on experience"}:
         base = f"{base} ({details})".strip()
@@ -503,14 +588,18 @@ def _salary_summary(item: dict[str, Any]) -> str | None:
 def _region(country_iso: str | None) -> str | None:
     if country_iso in {"US", "CA", "MX"}:
         return "North America"
+    if country_iso in {"CR", "CU", "KY", "TC"}:
+        return "North America"
     if country_iso in _EUROPE_CODES:
         return "Europe"
     if country_iso in _ASIA_CODES:
         return "Asia"
     if country_iso in _SOUTH_AMERICA_CODES:
         return "South America"
-    if country_iso in {"AU", "NZ"}:
+    if country_iso in {"AU", "GU", "NZ"}:
         return "Oceania"
-    if country_iso == "ZA":
+    if country_iso in {"CD", "EG", "NG", "ZA"}:
         return "Africa"
+    if country_iso == "AQ":
+        return "Antarctica"
     return None
