@@ -161,14 +161,20 @@ class KekaScraper(BaseScraper):
             html = await fetch.get_text(self.portal_url)
             identifier = _extract_identifier(html, self.host)
             api_root = f"https://{self.host}/careers/api"
-            jobs_payload, company_payload = await asyncio.gather(
-                fetch.get_json(
-                    f"{api_root}/embedjobs/{self.portal}/active/{identifier}"
-                ),
-                fetch.get_json(
-                    f"{api_root}/organization/{self.portal}/careerportalinfo"
-                ),
+            jobs_request = fetch.get_json(
+                f"{api_root}/embedjobs/{self.portal}/active/{identifier}"
             )
+            if self.company_name:
+                jobs_payload = await jobs_request
+                company_payload: object = {}
+            else:
+                jobs_payload, company_payload = await asyncio.gather(
+                    jobs_request,
+                    _optional_json(
+                        fetch,
+                        f"{api_root}/organization/{self.portal}/careerportalinfo",
+                    ),
+                )
         company = _company_name(
             company_payload,
             explicit=self.company_name,
@@ -398,7 +404,7 @@ def _locations(value: object) -> tuple[str | None, str | None]:
         )
         if country_iso is None and raw_code:
             candidate = raw_code.upper()
-            if candidate in _REGION_BY_COUNTRY:
+            if re.fullmatch(r"[A-Z]{2}", candidate):
                 country_iso = candidate
         if country_iso:
             countries.add(country_iso)
@@ -434,6 +440,15 @@ def _salary(
             "period": None,
             "summary": _string(summary_value),
         }
+    raw_period = value.get("salaryPeriod")
+    if raw_period == 0:
+        return {
+            "minimum": None,
+            "maximum": None,
+            "currency": None,
+            "period": None,
+            "summary": None,
+        }
     minimum = _number(value.get("minimum"))
     maximum = _number(value.get("maximum"))
     summary = _string(summary_value)
@@ -441,7 +456,6 @@ def _salary(
     currency = _string(value.get("currency")) if has_salary else None
     if currency and len(currency) != 3:
         currency = None
-    raw_period = value.get("salaryPeriod")
     period = (
         _SALARY_PERIODS.get(raw_period)
         if isinstance(raw_period, int) and not isinstance(raw_period, bool)
@@ -462,6 +476,13 @@ def _number(value: object) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
     return None
+
+
+async def _optional_json(fetch: Any, url: str) -> object:
+    try:
+        return await fetch.get_json(url)
+    except Exception:
+        return {}
 
 
 def _minimum_experience(value: str | None) -> int | None:

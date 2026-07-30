@@ -165,7 +165,7 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
                 or (
                     portal == "default"
                     and len(segments) == 3
-                    and segments[1].casefold() == "jobdetails"
+                    and segments[1].casefold() in {"applyjob", "jobdetails"}
                     and segments[2].isdigit()
                 )
                 or (
@@ -174,7 +174,8 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
                         len(segments) == 2
                         or (
                             len(segments) == 4
-                            and segments[2].casefold() == "jobdetails"
+                            and segments[2].casefold()
+                            in {"applyjob", "jobdetails"}
                             and segments[3].isdigit()
                         )
                     )

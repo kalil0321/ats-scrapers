@@ -116,11 +116,26 @@ def test_fetches_structured_public_jobs(httpx_mock) -> None:
 
 
 def test_explicit_company_name_wins_over_api(httpx_mock) -> None:
-    _mock_portal(httpx_mock, [_job()])
+    httpx_mock.add_response(url=PORTAL_URL, text=_bootstrap())
+    httpx_mock.add_response(url=JOBS_URL, json=[_job()])
 
     job = KekaScraper(PORTAL_URL, company_name="Bright Future India").fetch()[0]
 
     assert job.company == "Bright Future India"
+
+
+def test_company_metadata_failure_uses_hostname_fallback(httpx_mock) -> None:
+    httpx_mock.add_response(url=PORTAL_URL, text=_bootstrap())
+    httpx_mock.add_response(url=JOBS_URL, json=[_job()])
+    httpx_mock.add_response(
+        url=COMPANY_URL,
+        status_code=500,
+        is_reusable=True,
+    )
+
+    job = KekaScraper(PORTAL_URL).fetch()[0]
+
+    assert job.company == "100"
 
 
 def test_listing_only_mode_omits_description(httpx_mock) -> None:
@@ -178,6 +193,23 @@ def test_country_name_corrects_legacy_keka_country_code(httpx_mock) -> None:
     assert job.region == "Africa"
 
 
+def test_valid_country_code_survives_without_region_mapping(httpx_mock) -> None:
+    job_payload = _job()
+    job_payload["jobLocations"] = [
+        {
+            "city": "Paris",
+            "countryCode": "FR",
+            "countryName": "République française",
+        }
+    ]
+    _mock_portal(httpx_mock, [job_payload])
+
+    job = KekaScraper(PORTAL_URL).fetch()[0]
+
+    assert job.country_iso == "FR"
+    assert job.region is None
+
+
 def test_biweekly_salary_keeps_raw_period_without_invalid_enum(
     httpx_mock,
 ) -> None:
@@ -195,6 +227,26 @@ def test_biweekly_salary_keeps_raw_period_without_invalid_enum(
     assert job.salary_period is None
     assert job.raw is not None
     assert job.raw["salary_period"] == "Bi Weekly"
+
+
+def test_unavailable_salary_does_not_export_zero_range(httpx_mock) -> None:
+    job_payload = _job()
+    job_payload["salaryRange"] = {
+        "minimum": 0,
+        "maximum": 0,
+        "currency": "INR",
+        "salaryPeriod": 0,
+    }
+    job_payload["salaryRangeFormat"] = "Not Available"
+    _mock_portal(httpx_mock, [job_payload])
+
+    job = KekaScraper(PORTAL_URL).fetch()[0]
+
+    assert job.salary_min is None
+    assert job.salary_max is None
+    assert job.salary_currency is None
+    assert job.salary_period is None
+    assert job.salary_summary is None
 
 
 def test_duplicate_job_ids_fail_closed(httpx_mock) -> None:

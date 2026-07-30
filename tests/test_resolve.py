@@ -51,7 +51,17 @@ RESOLVES = [
         "https://100.keka.com/careers",
     ),
     (
+        "https://100.keka.com/careers/applyjob/153027",
+        ATSType.KEKA,
+        "https://100.keka.com/careers",
+    ),
+    (
         "https://universaled.keka.com/careers/ebenezerschool/jobdetails/123",
+        ATSType.KEKA,
+        "https://universaled.keka.com/careers/ebenezerschool",
+    ),
+    (
+        "https://universaled.keka.com/careers/ebenezerschool/applyjob/123",
         ATSType.KEKA,
         "https://universaled.keka.com/careers/ebenezerschool",
     ),
