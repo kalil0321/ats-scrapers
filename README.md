@@ -107,7 +107,7 @@ on a worker thread.
 Scraper adapters include:
 
 - Major ATS platforms: ADP Workforce Now, Greenhouse, Lever, Ashby, Workday, SmartRecruiters,
-  SuccessFactors, Oracle, iCIMS, HERP Hire, HRMOS, Paycom, Softgarden, Workable, Personio,
+  SuccessFactors, Oracle, iCIMS, HERP Hire, HRMOS, Keka, Paycom, Softgarden, Workable, Personio,
   and more.
 - First-party company APIs: Amazon, Apple, Google, TikTok, and Uber.
 - Public and regional sources: EURES, Bundesagentur, Arbetsformedlingen,

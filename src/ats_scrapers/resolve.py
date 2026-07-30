@@ -103,6 +103,10 @@ _UUID_RE = re.compile(
     re.IGNORECASE,
 )
 _PAYCOM_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
+_KEKA_PORTAL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$", re.IGNORECASE)
+_KEKA_RESERVED_SEGMENTS = frozenset(
+    {"api", "applyjob", "content", "jobdetails"}
+)
 
 
 def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
@@ -139,6 +143,50 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             and _DNS_LABEL_RE.fullmatch(segments[1])
         ):
             return ResolvedCareersUrl(ATSType.HRMOS, segments[1])
+        return None
+
+    if host.endswith(".keka.com"):
+        tenant = host.removesuffix(".keka.com")
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            _DNS_LABEL_RE.fullmatch(tenant)
+            and segments
+            and segments[0].casefold() == "careers"
+        ):
+            portal = "default"
+            if (
+                len(segments) >= 2
+                and segments[1].casefold() not in _KEKA_RESERVED_SEGMENTS
+                and _KEKA_PORTAL_RE.fullmatch(segments[1])
+            ):
+                portal = segments[1].casefold()
+            valid_remainder = (
+                len(segments) == 1
+                or (
+                    portal == "default"
+                    and len(segments) == 3
+                    and segments[1].casefold() == "jobdetails"
+                    and segments[2].isdigit()
+                )
+                or (
+                    portal != "default"
+                    and (
+                        len(segments) == 2
+                        or (
+                            len(segments) == 4
+                            and segments[2].casefold() == "jobdetails"
+                            and segments[3].isdigit()
+                        )
+                    )
+                )
+            )
+            if valid_remainder:
+                portal_url = (
+                    f"https://{host}/careers"
+                    if portal == "default"
+                    else f"https://{host}/careers/{portal}"
+                )
+                return ResolvedCareersUrl(ATSType.KEKA, portal_url)
         return None
 
     if host in {"paycomonline.net", "www.paycomonline.net"}:

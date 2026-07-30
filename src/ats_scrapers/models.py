@@ -50,6 +50,7 @@ class ATSType(StrEnum):
     ICIMS = "icims"
     JOBVITE = "jobvite"
     JOIN_COM = "join_com"
+    KEKA = "keka"
     LEVER = "lever"
     MERCOR = "mercor"
     MOKA = "moka"

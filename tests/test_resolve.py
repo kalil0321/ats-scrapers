@@ -18,6 +18,7 @@ from ats_scrapers.scrapers import (
     HerpScraper,
     HrmosScraper,
     JobviteScraper,
+    KekaScraper,
     MokaScraper,
     PageUpScraper,
     PaycomScraper,
@@ -44,6 +45,16 @@ RESOLVES = [
     ("https://herp.careers/v1/herpinc/abc123", ATSType.HERP, "herpinc"),
     ("https://hrmos.co/pages/ykk/jobs", ATSType.HRMOS, "ykk"),
     ("https://hrmos.co/pages/ykk/jobs/00-KU-001", ATSType.HRMOS, "ykk"),
+    (
+        "https://100.keka.com/careers/jobdetails/153027",
+        ATSType.KEKA,
+        "https://100.keka.com/careers",
+    ),
+    (
+        "https://universaled.keka.com/careers/ebenezerschool/jobdetails/123",
+        ATSType.KEKA,
+        "https://universaled.keka.com/careers/ebenezerschool",
+    ),
     (
         "https://www.paycomonline.net/v4/ats/web.php/portal/"
         "00F1F305D986350F2A5DF3D1AE79350F/career-page",
@@ -195,6 +206,10 @@ def test_icims_nonstandard_prefix_keeps_full_url() -> None:
         "https://herp.careers/careers/jobs/abc",
         "https://herp.careers/v1/bad_slug",
         "https://hrmos.co/pages/bad_slug/jobs",
+        "https://bad_slug.keka.com/careers",
+        "https://100.keka.com/api/jobs",
+        "https://100.keka.com/careers/jobdetails/not-a-number",
+        "https://100.keka.com/careers/custom/unknown/123",
         "https://www.paycomonline.net/v4/ats/web.php/portal/not-a-token/jobs/1",
         "https://evil.recruitee.com.attacker.io", # suffix-spoofing host
         "https://evil.career.softgarden.de.attacker.io/jobs/1",
@@ -307,6 +322,13 @@ def test_get_scraper_for_url_builds_scraper() -> None:
         "https://2020companies.wd1.myworkdayjobs.com/external_careers"
     )
     assert isinstance(workday, WorkdayScraper)
+
+
+def test_get_scraper_for_keka_url_builds_scraper() -> None:
+    scraper = get_scraper_for_url("https://100.keka.com/careers")
+
+    assert isinstance(scraper, KekaScraper)
+    assert scraper.company_slug == "https://100.keka.com/careers"
 
 
 def test_get_scraper_for_url_raises_with_guidance() -> None:

@@ -42,6 +42,7 @@ from ats_scrapers.scrapers.jobs_cz import JobsCzScraper
 from ats_scrapers.scrapers.jobsch import JobsChScraper
 from ats_scrapers.scrapers.jobvite import JobviteScraper
 from ats_scrapers.scrapers.join_com import JoinComScraper
+from ats_scrapers.scrapers.keka import KekaScraper
 from ats_scrapers.scrapers.lever import LeverScraper
 from ats_scrapers.scrapers.manfred import ManfredScraper
 from ats_scrapers.scrapers.mercor import MercorScraper
@@ -113,6 +114,7 @@ __all__ = [
     "JobsCzScraper",
     "JobviteScraper",
     "JoinComScraper",
+    "KekaScraper",
     "LeverScraper",
     "ManfredScraper",
     "MercorScraper",
