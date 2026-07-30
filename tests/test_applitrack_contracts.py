@@ -30,7 +30,7 @@ def test_applitrack_pipeline_uses_validated_tenant_catalog() -> None:
     assert config["csv"] == "ats-companies/applitrack.csv"
     assert config["output"] == "applitrack/jobs.csv"
     assert config["dedupe_by_ats_id"] is True
-    assert config["dedupe_by_content"] is True
+    assert "dedupe_by_content" not in config
     assert config["max_concurrency"] == 4
     assert config["min_timeout"] == 120.0
     assert config["fail_closed_on_any_error"] is True

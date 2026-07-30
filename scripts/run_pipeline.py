@@ -22,7 +22,6 @@ import argparse
 import asyncio
 import csv
 import fcntl
-import hashlib
 import json
 import os
 import re
@@ -361,7 +360,6 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/applitrack.csv",
         "output": "applitrack/jobs.csv",
         "dedupe_by_ats_id": True,
-        "dedupe_by_content": True,
         "max_concurrency": 4,
         "min_timeout": 120.0,
         "fail_closed_on_any_error": True,
@@ -1242,26 +1240,6 @@ def _job_dedupe_key(
     return job.company, ats_id
 
 
-def _job_content_dedupe_key(
-    job: Job,
-) -> tuple[str, str, str, str, str]:
-    def normalize(value: str | None) -> str:
-        return " ".join((value or "").casefold().split())
-
-    description_digest = hashlib.blake2b(
-        normalize(job.description).encode("utf-8"),
-        digest_size=16,
-    ).hexdigest()
-    posted = job.posted_at.date().isoformat() if job.posted_at else ""
-    return (
-        normalize(job.company),
-        normalize(job.title),
-        normalize(job.location),
-        posted,
-        description_digest,
-    )
-
-
 def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
     url = (row.get("url") or "").strip()
@@ -1540,8 +1518,6 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             f"({location} cache at {description_cache.path})"
         )
     seen_keys: set[tuple[str, str]] = set()
-    seen_content_keys: set[tuple[str, str, str, str, str]] = set()
-
     t0 = time.time()
     try:
         with tmp_output_path.open("w", newline="") as f:
@@ -1661,19 +1637,9 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                     }
                     for job in jobs:
                         key = _job_dedupe_key(job, cfg)
-                        content_key = (
-                            _job_content_dedupe_key(job)
-                            if cfg.get("dedupe_by_content")
-                            else None
-                        )
-                        if key in seen_keys or (
-                            content_key is not None
-                            and content_key in seen_content_keys
-                        ):
+                        if key in seen_keys:
                             continue
                         seen_keys.add(key)
-                        if content_key is not None:
-                            seen_content_keys.add(content_key)
                         if scraper is not None and not cfg.get("skip_description_enrichment"):
                             if _cached_description(job, description_cache) or job.description:
                                 desc_status = await _ensure_description(

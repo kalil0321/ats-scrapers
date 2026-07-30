@@ -248,6 +248,32 @@ def test_duplicate_id_keeps_available_position_type(httpx_mock) -> None:
     assert job.raw["position_type"] == "Teaching / Elementary"
 
 
+def test_duplicate_id_merges_three_position_types(httpx_mock) -> None:
+    posting = _posting(job_id="123", district_id="456")
+    second = posting.replace(
+        "Teaching / Elementary",
+        "Student Support",
+    )
+    third = posting.replace(
+        "Teaching / Elementary",
+        "Special Education",
+    )
+    httpx_mock.add_response(
+        url=LISTING_URL,
+        text=_payload(posting, second, third),
+    )
+
+    job = AppliTrackScraper(TENANT).fetch()[0]
+
+    assert job.department == "Teaching / Elementary"
+    assert job.raw is not None
+    assert job.raw["position_types"] == [
+        "Teaching / Elementary",
+        "Student Support",
+        "Special Education",
+    ]
+
+
 def test_conflicting_duplicate_id_fails_closed(httpx_mock) -> None:
     posting = _posting(job_id="123", district_id="456")
     conflict = _posting(
@@ -262,6 +288,31 @@ def test_conflicting_duplicate_id_fails_closed(httpx_mock) -> None:
 
     with pytest.raises(ScraperError, match="conflicting duplicate"):
         AppliTrackScraper(TENANT).fetch()
+
+
+def test_decodes_javascript_surrogate_pairs(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LISTING_URL,
+        text=_payload(_posting(title=r"Teacher \uD83D\uDE00")),
+    )
+
+    job = AppliTrackScraper(TENANT).fetch()[0]
+
+    assert job.title == "Teacher 😀"
+    job.title.encode("utf-8")
+
+
+def test_mixed_full_and_part_time_is_unclassified(httpx_mock) -> None:
+    posting = _posting().replace(
+        "<span class='normal'>Full-Time</span>",
+        "<span class='normal'>Full-Time/Part-Time</span>",
+    )
+    httpx_mock.add_response(url=LISTING_URL, text=_payload(posting))
+
+    job = AppliTrackScraper(TENANT).fetch()[0]
+
+    assert job.commitment == "Full-Time/Part-Time"
+    assert job.employment_type is None
 
 
 def test_full_public_url_is_normalized() -> None:

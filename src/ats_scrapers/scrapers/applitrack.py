@@ -60,6 +60,10 @@ _DOCUMENT_BOUNDARY_RE = re.compile(
     r"'\);\s*document\.write\('",
     re.IGNORECASE,
 )
+_UNICODE_SURROGATE_PAIR_RE = re.compile(
+    r"\\u([dD][89aAbB][0-9a-fA-F]{2})"
+    r"\\u([dD][c-fC-F][0-9a-fA-F]{2})"
+)
 _UNICODE_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
 _HEX_ESCAPE_RE = re.compile(r"\\x([0-9a-fA-F]{2})")
 _SPACE_RE = re.compile(r"[ \t\f\v]+")
@@ -328,6 +332,8 @@ def _merge_duplicate_job(
     duplicate_raw = dict(duplicate.raw or {})
     existing_position = existing_raw.pop("position_type", None)
     duplicate_position = duplicate_raw.pop("position_type", None)
+    existing_positions = existing_raw.pop("position_types", [])
+    duplicate_positions = duplicate_raw.pop("position_types", [])
     if existing_raw != duplicate_raw:
         raise ScraperError(
             f"AppliTrack ({tenant}) returned conflicting duplicate "
@@ -337,7 +343,12 @@ def _merge_duplicate_job(
     positions = list(
         dict.fromkeys(
             value
-            for value in (existing_position, duplicate_position)
+            for value in (
+                existing_position,
+                *existing_positions,
+                duplicate_position,
+                *duplicate_positions,
+            )
             if value
         )
     )
@@ -396,8 +407,20 @@ def _clean_fragment(value: str | None) -> str | None:
     if not value:
         return None
     value = _DOCUMENT_BOUNDARY_RE.sub("", value)
+    value = _UNICODE_SURROGATE_PAIR_RE.sub(
+        lambda match: chr(
+            0x10000
+            + ((int(match.group(1), 16) - 0xD800) << 10)
+            + (int(match.group(2), 16) - 0xDC00)
+        ),
+        value,
+    )
     value = _UNICODE_ESCAPE_RE.sub(
-        lambda match: chr(int(match.group(1), 16)),
+        lambda match: (
+            "\N{REPLACEMENT CHARACTER}"
+            if 0xD800 <= int(match.group(1), 16) <= 0xDFFF
+            else chr(int(match.group(1), 16))
+        ),
         value,
     )
     value = _HEX_ESCAPE_RE.sub(
@@ -436,9 +459,14 @@ def _parse_date(value: str | None) -> datetime | None:
 
 def _employment_type(value: str | None) -> EmploymentType | None:
     normalized = (value or "").casefold()
-    if "part" in normalized and "time" in normalized:
+    has_time = "time" in normalized
+    has_part = "part" in normalized
+    has_full = "full" in normalized
+    if has_time and has_part and has_full:
+        return None
+    if has_time and has_part:
         return "PART_TIME"
-    if "full" in normalized and "time" in normalized:
+    if has_time and has_full:
         return "FULL_TIME"
     return None
 
