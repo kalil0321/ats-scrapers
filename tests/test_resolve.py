@@ -20,6 +20,7 @@ from ats_scrapers.scrapers import (
     JobviteScraper,
     KekaScraper,
     MokaScraper,
+    NinehireScraper,
     PageUpScraper,
     PaycomScraper,
     PaylocityScraper,
@@ -162,6 +163,11 @@ RESOLVES = [
     ("https://bloomberg.avature.net/careers", ATSType.AVATURE, "bloomberg"),
     ("https://nvidia.eightfold.ai/careers", ATSType.EIGHTFOLD, "nvidia"),
     ("https://petz.gupy.io/jobs/123", ATSType.GUPY, "petz"),
+    (
+        "https://day1company.ninehire.site/job_posting/7a0UlD8L",
+        ATSType.NINEHIRE,
+        "day1company",
+    ),
     # Scheme-less input is tolerated
     ("jobs.ashbyhq.com/openai", ATSType.ASHBY, "openai"),
     ("www.jobs.lever.co/acme", ATSType.LEVER, "acme"),
@@ -327,6 +333,12 @@ def test_get_scraper_for_url_builds_scraper() -> None:
     assert isinstance(
         get_scraper_for_url("https://amer.zhiye.com/Social/?PageIndex=1"),
         BeisenLegacyScraper,
+    )
+    assert isinstance(
+        get_scraper_for_url(
+            "https://day1company.ninehire.site/job_posting/7a0UlD8L"
+        ),
+        NinehireScraper,
     )
     workday = get_scraper_for_url(
         "https://2020companies.wd1.myworkdayjobs.com/external_careers"
