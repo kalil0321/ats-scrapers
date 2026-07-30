@@ -179,7 +179,13 @@ class WorkdayScraper(BaseScraper):
             else None
         )
         try:
-            return await self._fetch_all(api, base, display_company, detail_prefix)
+            return await self._fetch_all(
+                api,
+                base,
+                company,
+                display_company,
+                detail_prefix,
+            )
         finally:
             self._deadline = None
 
@@ -216,7 +222,8 @@ class WorkdayScraper(BaseScraper):
         self,
         api: str,
         base: str,
-        company: str,
+        tenant: str,
+        display_company: str,
         detail_prefix: str,
     ) -> list[Job]:
         async with httpx.AsyncClient(
@@ -228,7 +235,12 @@ class WorkdayScraper(BaseScraper):
 
             def absorb(postings: list[dict[str, Any]]) -> None:
                 for posting in postings:
-                    job = self._parse_job(posting, base, company)
+                    job = self._parse_job(
+                        posting,
+                        base,
+                        tenant,
+                        display_company,
+                    )
                     key = job.ats_id or str(job.url)
                     if key in seen:
                         continue
@@ -483,16 +495,19 @@ class WorkdayScraper(BaseScraper):
             f"Workday gave up after {MAX_RETRIES} retries at offset={offset}: {last_exc}"
         )
 
-    def _parse_job(self, item: dict[str, Any], base_url: str, company: str) -> Job:
+    def _parse_job(
+        self,
+        item: dict[str, Any],
+        base_url: str,
+        tenant: str,
+        company: str,
+    ) -> Job:
         external_path = item.get("externalPath", "") or ""
-        bullet_req = (item.get("bulletFields") or [None])[0]
-        ats_id = bullet_req or external_path.rsplit("/", 1)[-1] or "unknown"
-        # bulletFields[0] is canonically the requisition id on Workday tenants
-        # that surface it (Accenture R-…, Salesforce JR-…). Same value across
-        # mirrors (Eightfold wrappers).
-        requisition_id = bullet_req if bullet_req and bullet_req != ats_id else None
-        if bullet_req:
-            requisition_id = bullet_req
+        ats_id = _job_identity(tenant, external_path)
+        requisition_id = _requisition_id(
+            item.get("bulletFields"),
+            external_path,
+        )
 
         # ``timeType`` ("Full time" / "Part time") is the canonical
         # Workday signal; map to our employment-type enum.
@@ -585,6 +600,39 @@ def _external_path(url: object) -> str | None:
     s = str(url)
     idx = s.find("/job/")
     return s[idx:] if idx >= 0 else None
+
+
+def _job_identity(tenant: str, external_path: object) -> str:
+    if not isinstance(external_path, str) or not external_path.strip():
+        raise ScraperError("Workday posting omitted externalPath")
+    path = external_path.strip()
+    if not path.startswith("/job/"):
+        raise ScraperError(
+            f"Workday posting had an invalid externalPath: {external_path!r}"
+        )
+    return f"{tenant}:{path}"
+
+
+def _requisition_id(
+    bullet_fields: object,
+    external_path: str,
+) -> str | None:
+    if not isinstance(bullet_fields, list):
+        return None
+    final_segment = external_path.rstrip("/").rsplit("/", 1)[-1].casefold()
+    candidates: list[str] = []
+    for value in bullet_fields:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        cleaned = value.strip()
+        marker = cleaned.casefold()
+        if (
+            final_segment == marker
+            or final_segment.endswith(f"_{marker}")
+            or f"_{marker}_" in f"_{final_segment}_"
+        ):
+            candidates.append(cleaned)
+    return max(candidates, key=len) if candidates else None
 
 
 def _format_locations(primary: object, additional: object) -> str | None:
