@@ -89,6 +89,9 @@ dev = [
     "types-boto3",
 ]
 
+[project.scripts]
+ats-scraper-search = "src.ats_scrapers.cli:search"
+
 [project.urls]
 Homepage = "https://github.com/kalil0321/ats-scrapers"
 Documentation = "https://github.com/kalil0321/ats-scrapers#readme"
