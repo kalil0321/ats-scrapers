@@ -22,7 +22,7 @@ def search():
     )
     args.add_argument(
         '--remote', dest='remote',
-        action='store_true',
+        action='store_true', default=None,
     )
     args.add_argument(
         '--salary-min', dest='salary_min',
