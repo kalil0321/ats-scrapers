@@ -49,7 +49,7 @@ def search():
 def fetch():
     args = argparse.ArgumentParser()
     args.add_argument(
-        'company', dest='company', type=str,
+        'company', type=str,
     )
     company = find_company(args.parse_args().company)
     jobs = get_scraper(company.ats, company.slug).fetch()
@@ -58,7 +58,7 @@ def fetch():
 def fetch_for_url():
     args = argparse.ArgumentParser()
     args.add_argument(
-        'url', dest='url', type=str,
+        'url', type=str,
     )
     jobs = get_scraper_for_url(args.parse_args().url).fetch()
     print(jobs.to_json(indent=4))
