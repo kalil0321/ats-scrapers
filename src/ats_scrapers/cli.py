@@ -6,6 +6,10 @@ import pandas as pd
 def search():
     args = argparse.ArgumentParser()
     args.add_argument(
+        '--query', dest='query',
+        type=str, default=None, nargs='?',
+    )
+    args.add_argument(
         '--location', dest='location',
         type=str, default=None, nargs='?',
     )
