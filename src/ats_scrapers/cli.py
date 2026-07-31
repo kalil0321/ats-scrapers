@@ -1,6 +1,7 @@
 from ats_scrapers import client
 from ats_scrapers.models import ATSType
 import argparse
+import pandas as pd
 
 def search():
     args = argparse.ArgumentParser()
