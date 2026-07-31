@@ -91,6 +91,7 @@ dev = [
 
 [project.scripts]
 ats-scraper-search = "ats_scrapers.cli:search"
+ats-scraper-find = "ats_scrapers.cli:find"
 ats-scraper-fetch = "ats_scrapers.cli:fetch"
 ats-scraper-fetch-url = "ats_scrapers.cli:fetch_for_url"
 
