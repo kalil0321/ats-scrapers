@@ -1,8 +1,5 @@
-from ats_scrapers import client, find_company, get_scraper_for_url
-from ats_scrapers.scrapers import get_scraper
 from ats_scrapers.models import ATSType
 import argparse
-import pandas as pd
 
 def search():
     args = argparse.ArgumentParser()
@@ -43,6 +40,8 @@ def search():
         '--limit', dest='limit',
         type=int, default=None, nargs='?',
     )
+
+    from ats_scrapers import client
     jobs = client.search(**args.parse_args().__dict__)
     print(jobs.to_json(orient='records', indent=4))
 
@@ -51,6 +50,8 @@ def find():
     args.add_argument(
         'company', type=str,
     )
+    
+    from ats_scrapers import find_company
     company = find_company(args.parse_args().company)
     print(company.to_json(orient='records', indent=4))
 
@@ -61,14 +62,21 @@ def fetch():
     )
     args.add_argument(
         'ats', type=str,
+        choices=[e.name.lower() for e in ATSType],
     )
-    jobs = get_scraper(args.parse_args().ats, args.parse_args().company).fetch()
-    print(jobs.to_json(orient='records', indent=4))
+    a = args.parse_args()
+
+    from ats_scrapers.scrapers import get_scraper
+    import json
+    jobs = get_scraper(a.ats, a.company).fetch()
+    print(json.dumps(jobs, indent=4))
 
 def fetch_for_url():
     args = argparse.ArgumentParser()
     args.add_argument(
         'url', type=str,
     )
+
+    from ats_scrapers import get_scraper_for_url
     jobs = get_scraper_for_url(args.parse_args().url).fetch()
     print(jobs.to_json(orient='records', indent=4))
