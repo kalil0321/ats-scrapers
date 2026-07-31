@@ -20,7 +20,7 @@ def search():
     args.add_argument(
         '--ats-type', dest='ats',
         type=str, default=None, nargs='?',
-        choices=[e.name for e in ATSType],
+        choices=[e.name.lower() for e in ATSType],
     )
     args.add_argument(
         '--remote', dest='remote',
