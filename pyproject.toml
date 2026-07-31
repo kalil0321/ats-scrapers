@@ -91,6 +91,8 @@ dev = [
 
 [project.scripts]
 ats-scraper-search = "ats_scrapers.cli:search"
+ats-scraper-fetch = "ats_scrapers.cli:fetch"
+ats-scraper-fetch-url = "ats_scrapers.cli:fetch_for_url"
 
 [project.urls]
 Homepage = "https://github.com/kalil0321/ats-scrapers"
