@@ -1,4 +1,5 @@
-from ats_scrapers import client
+from ats_scrapers import client, find_company, get_scraper_for_url
+from ats_scrapers.scrapers import get_scraper
 from ats_scrapers.models import ATSType
 import argparse
 import pandas as pd
@@ -42,9 +43,22 @@ def search():
         '--limit', dest='limit',
         type=int, default=None, nargs='?',
     )
-    with pd.option_context(
-        'display.max_rows', None,
-        'display.max_columns', None,
-        'display.precision', 3,
-    ):
-        print(client.search(**args.parse_args().__dict__))
+    jobs = client.search(**args.parse_args().__dict__)
+    print(jobs.to_json(indent=4))
+
+def fetch():
+    args = argparse.ArgumentParser()
+    args.add_argument(
+        'company', dest='company', type=str,
+    )
+    company = find_company(args.parse_args().company)
+    jobs = get_scraper(company.ats, company.slug).fetch()
+    print(jobs.to_json(indent=4))
+
+def fetch_for_url():
+    args = argparse.ArgumentParser()
+    args.add_argument(
+        'url', dest='url', type=str,
+    )
+    jobs = get_scraper_for_url(args.parse_args().url).fetch()
+    print(jobs.to_json(indent=4))
