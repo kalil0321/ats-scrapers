@@ -67,9 +67,9 @@ def fetch():
     a = args.parse_args()
 
     from ats_scrapers.scrapers import get_scraper
-    import json
     jobs = get_scraper(a.ats, a.company).fetch()
-    print(json.dumps(jobs, indent=4))
+    from pydantic import RootModel
+    print(RootModel(jobs).model_dump_json(indent=4))
 
 def fetch_for_url():
     args = argparse.ArgumentParser()
@@ -79,4 +79,5 @@ def fetch_for_url():
 
     from ats_scrapers import get_scraper_for_url
     jobs = get_scraper_for_url(args.parse_args().url).fetch()
-    print(jobs.to_json(orient='records', indent=4))
+    from pydantic import RootModel
+    print(RootModel(jobs).model_dump_json(indent=4))
