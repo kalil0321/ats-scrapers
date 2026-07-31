@@ -44,7 +44,7 @@ def search():
         type=int, default=None, nargs='?',
     )
     jobs = client.search(**args.parse_args().__dict__)
-    print(jobs.to_json(indent=4))
+    print(jobs.to_json(orient='records', indent=4))
 
 def find():
     args = argparse.ArgumentParser()
@@ -52,7 +52,7 @@ def find():
         'company', type=str,
     )
     company = find_company(args.parse_args().company)
-    print(company.to_json(indent=4))
+    print(company.to_json(orient='records', indent=4))
 
 def fetch():
     args = argparse.ArgumentParser()
@@ -63,7 +63,7 @@ def fetch():
         'ats', type=str,
     )
     jobs = get_scraper(args.parse_args().ats, args.parse_args().company).fetch()
-    print(jobs.to_json(indent=4))
+    print(jobs.to_json(orient='records', indent=4))
 
 def fetch_for_url():
     args = argparse.ArgumentParser()
@@ -71,4 +71,4 @@ def fetch_for_url():
         'url', type=str,
     )
     jobs = get_scraper_for_url(args.parse_args().url).fetch()
-    print(jobs.to_json(indent=4))
+    print(jobs.to_json(orient='records', indent=4))
