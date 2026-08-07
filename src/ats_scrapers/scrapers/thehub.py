@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import html
+import logging
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -33,8 +35,10 @@ DETAIL_API_URL_TEMPLATE = "https://thehub.io/api/jobs/{job_id}"
 JOB_URL_TEMPLATE = "https://thehub.io/jobs/{job_id}"
 PER_PAGE = 15  # Hard-coded by the API; ?limit=… is ignored.
 MAX_CONCURRENCY = 4
+MAX_DETAIL_FAILURE_RATIO = 0.10
 
 _TAG_RE = re.compile(r"<[^>]+>")
+log = logging.getLogger(__name__)
 
 
 @ScraperRegistry.register(ATSType.THEHUB)
@@ -93,10 +97,28 @@ class TheHubScraper(BaseScraper):
                 if item.get("id") or item.get("_id")
             ))
             details = await asyncio.gather(
-                *(self._fetch_detail(fetch, sem, job_id=job_id) for job_id in job_ids)
+                *(self._fetch_detail(fetch, sem, job_id=job_id) for job_id in job_ids),
+                return_exceptions=True,
             )
 
-        return [job for item in details if (job := self._parse(item)) is not None]
+        failures = [item for item in details if isinstance(item, Exception)]
+        allowed_failures = max(1, int(len(job_ids) * MAX_DETAIL_FAILURE_RATIO))
+        if len(failures) > allowed_failures:
+            raise ScraperError(
+                f"The Hub detail hydration failed for {len(failures)}/{len(job_ids)} jobs"
+            ) from failures[0]
+        if failures:
+            log.warning(
+                "The Hub skipped %d/%d jobs whose details failed to load",
+                len(failures),
+                len(job_ids),
+            )
+
+        return [
+            job
+            for item in details
+            if isinstance(item, dict) and (job := self._parse(item)) is not None
+        ]
 
     async def _fetch_page(
         self,
@@ -114,9 +136,12 @@ class TheHubScraper(BaseScraper):
         sem: asyncio.Semaphore,
         *,
         job_id: str,
-    ) -> dict[str, Any]:
-        async with sem:
-            payload = await fetch.get_json(DETAIL_API_URL_TEMPLATE.format(job_id=job_id))
+    ) -> dict[str, Any] | None:
+        try:
+            async with sem:
+                payload = await fetch.get_json(DETAIL_API_URL_TEMPLATE.format(job_id=job_id))
+        except CompanyNotFoundError:
+            return None
         return payload.get("doc") or {}
 
     def _parse(self, item: dict[str, Any]) -> Job | None:

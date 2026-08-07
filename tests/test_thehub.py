@@ -219,6 +219,60 @@ def test_drops_doc_missing_id_or_title(httpx_mock) -> None:
     assert [j.ats_id for j in jobs] == ["ok"]
 
 
+def test_skips_job_that_vanishes_before_detail_fetch(httpx_mock) -> None:
+    docs = [_doc(job_id="good"), _doc(job_id="vanished")]
+    httpx_mock.add_response(
+        url="https://thehub.io/api/v2/jobs?page=1",
+        json=_envelope(docs),
+    )
+    httpx_mock.add_response(
+        url="https://thehub.io/api/jobs/good",
+        json={"doc": docs[0], "related": []},
+    )
+    httpx_mock.add_response(url="https://thehub.io/api/jobs/vanished", status_code=404)
+
+    assert [job.ats_id for job in TheHubScraper("any").fetch()] == ["good"]
+
+
+def test_keeps_good_jobs_when_one_detail_fetch_fails(httpx_mock) -> None:
+    docs = [_doc(job_id="good"), _doc(job_id="failed")]
+    httpx_mock.add_response(
+        url="https://thehub.io/api/v2/jobs?page=1",
+        json=_envelope(docs),
+    )
+    httpx_mock.add_response(
+        url="https://thehub.io/api/jobs/good",
+        json={"doc": docs[0], "related": []},
+    )
+    httpx_mock.add_response(
+        url="https://thehub.io/api/jobs/failed",
+        status_code=500,
+        is_reusable=True,
+    )
+
+    assert [job.ats_id for job in TheHubScraper("any").fetch()] == ["good"]
+
+
+def test_raises_when_detail_failures_exceed_threshold(httpx_mock) -> None:
+    docs = [_doc(job_id="good"), _doc(job_id="failed-1"), _doc(job_id="failed-2")]
+    httpx_mock.add_response(
+        url="https://thehub.io/api/v2/jobs?page=1",
+        json=_envelope(docs),
+    )
+    httpx_mock.add_response(
+        url="https://thehub.io/api/jobs/good",
+        json={"doc": docs[0], "related": []},
+    )
+    httpx_mock.add_response(
+        url=re.compile(r"^https://thehub\.io/api/jobs/failed-"),
+        status_code=500,
+        is_reusable=True,
+    )
+
+    with pytest.raises(ScraperError, match="detail hydration failed for 2/3 jobs"):
+        TheHubScraper("any").fetch()
+
+
 def test_persistent_500_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=_API_RE, status_code=500, is_reusable=True)
     with pytest.raises(ScraperError):
