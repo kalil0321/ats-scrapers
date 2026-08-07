@@ -1,14 +1,13 @@
 """The Hub (https://thehub.io) — Nordic startup jobs scraper.
 
-The Hub is the leading direct-posting tech / startup job platform
-for the Nordics (DK, SE, NO, FI). Companies pay to list — not
-syndicated from LinkedIn / Indeed. ~1,000 active postings at any one
-time, all developer- or growth-focused, all with structured
-location + lat/lon + apply URL data.
+The Hub is a direct-posting tech / startup job platform for the
+Nordics (DK, SE, NO, FI). Companies pay to list — not syndicated
+from LinkedIn / Indeed. Listings include structured location +
+lat/lon + apply URL data.
 
-Public REST at ``https://thehub.io/api/jobs`` — no auth, no key.
-Pagination via ``?page=N`` (15 docs per page; page count is in the
-response envelope).
+Public REST at ``https://thehub.io/api/v2/jobs`` with details from
+``https://thehub.io/api/jobs/{id}`` — no auth, no key. Pagination via
+``?page=N`` (15 docs per page; page count is in the response envelope).
 
 Single-source scraper: ``company_slug`` is informational and ignored.
 """
@@ -29,7 +28,8 @@ if TYPE_CHECKING:
 
     from ats_scrapers.fetch import Fetcher
 
-API_URL = "https://thehub.io/api/jobs"
+LIST_API_URL = "https://thehub.io/api/v2/jobs"
+DETAIL_API_URL_TEMPLATE = "https://thehub.io/api/jobs/{job_id}"
 JOB_URL_TEMPLATE = "https://thehub.io/jobs/{job_id}"
 PER_PAGE = 15  # Hard-coded by the API; ?limit=… is ignored.
 MAX_CONCURRENCY = 4
@@ -46,7 +46,7 @@ class TheHubScraper(BaseScraper):
 
     Knobs:
     - ``max_pages`` — pagination cap (default 200, far above the
-      ~70 pages currently in the active board).
+      current active board).
     """
 
     ats = ATSType.THEHUB
@@ -73,37 +73,30 @@ class TheHubScraper(BaseScraper):
         self.max_pages = max_pages
 
     async def afetch(self) -> list[Job]:
-        seen: set[str] = set()
-        jobs: list[Job] = []
-        lock = asyncio.Lock()
-
-        async def absorb(items: list[dict[str, Any]]) -> None:
-            async with lock:
-                for it in items:
-                    job = self._parse(it)
-                    if job is None or job.ats_id in seen:
-                        continue
-                    seen.add(job.ats_id)
-                    jobs.append(job)
-
         async with self.make_fetcher() as fetch:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
-            # Probe page 1 to learn ``pages`` count.
             first = await self._fetch_page(fetch, sem, page=1)
             pages_total = int(first.get("pages") or 1)
-            await absorb(first.get("docs") or [])
-
             page_count = min(pages_total, self.max_pages)
-            if page_count <= 1:
-                return jobs
+            remaining = await asyncio.gather(
+                *(self._fetch_page(fetch, sem, page=page) for page in range(2, page_count + 1))
+            )
 
-            async def one(page: int) -> None:
-                payload = await self._fetch_page(fetch, sem, page=page)
-                await absorb(payload.get("docs") or [])
+            summaries = list(first.get("docs") or [])
+            for payload in remaining:
+                summaries.extend(payload.get("docs") or [])
 
-            await asyncio.gather(*(one(p) for p in range(2, page_count + 1)))
-        return jobs
+            job_ids = list(dict.fromkeys(
+                str(item.get("id") or item.get("_id") or "").strip()
+                for item in summaries
+                if item.get("id") or item.get("_id")
+            ))
+            details = await asyncio.gather(
+                *(self._fetch_detail(fetch, sem, job_id=job_id) for job_id in job_ids)
+            )
+
+        return [job for item in details if (job := self._parse(item)) is not None]
 
     async def _fetch_page(
         self,
@@ -113,7 +106,18 @@ class TheHubScraper(BaseScraper):
         page: int,
     ) -> dict[str, Any]:
         async with sem:
-            return await fetch.get_json(API_URL, params={"page": page})
+            return await fetch.get_json(LIST_API_URL, params={"page": page})
+
+    async def _fetch_detail(
+        self,
+        fetch: Fetcher,
+        sem: asyncio.Semaphore,
+        *,
+        job_id: str,
+    ) -> dict[str, Any]:
+        async with sem:
+            payload = await fetch.get_json(DETAIL_API_URL_TEMPLATE.format(job_id=job_id))
+        return payload.get("doc") or {}
 
     def _parse(self, item: dict[str, Any]) -> Job | None:
         ats_id = (item.get("id") or item.get("_id") or "").strip()
