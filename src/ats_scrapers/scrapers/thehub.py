@@ -91,15 +91,32 @@ class TheHubScraper(BaseScraper):
             for payload in remaining:
                 summaries.extend(payload.get("docs") or [])
 
-            job_ids = list(dict.fromkeys(
-                str(item.get("id") or item.get("_id") or "").strip()
-                for item in summaries
-                if item.get("id") or item.get("_id")
-            ))
+            job_ids: list[str] = []
+            seen_ids: set[str] = set()
+            for item in summaries:
+                status = str(item.get("status") or "").strip().upper()
+                if status and status != "ACTIVE":
+                    continue
+                job_id = str(item.get("id") or item.get("_id") or "").strip()
+                if not job_id or job_id in seen_ids:
+                    continue
+                seen_ids.add(job_id)
+                job_ids.append(job_id)
             details = await asyncio.gather(
                 *(self._fetch_detail(fetch, sem, job_id=job_id) for job_id in job_ids),
                 return_exceptions=True,
             )
+            for index, detail in enumerate(details):
+                if not isinstance(detail, Exception):
+                    continue
+                try:
+                    details[index] = await self._fetch_detail(
+                        fetch,
+                        sem,
+                        job_id=job_ids[index],
+                    )
+                except Exception as exc:
+                    details[index] = exc
 
         failures = [item for item in details if isinstance(item, Exception)]
         allowed_failures = max(1, int(len(job_ids) * MAX_DETAIL_FAILURE_RATIO))
@@ -142,7 +159,10 @@ class TheHubScraper(BaseScraper):
                 payload = await fetch.get_json(DETAIL_API_URL_TEMPLATE.format(job_id=job_id))
         except CompanyNotFoundError:
             return None
-        return payload.get("doc") or {}
+        detail = payload.get("doc")
+        if not isinstance(detail, dict) or not detail:
+            raise ScraperError(f"The Hub detail response for {job_id} has no job document")
+        return detail
 
     def _parse(self, item: dict[str, Any]) -> Job | None:
         ats_id = (item.get("id") or item.get("_id") or "").strip()

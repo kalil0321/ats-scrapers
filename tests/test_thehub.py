@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.fetch import DEFAULT_RETRIES
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import ScraperRegistry, TheHubScraper
 
@@ -73,10 +74,12 @@ def _mock_page(httpx_mock, docs: list[dict], *, page: int = 1, pages: int = 1) -
         json=_envelope(docs, pages=pages),
     )
     for doc in docs:
-        if not doc.get("id"):
+        status = str(doc.get("status") or "").strip().upper()
+        job_id = str(doc.get("id") or "").strip()
+        if not job_id or (status and status != "ACTIVE"):
             continue
         httpx_mock.add_response(
-            url=f"https://thehub.io/api/jobs/{doc['id']}",
+            url=f"https://thehub.io/api/jobs/{job_id}",
             json={"doc": doc, "related": []},
         )
 
@@ -212,6 +215,8 @@ def test_drops_doc_missing_id_or_title(httpx_mock) -> None:
         _doc(job_id="ok"),
         {"title": "no id", "status": "ACTIVE", "company": {"name": "X"},
          "location": {}, "geoLocation": {}},
+        {"id": "   ", "title": "blank id", "status": "ACTIVE", "company": {"name": "X"},
+         "location": {}, "geoLocation": {}},
         {"id": "no title", "status": "ACTIVE", "company": {"name": "X"},
          "location": {}, "geoLocation": {}},
     ])
@@ -253,6 +258,29 @@ def test_keeps_good_jobs_when_one_detail_fetch_fails(httpx_mock) -> None:
     assert [job.ats_id for job in TheHubScraper("any").fetch()] == ["good"]
 
 
+def test_recovers_detail_after_initial_retry_budget_is_exhausted(httpx_mock) -> None:
+    docs = [_doc(job_id="good"), _doc(job_id="recovered")]
+    httpx_mock.add_response(
+        url="https://thehub.io/api/v2/jobs?page=1",
+        json=_envelope(docs),
+    )
+    httpx_mock.add_response(
+        url="https://thehub.io/api/jobs/good",
+        json={"doc": docs[0], "related": []},
+    )
+    for _ in range(DEFAULT_RETRIES):
+        httpx_mock.add_response(
+            url="https://thehub.io/api/jobs/recovered",
+            status_code=500,
+        )
+    httpx_mock.add_response(
+        url="https://thehub.io/api/jobs/recovered",
+        json={"doc": docs[1], "related": []},
+    )
+
+    assert [job.ats_id for job in TheHubScraper("any").fetch()] == ["good", "recovered"]
+
+
 def test_raises_when_detail_failures_exceed_threshold(httpx_mock) -> None:
     docs = [_doc(job_id="good"), _doc(job_id="failed-1"), _doc(job_id="failed-2")]
     httpx_mock.add_response(
@@ -266,6 +294,26 @@ def test_raises_when_detail_failures_exceed_threshold(httpx_mock) -> None:
     httpx_mock.add_response(
         url=re.compile(r"^https://thehub\.io/api/jobs/failed-"),
         status_code=500,
+        is_reusable=True,
+    )
+
+    with pytest.raises(ScraperError, match="detail hydration failed for 2/3 jobs"):
+        TheHubScraper("any").fetch()
+
+
+def test_empty_detail_documents_count_toward_failure_threshold(httpx_mock) -> None:
+    docs = [_doc(job_id="good"), _doc(job_id="empty-1"), _doc(job_id="empty-2")]
+    httpx_mock.add_response(
+        url="https://thehub.io/api/v2/jobs?page=1",
+        json=_envelope(docs),
+    )
+    httpx_mock.add_response(
+        url="https://thehub.io/api/jobs/good",
+        json={"doc": docs[0], "related": []},
+    )
+    httpx_mock.add_response(
+        url=re.compile(r"^https://thehub\.io/api/jobs/empty-"),
+        json={"doc": None, "related": []},
         is_reusable=True,
     )
 
