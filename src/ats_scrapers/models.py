@@ -473,6 +473,16 @@ class Job(BaseModel):
         default=None,
         description="When ats-scrapers last saw this posting (UTC).",
     )
+    application_deadline: datetime | None = Field(
+        default=None,
+        description=(
+            "Explicit application deadline the ATS exposes (e.g. "
+            "SuccessFactors ``g:expiration_date`` in the Google Merchant "
+            "namespace, schema.org JobPosting ``validThrough``). ``None`` "
+            "when the source does not provide one — never inferred from "
+            "``posted_at`` or ``fetched_at``."
+        ),
+    )
     language: str | None = Field(
         default=None,
         description=(

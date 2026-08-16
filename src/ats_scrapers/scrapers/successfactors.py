@@ -372,6 +372,16 @@ class SuccessFactorsScraper(BaseScraper):
                     employment_type = mapped
                     break
 
+        # ``g:expiration_date`` (Google Merchant namespace) is the explicit
+        # application deadline. Tenants ship it as ``YYYY-MM-DD`` (date-only)
+        # or ISO 8601. Parse with ``datetime.fromisoformat`` (accepts both
+        # date-only and full ISO 8601 with offset/``Z``) — NOT ``_parse_pubdate``
+        # which is RFC 822 for ``pubDate``. ``None`` on absence/invalid; never
+        # fall back to ``posted_at``.
+        application_deadline = _parse_expiration_date(
+            item.findtext("g:expiration_date", namespaces=_GOOGLE_NS),
+        )
+
         return Job(
             url=link,
             title=title,
@@ -384,6 +394,7 @@ class SuccessFactorsScraper(BaseScraper):
             employment_type=employment_type,
             commitment=commitment,
             posted_at=posted_at,
+            application_deadline=application_deadline,
             fetched_at=datetime.now(UTC),
         )
 
@@ -572,6 +583,27 @@ def _parse_pubdate(value: object) -> datetime | None:
     try:
         return parsedate_to_datetime(value)
     except (TypeError, ValueError):
+        return None
+
+
+def _parse_expiration_date(value: object) -> datetime | None:
+    """Parse ``g:expiration_date`` (SuccessFactors application deadline).
+
+    Tenants ship this as date-only ``YYYY-MM-DD`` or full ISO 8601 (optionally
+    ending in ``Z``). Use ``datetime.fromisoformat`` — NOT ``_parse_pubdate``
+    (RFC 822, for ``pubDate``). Return ``None`` on absence or invalid input; the
+    caller never falls back to ``posted_at``.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
         return None
 
 
