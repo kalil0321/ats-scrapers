@@ -187,8 +187,11 @@ class Job(BaseModel):
        them, ``None`` otherwise.
 
     5. **Content & timing** (``description``, ``posted_at``,
-       ``fetched_at``, ``language``). ``language`` is the listing's
-       locale code (ISO 639-1, e.g. ``en`` / ``fr``).
+       ``fetched_at``, ``application_deadline``, ``language``).
+       ``application_deadline`` is an explicit deadline the ATS exposes
+       (``None`` when unavailable, never inferred from other timestamps).
+       ``language`` is the listing's locale code (ISO 639-1, e.g.
+       ``en`` / ``fr``).
 
     6. **Provider-specific overflow** (``raw``): a JSON dict captured
        at scrape-time so we don't lose ATS-specific fields the

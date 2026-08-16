@@ -19,10 +19,10 @@ the Pydantic descriptions are the source of truth; please update both.
 | **Location** | `location`, `country_iso`, `region`, `lat`, `lon`, `is_remote` |
 | **Compensation** | `salary_currency`, `salary_period`, `salary_summary`, `salary_min`, `salary_max` |
 | **Classification** | `experience`, `employment_type`, `department`, `team`, `requisition_id`, `apply_url`, `commitment` |
-| **Content & timing** | `description`, `posted_at`, `fetched_at`, `language` |
+| **Content & timing** | `description`, `posted_at`, `fetched_at`, `application_deadline`, `language` |
 | **Provider overflow** | `raw` |
 
-29 columns total in the published CSV.
+30 columns total in the published CSV.
 
 > **Heuristic vs LLM split.** The publisher's hardcoded inference is
 > intentionally narrow: title-only `is_remote` (returns `True` or
@@ -271,6 +271,17 @@ legacy ATSes.
 ### `fetched_at` &nbsp;`datetime | None`
 
 When ats-scrapers last saw this posting. UTC.
+
+### `application_deadline` &nbsp;`datetime | None`
+
+Explicit application deadline the ATS exposes, when the source
+provides one. Examples: SuccessFactors `g:expiration_date` (Google
+Merchant namespace), schema.org JobPosting `validThrough`. Parsed as
+ISO-8601 (date or full datetime with `Z`), UTC.
+
+`None` when the source does not provide an explicit deadline — it is
+**never** inferred from `posted_at`, `fetched_at`, or any arbitrary
+number of days.
 
 ### `language` &nbsp;`str | None`
 
