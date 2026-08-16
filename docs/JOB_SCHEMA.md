@@ -277,7 +277,13 @@ When ats-scrapers last saw this posting. UTC.
 Explicit application deadline the ATS exposes, when the source
 provides one. Examples: SuccessFactors `g:expiration_date` (Google
 Merchant namespace), schema.org JobPosting `validThrough`. Parsed as
-ISO-8601 (date or full datetime with `Z`), UTC.
+ISO-8601 via `datetime.fromisoformat` (date-only `YYYY-MM-DD` or a
+full datetime, optionally ending in `Z`).
+
+The timezone depends on what the source ships: values that carry an
+offset or `Z` are preserved as timezone-aware (e.g. `Z` → UTC-aware),
+while **date-only values parse to a timezone-naive** datetime (`00:00`
+local, no offset). Consumers should not assume the value is always UTC.
 
 `None` when the source does not provide an explicit deadline — it is
 **never** inferred from `posted_at`, `fetched_at`, or any arbitrary
