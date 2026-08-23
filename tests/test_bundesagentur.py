@@ -70,7 +70,7 @@ def test_simple_run_under_pagination_cap(httpx_mock) -> None:
     assert jobs[0].company == "ACME"
     assert jobs[0].location == "10115 Berlin, Berlin, Deutschland"
     assert jobs[0].country_iso == "DE"
-    assert jobs[0].region is None
+    assert jobs[0].region == "Europe"
     assert jobs[0].department == "IT"
     assert jobs[0].employment_type == "FULL_TIME"
     assert jobs[0].salary_currency == "EUR"
@@ -101,7 +101,7 @@ def test_preserves_multiple_locations_without_ambiguous_coordinates() -> None:
         "80331 München, Bayern, Deutschland"
     )
     assert job.country_iso == "DE"
-    assert job.region is None
+    assert job.region == "Europe"
     assert (job.lat, job.lon) == (None, None)
     assert len(job.raw["stellenlokationen"]) == 2
 

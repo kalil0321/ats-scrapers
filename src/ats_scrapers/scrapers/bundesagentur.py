@@ -494,7 +494,7 @@ class BundesagenturScraper(BaseScraper):
             ats_id=ats_id,
             location=location,
             country_iso=country_iso,
-            region=None,
+            region="Europe" if country_iso else None,
             lat=_number(coordinate_location.get("breite")),
             lon=_number(coordinate_location.get("laenge")),
             is_remote=is_remote,
