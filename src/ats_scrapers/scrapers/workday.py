@@ -294,7 +294,7 @@ class WorkdayScraper(BaseScraper):
             except ValueError:
                 return
             jpi = payload.get("jobPostingInfo") or {}
-            updates: dict[str, object] = {}
+            updates: dict[str, Any] = {}
 
             description = _extract_description(jpi)
             if description and not job.description:
@@ -306,7 +306,7 @@ class WorkdayScraper(BaseScraper):
                 resolved = _format_locations(primary, additional)
                 if resolved:
                     updates["location"] = resolved
- 
+
             # Capture posting dates from the detail payload. Workday sends
             # bare 'YYYY-MM-DD' strings with no time or timezone. Merge into
             # raw rather than replacing it, so listing-sourced keys
@@ -314,7 +314,7 @@ class WorkdayScraper(BaseScraper):
             start_date = jpi.get("startDate")
             end_date = jpi.get("endDate")
             if start_date or end_date:
-                merged_raw = dict(updates.get("raw") or job.raw or {})
+                merged_raw = dict(job.raw or {})
                 if start_date:
                     merged_raw["startDate"] = start_date
                 if end_date:
