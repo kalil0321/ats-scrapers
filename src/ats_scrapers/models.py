@@ -187,8 +187,11 @@ class Job(BaseModel):
        them, ``None`` otherwise.
 
     5. **Content & timing** (``description``, ``posted_at``,
-       ``fetched_at``, ``language``). ``language`` is the listing's
-       locale code (ISO 639-1, e.g. ``en`` / ``fr``).
+       ``fetched_at``, ``application_deadline``, ``language``).
+       ``application_deadline`` is an explicit deadline the ATS exposes
+       (``None`` when unavailable, never inferred from other timestamps).
+       ``language`` is the listing's locale code (ISO 639-1, e.g.
+       ``en`` / ``fr``).
 
     6. **Provider-specific overflow** (``raw``): a JSON dict captured
        at scrape-time so we don't lose ATS-specific fields the
@@ -472,6 +475,18 @@ class Job(BaseModel):
     fetched_at: datetime | None = Field(
         default=None,
         description="When ats-scrapers last saw this posting (UTC).",
+    )
+    application_deadline: datetime | None = Field(
+        default=None,
+        description=(
+            "Source-provided date after which the posting should no longer be "
+            "treated as open (e.g. "
+            "SuccessFactors ``g:expiration_date`` in the Google Merchant "
+            "namespace, schema.org JobPosting ``validThrough``). This may be "
+            "an employer-stated application deadline or a platform-generated "
+            "validity horizon. ``None`` when unavailable — never inferred "
+            "locally from ``posted_at`` or ``fetched_at``."
+        ),
     )
     language: str | None = Field(
         default=None,
