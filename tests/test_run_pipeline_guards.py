@@ -956,6 +956,54 @@ def test_streaming_pipeline_reuses_sqlite_description_cache(
     assert rows[0]["description"] == "cached"
 
 
+def test_streaming_pipeline_can_skip_description_enrichment(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "stream"
+    out_dir.mkdir()
+    out_path = out_dir / "jobs.csv"
+
+    class StreamingScraper:
+        include_descriptions: bool | None = None
+        description_calls = 0
+
+        def __init__(self, *_args, include_descriptions=True, **_kwargs) -> None:
+            self.__class__.include_descriptions = include_descriptions
+
+        async def fetch_stream(self):
+            yield Job(
+                url="https://example.com/jobs/1",
+                title="Engineer",
+                company="Acme",
+                ats_type=ATSType.CUSTOM,
+                ats_id="1",
+            )
+
+        def get_description(self, _job):
+            self.__class__.description_calls += 1
+            raise AssertionError("description endpoint must not be called")
+
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "stream",
+        {
+            "scraper": StreamingScraper,
+            "singleton": True,
+            "output": "stream/jobs.csv",
+            "skip_description_enrichment": True,
+        },
+    )
+
+    rc = asyncio.run(runner.run("stream", concurrency=1, max_tenants=None, timeout=1))
+
+    assert rc == 0
+    rows = list(csv.DictReader(out_path.open(newline="")))
+    assert rows[0]["description"] == ""
+    assert StreamingScraper.include_descriptions is False
+    assert StreamingScraper.description_calls == 0
+
+
 def test_streaming_failure_preserves_previous_jobs_csv(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

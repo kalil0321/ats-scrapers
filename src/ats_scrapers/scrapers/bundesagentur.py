@@ -5,9 +5,13 @@ every German employer that lists with the agency. The portal at
 ``arbeitsagentur.de`` exposes a public unauthenticated JSON API that
 the official frontend consumes:
 
-    GET https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobs
+    GET https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v6/jobs
         ?size=100&page={1..100}
     Header: X-API-Key: jobboerse-jobsuche
+
+The official frontend moved listings from v4 to v6 in August 2026. The v6
+response uses ``ergebnisliste`` and renamed German field keys, while job
+details remain on the v4 endpoint.
 
 The API caps pagination at ``size × page = 10,000`` results per query
 (``size=100, page=100``). Past that limit, the server returns 400.
@@ -42,24 +46,19 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import logging
 import random
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import Any
 
 import httpx
+from pydantic import HttpUrl
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable
-    from typing import Any
-
-logger = logging.getLogger(__name__)
-
-API_URL = "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobs"
+API_URL = "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v6/jobs"
 DETAIL_URL_TEMPLATE = (
     "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobdetails/{encoded_ref}"
 )
@@ -78,26 +77,26 @@ RETRY_BASE_DELAY = 2.0
 RETRY_JITTER = 0.5  # ± fraction added to each backoff so concurrent
 # retries don't synchronize and re-trigger the WAF in lockstep.
 
-# Subdivision facets in priority order. Each facet's ``counts`` dict
-# enumerates the available values for that filter — we read those at
-# query time so the scraper survives taxonomy churn.
-#
-# Facet ordering matters: API responses cap at 10k results, so we want
-# the highest-cardinality / least-skewed facets applied first. The
-# tail (arbeitszeit/zeitarbeit/befristung) is heavily skewed (~84% in
-# the dominant bucket each), which is why berufsfeld + the original
-# 4 facets weren't enough — the worst leaf (Verkauf+vz+false+
-# befristung=3) still held 56k jobs. eintrittsdatum (24 monthly start
-# windows + a "10_01_01-now" catch-all) and arbeitgeber (top-100
-# employers per leaf) are the levers that finally crack the dominant
-# leaves.
+# Candidate subdivision facets. At each node we only use a facet when its
+# bucket counts sum exactly to that node's total, then pick the candidate
+# whose largest bucket is smallest. This matters in v6: ``berufsfeld`` omits
+# 7.9k uncategorized Ausbildung records at the root, while multi-valued facets
+# such as ``arbeitszeit`` overlap. Treating either as an unconditional
+# partition silently loses or double-counts jobs. Once ``angebotsart`` and
+# ``ausbildungsart`` narrow the relevant branches, ``berufsfeld`` becomes
+# exhaustive and is safe to use.
 _SUBDIVISION_FACETS = (
-    "berufsfeld",      # 144 buckets, full coverage
-    "eintrittsdatum",  # 24 month windows; multi-tag (sum > total) so dedup is essential
-    "arbeitszeit",     # 5 work-time codes, multi-tag
-    "befristung",      # 3 contract types
-    "zeitarbeit",      # 2 (temp work y/n)
-    "arbeitgeber",     # top-100 employers per leaf — last-resort partition
+    "angebotsart",
+    "ausbildungsart",
+    "berufsfeld",
+    "befristung",
+    "zeitarbeit",
+    "pav",
+    "quereinstieg",
+    "externestellenboersen",
+    "behinderung",
+    "branche",
+    "arbeitgeber",
 )
 MAX_SUBDIVISION_DEPTH = len(_SUBDIVISION_FACETS)
 
@@ -107,11 +106,9 @@ class _PageFetchExhaustedError(ScraperError):
     a *transient* failure class (persistent 403 / 429 / 5xx, or a network
     error that didn't resolve before MAX_RETRIES).
 
-    Distinguished from ``ScraperError`` because the soft-fail callers
-    (``_exhaust_query`` / ``_fan_out_pages``) only want to swallow this
-    specific case — not contract breaks (401, 404, non-retryable status,
-    malformed JSON), which still raise plain ``ScraperError`` and crash
-    the scrape so an operator notices instead of silently undercounting.
+    Distinguished from ``ScraperError`` so logs preserve the retry-exhausted
+    failure class. It is deliberately not swallowed: publishing a partial
+    federal catalogue is less safe than preserving the previous complete run.
     """
 
 
@@ -215,7 +212,7 @@ class BundesagenturScraper(BaseScraper):
             async with lock:
                 for it in items:
                     job = self._parse(it)
-                    if job is None or job.ats_id in seen:
+                    if job is None or not job.ats_id or job.ats_id in seen:
                         continue
                     seen.add(job.ats_id)
                     new_jobs.append(job)
@@ -277,7 +274,7 @@ class BundesagenturScraper(BaseScraper):
         *,
         base_params: dict[str, Any],
         depth: int,
-        absorb,
+        absorb: Callable[[list[dict[str, Any]]], Awaitable[None]],
     ) -> None:
         """Recursively pull all jobs matching ``base_params``.
 
@@ -285,33 +282,14 @@ class BundesagenturScraper(BaseScraper):
         unused subdivision facet and split. ``depth`` bounds the
         recursion: berufsfeld → arbeitszeit → zeitarbeit → befristung.
         """
-        try:
-            first = await self._fetch_page(
-                client, sem, params={**base_params, "size": 1, "page": 1},
-            )
-        except _PageFetchExhaustedError as exc:
-            # Probe exhausted retries on a transient class (persistent WAF
-            # block or a network error that didn't resolve in time). We
-            # soft-fail this *one* subtree only — sibling buckets keep
-            # going. Probe failures must never silently look like
-            # ``maxErgebnisse=0`` (that would drop the whole subtree and
-            # at depth=0 the entire scrape) so we log loudly.
-            #
-            # Non-transient failures (401/404 contract breaks, malformed
-            # JSON, etc.) raise plain ``ScraperError`` from ``_fetch_page``
-            # and propagate up here uncaught — those crash the scrape
-            # rather than produce a silent undercount.
-            logger.warning(
-                "Bundesagentur probe failed for params=%s depth=%d — "
-                "subtree skipped, output will undercount: %s",
-                base_params, depth, exc,
-            )
-            return
+        first = await self._fetch_page(
+            client, sem, params={**base_params, "size": 1, "page": 1},
+        )
         total = int(first.get("maxErgebnisse") or 0)
         if total == 0:
             return
         # Page-1 hits are already paid for — absorb them rather than re-fetch.
-        await absorb(first.get("stellenangebote") or [])
+        await absorb(_result_items(first))
 
         if total <= PAGINATION_CAP:
             await self._fan_out_pages(
@@ -320,31 +298,14 @@ class BundesagenturScraper(BaseScraper):
             )
             return
 
-        # Above the cap — pick a subdivision facet not already in
-        # base_params, then split.
         applied = set(base_params.keys())
-        facet_name: str | None = None
-        for f in _SUBDIVISION_FACETS:
-            if f not in applied:
-                facet_name = f
-                break
-
-        if facet_name is None or depth >= MAX_SUBDIVISION_DEPTH:
-            # Out of facets — fall through and accept the 10k cap.
-            await self._fan_out_pages(
-                client, sem,
-                base_params=base_params, total=PAGINATION_CAP, absorb=absorb,
+        partition = _select_partition(first, total=total, applied=applied)
+        if partition is None or depth >= MAX_SUBDIVISION_DEPTH:
+            raise ScraperError(
+                f"Bundesagentur cannot losslessly partition {total} jobs "
+                f"for params={base_params}"
             )
-            return
-
-        facets = first.get("facetten") or {}
-        bucket_counts = _bucket_counts(facets, facet_name)
-        if not bucket_counts:
-            await self._fan_out_pages(
-                client, sem,
-                base_params=base_params, total=PAGINATION_CAP, absorb=absorb,
-            )
-            return
+        facet_name, bucket_counts = partition
 
         async def child_bucket(value: str, count: int) -> None:
             if count == 0:
@@ -366,7 +327,7 @@ class BundesagenturScraper(BaseScraper):
         *,
         base_params: dict[str, Any],
         total: int,
-        absorb,
+        absorb: Callable[[list[dict[str, Any]]], Awaitable[None]],
     ) -> None:
         # We can fetch ``ceil(total / PAGE_SIZE)`` pages, capped at PAGE_LIMIT.
         page_count = min((total + PAGE_SIZE - 1) // PAGE_SIZE, PAGE_LIMIT)
@@ -377,26 +338,8 @@ class BundesagenturScraper(BaseScraper):
         # saw at concurrency=3.
         for page in range(1, page_count + 1):
             params = {**base_params, "size": PAGE_SIZE, "page": page}
-            try:
-                payload = await self._fetch_page(client, sem, params=params)
-            except _PageFetchExhaustedError as exc:
-                # Page-level soft-fail: lose at most ``PAGE_SIZE`` jobs from
-                # this one page; keep working on the rest of the leaf and
-                # the rest of the tree. Bounded loss from transient WAF /
-                # network exhaustion is acceptable. (Probe failures hit
-                # the same class but ``_exhaust_query`` handles them
-                # separately because they affect a whole subtree.)
-                #
-                # Non-transient failures (contract breaks, bad JSON) raise
-                # plain ``ScraperError`` and propagate uncaught — better
-                # to crash than to silently undercount.
-                logger.warning(
-                    "Bundesagentur page %d/%d failed for params=%s — "
-                    "page skipped (~%d jobs lost): %s",
-                    page, page_count, base_params, PAGE_SIZE, exc,
-                )
-                continue
-            await absorb(payload.get("stellenangebote") or [])
+            payload = await self._fetch_page(client, sem, params=params)
+            await absorb(_result_items(payload))
 
     async def _fetch_page(
         self,
@@ -424,27 +367,27 @@ class BundesagenturScraper(BaseScraper):
                     continue
             if r.status_code == 200:
                 try:
-                    return r.json()
+                    payload = r.json()
                 except ValueError as exc:
                     raise ScraperError(
                         f"Bundesagentur returned non-JSON for {params}: {exc}"
                     ) from exc
+                if not isinstance(payload, dict):
+                    raise ScraperError(
+                        f"Bundesagentur returned a non-object payload for {params}"
+                    )
+                return payload
             if r.status_code == 400:
-                # Past pagination cap — return empty so caller stops.
-                return {"stellenangebote": [], "maxErgebnisse": 0}
+                raise ScraperError(
+                    f"Bundesagentur rejected query {params}: {r.text[:120]}"
+                )
             # 403 here is a transient Akamai/WAF rate-limit, not a real
             # auth failure (the API key never expires); back off and retry.
             if r.status_code in (403, 429) or 500 <= r.status_code < 600:
                 if attempt == MAX_RETRIES:
-                    # Persistent WAF/server failure — raise the *narrowed*
-                    # ``_PageFetchExhaustedError`` so callers can soft-fail it
-                    # specifically. ``_exhaust_query`` treats this as a
-                    # subtree-loss (logs + skips); ``_fan_out_pages`` treats
-                    # it as a page-loss (logs + continues). We must NOT
-                    # silently return an empty payload here: that would be
-                    # indistinguishable from a real ``maxErgebnisse=0``
-                    # response and would silently abandon the whole subtree
-                    # whenever a probe gets WAF-blocked.
+                    # Persistent WAF/server failure aborts the scrape. The
+                    # pipeline removes its temporary CSV and preserves the
+                    # previous complete provider output.
                     raise _PageFetchExhaustedError(
                         f"Bundesagentur returned {r.status_code} for {params} "
                         f"after {MAX_RETRIES} retries"
@@ -462,107 +405,117 @@ class BundesagenturScraper(BaseScraper):
             # Non-retryable status (401 auth break, 404 endpoint moved,
             # 4xx other than 403/429, etc.) — these are contract breaks,
             # not transient. Raise plain ``ScraperError`` so callers do
-            # NOT swallow it as a soft-fail; the scrape crashes loudly
-            # rather than silently producing a wholesale undercount.
+            # The scrape crashes loudly rather than producing an undercount.
             raise ScraperError(
                 f"Bundesagentur returned {r.status_code} for {params}: "
                 f"{r.text[:120]}"
             )
-        # Network errors exhausted the retry budget — same transient class
-        # as persistent WAF, so callers can soft-fail just this fetch.
+        # Network errors exhausted the retry budget; preserve the old output.
         raise _PageFetchExhaustedError(
             f"Bundesagentur exhausted retries for {params}: {last_exc}"
         )
 
     def _parse(self, item: dict[str, Any]) -> Job | None:
-        ats_id = str(item.get("refnr") or "").strip()
-        title = (item.get("titel") or item.get("beruf") or "").strip()
+        ats_id = str(item.get("referenznummer") or item.get("refnr") or "").strip()
+        title = str(
+            item.get("stellenangebotsTitel")
+            or item.get("titel")
+            or item.get("hauptberuf")
+            or ""
+        ).strip()
         if not ats_id or not title:
             return None
-        location = _format_location(item.get("arbeitsort"))
-        company = (item.get("arbeitgeber") or "Bundesagentur").strip() or "Bundesagentur"
+        location_items = _locations(item)
+        location = _format_locations(location_items)
+        country_codes = {
+            country_iso
+            for location_item in location_items
+            if (country_iso := _country_iso(_location_address(location_item).get("land")))
+        }
+        country_iso = next(iter(country_codes)) if len(country_codes) == 1 else None
+        coordinate_location = location_items[0] if len(location_items) == 1 else {}
+        company = str(
+            item.get("firma") or item.get("arbeitgeber") or "Bundesagentur"
+        ).strip() or "Bundesagentur"
 
         # Each posting has a deterministic public URL on jobsuche.arbeitsagentur.de.
         # The detail endpoint expects base64(refnr); the human URL accepts refnr.
         url = f"https://www.arbeitsagentur.de/jobsuche/jobdetail/{ats_id}"
 
-        # Bundesagentur exposes ``arbeitszeit`` as the work-time bucket
-        # — ``vz`` (Vollzeit / full-time), ``tz`` (Teilzeit / part-time),
-        # ``mj`` (Minijob / contract-style), ``ho`` (Home office),
-        # ``saison`` (Seasonal), ``ne`` (Nebenjob / side gig),
-        # ``selb`` (Selbständig / self-employed). Map the canonical ones.
-        arbeitszeit = item.get("arbeitszeit")
-        commitment: str | None = None
-        employment_type: str | None = None
-        if isinstance(arbeitszeit, str) and arbeitszeit.strip():
-            commitment = _ARBEITSZEIT_LABELS.get(
-                arbeitszeit.strip().lower(), arbeitszeit.strip(),
-            )
-            employment_type = _ARBEITSZEIT_TO_EMPLOYMENT_TYPE.get(
-                arbeitszeit.strip().lower(),
-            )
-        # ``zeitarbeit=true`` (temp-agency placement) is unambiguous —
-        # surface as TEMPORARY when the time-type doesn't disambiguate.
-        if not employment_type and item.get("zeitarbeit") is True:
-            employment_type = "TEMPORARY"
-        # ``befristung=2`` indicates fixed-term in the BA taxonomy.
-        if not employment_type and str(item.get("befristung") or "") == "2":
-            employment_type = "CONTRACT"
+        commitment, employment_type = _employment_details(item)
+        remote_value = item.get("homeofficemoeglich")
+        is_remote = remote_value if isinstance(remote_value, bool) else None
 
-        # ``ho`` (Home office) is the only explicit remote signal.
-        is_remote = True if isinstance(arbeitszeit, str) and arbeitszeit.lower() == "ho" else None
+        department = _text(item.get("berufsfeld"))
+        team = _text(item.get("branche"))
+        if team == department:
+            team = None
 
-        # ``berufsfeld`` is a high-level domain (Pedagogik / IT / Sales)
-        # — closest match to a department facet.
-        berufsfeld = item.get("berufsfeld")
-        department = (
-            berufsfeld.strip()
-            if isinstance(berufsfeld, str) and berufsfeld.strip()
-            else None
-        )
-
-        # Industry / sector → ``team`` (the closest analog the API exposes).
-        branche = item.get("branche")
-        team = (
-            branche.strip()
-            if isinstance(branche, str) and branche.strip()
-            and branche.strip() != department
-            else None
-        )
+        salary_min = _number(item.get("gehaltsspanneVon"))
+        salary_max = _number(item.get("gehaltsspanneBis"))
+        salary_period = _salary_period(item.get("verguetungsangabe"))
 
         raw: dict[str, Any] = {}
-        for k in ("branche", "berufsfeld", "befristung", "zeitarbeit",
-                  "arbeitgeberHashId", "kundennummerHash", "externeUrl",
-                  "arbeitszeit", "modifikationsTimestamp"):
+        for k in (
+            "aenderungsdatum",
+            "alleBerufe",
+            "arbeitgeberKundennummerHash",
+            "arbeitszeitSchichtNachtWochenende",
+            "arbeitszeitTeilzeitAbend",
+            "arbeitszeitTeilzeitFlexibel",
+            "arbeitszeitTeilzeitNachmittag",
+            "arbeitszeitTeilzeitVormittag",
+            "arbeitszeitVollzeit",
+            "berufsfeld",
+            "branche",
+            "chiffrenummer",
+            "hauptberuf",
+            "istArbeitnehmerUeberlassung",
+            "istGeringfuegigeBeschaeftigung",
+            "quereinstiegGeeignet",
+            "stellenangebotsart",
+            "stellenlokationen",
+            "vertragsdauer",
+        ):
             v = item.get(k)
-            if v not in (None, ""):
+            if v not in (None, "", [], {}):
                 raw[k] = v
 
-        externe_url = item.get("externeUrl")
+        externe_url = item.get("externeURL") or item.get("externeUrl")
         apply_url = externe_url if isinstance(externe_url, str) and externe_url.startswith("http") else None
 
+        description = _text(item.get("stellenangebotsBeschreibung"))
+
         return Job(
-            url=url,
+            url=HttpUrl(url),
             title=title,
             company=company,
             ats_type=ATSType.BUNDESAGENTUR,
             ats_id=ats_id,
             location=location,
+            country_iso=country_iso,
+            region="Europe" if country_iso else None,
+            lat=_number(coordinate_location.get("breite")),
+            lon=_number(coordinate_location.get("laenge")),
             is_remote=is_remote,
+            salary_currency="EUR" if salary_min is not None or salary_max is not None else None,
+            salary_period=salary_period,
+            salary_min=salary_min,
+            salary_max=salary_max,
             department=department,
             team=team,
             employment_type=employment_type,
             commitment=commitment,
-            apply_url=apply_url,
-            requisition_id=item.get("hashId") or None,
-            description=(
-                item.get("stellenangebotsBeschreibung").strip()[:25_000]
-                if isinstance(item.get("stellenangebotsBeschreibung"), str)
-                and item.get("stellenangebotsBeschreibung").strip()
-                else None
+            apply_url=HttpUrl(apply_url) if apply_url else None,
+            requisition_id=_text(item.get("chiffrenummer") or item.get("hashId")),
+            description=description[:25_000] if description else None,
+            posted_at=_parse_iso(
+                item.get("datumErsteVeroeffentlichung")
+                or _nested_value(item.get("veroeffentlichungszeitraum"), "von")
+                or item.get("aktuelleVeroeffentlichungsdatum")
             ),
-            posted_at=_parse_iso(item.get("eintrittsdatum") or item.get("aktuelleVeroeffentlichungsdatum")),
             fetched_at=datetime.now(UTC),
+            language="de",
             raw=raw or None,
         )
 
@@ -579,7 +532,7 @@ _ARBEITSZEIT_LABELS = {
     "selb": "Selbständig",
     "snw": "Schicht/Nacht/Wochenende",
 }
-_ARBEITSZEIT_TO_EMPLOYMENT_TYPE = {
+_ARBEITSZEIT_TO_EMPLOYMENT_TYPE: dict[str, EmploymentType] = {
     "vz": "FULL_TIME",
     "tz": "PART_TIME",
     "ho": "FULL_TIME",
@@ -588,6 +541,100 @@ _ARBEITSZEIT_TO_EMPLOYMENT_TYPE = {
     "saison": "TEMPORARY",
     "selb": "CONTRACT",
 }
+
+_COUNTRY_ISO = {
+    "DEUTSCHLAND": "DE",
+    "OESTERREICH": "AT",
+    "ÖSTERREICH": "AT",
+    "SCHWEIZ": "CH",
+    "FRANKREICH": "FR",
+    "NIEDERLANDE": "NL",
+    "BELGIEN": "BE",
+    "LUXEMBURG": "LU",
+    "POLEN": "PL",
+    "TSCHECHIEN": "CZ",
+    "DÄNEMARK": "DK",
+    "DAENEMARK": "DK",
+}
+
+_SALARY_PERIODS: dict[str, SalaryPeriod] = {
+    "STUNDENLOHN": "HOUR",
+    "TAGESENTGELT": "DAY",
+    "WOCHENENTGELT": "WEEK",
+    "MONATSENTGELT": "MONTH",
+    "MONATSGEHALT": "MONTH",
+    "JAHRESGEHALT": "YEAR",
+}
+
+
+def _result_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items = payload.get("ergebnisliste")
+    if not isinstance(items, list):
+        raise ScraperError("Bundesagentur v6 response is missing ergebnisliste")
+    if not all(isinstance(item, dict) for item in items):
+        raise ScraperError("Bundesagentur v6 returned a non-object job")
+    return items
+
+
+def _employment_details(
+    item: dict[str, Any],
+) -> tuple[str | None, EmploymentType | None]:
+    legacy = _text(item.get("arbeitszeit"))
+    if legacy:
+        code = legacy.lower()
+        commitment = _ARBEITSZEIT_LABELS.get(code, legacy)
+        legacy_employment_type = _ARBEITSZEIT_TO_EMPLOYMENT_TYPE.get(code)
+        if legacy_employment_type is None and item.get("zeitarbeit") is True:
+            legacy_employment_type = "TEMPORARY"
+        if (
+            legacy_employment_type is None
+            and str(item.get("befristung") or "") == "2"
+        ):
+            legacy_employment_type = "CONTRACT"
+        return commitment, legacy_employment_type
+
+    labels: list[str] = []
+    is_full_time = item.get("arbeitszeitVollzeit") is True
+    is_part_time = any(
+        item.get(key) is True
+        for key in (
+            "arbeitszeitTeilzeitAbend",
+            "arbeitszeitTeilzeitFlexibel",
+            "arbeitszeitTeilzeitNachmittag",
+            "arbeitszeitTeilzeitVormittag",
+        )
+    )
+    is_minijob = item.get("istGeringfuegigeBeschaeftigung") is True
+    if is_full_time:
+        labels.append("Vollzeit")
+    if is_part_time:
+        labels.append("Teilzeit")
+    if is_minijob:
+        labels.append("Minijob")
+    if item.get("arbeitszeitSchichtNachtWochenende") is True:
+        labels.append("Schicht/Nacht/Wochenende")
+
+    if item.get("istArbeitnehmerUeberlassung") is True:
+        employment_type: EmploymentType | None = "TEMPORARY"
+    elif is_full_time:
+        employment_type = "FULL_TIME"
+    elif is_part_time or is_minijob:
+        employment_type = "PART_TIME"
+    elif item.get("vertragsdauer") == "BEFRISTET":
+        employment_type = "CONTRACT"
+    else:
+        employment_type = None
+    return ", ".join(labels) or None, employment_type
+
+
+def _locations(item: dict[str, Any]) -> list[dict[str, Any]]:
+    locations = item.get("stellenlokationen")
+    if isinstance(locations, list):
+        parsed = [value for value in locations if isinstance(value, dict)]
+        if parsed:
+            return parsed
+    legacy = item.get("arbeitsort")
+    return [{"adresse": legacy}] if isinstance(legacy, dict) else []
 
 
 def _bucket_counts(facets: dict[str, Any], facet_name: str) -> dict[str, int]:
@@ -603,15 +650,100 @@ def _bucket_counts(facets: dict[str, Any], facet_name: str) -> dict[str, int]:
     return {str(k): int(v) for k, v in counts.items() if int(v) > 0}
 
 
+def _select_partition(
+    payload: dict[str, Any],
+    *,
+    total: int,
+    applied: set[str],
+) -> tuple[str, dict[str, int]] | None:
+    facets = payload.get("facetten")
+    if not isinstance(facets, dict):
+        return None
+
+    candidates: list[tuple[int, int, str, dict[str, int]]] = []
+    for priority, facet_name in enumerate(_SUBDIVISION_FACETS):
+        if facet_name in applied:
+            continue
+        counts = _bucket_counts(facets, facet_name)
+        if len(counts) < 2 or sum(counts.values()) != total:
+            continue
+        largest_bucket = max(counts.values())
+        if largest_bucket >= total:
+            continue
+        candidates.append((largest_bucket, priority, facet_name, counts))
+
+    if not candidates:
+        return None
+    _, _, facet_name, counts = min(candidates)
+    return facet_name, counts
+
+
 def _format_location(value: object) -> str | None:
     if not isinstance(value, dict):
         return None
+    address = value.get("adresse")
+    if isinstance(address, dict):
+        value = address
+
+    postal_code = _text(value.get("plz"))
+    city = _text(value.get("ort"))
+    locality = " ".join(part for part in (postal_code, city) if part) or None
     parts = [
-        str(value[k]).strip()
-        for k in ("ort", "region", "land")
-        if isinstance(value.get(k), str) and value.get(k).strip() and value.get(k) != "null"
+        locality,
+        _region_name(value.get("region")),
+        _display_enum(value.get("land")),
     ]
-    return ", ".join(parts) or None
+    return ", ".join(dict.fromkeys(part for part in parts if part)) or None
+
+
+def _format_locations(values: list[dict[str, Any]]) -> str | None:
+    locations = [
+        location
+        for value in values
+        if (location := _format_location(value)) is not None
+    ]
+    return " | ".join(dict.fromkeys(locations)) or None
+
+
+def _location_address(value: dict[str, Any]) -> dict[str, Any]:
+    address = value.get("adresse")
+    return address if isinstance(address, dict) else {}
+
+
+def _text(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _display_enum(value: object) -> str | None:
+    raw = _text(value)
+    return raw.replace("_", " ").title() if raw else None
+
+
+def _region_name(value: object) -> str | None:
+    return _display_enum(value)
+
+
+def _country_iso(value: object) -> str | None:
+    raw = _text(value)
+    return _COUNTRY_ISO.get(raw.upper()) if raw else None
+
+
+def _salary_period(value: object) -> SalaryPeriod | None:
+    raw = _text(value)
+    return _SALARY_PERIODS.get(raw.upper()) if raw else None
+
+
+def _nested_value(value: object, key: str) -> object:
+    return value.get(key) if isinstance(value, dict) else None
 
 
 def _parse_iso(value: object) -> datetime | None:
