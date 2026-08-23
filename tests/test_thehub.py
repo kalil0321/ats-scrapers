@@ -256,6 +256,11 @@ def test_keeps_good_jobs_when_one_detail_fetch_fails(httpx_mock) -> None:
     )
 
     assert [job.ats_id for job in TheHubScraper("any").fetch()] == ["good"]
+    requests = httpx_mock.get_requests()
+    failed_requests = [
+        request for request in requests if str(request.url).endswith("/failed")
+    ]
+    assert len(failed_requests) == DEFAULT_RETRIES + 1
 
 
 def test_recovers_detail_after_initial_retry_budget_is_exhausted(httpx_mock) -> None:
@@ -319,6 +324,10 @@ def test_empty_detail_documents_count_toward_failure_threshold(httpx_mock) -> No
 
     with pytest.raises(ScraperError, match="detail hydration failed for 2/3 jobs"):
         TheHubScraper("any").fetch()
+
+    requests = httpx_mock.get_requests()
+    assert sum(str(request.url).endswith("/empty-1") for request in requests) == 1
+    assert sum(str(request.url).endswith("/empty-2") for request in requests) == 1
 
 
 def test_persistent_500_raises(httpx_mock) -> None:

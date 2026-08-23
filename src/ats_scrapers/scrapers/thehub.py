@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.fetch import RetryExhaustedError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -106,17 +107,26 @@ class TheHubScraper(BaseScraper):
                 *(self._fetch_detail(fetch, sem, job_id=job_id) for job_id in job_ids),
                 return_exceptions=True,
             )
-            for index, detail in enumerate(details):
-                if not isinstance(detail, Exception):
-                    continue
-                try:
-                    details[index] = await self._fetch_detail(
-                        fetch,
-                        sem,
-                        job_id=job_ids[index],
+            retry_indexes = [
+                index
+                for index, detail in enumerate(details)
+                if isinstance(detail, RetryExhaustedError)
+            ]
+            if retry_indexes:
+                async with self.make_fetcher(retries=1) as recovery_fetch:
+                    recovered = await asyncio.gather(
+                        *(
+                            self._fetch_detail(
+                                recovery_fetch,
+                                sem,
+                                job_id=job_ids[index],
+                            )
+                            for index in retry_indexes
+                        ),
+                        return_exceptions=True,
                     )
-                except Exception as exc:
-                    details[index] = exc
+                for index, detail in zip(retry_indexes, recovered, strict=True):
+                    details[index] = detail
 
         failures = [item for item in details if isinstance(item, Exception)]
         allowed_failures = max(1, int(len(job_ids) * MAX_DETAIL_FAILURE_RATIO))
