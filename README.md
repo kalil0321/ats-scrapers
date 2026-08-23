@@ -11,12 +11,17 @@ sources.
 [![PyPI version](https://img.shields.io/pypi/v/ats-scrapers)](https://pypi.org/project/ats-scrapers/)
 [![Python versions](https://img.shields.io/pypi/pyversions/ats-scrapers)](https://pypi.org/project/ats-scrapers/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/kalil0321/ats-scrapers/blob/main/LICENSE)
+[![Live jobs](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.total_jobs&label=live%20jobs&cacheSeconds=300)](https://storage.stapply.ai/jobhive/v1/manifest.json)
+[![Companies](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.total_companies&label=companies&cacheSeconds=300)](https://storage.stapply.ai/jobhive/v1/manifest.json)
+[![Sources](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.ats_count&label=sources&cacheSeconds=300)](https://storage.stapply.ai/jobhive/v1/manifest.json)
+[![Dataset snapshot](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.generated_at&label=snapshot&cacheSeconds=300)](https://storage.stapply.ai/jobhive/v1/manifest.json)
 
 `ats-scrapers` provides two layers:
 
-- A free, hosted dataset with **4.2M+ live jobs** from **63,000+ companies**
-  across **49 sources**.
-- More than 50 reusable scraper adapters, including Workday, Greenhouse, Lever,
+- A free, hosted dataset of live jobs from company career sites, ATS
+  platforms, and public job feeds. The badges above read current counts and
+  snapshot time directly from the live manifest.
+- Reusable scraper adapters for Workday, Greenhouse, Lever,
   Ashby, SmartRecruiters, and SuccessFactors.
 
 Jobs are collected from ATS endpoints, company career sites, and public job
@@ -80,7 +85,7 @@ scraper = get_scraper_for_url("https://jobs.ashbyhq.com/openai")
 jobs = scraper.fetch()
 ```
 
-Or look it up by name in the hosted companies directory (63,000+ tenants):
+Or look it up by name in the hosted companies directory:
 
 ```python
 from ats_scrapers import find_company
