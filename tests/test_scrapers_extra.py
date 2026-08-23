@@ -452,6 +452,8 @@ def test_workday_enriches_description_from_detail_endpoint(httpx_mock) -> None:
         json={
             "jobPostingInfo": {
                 "jobDescription": "<div><p>Build <strong>search</strong>.</p></div>",
+                "startDate": "2026-08-23",
+                "endDate": "2026-09-30",
             }
         },
     )
@@ -460,6 +462,12 @@ def test_workday_enriches_description_from_detail_endpoint(httpx_mock) -> None:
 
     assert len(jobs) == 1
     assert jobs[0].description == "Build search ."
+    assert jobs[0].raw == {
+        "bullet_fields": ["R-1"],
+        "externalPath": "/job/USA/Engineer_R-1",
+        "startDate": "2026-08-23",
+        "endDate": "2026-09-30",
+    }
 
 
 def test_workday_rollup_resolution_failure_is_silent(httpx_mock) -> None:
