@@ -44,6 +44,7 @@ def _job(refnr: str, titel: str, ort: str | None = None) -> dict:
         ],
         "firma": "ACME",
         "datumErsteVeroeffentlichung": "2026-05-01",
+        "berufsfeld": "IT",
         "hauptberuf": "Softwareentwicklung und Programmierung",
         "arbeitszeitVollzeit": True,
         "homeofficemoeglich": False,
@@ -69,10 +70,40 @@ def test_simple_run_under_pagination_cap(httpx_mock) -> None:
     assert jobs[0].company == "ACME"
     assert jobs[0].location == "10115 Berlin, Berlin, Deutschland"
     assert jobs[0].country_iso == "DE"
+    assert jobs[0].region is None
+    assert jobs[0].department == "IT"
     assert jobs[0].employment_type == "FULL_TIME"
     assert jobs[0].salary_currency == "EUR"
     assert jobs[0].salary_period == "YEAR"
     assert jobs[0].salary_min == 50_000
+
+
+def test_preserves_multiple_locations_without_ambiguous_coordinates() -> None:
+    item = _job("multi", "Multi-location role")
+    item["stellenlokationen"].append(
+        {
+            "adresse": {
+                "plz": "80331",
+                "ort": "München",
+                "region": "BAYERN",
+                "land": "DEUTSCHLAND",
+            },
+            "breite": 48.137,
+            "laenge": 11.575,
+        }
+    )
+
+    job = BundesagenturScraper("any")._parse(item)
+
+    assert job is not None
+    assert job.location == (
+        "10115 Berlin, Berlin, Deutschland | "
+        "80331 München, Bayern, Deutschland"
+    )
+    assert job.country_iso == "DE"
+    assert job.region is None
+    assert (job.lat, job.lon) == (None, None)
+    assert len(job.raw["stellenlokationen"]) == 2
 
 
 def test_partition_ignores_non_exhaustive_facets() -> None:

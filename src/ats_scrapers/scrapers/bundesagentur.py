@@ -425,10 +425,15 @@ class BundesagenturScraper(BaseScraper):
         ).strip()
         if not ats_id or not title:
             return None
-        location_data = _first_location(item)
-        location = _format_location(location_data)
-        address = location_data.get("adresse") if isinstance(location_data, dict) else None
-        address = address if isinstance(address, dict) else {}
+        location_items = _locations(item)
+        location = _format_locations(location_items)
+        country_codes = {
+            country_iso
+            for location_item in location_items
+            if (country_iso := _country_iso(_location_address(location_item).get("land")))
+        }
+        country_iso = next(iter(country_codes)) if len(country_codes) == 1 else None
+        coordinate_location = location_items[0] if len(location_items) == 1 else {}
         company = str(
             item.get("firma") or item.get("arbeitgeber") or "Bundesagentur"
         ).strip() or "Bundesagentur"
@@ -441,7 +446,7 @@ class BundesagenturScraper(BaseScraper):
         remote_value = item.get("homeofficemoeglich")
         is_remote = remote_value if isinstance(remote_value, bool) else None
 
-        department = _text(item.get("hauptberuf") or item.get("berufsfeld"))
+        department = _text(item.get("berufsfeld"))
         team = _text(item.get("branche"))
         if team == department:
             team = None
@@ -461,6 +466,7 @@ class BundesagenturScraper(BaseScraper):
             "arbeitszeitTeilzeitNachmittag",
             "arbeitszeitTeilzeitVormittag",
             "arbeitszeitVollzeit",
+            "berufsfeld",
             "branche",
             "chiffrenummer",
             "hauptberuf",
@@ -468,6 +474,7 @@ class BundesagenturScraper(BaseScraper):
             "istGeringfuegigeBeschaeftigung",
             "quereinstiegGeeignet",
             "stellenangebotsart",
+            "stellenlokationen",
             "vertragsdauer",
         ):
             v = item.get(k)
@@ -486,10 +493,10 @@ class BundesagenturScraper(BaseScraper):
             ats_type=ATSType.BUNDESAGENTUR,
             ats_id=ats_id,
             location=location,
-            country_iso=_country_iso(address.get("land")),
-            region=_region_name(address.get("region")),
-            lat=_number(location_data.get("breite")),
-            lon=_number(location_data.get("laenge")),
+            country_iso=country_iso,
+            region=None,
+            lat=_number(coordinate_location.get("breite")),
+            lon=_number(coordinate_location.get("laenge")),
             is_remote=is_remote,
             salary_currency="EUR" if salary_min is not None or salary_max is not None else None,
             salary_period=salary_period,
@@ -620,12 +627,14 @@ def _employment_details(
     return ", ".join(labels) or None, employment_type
 
 
-def _first_location(item: dict[str, Any]) -> dict[str, Any]:
+def _locations(item: dict[str, Any]) -> list[dict[str, Any]]:
     locations = item.get("stellenlokationen")
-    if isinstance(locations, list) and locations and isinstance(locations[0], dict):
-        return locations[0]
+    if isinstance(locations, list):
+        parsed = [value for value in locations if isinstance(value, dict)]
+        if parsed:
+            return parsed
     legacy = item.get("arbeitsort")
-    return {"adresse": legacy} if isinstance(legacy, dict) else {}
+    return [{"adresse": legacy}] if isinstance(legacy, dict) else []
 
 
 def _bucket_counts(facets: dict[str, Any], facet_name: str) -> dict[str, int]:
@@ -685,6 +694,20 @@ def _format_location(value: object) -> str | None:
         _display_enum(value.get("land")),
     ]
     return ", ".join(dict.fromkeys(part for part in parts if part)) or None
+
+
+def _format_locations(values: list[dict[str, Any]]) -> str | None:
+    locations = [
+        location
+        for value in values
+        if (location := _format_location(value)) is not None
+    ]
+    return " | ".join(dict.fromkeys(locations)) or None
+
+
+def _location_address(value: dict[str, Any]) -> dict[str, Any]:
+    address = value.get("adresse")
+    return address if isinstance(address, dict) else {}
 
 
 def _text(value: object) -> str | None:
