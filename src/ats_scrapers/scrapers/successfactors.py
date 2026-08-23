@@ -372,12 +372,13 @@ class SuccessFactorsScraper(BaseScraper):
                     employment_type = mapped
                     break
 
-        # ``g:expiration_date`` (Google Merchant namespace) is the explicit
-        # application deadline. Tenants ship it as ``YYYY-MM-DD`` (date-only)
-        # or ISO 8601. Parse with ``datetime.fromisoformat`` (accepts both
-        # date-only and full ISO 8601 with offset/``Z``) — NOT ``_parse_pubdate``
-        # which is RFC 822 for ``pubDate``. ``None`` on absence/invalid; never
-        # fall back to ``posted_at``.
+        # ``g:expiration_date`` (Google Merchant namespace) is the source's
+        # posting-expiration / valid-through value. Tenants ship it as
+        # ``YYYY-MM-DD`` (date-only) or ISO 8601. Parse with
+        # ``datetime.fromisoformat`` (accepts both date-only and full ISO 8601
+        # with offset/``Z``) — NOT ``_parse_pubdate`` which is RFC 822 for
+        # ``pubDate``. ``None`` on absence/invalid; never fall back to
+        # ``posted_at``.
         application_deadline = _parse_expiration_date(
             item.findtext("g:expiration_date", namespaces=_GOOGLE_NS),
         )

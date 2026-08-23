@@ -274,11 +274,12 @@ When ats-scrapers last saw this posting. UTC.
 
 ### `application_deadline` &nbsp;`datetime | None`
 
-Explicit application deadline the ATS exposes, when the source
-provides one. Examples: SuccessFactors `g:expiration_date` (Google
-Merchant namespace), schema.org JobPosting `validThrough`. Parsed as
-ISO-8601 via `datetime.fromisoformat` (date-only `YYYY-MM-DD` or a
-full datetime, optionally ending in `Z`).
+Source-provided date after which the posting should no longer be treated
+as open. Examples: SuccessFactors `g:expiration_date` (Google Merchant
+namespace), schema.org JobPosting `validThrough`. It may be an
+employer-stated application deadline or a platform-generated validity
+horizon. Parsed as ISO-8601 via `datetime.fromisoformat` (date-only
+`YYYY-MM-DD` or a full datetime, optionally ending in `Z`).
 
 The timezone depends on what the source ships: values that carry an
 offset or `Z` are preserved as timezone-aware (e.g. `Z` → UTC-aware),

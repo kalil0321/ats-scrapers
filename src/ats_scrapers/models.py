@@ -479,11 +479,13 @@ class Job(BaseModel):
     application_deadline: datetime | None = Field(
         default=None,
         description=(
-            "Explicit application deadline the ATS exposes (e.g. "
+            "Source-provided date after which the posting should no longer be "
+            "treated as open (e.g. "
             "SuccessFactors ``g:expiration_date`` in the Google Merchant "
-            "namespace, schema.org JobPosting ``validThrough``). ``None`` "
-            "when the source does not provide one — never inferred from "
-            "``posted_at`` or ``fetched_at``."
+            "namespace, schema.org JobPosting ``validThrough``). This may be "
+            "an employer-stated application deadline or a platform-generated "
+            "validity horizon. ``None`` when unavailable — never inferred "
+            "locally from ``posted_at`` or ``fetched_at``."
         ),
     )
     language: str | None = Field(
