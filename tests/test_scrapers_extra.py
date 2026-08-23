@@ -118,6 +118,40 @@ def test_workable_falls_back_to_slug_without_company_name(httpx_mock) -> None:
     assert jobs[0].company == "acme"
 
 
+def test_workable_combines_locations_for_duplicate_shortcodes(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://apply.workable.com/api/v1/widget/accounts/acme",
+        json={
+            "name": "Acme Corporation",
+            "jobs": [
+                {
+                    "shortcode": "ABC123",
+                    "title": "Backend Dev",
+                    "url": "https://apply.workable.com/j/ABC123",
+                    "location": {"city": "Paris", "country": "France"},
+                },
+                {
+                    "shortcode": "ABC123",
+                    "title": "Backend Dev",
+                    "url": "https://apply.workable.com/j/ABC123",
+                    "location": {"city": "Berlin", "country": "Germany"},
+                },
+                {
+                    "shortcode": "ABC123",
+                    "title": "Backend Dev",
+                    "url": "https://apply.workable.com/j/ABC123",
+                    "location": {"city": "Paris", "country": "France"},
+                },
+            ],
+        },
+    )
+
+    jobs = WorkableScraper("acme", include_descriptions=False).fetch()
+
+    assert len(jobs) == 1
+    assert jobs[0].location == "Paris, France | Berlin, Germany"
+
+
 def test_workable_404(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://apply.workable.com/api/v1/widget/accounts/missing",

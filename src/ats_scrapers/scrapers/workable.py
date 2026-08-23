@@ -90,10 +90,19 @@ class WorkableScraper(BaseScraper):
             company_name = payload.get("name")
             if not isinstance(company_name, str) or not company_name.strip():
                 company_name = self.company_slug
-            jobs = [
-                self._parse_job(item, company_name.strip())
-                for item in payload.get("jobs", [])
-            ]
+            jobs_by_id: dict[str, Job] = {}
+            for item in payload.get("jobs", []):
+                job = self._parse_job(item, company_name.strip())
+                key = job.ats_id or str(job.url)
+                existing = jobs_by_id.get(key)
+                if existing is None:
+                    jobs_by_id[key] = job
+                    continue
+                existing.location = _combine_locations(
+                    existing.location,
+                    job.location,
+                )
+            jobs = list(jobs_by_id.values())
 
             if self.include_descriptions and jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
@@ -217,6 +226,17 @@ def _extract_location(item: dict[str, Any]) -> str | None:
             return joined
     parts = [item.get("city"), item.get("state"), item.get("country")]
     return ", ".join(p for p in parts if p) or None
+
+
+def _combine_locations(*values: str | None) -> str | None:
+    locations = dict.fromkeys(
+        location
+        for value in values
+        if value
+        for location in value.split(" | ")
+        if location
+    )
+    return " | ".join(locations) or None
 
 
 def _parse_iso(value: str | None) -> datetime | None:
