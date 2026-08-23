@@ -1,14 +1,13 @@
 """The Hub (https://thehub.io) — Nordic startup jobs scraper.
 
-The Hub is the leading direct-posting tech / startup job platform
-for the Nordics (DK, SE, NO, FI). Companies pay to list — not
-syndicated from LinkedIn / Indeed. ~1,000 active postings at any one
-time, all developer- or growth-focused, all with structured
-location + lat/lon + apply URL data.
+The Hub is a direct-posting tech / startup job platform for the
+Nordics (DK, SE, NO, FI). Companies pay to list — not syndicated
+from LinkedIn / Indeed. Listings include structured location +
+lat/lon + apply URL data.
 
-Public REST at ``https://thehub.io/api/jobs`` — no auth, no key.
-Pagination via ``?page=N`` (15 docs per page; page count is in the
-response envelope).
+Public REST at ``https://thehub.io/api/v2/jobs`` with details from
+``https://thehub.io/api/jobs/{id}`` — no auth, no key. Pagination via
+``?page=N`` (15 docs per page; page count is in the response envelope).
 
 Single-source scraper: ``company_slug`` is informational and ignored.
 """
@@ -17,10 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import html
+import logging
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.fetch import RetryExhaustedError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -29,12 +31,15 @@ if TYPE_CHECKING:
 
     from ats_scrapers.fetch import Fetcher
 
-API_URL = "https://thehub.io/api/jobs"
+LIST_API_URL = "https://thehub.io/api/v2/jobs"
+DETAIL_API_URL_TEMPLATE = "https://thehub.io/api/jobs/{job_id}"
 JOB_URL_TEMPLATE = "https://thehub.io/jobs/{job_id}"
 PER_PAGE = 15  # Hard-coded by the API; ?limit=… is ignored.
 MAX_CONCURRENCY = 4
+MAX_DETAIL_FAILURE_RATIO = 0.10
 
 _TAG_RE = re.compile(r"<[^>]+>")
+log = logging.getLogger(__name__)
 
 
 @ScraperRegistry.register(ATSType.THEHUB)
@@ -46,7 +51,7 @@ class TheHubScraper(BaseScraper):
 
     Knobs:
     - ``max_pages`` — pagination cap (default 200, far above the
-      ~70 pages currently in the active board).
+      current active board).
     """
 
     ats = ATSType.THEHUB
@@ -73,37 +78,74 @@ class TheHubScraper(BaseScraper):
         self.max_pages = max_pages
 
     async def afetch(self) -> list[Job]:
-        seen: set[str] = set()
-        jobs: list[Job] = []
-        lock = asyncio.Lock()
-
-        async def absorb(items: list[dict[str, Any]]) -> None:
-            async with lock:
-                for it in items:
-                    job = self._parse(it)
-                    if job is None or job.ats_id in seen:
-                        continue
-                    seen.add(job.ats_id)
-                    jobs.append(job)
-
         async with self.make_fetcher() as fetch:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
-            # Probe page 1 to learn ``pages`` count.
             first = await self._fetch_page(fetch, sem, page=1)
             pages_total = int(first.get("pages") or 1)
-            await absorb(first.get("docs") or [])
-
             page_count = min(pages_total, self.max_pages)
-            if page_count <= 1:
-                return jobs
+            remaining = await asyncio.gather(
+                *(self._fetch_page(fetch, sem, page=page) for page in range(2, page_count + 1))
+            )
 
-            async def one(page: int) -> None:
-                payload = await self._fetch_page(fetch, sem, page=page)
-                await absorb(payload.get("docs") or [])
+            summaries = list(first.get("docs") or [])
+            for payload in remaining:
+                summaries.extend(payload.get("docs") or [])
 
-            await asyncio.gather(*(one(p) for p in range(2, page_count + 1)))
-        return jobs
+            job_ids: list[str] = []
+            seen_ids: set[str] = set()
+            for item in summaries:
+                status = str(item.get("status") or "").strip().upper()
+                if status and status != "ACTIVE":
+                    continue
+                job_id = str(item.get("id") or item.get("_id") or "").strip()
+                if not job_id or job_id in seen_ids:
+                    continue
+                seen_ids.add(job_id)
+                job_ids.append(job_id)
+            details = await asyncio.gather(
+                *(self._fetch_detail(fetch, sem, job_id=job_id) for job_id in job_ids),
+                return_exceptions=True,
+            )
+            retry_indexes = [
+                index
+                for index, detail in enumerate(details)
+                if isinstance(detail, RetryExhaustedError)
+            ]
+            if retry_indexes:
+                async with self.make_fetcher(retries=1) as recovery_fetch:
+                    recovered = await asyncio.gather(
+                        *(
+                            self._fetch_detail(
+                                recovery_fetch,
+                                sem,
+                                job_id=job_ids[index],
+                            )
+                            for index in retry_indexes
+                        ),
+                        return_exceptions=True,
+                    )
+                for index, detail in zip(retry_indexes, recovered, strict=True):
+                    details[index] = detail
+
+        failures = [item for item in details if isinstance(item, Exception)]
+        allowed_failures = max(1, int(len(job_ids) * MAX_DETAIL_FAILURE_RATIO))
+        if len(failures) > allowed_failures:
+            raise ScraperError(
+                f"The Hub detail hydration failed for {len(failures)}/{len(job_ids)} jobs"
+            ) from failures[0]
+        if failures:
+            log.warning(
+                "The Hub skipped %d/%d jobs whose details failed to load",
+                len(failures),
+                len(job_ids),
+            )
+
+        return [
+            job
+            for item in details
+            if isinstance(item, dict) and (job := self._parse(item)) is not None
+        ]
 
     async def _fetch_page(
         self,
@@ -113,7 +155,24 @@ class TheHubScraper(BaseScraper):
         page: int,
     ) -> dict[str, Any]:
         async with sem:
-            return await fetch.get_json(API_URL, params={"page": page})
+            return await fetch.get_json(LIST_API_URL, params={"page": page})
+
+    async def _fetch_detail(
+        self,
+        fetch: Fetcher,
+        sem: asyncio.Semaphore,
+        *,
+        job_id: str,
+    ) -> dict[str, Any] | None:
+        try:
+            async with sem:
+                payload = await fetch.get_json(DETAIL_API_URL_TEMPLATE.format(job_id=job_id))
+        except CompanyNotFoundError:
+            return None
+        detail = payload.get("doc")
+        if not isinstance(detail, dict) or not detail:
+            raise ScraperError(f"The Hub detail response for {job_id} has no job document")
+        return detail
 
     def _parse(self, item: dict[str, Any]) -> Job | None:
         ats_id = (item.get("id") or item.get("_id") or "").strip()

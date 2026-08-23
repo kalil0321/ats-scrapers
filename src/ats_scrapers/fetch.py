@@ -68,6 +68,10 @@ class MalformedJSONError(ScraperError, ValueError):
     written against either contract keep working.
     """
 
+
+class RetryExhaustedError(ScraperError):
+    """A retryable HTTP or network failure exhausted its attempt budget."""
+
 # Total attempts per request (first try included). Module-level so the
 # suite-wide conftest fixture can dial them down in one place; a
 # Fetcher constructed with explicit values ignores these.
@@ -290,7 +294,7 @@ class Fetcher:
             except Exception as exc:  # network layer (httpx transport, cloak)
                 last_error = str(exc)
                 if attempt == retries:
-                    raise ScraperError(
+                    raise RetryExhaustedError(
                         f"{self.label}: {method} {url} failed after "
                         f"{retries} attempts: {exc}"
                     ) from exc
@@ -335,7 +339,7 @@ class Fetcher:
             if status in _RETRYABLE_STATUSES:
                 last_error = f"HTTP {status}"
                 if attempt == retries:
-                    raise ScraperError(
+                    raise RetryExhaustedError(
                         f"{self.label}: {url} returned {status} after "
                         f"{retries} attempts"
                     )

@@ -855,9 +855,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "output": "remoteok/jobs.csv",
     },
     "thehub": {
-        # The Hub — Nordic startups, ships lat/lon. ~1k live.
+        # The Hub — Nordic startups, ships lat/lon.
         "scraper": TheHubScraper, "singleton": True,
         "output": "thehub/jobs.csv",
+        "fail_closed_on_empty": True,
     },
     "wanted": {
         # Wanted — Korea + Japan tech roles. ~10k live.
