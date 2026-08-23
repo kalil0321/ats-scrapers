@@ -163,7 +163,7 @@ class BambooHRScraper(BaseScraper):
                 WIDGET_TEMPLATE.format(slug=self.company_slug)
             )
             jobs = self._parse_widget(widget_html)
-            if "bhrPositionID_" in widget_html and not jobs:
+            if re.search(r"bhrPositionID_", widget_html, re.IGNORECASE) and not jobs:
                 raise ScraperError(
                     f"BambooHR widget for {self.company_slug} contains jobs "
                     "but none matched the parser"

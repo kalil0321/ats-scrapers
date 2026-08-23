@@ -163,10 +163,14 @@ def test_raises_when_job_markers_do_not_match_parser(httpx_mock) -> None:
         BambooHRScraper("acme", include_descriptions=False).fetch()
 
 
-def test_pipeline_fails_closed_on_empty() -> None:
-    from scripts.run_pipeline import CONFIGS
+def test_raises_for_case_variant_unparsed_job_marker(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=WIDGET_URL,
+        text='<article data-position="bhrpositionid_1">Job</article>',
+    )
 
-    assert CONFIGS["bamboohr"]["fail_closed_on_empty"] is True
+    with pytest.raises(ScraperError, match="contains jobs but none matched"):
+        BambooHRScraper("acme", include_descriptions=False).fetch()
 
 
 def test_returns_empty_for_widget_with_no_departments(httpx_mock) -> None:
