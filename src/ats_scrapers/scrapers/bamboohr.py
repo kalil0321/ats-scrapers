@@ -81,10 +81,10 @@ _EMPLOYMENT_TYPE_MAP = {
 # Each department block is wrapped in a <li class="BambooHR-ATS-Department-Item">.
 # Inside, the header div carries the department name and the <ul> holds jobs.
 _DEPARTMENT_BLOCK_RE = re.compile(
-    r'<li id="bhrDepartmentID_(?P<dept_id>\d+)"[^>]*'
+    r'<li\s+id="bhrDepartmentID_(?P<dept_id>\d+)"[^>]*'
     r'class="BambooHR-ATS-Department-Item"[^>]*>'
     r'(?P<body>.*?)'
-    r'(?=<li id="bhrDepartmentID_|\Z)',
+    r'(?=<li\s+id="bhrDepartmentID_|\Z)',
     re.DOTALL | re.IGNORECASE,
 )
 _DEPARTMENT_NAME_RE = re.compile(
@@ -92,7 +92,7 @@ _DEPARTMENT_NAME_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 _POSITION_RE = re.compile(
-    r'<li id="bhrPositionID_(?P<id>\d+)"[^>]*'
+    r'<li\s+id="bhrPositionID_(?P<id>\d+)"[^>]*'
     r'class="BambooHR-ATS-Jobs-Item"[^>]*>'
     r'(?P<body>.*?)</li>',
     re.DOTALL | re.IGNORECASE,
@@ -163,6 +163,11 @@ class BambooHRScraper(BaseScraper):
                 WIDGET_TEMPLATE.format(slug=self.company_slug)
             )
             jobs = self._parse_widget(widget_html)
+            if re.search(r"bhrPositionID_", widget_html, re.IGNORECASE) and not jobs:
+                raise ScraperError(
+                    f"BambooHR widget for {self.company_slug} contains jobs "
+                    "but none matched the parser"
+                )
             if self.include_descriptions and jobs:
                 await self._enrich_from_detail_api(fetch, jobs)
             return jobs
