@@ -106,6 +106,69 @@ def test_parses_basic_widget(httpx_mock) -> None:
     assert jobs[0].company == "acme"
 
 
+def test_parses_current_multiline_widget_markup(httpx_mock) -> None:
+    html = """
+    <li
+        id="bhrDepartmentID_100"
+        class="BambooHR-ATS-Department-Item"
+    >
+        <div id="department_100" class="BambooHR-ATS-Department-Header">
+            Engineering
+        </div>
+        <ul class="BambooHR-ATS-Jobs-List">
+            <li
+                id="bhrPositionID_1"
+                class="BambooHR-ATS-Jobs-Item"
+            >
+                <a href="//acme.bamboohr.com/careers/1">Backend Engineer</a>
+                <span class="BambooHR-ATS-Location">Berlin</span>
+            </li>
+        </ul>
+    </li>
+    <li
+        id="bhrDepartmentID_200"
+        class="BambooHR-ATS-Department-Item"
+    >
+        <div id="department_200" class="BambooHR-ATS-Department-Header">
+            Sales
+        </div>
+        <ul class="BambooHR-ATS-Jobs-List">
+            <li
+                id="bhrPositionID_2"
+                class="BambooHR-ATS-Jobs-Item"
+            >
+                <a href="//acme.bamboohr.com/careers/2">Account Executive</a>
+                <span class="BambooHR-ATS-Location">Paris</span>
+            </li>
+        </ul>
+    </li>
+    """
+    httpx_mock.add_response(url=WIDGET_URL, text=html)
+
+    jobs = BambooHRScraper("acme", include_descriptions=False).fetch()
+
+    assert [(job.ats_id, job.title, job.department) for job in jobs] == [
+        ("1", "Backend Engineer", "Engineering"),
+        ("2", "Account Executive", "Sales"),
+    ]
+
+
+def test_raises_when_job_markers_do_not_match_parser(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=WIDGET_URL,
+        text='<article data-position="bhrPositionID_1">Job</article>',
+    )
+
+    with pytest.raises(ScraperError, match="contains jobs but none matched"):
+        BambooHRScraper("acme", include_descriptions=False).fetch()
+
+
+def test_pipeline_fails_closed_on_empty() -> None:
+    from scripts.run_pipeline import CONFIGS
+
+    assert CONFIGS["bamboohr"]["fail_closed_on_empty"] is True
+
+
 def test_returns_empty_for_widget_with_no_departments(httpx_mock) -> None:
     httpx_mock.add_response(url=WIDGET_URL, text='<div class="BambooHR-ATS-board"></div>')
     assert BambooHRScraper("acme").fetch() == []
