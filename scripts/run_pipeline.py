@@ -772,6 +772,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "uber": {
         "scraper": UberScraper, "singleton": True,
         "output": "uber/jobs.csv",
+        "fail_closed_on_empty": True,
     },
     "bundesagentur": {
         # German federal employment agency — official, public, ~1M+ jobs.
