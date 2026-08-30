@@ -184,6 +184,69 @@ def test_oversize_query_uses_verified_overlapping_cover(
     assert {job.ats_id for job in jobs} == {"A", "B", "C"}
 
 
+def test_verified_cover_retries_catalogue_churn(httpx_mock, monkeypatch) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 2)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
+    pass_number = 0
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        nonlocal pass_number
+        params = parse_qs(urlparse(str(request.url)).query)
+        size = int(params.get("size", ["1"])[0])
+        sort = params.get("sort", [None])[0]
+        profession = params.get("beruf", [None])[0]
+        if size == 1:
+            items = [_job("B", "Job B")]
+        else:
+            if sort == "relevanz":
+                pass_number += 1
+            if pass_number == 1:
+                items = (
+                    [_job("C", "Job C")]
+                    if profession == "missing-tail"
+                    else [_job("A", "Job A"), _job("B", "Job B")]
+                )
+            else:
+                items = (
+                    [_job("D", "Job D")]
+                    if profession == "missing-tail"
+                    else [_job("B", "Job B"), _job("C", "Job C")]
+                )
+        return httpx.Response(
+            200,
+            json={
+                "ergebnisliste": items,
+                "maxErgebnisse": 3,
+                "facetten": {
+                    "beruf": {
+                        "counts": {"common": 2, "missing-tail": 1}
+                    }
+                },
+            },
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert {job.ats_id for job in jobs} == {"B", "C", "D"}
+    assert pass_number == 3
+
+
+def test_missing_result_total_is_a_contract_break(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_RE,
+        json={"ergebnisliste": [_job("1", "Probe")]},
+        is_reusable=True,
+    )
+
+    with pytest.raises(ScraperError, match="valid maxErgebnisse"):
+        BundesagenturScraper("any").fetch()
+
+
 # --- Retry exhaustion: abort rather than publish a partial catalogue --------
 
 

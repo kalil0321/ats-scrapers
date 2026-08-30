@@ -104,6 +104,9 @@ _COVER_SORTS = (
 # small tail. They are not trusted as partitions; they are only used to add
 # records to a locally deduplicated cover whose final size is verified.
 _COVER_FACETS = ("beruf", "arbeitsort")
+MAX_COVER_TOTAL = 25_000
+MAX_COVER_ATTEMPTS = 3
+COVER_ABSORB_BATCH_SIZE = 500
 
 
 class _PageFetchExhaustedError(ScraperError):
@@ -290,7 +293,7 @@ class BundesagenturScraper(BaseScraper):
         first = await self._fetch_page(
             client, sem, params={**base_params, "size": 1, "page": 1},
         )
-        total = int(first.get("maxErgebnisse") or 0)
+        total = _result_total(first)
         if total == 0:
             return
         # Page-1 hits are already paid for — absorb them rather than re-fetch.
@@ -311,7 +314,6 @@ class BundesagenturScraper(BaseScraper):
                 sem,
                 base_params=base_params,
                 total=total,
-                initial_payload=first,
                 absorb=absorb,
             )
             return
@@ -337,7 +339,6 @@ class BundesagenturScraper(BaseScraper):
         *,
         base_params: dict[str, Any],
         total: int,
-        initial_payload: dict[str, Any],
         absorb: Callable[[list[dict[str, Any]]], Awaitable[None]],
     ) -> None:
         """Recover an oversized leaf without treating overlaps as partitions.
@@ -345,11 +346,66 @@ class BundesagenturScraper(BaseScraper):
         The API exposes several official sort orders and high-cardinality
         facets, each of which reveals a different slice before the 10k cap.
         Collect their union locally, deduplicate by reference number, and only
-        release rows to the caller after a fresh total probe confirms coverage.
+        release rows after two consecutive passes return the same exact set.
         """
+        if total > MAX_COVER_TOTAL:
+            raise ScraperError(
+                f"Bundesagentur refuses an unbounded cover of {total} jobs "
+                f"for params={base_params}"
+            )
+
+        previous_references: set[str] | None = None
+        for _attempt in range(MAX_COVER_ATTEMPTS):
+            start = await self._fetch_page(
+                client,
+                sem,
+                params={**base_params, "size": 1, "page": 1},
+            )
+            start_total = _result_total(start)
+            if start_total > MAX_COVER_TOTAL:
+                raise ScraperError(
+                    f"Bundesagentur refuses an unbounded cover of "
+                    f"{start_total} jobs for params={base_params}"
+                )
+            items_by_reference = await self._build_cover_pass(
+                client,
+                sem,
+                base_params=base_params,
+                total=start_total,
+                initial_payload=start,
+            )
+            end = await self._fetch_page(
+                client,
+                sem,
+                params={**base_params, "size": 1, "page": 1},
+            )
+            end_total = _result_total(end)
+            references = set(items_by_reference)
+            stable_count = len(references) == start_total == end_total
+            if stable_count and references == previous_references:
+                items = list(items_by_reference.values())
+                for offset in range(0, len(items), COVER_ABSORB_BATCH_SIZE):
+                    await absorb(items[offset:offset + COVER_ABSORB_BATCH_SIZE])
+                return
+            previous_references = references if stable_count else None
+
+        raise ScraperError(
+            "Bundesagentur could not obtain two stable verified covers for "
+            f"params={base_params} after {MAX_COVER_ATTEMPTS} attempts"
+        )
+
+    async def _build_cover_pass(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        *,
+        base_params: dict[str, Any],
+        total: int,
+        initial_payload: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
         items_by_reference: dict[str, dict[str, Any]] = {}
 
-        async def collect_pages(params: dict[str, Any], count: int) -> None:
+        async def collect_pages(params: dict[str, Any], count: int) -> bool:
             page_count = min(
                 (count + PAGE_SIZE - 1) // PAGE_SIZE,
                 PAGE_LIMIT,
@@ -364,16 +420,16 @@ class BundesagenturScraper(BaseScraper):
                     reference = _item_reference(item)
                     if reference:
                         items_by_reference[reference] = item
+                if len(items_by_reference) >= total:
+                    return True
+            return False
 
-        covered = False
         for sort in _COVER_SORTS:
-            await collect_pages({**base_params, "sort": sort}, total)
-            if len(items_by_reference) >= total:
-                covered = True
-                break
+            if await collect_pages({**base_params, "sort": sort}, total):
+                return items_by_reference
 
         facets = initial_payload.get("facetten")
-        if not covered and isinstance(facets, dict):
+        if isinstance(facets, dict):
             for facet_name in _COVER_FACETS:
                 counts = _bucket_counts(facets, facet_name)
                 for value, count in sorted(
@@ -381,30 +437,17 @@ class BundesagenturScraper(BaseScraper):
                 ):
                     if count > PAGINATION_CAP:
                         continue
-                    await collect_pages(
+                    if await collect_pages(
                         {**base_params, facet_name: value},
                         count,
-                    )
-                    if len(items_by_reference) >= total:
-                        covered = True
-                        break
-                if covered:
-                    break
+                    ):
+                        return items_by_reference
 
-        latest = await self._fetch_page(
-            client,
-            sem,
-            params={**base_params, "size": 1, "page": 1},
+        raise ScraperError(
+            "Bundesagentur verified cover is incomplete: "
+            f"collected {len(items_by_reference)} unique jobs for "
+            f"total={total}, params={base_params}"
         )
-        latest_total = int(latest.get("maxErgebnisse") or 0)
-        if len(items_by_reference) < latest_total:
-            raise ScraperError(
-                "Bundesagentur verified cover is incomplete: "
-                f"collected {len(items_by_reference)} unique jobs for "
-                f"latest_total={latest_total}, initial_total={total}, "
-                f"params={base_params}"
-            )
-        await absorb(list(items_by_reference.values()))
 
     async def _fan_out_pages(
         self,
@@ -660,6 +703,21 @@ def _result_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not all(isinstance(item, dict) for item in items):
         raise ScraperError("Bundesagentur v6 returned a non-object job")
     return items
+
+
+def _result_total(payload: dict[str, Any]) -> int:
+    value = payload.get("maxErgebnisse")
+    if isinstance(value, bool):
+        raise ScraperError("Bundesagentur response has invalid maxErgebnisse")
+    try:
+        total = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ScraperError(
+            "Bundesagentur response is missing a valid maxErgebnisse"
+        ) from exc
+    if total < 0:
+        raise ScraperError("Bundesagentur response has negative maxErgebnisse")
+    return total
 
 
 def _item_reference(item: dict[str, Any]) -> str:
