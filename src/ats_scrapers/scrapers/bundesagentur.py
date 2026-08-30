@@ -81,6 +81,8 @@ _SUBDIVISION_FACETS = (
     "angebotsart",
     "ausbildungsart",
     "berufsfeld",
+    "beruf",
+    "schulbildung",
     "befristung",
     "zeitarbeit",
     "pav",
@@ -431,6 +433,8 @@ class BundesagenturScraper(BaseScraper):
         facets = initial_payload.get("facetten")
         if isinstance(facets, dict):
             for facet_name in _COVER_FACETS:
+                if facet_name in base_params:
+                    continue
                 counts = _bucket_counts(facets, facet_name)
                 for value, count in sorted(
                     counts.items(), key=lambda item: item[1], reverse=True

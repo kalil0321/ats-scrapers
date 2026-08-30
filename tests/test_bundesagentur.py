@@ -123,6 +123,30 @@ def test_partition_ignores_non_exhaustive_facets() -> None:
     )
 
 
+def test_partition_uses_exact_profession_buckets() -> None:
+    from ats_scrapers.scrapers.bundesagentur import _select_partition
+
+    payload = {
+        "facetten": {
+            "beruf": {
+                "counts": {
+                    "Kaufmann/-frau - Einzelhandel": 8_000,
+                    "Verkäufer/in": 4_000,
+                }
+            },
+            "arbeitszeit": {"counts": {"vz": 11_900, "tz": 300}},
+        }
+    }
+
+    assert _select_partition(payload, total=12_000, applied=set()) == (
+        "beruf",
+        {
+            "Kaufmann/-frau - Einzelhandel": 8_000,
+            "Verkäufer/in": 4_000,
+        },
+    )
+
+
 def test_oversize_query_without_verified_cover_crashes(
     httpx_mock, monkeypatch
 ) -> None:
@@ -157,10 +181,10 @@ def test_oversize_query_uses_verified_overlapping_cover(
     def serve(request: httpx.Request) -> httpx.Response:
         params = parse_qs(urlparse(str(request.url)).query)
         size = int(params.get("size", ["1"])[0])
-        profession = params.get("beruf", [None])[0]
+        location = params.get("arbeitsort", [None])[0]
         if size == 1:
             items = [_job("A", "Job A")]
-        elif profession == "missing-tail":
+        elif location == "missing-tail":
             items = [_job("C", "Job C")]
         else:
             items = [_job("A", "Job A"), _job("B", "Job B")]
@@ -170,7 +194,7 @@ def test_oversize_query_uses_verified_overlapping_cover(
                 "ergebnisliste": items,
                 "maxErgebnisse": 3,
                 "facetten": {
-                    "beruf": {
+                    "arbeitsort": {
                         "counts": {"common": 2, "missing-tail": 1}
                     }
                 },
@@ -197,7 +221,7 @@ def test_verified_cover_retries_catalogue_churn(httpx_mock, monkeypatch) -> None
         params = parse_qs(urlparse(str(request.url)).query)
         size = int(params.get("size", ["1"])[0])
         sort = params.get("sort", [None])[0]
-        profession = params.get("beruf", [None])[0]
+        location = params.get("arbeitsort", [None])[0]
         if size == 1:
             items = [_job("B", "Job B")]
         else:
@@ -206,13 +230,13 @@ def test_verified_cover_retries_catalogue_churn(httpx_mock, monkeypatch) -> None
             if pass_number == 1:
                 items = (
                     [_job("C", "Job C")]
-                    if profession == "missing-tail"
+                    if location == "missing-tail"
                     else [_job("A", "Job A"), _job("B", "Job B")]
                 )
             else:
                 items = (
                     [_job("D", "Job D")]
-                    if profession == "missing-tail"
+                    if location == "missing-tail"
                     else [_job("B", "Job B"), _job("C", "Job C")]
                 )
         return httpx.Response(
@@ -221,7 +245,7 @@ def test_verified_cover_retries_catalogue_churn(httpx_mock, monkeypatch) -> None
                 "ergebnisliste": items,
                 "maxErgebnisse": 3,
                 "facetten": {
-                    "beruf": {
+                    "arbeitsort": {
                         "counts": {"common": 2, "missing-tail": 1}
                     }
                 },
