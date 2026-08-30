@@ -348,7 +348,9 @@ class BundesagenturScraper(BaseScraper):
         The API exposes several official sort orders and high-cardinality
         facets, each of which reveals a different slice before the 10k cap.
         Collect their union locally, deduplicate by reference number, and only
-        release rows after two consecutive passes return the same exact set.
+        release rows after two consecutive passes each recover their complete
+        advertised count. The catalogue is live, so reference IDs may change
+        between otherwise complete passes.
         """
         if total > MAX_COVER_TOTAL:
             raise ScraperError(
@@ -356,7 +358,8 @@ class BundesagenturScraper(BaseScraper):
                 f"for params={base_params}"
             )
 
-        previous_references: set[str] | None = None
+        consecutive_complete_passes = 0
+        observations: list[str] = []
         for _attempt in range(MAX_COVER_ATTEMPTS):
             start = await self._fetch_page(
                 client,
@@ -383,17 +386,26 @@ class BundesagenturScraper(BaseScraper):
             )
             end_total = _result_total(end)
             references = set(items_by_reference)
-            stable_count = len(references) == start_total == end_total
-            if stable_count and references == previous_references:
-                items = list(items_by_reference.values())
-                for offset in range(0, len(items), COVER_ABSORB_BATCH_SIZE):
-                    await absorb(items[offset:offset + COVER_ABSORB_BATCH_SIZE])
-                return
-            previous_references = references if stable_count else None
+            complete_pass = len(references) == start_total == end_total
+            observations.append(
+                f"{start_total}/{len(references)}/{end_total}"
+            )
+            if complete_pass:
+                consecutive_complete_passes += 1
+                if consecutive_complete_passes >= 2:
+                    items = list(items_by_reference.values())
+                    for offset in range(0, len(items), COVER_ABSORB_BATCH_SIZE):
+                        await absorb(
+                            items[offset:offset + COVER_ABSORB_BATCH_SIZE]
+                        )
+                    return
+            else:
+                consecutive_complete_passes = 0
 
         raise ScraperError(
-            "Bundesagentur could not obtain two stable verified covers for "
-            f"params={base_params} after {MAX_COVER_ATTEMPTS} attempts"
+            "Bundesagentur could not obtain two consecutive count-complete "
+            f"covers for params={base_params} after {MAX_COVER_ATTEMPTS} "
+            f"attempts (start/unique/end={observations})"
         )
 
     async def _build_cover_pass(

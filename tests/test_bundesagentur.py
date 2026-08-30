@@ -165,7 +165,7 @@ def test_oversize_query_without_verified_cover_crashes(
         is_reusable=True,
     )
 
-    with pytest.raises(ScraperError, match="two stable verified covers"):
+    with pytest.raises(ScraperError, match="count-complete covers"):
         BundesagenturScraper("any").fetch()
 
 
@@ -257,7 +257,7 @@ def test_verified_cover_retries_catalogue_churn(httpx_mock, monkeypatch) -> None
     jobs = BundesagenturScraper("any").fetch()
 
     assert {job.ats_id for job in jobs} == {"B", "C", "D"}
-    assert pass_number == 3
+    assert pass_number == 2
 
 
 def test_verified_cover_retries_catalogue_shrink(httpx_mock, monkeypatch) -> None:
