@@ -181,10 +181,10 @@ def test_oversize_query_uses_verified_overlapping_cover(
     def serve(request: httpx.Request) -> httpx.Response:
         params = parse_qs(urlparse(str(request.url)).query)
         size = int(params.get("size", ["1"])[0])
-        location = params.get("arbeitsort", [None])[0]
+        additional_profession = params.get("weitereberufe", [None])[0]
         if size == 1:
             items = [_job("A", "Job A")]
-        elif location == "missing-tail":
+        elif additional_profession == "missing-tail":
             items = [_job("C", "Job C")]
         else:
             items = [_job("A", "Job A"), _job("B", "Job B")]
@@ -196,7 +196,10 @@ def test_oversize_query_uses_verified_overlapping_cover(
                 "facetten": {
                     "arbeitsort": {
                         "counts": {"common": 2, "missing-tail": 1}
-                    }
+                    },
+                    "weitereberufe": {
+                        "counts": {"common": 2, "missing-tail": 1}
+                    },
                 },
             },
         )

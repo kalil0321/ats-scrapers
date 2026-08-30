@@ -105,7 +105,7 @@ _COVER_SORTS = (
 # These API-provided facets are intentionally allowed to overlap or omit a
 # small tail. They are not trusted as partitions; they are only used to add
 # records to a locally deduplicated cover whose final size is verified.
-_COVER_FACETS = ("beruf", "arbeitsort")
+_COVER_FACETS = ("beruf", "arbeitsort", "weitereberufe")
 MAX_COVER_TOTAL = 25_000
 MAX_COVER_ATTEMPTS = 3
 COVER_ABSORB_BATCH_SIZE = 500
