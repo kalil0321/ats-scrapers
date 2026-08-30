@@ -395,8 +395,9 @@ def test_malformed_json_crashes_not_skips(httpx_mock) -> None:
         content=b"<html>Maintenance</html>",
         is_reusable=True,
     )
-    with pytest.raises(ScraperError):
+    with pytest.raises(ScraperError) as exc_info:
         BundesagenturScraper("any").fetch()
+    assert type(exc_info.value) is ScraperError
 
 
 def test_incomplete_200_retries_then_succeeds(httpx_mock) -> None:

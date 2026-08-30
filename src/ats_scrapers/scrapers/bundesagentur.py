@@ -525,7 +525,7 @@ class BundesagenturScraper(BaseScraper):
                         else:
                             return payload
                 if attempt == MAX_RETRIES:
-                    raise _PageFetchExhaustedError(
+                    raise ScraperError(
                         "Bundesagentur returned an invalid 200 payload for "
                         f"{params} after {MAX_RETRIES} retries: {last_exc}"
                     ) from last_exc
