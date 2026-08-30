@@ -16,26 +16,18 @@ details remain on the v4 endpoint.
 The API caps pagination at ``size × page = 10,000`` results per query
 (``size=100, page=100``). Past that limit, the server returns 400.
 
-To collect the full ~1M jobs we subdivide *recursively* by orthogonal
-facets in priority order: ``berufsfeld`` (144 categories) →
-``arbeitszeit`` (5 work-time buckets, e.g. ``vz``/``tz``) →
-``zeitarbeit`` (2 — temp work yes/no) → ``befristung`` (3 — permanent /
-fixed-term / vocational). At each level we only descend if the bucket
-still exceeds the 10k cap. Empirically this is enough to break every
-oversize category into <10k leaves.
+To collect the full ~1M jobs we subdivide *recursively* using only facets
+whose bucket counts form an exact, non-overlapping partition of the current
+query. If the API exposes no such partition for an oversized leaf, we build
+an overlapping cover from every official sort order plus high-cardinality
+facets, deduplicate by reference number, and accept it only when its unique
+row count reaches the API's advertised total. Otherwise the scrape fails
+closed and preserves the previous complete dataset.
 
 The earlier version subdivided by Bundesland names, but the API's
 ``arbeitsort`` filter expects *city* names (e.g. ``"Berlin"``,
 ``"München"``), not states (``"Bayern"`` returns 0) — that bug capped
 output at ~301k.
-
-A subsequent 4-facet version (``berufsfeld → arbeitszeit → zeitarbeit →
-befristung``) still capped near ~301-500k because the tail facets are
-heavily skewed (~84% in the dominant bucket each), so the worst leaf —
-Verkauf + vz + false + befristung=3 — still held 56k jobs against a
-10k cap. The current 6-facet recursion adds ``eintrittsdatum`` (24
-month windows) and ``arbeitgeber`` (top-100 employers per leaf), which
-is enough to drive every dominant leaf below 10k.
 
 Single-tenant scraper: ``company_slug`` is informational and ignored.
 The output rows carry the German employer name as ``company`` so the
@@ -66,7 +58,7 @@ API_KEY = "jobboerse-jobsuche"  # Public key shared by the official frontend.
 PAGE_SIZE = 100
 PAGE_LIMIT = 100  # size × page caps at 10,000 → max page=100 at size=100.
 PAGINATION_CAP = PAGE_SIZE * PAGE_LIMIT
-# The 6-facet recursion issues 10k+ requests for a full scrape. The
+# The recursive fan-out issues 10k+ requests for a full scrape. The
 # arbeitsagentur API has an Akamai-style WAF that returns 403 under
 # burst load. A shared global semaphore at 2 + sequential page fan-out
 # within each leaf keeps the request pace below the WAF threshold while
@@ -99,6 +91,19 @@ _SUBDIVISION_FACETS = (
     "arbeitgeber",
 )
 MAX_SUBDIVISION_DEPTH = len(_SUBDIVISION_FACETS)
+
+# The official frontend exposes these four sort orders. Different orderings
+# surface different records before the API's hard 10k pagination cap.
+_COVER_SORTS = (
+    "relevanz",
+    "veroeffdatum",
+    "moddatum",
+    "eintrittsdatum",
+)
+# These API-provided facets are intentionally allowed to overlap or omit a
+# small tail. They are not trusted as partitions; they are only used to add
+# records to a locally deduplicated cover whose final size is verified.
+_COVER_FACETS = ("beruf", "arbeitsort")
 
 
 class _PageFetchExhaustedError(ScraperError):
@@ -278,9 +283,9 @@ class BundesagenturScraper(BaseScraper):
     ) -> None:
         """Recursively pull all jobs matching ``base_params``.
 
-        Pagination caps at 10k. If the query exceeds that, pick the next
-        unused subdivision facet and split. ``depth`` bounds the
-        recursion: berufsfeld → arbeitszeit → zeitarbeit → befristung.
+        Pagination caps at 10k. If the query exceeds that, use an exact
+        facet partition when available, then fall back to a verified
+        overlapping cover. ``depth`` bounds recursive facet subdivision.
         """
         first = await self._fetch_page(
             client, sem, params={**base_params, "size": 1, "page": 1},
@@ -301,10 +306,15 @@ class BundesagenturScraper(BaseScraper):
         applied = set(base_params.keys())
         partition = _select_partition(first, total=total, applied=applied)
         if partition is None or depth >= MAX_SUBDIVISION_DEPTH:
-            raise ScraperError(
-                f"Bundesagentur cannot losslessly partition {total} jobs "
-                f"for params={base_params}"
+            await self._collect_verified_cover(
+                client,
+                sem,
+                base_params=base_params,
+                total=total,
+                initial_payload=first,
+                absorb=absorb,
             )
+            return
         facet_name, bucket_counts = partition
 
         async def child_bucket(value: str, count: int) -> None:
@@ -319,6 +329,82 @@ class BundesagenturScraper(BaseScraper):
         await asyncio.gather(
             *(child_bucket(v, c) for v, c in bucket_counts.items())
         )
+
+    async def _collect_verified_cover(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        *,
+        base_params: dict[str, Any],
+        total: int,
+        initial_payload: dict[str, Any],
+        absorb: Callable[[list[dict[str, Any]]], Awaitable[None]],
+    ) -> None:
+        """Recover an oversized leaf without treating overlaps as partitions.
+
+        The API exposes several official sort orders and high-cardinality
+        facets, each of which reveals a different slice before the 10k cap.
+        Collect their union locally, deduplicate by reference number, and only
+        release rows to the caller after a fresh total probe confirms coverage.
+        """
+        items_by_reference: dict[str, dict[str, Any]] = {}
+
+        async def collect_pages(params: dict[str, Any], count: int) -> None:
+            page_count = min(
+                (count + PAGE_SIZE - 1) // PAGE_SIZE,
+                PAGE_LIMIT,
+            )
+            for page in range(1, page_count + 1):
+                payload = await self._fetch_page(
+                    client,
+                    sem,
+                    params={**params, "size": PAGE_SIZE, "page": page},
+                )
+                for item in _result_items(payload):
+                    reference = _item_reference(item)
+                    if reference:
+                        items_by_reference[reference] = item
+
+        covered = False
+        for sort in _COVER_SORTS:
+            await collect_pages({**base_params, "sort": sort}, total)
+            if len(items_by_reference) >= total:
+                covered = True
+                break
+
+        facets = initial_payload.get("facetten")
+        if not covered and isinstance(facets, dict):
+            for facet_name in _COVER_FACETS:
+                counts = _bucket_counts(facets, facet_name)
+                for value, count in sorted(
+                    counts.items(), key=lambda item: item[1], reverse=True
+                ):
+                    if count > PAGINATION_CAP:
+                        continue
+                    await collect_pages(
+                        {**base_params, facet_name: value},
+                        count,
+                    )
+                    if len(items_by_reference) >= total:
+                        covered = True
+                        break
+                if covered:
+                    break
+
+        latest = await self._fetch_page(
+            client,
+            sem,
+            params={**base_params, "size": 1, "page": 1},
+        )
+        latest_total = int(latest.get("maxErgebnisse") or 0)
+        if len(items_by_reference) < latest_total:
+            raise ScraperError(
+                "Bundesagentur verified cover is incomplete: "
+                f"collected {len(items_by_reference)} unique jobs for "
+                f"latest_total={latest_total}, initial_total={total}, "
+                f"params={base_params}"
+            )
+        await absorb(list(items_by_reference.values()))
 
     async def _fan_out_pages(
         self,
@@ -416,7 +502,7 @@ class BundesagenturScraper(BaseScraper):
         )
 
     def _parse(self, item: dict[str, Any]) -> Job | None:
-        ats_id = str(item.get("referenznummer") or item.get("refnr") or "").strip()
+        ats_id = _item_reference(item)
         title = str(
             item.get("stellenangebotsTitel")
             or item.get("titel")
@@ -574,6 +660,10 @@ def _result_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not all(isinstance(item, dict) for item in items):
         raise ScraperError("Bundesagentur v6 returned a non-object job")
     return items
+
+
+def _item_reference(item: dict[str, Any]) -> str:
+    return str(item.get("referenznummer") or item.get("refnr") or "").strip()
 
 
 def _employment_details(

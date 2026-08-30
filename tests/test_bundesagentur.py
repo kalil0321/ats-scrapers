@@ -123,19 +123,65 @@ def test_partition_ignores_non_exhaustive_facets() -> None:
     )
 
 
-def test_oversize_query_without_lossless_partition_crashes(httpx_mock) -> None:
+def test_oversize_query_without_verified_cover_crashes(
+    httpx_mock, monkeypatch
+) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 1)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 1)
     httpx_mock.add_response(
         url=_API_RE,
         json={
             "ergebnisliste": [_job("1", "Probe")],
-            "maxErgebnisse": 10_001,
-            "facetten": {"berufsfeld": {"counts": {"IT": 9_000}}},
+            "maxErgebnisse": 2,
+            "facetten": {},
         },
         is_reusable=True,
     )
 
-    with pytest.raises(ScraperError, match="cannot losslessly partition"):
+    with pytest.raises(ScraperError, match="verified cover is incomplete"):
         BundesagenturScraper("any").fetch()
+
+
+def test_oversize_query_uses_verified_overlapping_cover(
+    httpx_mock, monkeypatch
+) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 2)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        params = parse_qs(urlparse(str(request.url)).query)
+        size = int(params.get("size", ["1"])[0])
+        profession = params.get("beruf", [None])[0]
+        if size == 1:
+            items = [_job("A", "Job A")]
+        elif profession == "missing-tail":
+            items = [_job("C", "Job C")]
+        else:
+            items = [_job("A", "Job A"), _job("B", "Job B")]
+        return httpx.Response(
+            200,
+            json={
+                "ergebnisliste": items,
+                "maxErgebnisse": 3,
+                "facetten": {
+                    "beruf": {
+                        "counts": {"common": 2, "missing-tail": 1}
+                    }
+                },
+            },
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert {job.ats_id for job in jobs} == {"A", "B", "C"}
 
 
 # --- Retry exhaustion: abort rather than publish a partial catalogue --------
