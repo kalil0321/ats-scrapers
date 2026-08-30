@@ -123,18 +123,187 @@ def test_partition_ignores_non_exhaustive_facets() -> None:
     )
 
 
-def test_oversize_query_without_lossless_partition_crashes(httpx_mock) -> None:
+def test_partition_uses_exact_profession_buckets() -> None:
+    from ats_scrapers.scrapers.bundesagentur import _select_partition
+
+    payload = {
+        "facetten": {
+            "beruf": {
+                "counts": {
+                    "Kaufmann/-frau - Einzelhandel": 8_000,
+                    "Verkäufer/in": 4_000,
+                }
+            },
+            "arbeitszeit": {"counts": {"vz": 11_900, "tz": 300}},
+        }
+    }
+
+    assert _select_partition(payload, total=12_000, applied=set()) == (
+        "beruf",
+        {
+            "Kaufmann/-frau - Einzelhandel": 8_000,
+            "Verkäufer/in": 4_000,
+        },
+    )
+
+
+def test_oversize_query_without_verified_cover_crashes(
+    httpx_mock, monkeypatch
+) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 1)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 1)
     httpx_mock.add_response(
         url=_API_RE,
         json={
             "ergebnisliste": [_job("1", "Probe")],
-            "maxErgebnisse": 10_001,
-            "facetten": {"berufsfeld": {"counts": {"IT": 9_000}}},
+            "maxErgebnisse": 2,
+            "facetten": {},
         },
         is_reusable=True,
     )
 
-    with pytest.raises(ScraperError, match="cannot losslessly partition"):
+    with pytest.raises(ScraperError, match="two stable verified covers"):
+        BundesagenturScraper("any").fetch()
+
+
+def test_oversize_query_uses_verified_overlapping_cover(
+    httpx_mock, monkeypatch
+) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 2)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        params = parse_qs(urlparse(str(request.url)).query)
+        size = int(params.get("size", ["1"])[0])
+        location = params.get("arbeitsort", [None])[0]
+        if size == 1:
+            items = [_job("A", "Job A")]
+        elif location == "missing-tail":
+            items = [_job("C", "Job C")]
+        else:
+            items = [_job("A", "Job A"), _job("B", "Job B")]
+        return httpx.Response(
+            200,
+            json={
+                "ergebnisliste": items,
+                "maxErgebnisse": 3,
+                "facetten": {
+                    "arbeitsort": {
+                        "counts": {"common": 2, "missing-tail": 1}
+                    }
+                },
+            },
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert {job.ats_id for job in jobs} == {"A", "B", "C"}
+
+
+def test_verified_cover_retries_catalogue_churn(httpx_mock, monkeypatch) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 2)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
+    pass_number = 0
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        nonlocal pass_number
+        params = parse_qs(urlparse(str(request.url)).query)
+        size = int(params.get("size", ["1"])[0])
+        sort = params.get("sort", [None])[0]
+        location = params.get("arbeitsort", [None])[0]
+        if size == 1:
+            items = [_job("B", "Job B")]
+        else:
+            if sort == "relevanz":
+                pass_number += 1
+            if pass_number == 1:
+                items = (
+                    [_job("C", "Job C")]
+                    if location == "missing-tail"
+                    else [_job("A", "Job A"), _job("B", "Job B")]
+                )
+            else:
+                items = (
+                    [_job("D", "Job D")]
+                    if location == "missing-tail"
+                    else [_job("B", "Job B"), _job("C", "Job C")]
+                )
+        return httpx.Response(
+            200,
+            json={
+                "ergebnisliste": items,
+                "maxErgebnisse": 3,
+                "facetten": {
+                    "arbeitsort": {
+                        "counts": {"common": 2, "missing-tail": 1}
+                    }
+                },
+            },
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert {job.ats_id for job in jobs} == {"B", "C", "D"}
+    assert pass_number == 3
+
+
+def test_verified_cover_retries_catalogue_shrink(httpx_mock, monkeypatch) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 2)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
+    probe_number = 0
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        nonlocal probe_number
+        params = parse_qs(urlparse(str(request.url)).query)
+        size = int(params.get("size", ["1"])[0])
+        if size == 1:
+            probe_number += 1
+            total = 3 if probe_number <= 2 else 2
+            items = [_job("A", "Job A")]
+        else:
+            total = 2
+            items = [_job("A", "Job A"), _job("B", "Job B")]
+        return httpx.Response(
+            200,
+            json={
+                "ergebnisliste": items,
+                "maxErgebnisse": total,
+                "facetten": {},
+            },
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert {job.ats_id for job in jobs} == {"A", "B"}
+    assert probe_number == 7
+
+
+def test_missing_result_total_is_a_contract_break(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_RE,
+        json={"ergebnisliste": [_job("1", "Probe")]},
+        is_reusable=True,
+    )
+
+    with pytest.raises(ScraperError, match="valid maxErgebnisse"):
         BundesagenturScraper("any").fetch()
 
 
