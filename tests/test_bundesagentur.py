@@ -387,9 +387,7 @@ def test_root_probe_404_crashes_not_skips(httpx_mock) -> None:
 
 
 def test_malformed_json_crashes_not_skips(httpx_mock) -> None:
-    """A 200 OK with a malformed body is a contract break — the schema
-    we're parsing against is unknown — and must crash rather than
-    soft-fail to ``[]``."""
+    """Repeated malformed 200 responses must fail closed."""
     from ats_scrapers.exceptions import ScraperError
     httpx_mock.add_response(
         url=_API_RE,
@@ -397,8 +395,27 @@ def test_malformed_json_crashes_not_skips(httpx_mock) -> None:
         content=b"<html>Maintenance</html>",
         is_reusable=True,
     )
-    with pytest.raises(ScraperError):
+    with pytest.raises(ScraperError) as exc_info:
         BundesagenturScraper("any").fetch()
+    assert type(exc_info.value) is ScraperError
+
+
+def test_incomplete_200_retries_then_succeeds(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_RE,
+        status_code=200,
+        json={"maxErgebnisse": 1},
+    )
+    httpx_mock.add_response(
+        url=_API_RE,
+        status_code=200,
+        json={"ergebnisliste": [_job("1", "Probe")], "maxErgebnisse": 1},
+        is_reusable=True,
+    )
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert {job.ats_id for job in jobs} == {"1"}
 
 
 # ---------------------------------------------------------------------------
