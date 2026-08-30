@@ -447,11 +447,7 @@ class BundesagenturScraper(BaseScraper):
                     ):
                         return items_by_reference
 
-        raise ScraperError(
-            "Bundesagentur verified cover is incomplete: "
-            f"collected {len(items_by_reference)} unique jobs for "
-            f"total={total}, params={base_params}"
-        )
+        return items_by_reference
 
     async def _fan_out_pages(
         self,

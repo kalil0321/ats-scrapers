@@ -165,7 +165,7 @@ def test_oversize_query_without_verified_cover_crashes(
         is_reusable=True,
     )
 
-    with pytest.raises(ScraperError, match="verified cover is incomplete"):
+    with pytest.raises(ScraperError, match="two stable verified covers"):
         BundesagenturScraper("any").fetch()
 
 
@@ -258,6 +258,42 @@ def test_verified_cover_retries_catalogue_churn(httpx_mock, monkeypatch) -> None
 
     assert {job.ats_id for job in jobs} == {"B", "C", "D"}
     assert pass_number == 3
+
+
+def test_verified_cover_retries_catalogue_shrink(httpx_mock, monkeypatch) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 2)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
+    probe_number = 0
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        nonlocal probe_number
+        params = parse_qs(urlparse(str(request.url)).query)
+        size = int(params.get("size", ["1"])[0])
+        if size == 1:
+            probe_number += 1
+            total = 3 if probe_number <= 2 else 2
+            items = [_job("A", "Job A")]
+        else:
+            total = 2
+            items = [_job("A", "Job A"), _job("B", "Job B")]
+        return httpx.Response(
+            200,
+            json={
+                "ergebnisliste": items,
+                "maxErgebnisse": total,
+                "facetten": {},
+            },
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert {job.ats_id for job in jobs} == {"A", "B"}
+    assert probe_number == 7
 
 
 def test_missing_result_total_is_a_contract_break(httpx_mock) -> None:
