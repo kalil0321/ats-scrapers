@@ -510,14 +510,31 @@ class BundesagenturScraper(BaseScraper):
                 try:
                     payload = r.json()
                 except ValueError as exc:
-                    raise ScraperError(
-                        f"Bundesagentur returned non-JSON for {params}: {exc}"
-                    ) from exc
-                if not isinstance(payload, dict):
-                    raise ScraperError(
-                        f"Bundesagentur returned a non-object payload for {params}"
-                    )
-                return payload
+                    last_exc = exc
+                else:
+                    if not isinstance(payload, dict):
+                        last_exc = ScraperError(
+                            "Bundesagentur returned a non-object payload"
+                        )
+                    else:
+                        try:
+                            _result_items(payload)
+                            _result_total(payload)
+                        except ScraperError as exc:
+                            last_exc = exc
+                        else:
+                            return payload
+                if attempt == MAX_RETRIES:
+                    raise _PageFetchExhaustedError(
+                        "Bundesagentur returned an invalid 200 payload for "
+                        f"{params} after {MAX_RETRIES} retries: {last_exc}"
+                    ) from last_exc
+                base = RETRY_BASE_DELAY * (2 ** attempt)
+                delay = base * (
+                    1 + random.uniform(-RETRY_JITTER, RETRY_JITTER)
+                )
+                await asyncio.sleep(delay)
+                continue
             if r.status_code == 400:
                 raise ScraperError(
                     f"Bundesagentur rejected query {params}: {r.text[:120]}"
