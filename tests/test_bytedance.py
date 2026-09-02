@@ -311,8 +311,11 @@ def test_fetch_rejects_short_page_before_reported_count(httpx_mock) -> None:
 
 
 def test_fetch_rejects_overlapping_pages_before_reported_count(
-    httpx_mock,
+    httpx_mock, monkeypatch
 ) -> None:
+    monkeypatch.setattr(
+        "ats_scrapers.scrapers.bytedance.MAX_CATALOGUE_ATTEMPTS", 1
+    )
     first_page = [
         {**_FIXTURE, "id": str(index)}
         for index in range(PAGE_SIZE)
@@ -342,6 +345,35 @@ def test_fetch_rejects_overlapping_pages_before_reported_count(
         match=rf"{PAGE_SIZE + PAGE_SIZE // 2}/{total} unique jobs",
     ):
         BytedanceScraper("any").fetch()
+
+
+def test_fetch_retries_catalogue_after_overlapping_pages(httpx_mock) -> None:
+    first_page = [
+        {**_FIXTURE, "id": str(index)}
+        for index in range(PAGE_SIZE)
+    ]
+    overlapping_page = [
+        {**_FIXTURE, "id": str(index)}
+        for index in range(PAGE_SIZE // 2, PAGE_SIZE + PAGE_SIZE // 2)
+    ]
+    second_page = [
+        {**_FIXTURE, "id": str(index)}
+        for index in range(PAGE_SIZE, PAGE_SIZE * 2)
+    ]
+    total = PAGE_SIZE * 2
+    for jobs in (first_page, overlapping_page, first_page, second_page):
+        httpx_mock.add_response(
+            url=API_URL,
+            json={
+                "code": 0,
+                "data": {"job_post_list": jobs, "count": total},
+            },
+        )
+
+    result = BytedanceScraper("any").fetch()
+
+    assert len(result) == total
+    assert len({job.ats_id for job in result}) == total
 
 
 # --- Helper-function units --------------------------------------------------
