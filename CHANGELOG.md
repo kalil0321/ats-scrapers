@@ -5,6 +5,40 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-02
+
+### Added
+
+- 19 installable source adapters: ADP Workforce Now, Beisen, Beisen Legacy,
+  ByteDance, Darwinbox, Dayforce, Gupy, HERP, HRMOS, Job Bank Canada, Jobvite,
+  Keka, Moka, PageUp, Paycom, Paylocity, SEEK, Softgarden, and UKG Pro.
+- Careers-URL resolution for the newly supported multi-tenant platforms.
+- `Job.application_deadline` for explicit source-provided deadlines, currently
+  populated from `g:expiration_date` in SuccessFactors RSS feeds.
+- Workday posting start and end dates in `Job.raw` when supplied by the detail
+  endpoint.
+
+### Changed
+
+- SuccessFactors supports legacy XML feeds in addition to the existing API.
+- Bundesagentur uses the v6 API with expanded profession coverage, bounded
+  retries, and fail-closed handling for incomplete responses.
+- Dayforce supports multiple public-feed variants used by different tenants.
+- Moka scraping installs AES-CBC support through the `scrapers` extra.
+- The package description no longer embeds dataset counts that become stale
+  between releases.
+
+### Fixed
+
+- ByteDance retries a full catalogue snapshot when upstream changes cause
+  overlapping offset pages, while still failing closed on repeated mismatch.
+- Workday retries transient HTML outage responses instead of treating them as
+  successful JSON payloads.
+- The shared fetcher distinguishes exhausted retryable failures and passes
+  timeouts to `httpcloak` in the units it expects.
+- Reliability and parsing fixes for BambooHR, iCIMS, Oracle, The Hub, Uber,
+  Workable, and several newly added providers.
+
 ## [0.2.0] — 2026-07-23
 
 ### Added — company discovery without ATS knowledge
