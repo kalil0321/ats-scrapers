@@ -14,7 +14,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   Keka, Moka, PageUp, Paycom, Paylocity, SEEK, Softgarden, and UKG Pro.
 - Careers-URL resolution for the newly supported multi-tenant platforms.
 - `Job.application_deadline` for explicit source-provided deadlines, currently
-  populated by SuccessFactors legacy feeds.
+  populated from `g:expiration_date` in SuccessFactors RSS feeds.
 - Workday posting start and end dates in `Job.raw` when supplied by the detail
   endpoint.
 
