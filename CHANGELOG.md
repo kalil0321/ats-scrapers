@@ -30,6 +30,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
+- ByteDance retries a full catalogue snapshot when upstream changes cause
+  overlapping offset pages, while still failing closed on repeated mismatch.
 - Workday retries transient HTML outage responses instead of treating them as
   successful JSON payloads.
 - The shared fetcher distinguishes exhausted retryable failures and passes
