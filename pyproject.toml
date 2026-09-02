@@ -106,6 +106,7 @@ packages = ["src/ats_scrapers"]
 include = [
     "/src",
     "/README.md",
+    "/CHANGELOG.md",
     "/LICENSE",
 ]
 
