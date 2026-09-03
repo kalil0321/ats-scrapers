@@ -86,6 +86,11 @@ def test_oracle_dedupes_same_tenant_job_across_named_sites() -> None:
     assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
 
 
+def test_applitrack_preserves_distinct_provider_ids() -> None:
+    assert runner.CONFIGS["applitrack"]["dedupe_by_ats_id"] is True
+    assert "dedupe_by_content" not in runner.CONFIGS["applitrack"]
+
+
 def test_icims_dedupes_exact_job_url_across_named_portals() -> None:
     first = Job(
         url="https://careers-acme.icims.com/jobs/1/engineer/job?in_iframe=1",

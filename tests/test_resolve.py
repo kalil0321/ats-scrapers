@@ -8,6 +8,7 @@ from ats_scrapers import get_scraper_for_url, resolve_careers_url
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import (
+    AppliTrackScraper,
     AshbyScraper,
     BeisenLegacyScraper,
     BeisenScraper,
@@ -30,6 +31,18 @@ from ats_scrapers.scrapers import (
 
 RESOLVES = [
     # Path-based tenants
+    (
+        "https://www.applitrack.com/leander/onlineapp/"
+        "JobPostings/view.asp?AppliTrackJobId=10217",
+        ATSType.APPLITRACK,
+        "https://www.applitrack.com/leander/onlineapp",
+    ),
+    (
+        "https://phl.applitrack.com/RESA/onlineapp/"
+        "JobPostings/view.asp?AppliTrackJobId=15692_1164",
+        ATSType.APPLITRACK,
+        "https://www.applitrack.com/resa/onlineapp",
+    ),
     ("https://jobs.ashbyhq.com/openai", ATSType.ASHBY, "openai"),
     ("https://jobs.ashbyhq.com/openai/some-posting-id", ATSType.ASHBY, "openai"),
     ("https://boards.greenhouse.io/anthropic", ATSType.GREENHOUSE, "anthropic"),
@@ -207,6 +220,9 @@ def test_icims_nonstandard_prefix_keeps_full_url() -> None:
     [
         "https://careers.example.com/jobs",       # custom domain
         "https://www.linkedin.com/jobs/view/1",   # aggregator
+        "https://www.applitrack.com/onlineapp/JobPostings/view.asp",
+        "https://www.applitrack.com/bad_tenant/onlineapp/",
+        "https://www.applitrack.com/leander/jobs/",
         "https://jobs.ashbyhq.com",               # no slug in path
         "https://jobs.jobvite.com/search",
         "https://jobs.jobvite.com/jobs",
@@ -241,6 +257,13 @@ def test_unrecognized_urls_return_none(url: str) -> None:
 
 
 def test_get_scraper_for_url_builds_scraper() -> None:
+    assert isinstance(
+        get_scraper_for_url(
+            "https://www.applitrack.com/leander/onlineapp/"
+            "JobPostings/view.asp?AppliTrackJobId=10217"
+        ),
+        AppliTrackScraper,
+    )
     scraper = get_scraper_for_url(
         "https://jobs.ashbyhq.com/openai", include_descriptions=False
     )

@@ -1,12 +1,13 @@
 # Provider Description Matrix
 
-This table covers the 52 providers listed below.
+This table covers the 53 providers listed below.
 `API/feed` means the data comes from a machine-readable endpoint such as JSON,
 XML, RSS, GraphQL, or a markdown endpoint. `HTML` means the scraper parses a
 page/rendered page rather than a structured job payload.
 
 | Provider | Has description? | Is description 2 steps? | Job fetch: API / HTML? | Description: API / HTML? |
 |---|---:|---:|---|---|
+| `applitrack` | Yes | No | HTML in public JavaScript response | HTML |
 | `amazon` | Yes | No | API | API |
 | `apple` | Yes | No | API | API |
 | `arbetsformedlingen` | Yes | No | API | API |
