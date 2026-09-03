@@ -22,7 +22,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "icims", "join_com", "jobvite", "keka", "lever", "mercor", "moka", "oracle", "pageup", "paycom", "paylocity",
         "personio", "phenom",
         "pinpoint", "recruiterbox", "rippling", "smartrecruiters", "softgarden",
-        "successfactors", "ukg", "workable", "workday",
+        "successfactors", "talentio", "ukg", "workable", "workday",
         # Big-tech custom careers systems
         "amazon", "apple", "bytedance", "google", "meta",
         "tesla", "tiktok", "uber", "usajobs",

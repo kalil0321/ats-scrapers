@@ -66,6 +66,7 @@ class ATSType(StrEnum):
     SMARTRECRUITERS = "smartrecruiters"
     SOFTGARDEN = "softgarden"
     SUCCESSFACTORS = "successfactors"
+    TALENTIO = "talentio"
     UKG = "ukg"
     WORKABLE = "workable"
     WORKDAY = "workday"

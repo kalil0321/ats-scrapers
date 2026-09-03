@@ -1,6 +1,6 @@
 # Provider Description Matrix
 
-This table covers the 52 providers listed below.
+This table covers the 53 providers listed below.
 `API/feed` means the data comes from a machine-readable endpoint such as JSON,
 XML, RSS, GraphQL, or a markdown endpoint. `HTML` means the scraper parses a
 page/rendered page rather than a structured job payload.
@@ -48,6 +48,7 @@ page/rendered page rather than a structured job payload.
 | `softgarden` | Yes | No | API/feed | API/feed |
 | `successfactors` | Yes | No | API/feed (RSS/XML) | API/feed (RSS/XML) |
 | `taleo` | Yes | Yes | HTML | HTML |
+| `talentio` | Yes | Yes | HTML bootstrap | HTML (JSON-LD) |
 | `teamtailor` | Yes | No | API/feed (RSS/XML) | API/feed (RSS/XML) |
 | `tesla` | Yes | Yes | API/feed / browser | API/feed |
 | `thehub` | Yes | No | API/feed | API/feed |
