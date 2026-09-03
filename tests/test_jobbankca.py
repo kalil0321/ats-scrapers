@@ -320,6 +320,27 @@ def test_fetch_deduplicates_repeated_ats_id(httpx_mock) -> None:
     assert [j.ats_id for j in jobs] == ["9999"]
 
 
+def test_fetch_treats_consecutive_repeated_pages_as_exhausted(
+    httpx_mock,
+) -> None:
+    """Job Bank clamps pages past the end to its final result page."""
+    httpx_mock.add_response(
+        url="https://www.jobbank.gc.ca/jobsearch/jobsearch",
+        match_params={"searchstring": "", "sort": "M", "page": "1"},
+        html=_page([_article(job_id="9999")]),
+    )
+    for page in ("2", "3"):
+        httpx_mock.add_response(
+            url="https://www.jobbank.gc.ca/jobsearch/jobsearch",
+            match_params={"searchstring": "", "sort": "M", "page": page},
+            html=_page([_article(job_id="9999")]),
+        )
+
+    jobs = JobBankCAScraper("any").fetch()
+
+    assert [job.ats_id for job in jobs] == ["9999"]
+
+
 def test_fetch_respects_max_pages_cap(httpx_mock) -> None:
     """``max_pages=1`` stops after a single page even if more remain."""
     httpx_mock.add_response(

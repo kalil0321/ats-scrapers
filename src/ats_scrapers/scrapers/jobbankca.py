@@ -219,9 +219,12 @@ class JobBankCAScraper(BaseScraper):
                 )
                 repeated_pages = repeated_pages + 1 if added == 0 else 0
                 if repeated_pages >= 2:
-                    raise ScraperError(
-                        "Job Bank repeated only known jobs on consecutive pages"
+                    logger.info(
+                        "Job Bank repeated only known jobs on consecutive "
+                        "pages; treating the catalogue as exhausted"
                     )
+                    exhausted = True
+                    break
                 page += 1
         if self._full_catalogue and not jobs:
             raise ScraperError(
