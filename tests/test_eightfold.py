@@ -329,6 +329,18 @@ def test_fetch_returns_empty_when_first_page_empty(httpx_mock) -> None:
     assert EightfoldScraper("dolby").fetch() == []
 
 
+def test_preserves_requisition_id_equal_to_ats_id(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page([_position(job_id="R-123")]),
+    )
+
+    job = EightfoldScraper("dolby", include_descriptions=False).fetch()[0]
+
+    assert job.ats_id == "R-123"
+    assert job.requisition_id == "R-123"
+
+
 def test_fetch_dedupes_jobs_with_same_ats_id(httpx_mock) -> None:
     """If concurrent pages return the same `displayJobId` (the listing can
     shift between requests), the final list must contain each id once."""
