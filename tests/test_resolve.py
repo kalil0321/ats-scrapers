@@ -159,6 +159,16 @@ RESOLVES = [
     ("https://10xfounders.jobs.personio.com", ATSType.PERSONIO, "10xfounders"),
     ("https://aawdc.pinpointhq.com", ATSType.PINPOINT, "aawdc"),
     ("https://acme.applytojob.com/apply", ATSType.JAZZHR, "acme"),
+    (
+        "https://careers.hireology.com/andersonautogroup/2827500/description",
+        ATSType.HIREOLOGY,
+        "andersonautogroup",
+    ),
+    (
+        "https://careers.hireology.com/thelodgenursing%26rehabcenter/",
+        ATSType.HIREOLOGY,
+        "thelodgenursing&rehabcenter",
+    ),
     ("https://bloomberg.avature.net/careers", ATSType.AVATURE, "bloomberg"),
     ("https://nvidia.eightfold.ai/careers", ATSType.EIGHTFOLD, "nvidia"),
     ("https://petz.gupy.io/jobs/123", ATSType.GUPY, "petz"),
