@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
+from botocore.exceptions import ClientError
 
-from ats_scrapers.exceptions import StorageError
+from ats_scrapers.exceptions import StorageConflictError, StorageError
 from pipeline.r2 import R2Client, R2Config
 
 R2_VARS = (
@@ -142,18 +144,55 @@ class FakeBoto3Client:
     def __init__(self) -> None:
         self.uploaded_files: list[tuple[str, str, str, dict]] = []
         self.put_objects: list[dict] = []
+        self.copy_objects: list[dict] = []
         self.head_responses: dict[str, dict] = {}
+        self.get_responses: dict[str, dict] = {}
+        self.meta = FakeBoto3Meta()
 
     def upload_file(self, src: str, bucket: str, key: str, ExtraArgs=None) -> None:  # noqa: N803
         self.uploaded_files.append((src, bucket, key, ExtraArgs or {}))
 
-    def put_object(self, *, Bucket: str, Key: str, Body: bytes, **extra) -> None:  # noqa: N803
+    def put_object(self, *, Bucket: str, Key: str, Body: bytes, **extra):  # noqa: N803
         self.put_objects.append({"Bucket": Bucket, "Key": Key, "Body": Body, **extra})
+        return {"ETag": '"new-etag"'}
+
+    def copy_object(self, *, Bucket: str, Key: str, **extra):  # noqa: N803
+        params = {"headers": {}}
+        self.meta.events.emit(
+            "before-call.s3.CopyObject",
+            params=params,
+        )
+        self.copy_objects.append(
+            {
+                "Bucket": Bucket,
+                "Key": Key,
+                "headers": params["headers"],
+                **extra,
+            }
+        )
+        return {"CopyObjectResult": {"ETag": '"copied-etag"'}}
 
     def head_object(self, *, Bucket: str, Key: str):  # noqa: N803
         if Key in self.head_responses:
             return self.head_responses[Key]
-        raise Exception("404")
+        raise ClientError(
+            {
+                "Error": {"Code": "NoSuchKey"},
+                "ResponseMetadata": {"HTTPStatusCode": 404},
+            },
+            "HeadObject",
+        )
+
+    def get_object(self, *, Bucket: str, Key: str):  # noqa: N803
+        if Key in self.get_responses:
+            return self.get_responses[Key]
+        raise ClientError(
+            {
+                "Error": {"Code": "NoSuchKey"},
+                "ResponseMetadata": {"HTTPStatusCode": 404},
+            },
+            "GetObject",
+        )
 
     def get_paginator(self, _name: str):
         class P:
@@ -161,6 +200,23 @@ class FakeBoto3Client:
                 yield {"Contents": [{"Key": f"{kwargs.get('Prefix', '')}example"}]}
 
         return P()
+
+
+class FakeBoto3Events:
+    def __init__(self) -> None:
+        self.handlers: dict[str, list] = {}
+
+    def register(self, name: str, handler) -> None:
+        self.handlers.setdefault(name, []).append(handler)
+
+    def emit(self, name: str, **kwargs) -> None:
+        for handler in self.handlers.get(name, []):
+            handler(**kwargs)
+
+
+class FakeBoto3Meta:
+    def __init__(self) -> None:
+        self.events = FakeBoto3Events()
 
 
 @pytest.fixture
@@ -214,6 +270,145 @@ def test_upload_bytes_calls_put_object(
     client.upload_bytes(b"hello", "k", content_type="text/plain")
     assert fake.put_objects[0]["Body"] == b"hello"
     assert fake.put_objects[0]["Key"] == "k"
+
+
+def test_conditional_upload_uses_expected_etag(
+    fake_r2_client: tuple[R2Client, FakeBoto3Client],
+) -> None:
+    client, fake = fake_r2_client
+
+    etag = client.upload_bytes_if_current(
+        b"manifest",
+        "jobhive/v1/manifest.json",
+        expected_etag='"etag-1"',
+        content_type="application/json",
+    )
+
+    assert etag == '"new-etag"'
+    assert fake.put_objects[0]["IfMatch"] == '"etag-1"'
+    assert "IfNoneMatch" not in fake.put_objects[0]
+
+
+def test_conditional_upload_requires_absent_key_for_create(
+    fake_r2_client: tuple[R2Client, FakeBoto3Client],
+) -> None:
+    client, fake = fake_r2_client
+
+    client.upload_bytes_if_current(
+        b"lease",
+        "jobhive/v1/.locks/jobs-publication.json",
+        expected_etag=None,
+    )
+
+    assert fake.put_objects[0]["IfNoneMatch"] == "*"
+    assert "IfMatch" not in fake.put_objects[0]
+
+
+def test_conditional_upload_maps_precondition_failure(
+    fake_r2_client: tuple[R2Client, FakeBoto3Client],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, fake = fake_r2_client
+
+    def conflict(**_kwargs):
+        raise ClientError(
+            {
+                "Error": {"Code": "PreconditionFailed"},
+                "ResponseMetadata": {"HTTPStatusCode": 412},
+            },
+            "PutObject",
+        )
+
+    monkeypatch.setattr(fake, "put_object", conflict)
+
+    with pytest.raises(StorageConflictError):
+        client.upload_bytes_if_current(
+            b"manifest",
+            "jobhive/v1/manifest.json",
+            expected_etag='"stale"',
+        )
+
+
+def test_copy_uses_server_side_copy(
+    fake_r2_client: tuple[R2Client, FakeBoto3Client],
+) -> None:
+    client, fake = fake_r2_client
+
+    client.copy(
+        "jobhive/v1/job-snapshots/abc.csv",
+        "jobhive/v1/all.csv",
+        expected_destination_etag=None,
+        content_type="text/csv",
+        cache_control="public, max-age=300",
+    )
+
+    copied = fake.copy_objects[0]
+    assert copied["Key"] == "jobhive/v1/all.csv"
+    assert copied["CopySource"] == {
+        "Bucket": "bucket",
+        "Key": "jobhive/v1/job-snapshots/abc.csv",
+    }
+    assert copied["MetadataDirective"] == "REPLACE"
+    assert copied["ContentType"] == "text/csv"
+    assert copied["headers"] == {
+        "cf-copy-destination-if-none-match": "*",
+    }
+
+
+def test_copy_fences_existing_destination_with_etag(
+    fake_r2_client: tuple[R2Client, FakeBoto3Client],
+) -> None:
+    client, fake = fake_r2_client
+
+    client.copy(
+        "jobhive/v1/job-snapshots/abc.csv",
+        "jobhive/v1/all.csv",
+        expected_destination_etag='"previous"',
+    )
+
+    assert fake.copy_objects[0]["headers"] == {
+        "cf-copy-destination-if-match": '"previous"',
+    }
+
+
+def test_copy_maps_destination_precondition_failure(
+    fake_r2_client: tuple[R2Client, FakeBoto3Client],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, fake = fake_r2_client
+
+    def reject_copy(**_kwargs):
+        raise ClientError(
+            {
+                "Error": {"Code": "PreconditionFailed"},
+                "ResponseMetadata": {"HTTPStatusCode": 412},
+            },
+            "CopyObject",
+        )
+
+    monkeypatch.setattr(fake, "copy_object", reject_copy)
+
+    with pytest.raises(StorageConflictError, match="conditional copy"):
+        client.copy(
+            "jobhive/v1/job-snapshots/abc.csv",
+            "jobhive/v1/all.csv",
+            expected_destination_etag='"previous"',
+        )
+
+
+def test_get_bytes_with_etag(
+    fake_r2_client: tuple[R2Client, FakeBoto3Client],
+) -> None:
+    client, fake = fake_r2_client
+    fake.get_responses["manifest"] = {
+        "Body": io.BytesIO(b"{}"),
+        "ETag": '"etag-1"',
+    }
+
+    assert client.get_bytes_with_etag("manifest") == (
+        b"{}",
+        '"etag-1"',
+    )
 
 
 def test_public_url_returns_none_when_no_base() -> None:
