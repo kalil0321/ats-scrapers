@@ -624,6 +624,9 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "greenhouse": {
         "scraper": GreenhouseScraper,
         "slug": _greenhouse_slug,
+        "kwargs": lambda r: {
+            "company_name": (r.get("company_name") or "").strip() or None,
+        },
         "csv": "ats-companies/greenhouse.csv",
         "output": "greenhouse/jobs.csv",
     },
