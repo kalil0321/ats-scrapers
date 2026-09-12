@@ -86,6 +86,22 @@ def test_oracle_dedupes_same_tenant_job_across_named_sites() -> None:
     assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
 
 
+def test_recruitee_company_name_override_is_opt_in() -> None:
+    config = runner.CONFIGS["recruitee"]
+    ordinary_row = {
+        "name": "Acme Catalog Name",
+        "slug": "acme",
+        "url": "https://acme.recruitee.com",
+    }
+    corrected_row = {
+        **ordinary_row,
+        "company_name": "Acme Holdings",
+    }
+
+    assert config["kwargs"](ordinary_row) == {"company_name": None}
+    assert config["kwargs"](corrected_row) == {"company_name": "Acme Holdings"}
+
+
 def test_icims_dedupes_exact_job_url_across_named_portals() -> None:
     first = Job(
         url="https://careers-acme.icims.com/jobs/1/engineer/job?in_iframe=1",
