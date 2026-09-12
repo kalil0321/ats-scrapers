@@ -612,6 +612,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "ashby": {
         "scraper": AshbyScraper,
         "slug": _ashby_slug,
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
         "csv": "ats-companies/ashby.csv",
         "output": "ashby/jobs.csv",
     },
