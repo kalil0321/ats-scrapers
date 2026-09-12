@@ -103,6 +103,12 @@ def test_parses_basic_rss(httpx_mock) -> None:
     assert str(job.url) == "https://acme.teamtailor.com/jobs/123-engineer"
 
 
+def test_uses_configured_company_name(httpx_mock) -> None:
+    httpx_mock.add_response(url=RSS_URL, text=_rss([_item()]))
+    jobs = TeamtailorScraper("acme", company_name="Acme Holdings").fetch()
+    assert jobs[0].company == "Acme Holdings"
+
+
 def test_parses_multiple_items_preserves_order(httpx_mock) -> None:
     httpx_mock.add_response(url=RSS_URL, text=_rss([
         _item(title="A", link="https://acme.teamtailor.com/jobs/1-a", guid="g1"),

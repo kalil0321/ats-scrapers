@@ -86,6 +86,161 @@ def test_oracle_dedupes_same_tenant_job_across_named_sites() -> None:
     assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
 
 
+def test_teamtailor_dedupes_same_job_across_mirrored_tenant_feeds() -> None:
+    first = Job(
+        url="https://careers.example.com/jobs/123-engineer",
+        title="Engineer",
+        company="parent-feed",
+        ats_type=ATSType.TEAMTAILOR,
+        ats_id="123",
+    )
+    second = first.model_copy(
+        update={
+            "url": "https://careers-subsidiary.example.com/jobs/123-engineer",
+            "company": "subsidiary-feed",
+        }
+    )
+
+    teamtailor_config = runner.CONFIGS["teamtailor"]
+    assert runner._job_dedupe_key(first, teamtailor_config) == (
+        runner._job_dedupe_key(second, teamtailor_config)
+    )
+    assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
+
+
+def test_teamtailor_pipeline_passes_catalog_company_name() -> None:
+    row = {
+        "name": "Acme Holdings",
+        "slug": "acme",
+        "url": "https://acme.teamtailor.com",
+    }
+
+    assert runner.CONFIGS["teamtailor"]["kwargs"](row) == {
+        "company_name": "Acme Holdings"
+    }
+
+
+def test_deterministic_job_choice_preserves_catalog_priority() -> None:
+    canonical = Job(
+        url="https://shared.example.com/jobs/123-engineer",
+        title="Engineer",
+        company="z-feed",
+        ats_type=ATSType.TEAMTAILOR,
+        ats_id="123",
+    )
+    mirrored = Job(
+        url="https://shared.example.com/jobs/123-engineer",
+        title="Engineer",
+        company="a-feed",
+        ats_type=ATSType.TEAMTAILOR,
+        ats_id="123",
+    )
+
+    canonical_entry = (0, "z-feed", canonical)
+    mirrored_entry = (1, "a-feed", mirrored)
+    assert runner._deterministic_job_choice(None, canonical_entry) is canonical_entry
+    assert (
+        runner._deterministic_job_choice(canonical_entry, mirrored_entry)
+        is canonical_entry
+    )
+    assert (
+        runner._deterministic_job_choice(mirrored_entry, canonical_entry)
+        is canonical_entry
+    )
+
+
+def test_deterministic_job_choice_prefers_authoritative_hostname() -> None:
+    canonical = Job(
+        url="https://canonical.teamtailor.com/jobs/123-engineer",
+        title="Engineer",
+        company="canonical",
+        ats_type=ATSType.TEAMTAILOR,
+        ats_id="123",
+    )
+    mirrored = canonical.model_copy(update={"company": "mirror"})
+    earlier_mirror = (0, "mirror", mirrored)
+    later_canonical = (1, "canonical", canonical)
+
+    assert (
+        runner._deterministic_job_choice(earlier_mirror, later_canonical)
+        is later_canonical
+    )
+    assert (
+        runner._deterministic_job_choice(later_canonical, earlier_mirror)
+        is later_canonical
+    )
+
+
+def test_deterministic_provider_dedupe_ignores_completion_order(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "ats-companies").mkdir()
+    (tmp_path / "ats-companies" / "mirrored.csv").write_text(
+        "name,slug,url\n"
+        "Zulu,zulu,https://zulu.example.com\n"
+        "Alpha,alpha,https://alpha.example.com\n",
+        encoding="utf-8",
+    )
+    delays: dict[str, float] = {}
+
+    async def fake_run_scraper(
+        _scraper_cls,
+        slug,
+        _kwargs=None,
+        _timeout=30,
+        *,
+        include_descriptions=True,
+    ):
+        await asyncio.sleep(delays[slug])
+        return (
+            slug,
+            object(),
+            [
+                Job(
+                    url=f"https://{slug}.example.com/jobs/123-engineer",
+                    title="Engineer",
+                    company=slug,
+                    ats_type=ATSType.TEAMTAILOR,
+                    ats_id="123",
+                )
+            ],
+            None,
+        )
+
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(runner, "_run_scraper", fake_run_scraper)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "mirrored",
+        {
+            "scraper": object,
+            "slug": lambda row: row["slug"],
+            "csv": "ats-companies/mirrored.csv",
+            "output": "mirrored/jobs.csv",
+            "dedupe_by_ats_id": True,
+            "deterministic_dedupe": True,
+            "skip_description_enrichment": True,
+        },
+    )
+
+    def run_with_delays(alpha: float, zulu: float) -> dict[str, str]:
+        delays.update(alpha=alpha, zulu=zulu)
+        rc = asyncio.run(
+            runner.run("mirrored", concurrency=2, max_tenants=None, timeout=1)
+        )
+        assert rc == 0
+        with (tmp_path / "mirrored" / "jobs.csv").open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        assert len(rows) == 1
+        return rows[0]
+
+    alpha_first = run_with_delays(alpha=0, zulu=0.01)
+    zulu_first = run_with_delays(alpha=0.01, zulu=0)
+
+    assert alpha_first == zulu_first
+    assert alpha_first["company"] == "zulu"
+
+
 def test_icims_dedupes_exact_job_url_across_named_portals() -> None:
     first = Job(
         url="https://careers-acme.icims.com/jobs/1/engineer/job?in_iframe=1",
