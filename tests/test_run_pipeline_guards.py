@@ -86,6 +86,24 @@ def test_oracle_dedupes_same_tenant_job_across_named_sites() -> None:
     assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
 
 
+def test_greenhouse_company_name_override_is_opt_in() -> None:
+    config = runner.CONFIGS["greenhouse"]
+    ordinary_row = {
+        "name": "Unreviewed Catalog Label",
+        "slug": "acme",
+        "url": "https://job-boards.greenhouse.io/acme",
+    }
+    validated_row = {
+        **ordinary_row,
+        "company_name": "Acme Holdings",
+    }
+
+    assert config["kwargs"](ordinary_row) == {"company_name": None}
+    assert config["kwargs"](validated_row) == {
+        "company_name": "Acme Holdings"
+    }
+
+
 def test_icims_dedupes_exact_job_url_across_named_portals() -> None:
     first = Job(
         url="https://careers-acme.icims.com/jobs/1/engineer/job?in_iframe=1",
