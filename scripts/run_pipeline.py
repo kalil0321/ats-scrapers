@@ -538,6 +538,9 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "teamtailor": {
         "scraper": TeamtailorScraper,
         "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
+        "dedupe_by_ats_id": True,
+        "deterministic_dedupe": True,
         "csv": "ats-companies/teamtailor.csv",
         "output": "teamtailor/jobs.csv",
     },
@@ -1233,6 +1236,41 @@ def _job_dedupe_key(
     return job.company, ats_id
 
 
+def _deterministic_job_choice(
+    current: tuple[int, str, Job] | None,
+    candidate: tuple[int, str, Job],
+) -> tuple[int, str, Job]:
+    if current is None:
+        return candidate
+
+    def preference(
+        item: tuple[int, str, Job],
+    ) -> tuple[int, int, str, str, str, str]:
+        catalog_priority, source_slug, job = item
+        job_hostname = (urlparse(str(job.url)).hostname or "").casefold()
+        normalized_source = source_slug.strip().casefold()
+        if normalized_source.startswith(("http://", "https://")):
+            source_hostname = (
+                urlparse(normalized_source).hostname or ""
+            ).casefold()
+            owns_job_url = source_hostname == job_hostname
+        else:
+            owns_job_url = (
+                job_hostname == normalized_source
+                or job_hostname.startswith(f"{normalized_source}.")
+            )
+        return (
+            0 if owns_job_url else 1,
+            catalog_priority,
+            (job.company or "").casefold(),
+            str(job.url).casefold(),
+            job.ats_id or "",
+            json.dumps(job.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
+        )
+
+    return min(current, candidate, key=preference)
+
+
 def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
     url = (row.get("url") or "").strip()
@@ -1501,6 +1539,9 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             f"({location} cache at {description_cache.path})"
         )
     seen_keys: set[tuple[str, str]] = set()  # (company, ats_id) for cross-tenant dedup
+    buffered_jobs: dict[tuple[str, str], tuple[int, str, Job]] | None = (
+        {} if cfg.get("deterministic_dedupe") else None
+    )
 
     t0 = time.time()
     try:
@@ -1595,7 +1636,11 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                     print(f"  [{ats}] streaming failed: {type(exc).__name__}: "
                           f"{str(exc)[:200]}")
             else:
-                async def scrape_tenant(slug: str, kw: dict[str, Any]) -> None:
+                async def scrape_tenant(
+                    catalog_priority: int,
+                    slug: str,
+                    kw: dict[str, Any],
+                ) -> None:
                     started = time.time()
                     async with sem:
                         try:
@@ -1632,9 +1677,10 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                     }
                     for job in jobs:
                         key = _job_dedupe_key(job, cfg)
-                        if key in seen_keys:
+                        if buffered_jobs is None and key in seen_keys:
                             continue
-                        seen_keys.add(key)
+                        if buffered_jobs is None:
+                            seen_keys.add(key)
                         if scraper is not None and not cfg.get("skip_description_enrichment"):
                             if _cached_description(job, description_cache) or job.description:
                                 desc_status = await _ensure_description(
@@ -1650,8 +1696,18 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                                         if description_delay:
                                             await asyncio.sleep(description_delay)
                             desc_stats[desc_status] += 1
-                        writer.writerow(_job_to_row(job))
-                        counts["jobs"] += 1
+                        if buffered_jobs is None:
+                            writer.writerow(_job_to_row(job))
+                            counts["jobs"] += 1
+                        else:
+                            current = buffered_jobs.get(key)
+                            chosen = _deterministic_job_choice(
+                                current,
+                                (catalog_priority, slug, job),
+                            )
+                            buffered_jobs[key] = chosen
+                            if current is None:
+                                counts["jobs"] += 1
                     elapsed = time.time() - started
                     if elapsed >= float(cfg.get("slow_tenant_log_seconds", 300)):
                         print(
@@ -1668,7 +1724,12 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                 batch_size = 50
                 for i in range(0, len(targets), batch_size):
                     batch = targets[i:i + batch_size]
-                    await asyncio.gather(*(scrape_tenant(s, kw) for s, kw in batch))
+                    await asyncio.gather(
+                        *(
+                            scrape_tenant(priority, slug, kw)
+                            for priority, (slug, kw) in enumerate(batch, start=i)
+                        )
+                    )
                     f.flush()
                     elapsed = time.time() - t0
                     print(
@@ -1677,6 +1738,11 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                         f"{counts['success']} OK, {counts['not_found']} not-found, "
                         f"{counts['error']} errors, {counts['jobs']:,} jobs"
                     )
+
+                if buffered_jobs is not None:
+                    for key in sorted(buffered_jobs):
+                        _, _, job = buffered_jobs[key]
+                        writer.writerow(_job_to_row(job))
 
         elapsed = time.time() - t0
         print(
