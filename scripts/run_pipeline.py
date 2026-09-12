@@ -391,6 +391,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "breezy": {
         "scraper": BreezyScraper,
         "slug": lambda r: _slug_col(r) or r.get("name"),
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
         "csv": "ats-companies/breezy.csv",
         "output": "breezy/jobs.csv",
     },
