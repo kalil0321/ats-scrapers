@@ -37,6 +37,21 @@ def test_parses_basic_offer(httpx_mock) -> None:
     job = jobs[0]
     assert job.title == "Senior Engineer"
     assert job.ats_type is ATSType.RECRUITEE
+    assert job.company == "AcmeCorp"
+
+
+def test_configured_company_name_overrides_payload_name(httpx_mock) -> None:
+    httpx_mock.add_response(url=API, json={"offers": [_offer()]})
+    jobs = RecruiteeScraper("acme", company_name="Acme Holdings").fetch()
+    assert jobs[0].company == "Acme Holdings"
+
+
+def test_company_name_is_normalized_to_nfc(httpx_mock) -> None:
+    offer = _offer()
+    offer["company_name"] = "Go\u0308cke GmbH"
+    httpx_mock.add_response(url=API, json={"offers": [offer]})
+    jobs = RecruiteeScraper("acme").fetch()
+    assert jobs[0].company == "Göcke GmbH"
 
 
 def test_returns_empty_offers(httpx_mock) -> None:

@@ -606,6 +606,9 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # actual subdomain ("5280highschool"). Always derive the slug
         # from the URL when one is present.
         "slug": _recruitee_slug,
+        "kwargs": lambda r: {
+            "company_name": (r.get("company_name") or "").strip() or None,
+        },
         "csv": "ats-companies/recruitee.csv",
         "output": "recruitee/jobs.csv",
     },
