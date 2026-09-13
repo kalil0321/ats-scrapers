@@ -99,6 +99,7 @@ from ats_scrapers.scrapers import (
     TikTokScraper,
     UberScraper,
     UKGProScraper,
+    VarbiScraper,
     WantedScraper,
     WellfoundScraper,
     WeWorkRemotelyScraper,
@@ -349,6 +350,18 @@ def _icims_slug(row: dict[str, Any]) -> str | None:
 #   is ``ats-companies/{ats}.csv`` with columns ``name,url``)
 # - output: jobs CSV output path (per-ATS jobs dataset under ``{ats}/``)
 CONFIGS: dict[str, dict[str, Any]] = {
+    "varbi": {
+        "scraper": VarbiScraper,
+        "slug": _slug_col,
+        "kwargs": lambda row: {"company_name": (row.get("name") or "").strip() or None},
+        "csv": "ats-companies/varbi.csv",
+        "output": "varbi/jobs.csv",
+        "max_concurrency": 2,
+        "dedupe_by_ats_id": True,
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+    },
     "adp": {
         "scraper": ADPWorkforceNowScraper,
         "slug": lambda r: (r.get("url") or "").strip() or None,
