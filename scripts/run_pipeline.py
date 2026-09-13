@@ -761,6 +761,9 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "meta": {
         "scraper": MetaScraper, "singleton": True,
         "output": "meta/jobs.csv",
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
     },
     "tesla": {
         "scraper": TeslaScraper, "singleton": True,
