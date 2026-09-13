@@ -1,16 +1,6 @@
-"""Tests for the Wellfound scraper.
+"""Legacy opt-in Firecrawl backend and Wellfound markdown parser tests.
 
-The site is gated behind Akamai — every direct fetch 403s. The
-library uses Firecrawl (paid, opt-in) as the rendering backend, so
-the tests focus on:
-
-- Default behaviour without a Firecrawl key (raise with hint)
-- Markdown parser (Wellfound's bullet-separated meta line is
-  particularly format-fragile)
-- Salary / remote / location / posted-date inference from the
-  meta line
-- Multi-role fan-out + dedup of the per-job IDs across roles
-
+Credential-free browser coverage lives in test_wellfound_browser.py.
 """
 
 from __future__ import annotations
@@ -88,7 +78,7 @@ def test_raises_without_firecrawl_key(monkeypatch: pytest.MonkeyPatch) -> None:
     config hint, not silently return []."""
     monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
     with pytest.raises(ScraperError, match="Firecrawl"):
-        WellfoundScraper("any").fetch()
+        WellfoundScraper("any", backend="firecrawl").fetch()
 
 
 def test_get_description_without_firecrawl_key_returns_none(
@@ -300,22 +290,16 @@ def test_parse_relative_time() -> None:
 # --- error handling ---------------------------------------------------------
 
 
-def test_firecrawl_500_returns_empty_for_role_not_crash(httpx_mock) -> None:
-    """A single failing role mustn't crash the whole run — soft-fail
-    on transient Firecrawl errors and keep going for other roles.
-    Test by stubbing a 500 response and verifying the scraper
-    returns [] (no jobs from this role) rather than raising."""
+def test_firecrawl_500_raises_instead_of_returning_partial_results(httpx_mock) -> None:
     httpx_mock.add_response(
         url=_FIRECRAWL_RE,
         status_code=500,
         is_reusable=True,
     )
-    jobs = WellfoundScraper(
-        "any",
-        firecrawl_api_key="test-key",
-        role_slugs=("software-engineer",),
-    ).fetch()
-    assert jobs == []
+    with pytest.raises(ScraperError):
+        WellfoundScraper(
+            "any", firecrawl_api_key="test-key", role_slugs=("software-engineer",),
+        ).fetch()
 
 
 def test_firecrawl_402_payment_required_raises(httpx_mock) -> None:
