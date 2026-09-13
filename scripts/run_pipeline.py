@@ -813,6 +813,9 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # US tech jobs aggregator. ~3-6k live jobs depending on the day.
         "scraper": BuiltInScraper, "singleton": True,
         "output": "builtin/jobs.csv",
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
     },
     "getonbrd": {
         # LATAM tech jobs board. ~1k live.

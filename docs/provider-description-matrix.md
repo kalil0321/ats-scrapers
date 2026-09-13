@@ -14,7 +14,7 @@ page/rendered page rather than a structured job payload.
 | `avature` | Yes | Yes | HTML | HTML |
 | `bamboohr` | Yes | Yes | HTML | API |
 | `breezy` | Yes | Yes | API | HTML |
-| `builtin` | Yes | No | HTML | HTML |
+| `builtin` | Yes | Yes | Public HTML listing summaries | Public JobPosting JSON-LD details |
 | `bundesagentur` | Yes | Yes | API | API |
 | `cornerstone` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `eightfold` | Yes | Yes | API | API |
