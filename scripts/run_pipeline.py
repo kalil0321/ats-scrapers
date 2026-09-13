@@ -874,10 +874,12 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "output": "wanted/jobs.csv",
     },
     "wellfound": {
-        # Wellfound (was AngelList Talent) — US startups. ~700 live;
-        # opt-in Firecrawl path because the API is auth-gated.
+        # Public role pages, local browser, no implicit paid fallback.
         "scraper": WellfoundScraper, "singleton": True,
         "output": "wellfound/jobs.csv",
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
     },
     "weworkremotely": {
         # We Work Remotely — remote-only listings. ~500 live.

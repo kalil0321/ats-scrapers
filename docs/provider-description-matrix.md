@@ -54,8 +54,20 @@ page/rendered page rather than a structured job payload.
 | `tiktok` | Yes | No | API/feed | API/feed |
 | `uber` | Yes | No | API/feed | API/feed |
 | `wanted` | Yes | Yes | API/feed | API/feed |
-| `wellfound` | Yes | Yes | HTML / Firecrawl | HTML / Firecrawl |
+| `wellfound` | Yes | No (browser); Yes (legacy) | Public role-page structured data (local browser) | Embedded full descriptions; Firecrawl legacy opt-in |
 | `weworkremotely` | Yes | No | API/feed (RSS/XML) | API/feed (RSS/XML) |
 | `workable` | Yes | Yes | API/feed | API/feed (Markdown) |
 | `workday` | Yes | Yes | API/feed | API/feed |
 | `ycombinator` | Yes | No | API/feed | API/feed |
+
+## Wellfound browser readiness
+
+The credential-free backend is experimental, not validated for unattended
+production publication. On 2026-09-13, a local browser exposed real structured
+jobs and descriptions, but the VPS received HTTP 403. All 23 public
+`finance-manager` pages exposed 691 unique job IDs against an advertised total
+of 991, before filtering ATS imports. The scraper rejects that incomplete run
+instead of publishing it as a complete catalogue. Resolving that coverage gap
+and validating access on the deployment host are release gates. Role coverage
+is limited to the configured slugs; the confirmed-404 `founders-associate`
+slug has been removed.
