@@ -5,6 +5,13 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- Varbi employer RSS scraper with complete descriptions, public detail metadata,
+  locale-independent tenant IDs, URL resolution, and a validated employer catalog.
+  Expired detail pages are excluded; malformed feeds and mismatched detail pages
+  fail closed. Date-only application deadlines are preserved in `Job.raw`.
+
 ## [0.3.0] — 2026-09-02
 
 ### Added

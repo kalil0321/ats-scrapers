@@ -72,6 +72,7 @@ from ats_scrapers.scrapers.tiktok import TikTokScraper
 from ats_scrapers.scrapers.uber import UberScraper
 from ats_scrapers.scrapers.ukg import UKGProScraper
 from ats_scrapers.scrapers.usajobs import USAJobsScraper
+from ats_scrapers.scrapers.varbi import VarbiScraper
 from ats_scrapers.scrapers.wanted import WantedScraper
 from ats_scrapers.scrapers.welcometothejungle import WTTJScraper
 from ats_scrapers.scrapers.wellfound import WellfoundScraper
@@ -145,6 +146,7 @@ __all__ = [
     "UKGProScraper",
     "USAJobsScraper",
     "UberScraper",
+    "VarbiScraper",
     "WTTJScraper",
     "WantedScraper",
     "WeWorkRemotelyScraper",
