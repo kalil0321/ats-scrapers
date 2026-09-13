@@ -8,8 +8,8 @@ GraphQL responses.
 
 ``cloakbrowser`` (stealth-patched Chromium) ships its own binary and
 bypasses Meta's bot-detection without a paid browser-as-a-service.
-When the package isn't installed the scraper logs a warning and
-returns ``[]`` so the rest of the publish pipeline keeps moving.
+Missing browser dependencies, failed navigation and incomplete listings
+raise errors rather than representing outages as a successful empty feed.
 
 GraphQL listing payloads sometimes include description-like fields; when
 present, the scraper carries them into ``Job.description``.
@@ -20,20 +20,18 @@ from __future__ import annotations
 import asyncio
 import html
 import json
-import logging
 import re
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers import _cloakbrowser as cb
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
-log = logging.getLogger(__name__)
-
-_LISTING_URL = "https://www.metacareers.com/jobs"
+_LISTING_URL = "https://www.metacareers.com/jobsearch/"
 
 # How long to keep listening for GraphQL responses after the listing
 # page finishes its initial load. The page lazy-fires more queries as
@@ -54,9 +52,7 @@ class MetaScraper(BaseScraper):
     ats = ATSType.META
 
     async def afetch(self) -> list[Job]:
-        if not cb.is_enabled():
-            cb.warn_disabled("Meta")
-            return []
+        cb.require_cloakbrowser()
         return await self._fetch_via_cloakbrowser()
 
     def get_description(self, job: Job) -> str | None:
@@ -75,6 +71,7 @@ class MetaScraper(BaseScraper):
 
         proxy = cb.evomi_proxy_from_env()
         captured: list[dict[str, Any]] = []
+        response_tasks: list[asyncio.Task[None]] = []
 
         async def on_response(resp: Any) -> None:
             if "graphql" not in resp.url:
@@ -85,29 +82,67 @@ class MetaScraper(BaseScraper):
                 # GraphQL endpoints occasionally stream non-JSON
                 # (errors, redirects). Silently skip.
                 return
-            captured.append(payload)
+            if isinstance(payload, dict):
+                captured.append(payload)
+
+        def schedule_response(resp: Any) -> None:
+            if "graphql" in resp.url:
+                response_tasks.append(asyncio.create_task(on_response(resp)))
 
         browser = await launch_async(
             headless=True, humanize=True, proxy=proxy,
         )
         try:
             page = await browser.new_page()
-            page.on("response", on_response)
+            page.on("response", schedule_response)
             try:
-                await page.goto(
+                response = await page.goto(
                     _LISTING_URL,
                     wait_until="domcontentloaded",
                     timeout=60_000,
                 )
+                if response is None or response.status >= 400:
+                    status = response.status if response else "no response"
+                    raise ScraperError(f"Meta listing navigation returned {status}")
                 await page.wait_for_timeout(_GRAPHQL_SETTLE_MS)
             except Exception as exc:
-                log.warning("Meta: page load failed (%s)", exc)
+                raise ScraperError(f"Meta listing navigation failed: {exc}") from exc
+            if response_tasks:
+                await asyncio.gather(*response_tasks)
         finally:
+            for task in response_tasks:
+                if not task.done():
+                    task.cancel()
+            if response_tasks:
+                await asyncio.gather(*response_tasks, return_exceptions=True)
             await browser.close()
 
-        jobs = list(self._parse_responses(captured))
+        jobs = self._validated_jobs(captured)
         if self.include_descriptions and jobs:
             await self._enrich_detail_descriptions(jobs)
+        return jobs
+
+    def _validated_jobs(self, responses: list[dict[str, Any]]) -> list[Job]:
+        jobs = self._parse_responses(responses)
+        if not jobs:
+            raise ScraperError("Meta returned no recognized job listings; refusing an empty result")
+        totals: set[int] = set()
+        for payload in responses:
+            data = payload.get("data")
+            if not isinstance(data, dict):
+                continue
+            for key in ("job_search_with_featured_jobs_v2", "job_search_with_featured_jobs"):
+                listing = data.get(key)
+                if not isinstance(listing, dict) or "job_count" not in listing:
+                    continue
+                total = listing["job_count"]
+                if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+                    raise ScraperError("Meta returned an invalid job_count")
+                totals.add(total)
+        if totals and totals != {len(jobs)}:
+            raise ScraperError(
+                f"Meta advertised totals {sorted(totals)} but returned {len(jobs)} unique jobs"
+            )
         return jobs
 
     def _parse_responses(
@@ -122,6 +157,7 @@ class MetaScraper(BaseScraper):
                 title = entry.get("title")
                 if not job_id or not title:
                     continue
+                job_id = str(job_id)
                 if job_id in seen:
                     continue
                 seen.add(job_id)
@@ -149,11 +185,15 @@ class MetaScraper(BaseScraper):
         contract, so we tolerate a few aliases.
         """
         data = payload.get("data") or {}
-        # Primary shape (as of 2026-05): job_search_with_featured_jobs.all_jobs
-        jobs = (data.get("job_search_with_featured_jobs") or {}).get("all_jobs") or []
-        if jobs:
-            yield from jobs
+        if not isinstance(data, dict):
             return
+        # Primary shape (as of 2026-05): job_search_with_featured_jobs.all_jobs
+        for key in ("job_search_with_featured_jobs_v2", "job_search_with_featured_jobs"):
+            listing = data.get(key)
+            jobs = listing.get("all_jobs") if isinstance(listing, dict) else None
+            if isinstance(jobs, list) and jobs:
+                yield from (job for job in jobs if isinstance(job, dict))
+                return
         # Fallback shapes seen in older responses or A/B variants.
         for key in ("job_search_results", "jobSearchResults"):
             results = (data.get(key) or {}).get("results") or []

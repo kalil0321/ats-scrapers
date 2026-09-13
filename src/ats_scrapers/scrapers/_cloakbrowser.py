@@ -26,9 +26,9 @@ Two scrapers use cloakbrowser today:
 Helpers below mirror the structure of :mod:`_browserbase` (which
 Avature still uses as its last-resort fallback): ``is_enabled`` /
 ``require_cloakbrowser`` / ``warn_disabled`` / ``evomi_proxy_from_env``.
-The graceful degradation contract is preserved — when ``cloakbrowser``
-isn't installed, the scraper logs a warning and returns ``[]`` instead
-of crashing the publish pipeline.
+Tesla retains its graceful-degradation contract when ``cloakbrowser`` is
+missing. Meta requires the dependency explicitly so browser failures cannot
+be published as a successful empty feed.
 """
 
 from __future__ import annotations
