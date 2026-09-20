@@ -31,7 +31,9 @@ if TYPE_CHECKING:
 _JOB_PATH = re.compile(r"^/(?:[a-z]{2}/)?what:job/jobID:(\d+)/?$")
 _NON_VACANCY_TITLE = re.compile(
     r"\((?:scholarship|stipendium)\)|^(?:intresseanmälan|spontanansökan|"
-    r"general application|open application|expression of interest)\b", re.I,
+    r"general application|open application|expression of interest|"
+    r"open sollicitatie|spontane sollicitatie|uopfordret ansøgning|"
+    r"spontanansøgning)\b", re.I,
 )
 _COMPANY_PREFIX = re.compile(
     r"^(?:New jobs at|Nya lediga jobb hos|Lediga jobb hos|Ledige stillinger hos|"
@@ -47,6 +49,10 @@ _MONTHS = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "maj": 5,
     "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "okt": 10,
     "nov": 11, "dec": 12, "des": 12,
+    "january": 1, "januari": 1, "february": 2, "februari": 2,
+    "march": 3, "mars": 3, "april": 4, "june": 6, "juni": 6,
+    "july": 7, "juli": 7, "august": 8, "augusti": 8, "september": 9,
+    "october": 10, "oktober": 10, "november": 11, "december": 12,
 }
 _METADATA_FIELDS = (
     "type-of-employment", "hours", "town", "county", "country",
@@ -143,7 +149,7 @@ class VarbiScraper(BaseScraper):
                 or parsed.query or parsed.fragment or not match
             ):
                 raise ScraperError(f"Varbi feed contains an untrusted job URL: {url}")
-            description = _text(item.findtext("description", ""))
+            description = _description_text(item.findtext("description", ""))
             if not title or not description:
                 raise ScraperError("Varbi feed omitted a job title or description")
             if _NON_VACANCY_TITLE.search(title):
@@ -192,7 +198,10 @@ class VarbiScraper(BaseScraper):
             cell = soup.select_one(f".quick-info-{field} td")
             if cell is not None:
                 metadata[field] = cell.get_text(" ", strip=True)
-        deadline = _date(metadata.get("ends", ""))
+        deadline_text = metadata.get("ends", "")
+        deadline = _date(deadline_text)
+        if deadline_text and deadline is None:
+            raise ScraperError(f"Varbi returned an unrecognized deadline: {deadline_text}")
         if deadline and deadline < datetime.now(ZoneInfo("Europe/Stockholm")).date():
             return None
         job.location = ", ".join(
@@ -231,6 +240,17 @@ def _text(value: str) -> str:
     return html.unescape(html.unescape(value)).strip()
 
 
+def _description_text(value: str) -> str:
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError as error:
+        raise ScraperError("Varbi description parsing requires ats-scrapers[scrapers]") from error
+    soup = BeautifulSoup(_text(value), "html.parser")
+    for element in soup(["script", "style"]):
+        element.decompose()
+    return soup.get_text(" ", strip=True)
+
+
 def _posted_at(value: str) -> datetime | None:
     try:
         parsed = parsedate_to_datetime(value)
@@ -240,6 +260,7 @@ def _posted_at(value: str) -> datetime | None:
 
 
 def _date(value: str) -> date | None:
+    value = value.strip()
     numeric = re.fullmatch(r"(\d{2})[-.](\d{2})[-.](\d{4})", value)
     if numeric:
         try:
@@ -249,7 +270,9 @@ def _date(value: str) -> date | None:
     try:
         return date.fromisoformat(value)
     except ValueError:
-        match = re.fullmatch(r"(\d{1,2})\.([a-z]+)\.(\d{4})", value.casefold())
+        match = re.fullmatch(
+            r"(\d{1,2})[.\s]+([a-z]+)[.\s]+(\d{4})", value.casefold(),
+        )
         if match and match[2] in _MONTHS:
             try:
                 return date(int(match[3]), _MONTHS[match[2]], int(match[1]))

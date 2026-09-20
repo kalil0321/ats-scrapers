@@ -108,7 +108,10 @@ def test_removed_details_are_excluded(httpx_mock, status) -> None:
     assert VarbiScraper("acme").fetch() == []
 
 
-@pytest.mark.parametrize("deadline", ["2000-01-01", "01.Jan.2000", "01.okt.2000", "01-10-2000", "01.10.2000"])
+@pytest.mark.parametrize("deadline", [
+    "2000-01-01", "01.Jan.2000", "01.okt.2000", "01-10-2000", "01.10.2000",
+    "1 January 2000", "01 januari 2000", "1.October.2000", "1 oktober 2000",
+])
 def test_expired_dates_are_excluded(httpx_mock, deadline) -> None:
     httpx_mock.add_response(url=FEED, text=_feed())
     httpx_mock.add_response(url=DETAIL, text=_detail(deadline=deadline))
@@ -140,6 +143,8 @@ def test_empty_recognized_feed(httpx_mock) -> None:
 @pytest.mark.parametrize("title", [
     "Postdoctoral studies in Immunology (scholarship)",
     "Intresseanmälan till tentavakt", "Spontanansökan", "General application",
+    "Open sollicitatie", "Spontane sollicitatie", "Uopfordret ansøgning",
+    "Spontanansøgning",
 ])
 def test_non_vacancy_items_are_not_jobs(httpx_mock, title) -> None:
     httpx_mock.add_response(url=FEED, text=_feed(_item(title=title)))
@@ -227,3 +232,34 @@ def test_unknown_employer_fails_closed() -> None:
 def test_rejects_non_tenant_input(slug) -> None:
     with pytest.raises((ScraperError, ValueError)):
         VarbiScraper(slug)
+
+
+@pytest.mark.parametrize("slug", ["www", "api", "support", "login"])
+def test_resolver_rejects_platform_subdomains(slug) -> None:
+    assert resolve_careers_url(f"https://{slug}.varbi.com/") is None
+
+
+@pytest.mark.parametrize("description", [
+    "<p>Build <strong>reliable</strong> pipelines.</p>",
+    "&lt;p&gt;Build &lt;strong&gt;reliable&lt;/strong&gt; pipelines.&lt;/p&gt;",
+])
+def test_feed_description_is_plain_text(description) -> None:
+    jobs = VarbiScraper("acme")._parse_feed(_feed(_item(description=description)))
+    assert jobs[0].description == "Build reliable pipelines."
+
+
+@pytest.mark.parametrize("deadline", ["not a date", "31 February 2099"])
+def test_unrecognized_deadline_fails_closed(httpx_mock, deadline) -> None:
+    httpx_mock.add_response(url=FEED, text=_feed())
+    httpx_mock.add_response(url=DETAIL, text=_detail(deadline=deadline))
+    with pytest.raises(ScraperError, match="unrecognized deadline"):
+        VarbiScraper("acme").fetch()
+
+
+def test_missing_location_is_optional(httpx_mock) -> None:
+    httpx_mock.add_response(url=FEED, text=_feed())
+    detail = _detail()
+    for field in ("town", "county", "country"):
+        detail = detail.replace(f'quick-info-{field}', f'unrelated-{field}')
+    httpx_mock.add_response(url=DETAIL, text=detail)
+    assert VarbiScraper("acme").fetch()[0].location is None

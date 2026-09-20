@@ -21,6 +21,6 @@ async def test_live_varbi_karolinska() -> None:
         jobs = await VarbiScraper("ki").afetch()
     assert jobs
     assert len({job.ats_id for job in jobs}) == len(jobs)
-    assert all(job.title and job.description and job.location for job in jobs)
+    assert all(job.title and job.description for job in jobs)
     assert all(job.company == "Karolinska Institutet (KI)" for job in jobs)
     assert all(str(job.url).startswith("https://ki.varbi.com/") for job in jobs)
