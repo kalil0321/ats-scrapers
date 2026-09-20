@@ -101,7 +101,9 @@ def test_greenhouse_uses_the_single_catalog_name() -> None:
 
 
 @pytest.mark.parametrize("name", ["Job Board", "The Status Network (TEST, DO NOT REMOVE)",
-                                  "Third-Party Job Posts", "Internal Job Board", "Private Jobs"])
+                                  "Third-Party Job Posts", "Internal Job Board", "Private Jobs",
+                                  "CTC Lateral - External, Not Advertised",
+                                  "CTC Campus - External, Not Advertised"])
 def test_greenhouse_does_not_promote_unresolved_page_labels(name: str) -> None:
     assert runner.CONFIGS["greenhouse"]["kwargs"]({"name": name}) == {"company_name": None}
 
@@ -115,6 +117,9 @@ def test_greenhouse_catalog_has_only_one_company_name_column() -> None:
     assert rows
     assert all(row["name"].strip() and None not in row and None not in row.values() for row in rows)
     assert len({row["slug"] for row in rows}) == len(rows)
+    assert next(row["name"] for row in rows if row["slug"] == "cobblestoneenergy") == (
+        "Cobblestone Energy"
+    )
 
 
 def test_greenhouse_preserves_private_in_real_employer_names() -> None:
