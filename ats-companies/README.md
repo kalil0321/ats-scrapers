@@ -10,7 +10,9 @@ Keep the employer display name in `name`, not in a second `company_name`
 column. A scraper's Python `company_name` argument can receive that existing
 `name` value; the argument is not an additional catalog field. Verify names
 against the provider or employer and do not replace them with generic careers
-page titles when refreshing the catalog.
+page titles when refreshing the catalog. This is the target schema, not a claim
+that every legacy catalog has migrated: `icims.csv` still contains the old
+`company_name` column and requires a separate provider-specific migration.
 
 ```csv
 name,slug,url
