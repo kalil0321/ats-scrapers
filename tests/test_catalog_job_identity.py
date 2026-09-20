@@ -97,3 +97,20 @@ def test_recruitee_apply_url_preserves_job_identity() -> None:
     ) == runner._catalog_job_url(
         "https://acme.recruitee.com/o/engineer", "recruitee",
     )
+    assert runner._catalog_job_url(
+        "https://acme.recruitee.com/o/apply", "recruitee",
+    ) == "acme.recruitee.com/o/apply"
+
+
+@pytest.mark.parametrize(("url", "expected"), [
+    ("http://host:80/job", "host/job"),
+    ("https://host:443/job", "host/job"),
+    ("http://host:443/job", "host:443/job"),
+    ("https://host:80/job", "host:80/job"),
+    ("https://host:8443/job", "host:8443/job"),
+    ("https://host:0/job", "host:0/job"),
+    ("https://[::1]:8443/job", "[::1]:8443/job"),
+    ("https://[::1:8443]/job", "[::1:8443]/job"),
+])
+def test_catalog_url_preserves_non_default_endpoints(url, expected) -> None:
+    assert runner._catalog_job_url(url, "greenhouse") == expected
