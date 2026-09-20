@@ -40,23 +40,65 @@ the Pydantic descriptions are the source of truth; please update both.
 
 ### `global_id` &nbsp;`str` &nbsp;*(derived)*
 
-Globally unique identifier for the posting, formatted as
-`{ats_type}:{ats_id}` when both are present.
+An opaque, source-specific posting identifier. **Do not parse it to recover
+`ats_id`; read that column directly.** It is not a cross-ATS duplicate detector.
 
-- **Examples:** `ashby:engineer-2026`, `workday:R0136150`, `greenhouse:6849563`.
-- **Separator:** `:`. Parsers should split on the **first** colon —
-  `ats_id` may itself contain colons (some Taleo URLs encode multiple).
-  Example: `"taleo:acme:req:12345"` parses as
-  `("taleo", "acme:req:12345")`.
+- **Greenhouse, Lever, Ashby and Recruitee:** `{ats_type}:v2:{sha256}`.
+  The 64-character digest hashes UTF-8 JSON `[canonical_url, trimmed_ats_id]`,
+  using ASCII escapes and compact separators. Distinct tenant URLs with the
+  same native ID remain distinct even when their employer display names match.
+- **Other sources:** keep the existing `{ats_type}:{ats_id}` format in this
+  change. Their uniqueness still depends on the scraper's native-ID scoping;
+  this is not a claim that every provider has been audited.
+- **URL normalization:** lowercase host, omit HTTP/HTTPS scheme and its default
+  port, strip trailing path slashes and fragment, remove `utm_*`, and sort query
+  keys (preserving repeated-key order). Path case, nondefault ports and meaningful
+  query selectors remain.
+  Greenhouse also removes `gh_src` and a redundant `gh_jid` equal to the numeric
+  path ID on recognized hosted boards. Lever removes `lever-source` and
+  `lever-origin`; Recruitee normalizes `/o/<slug>/apply` to `/o/<slug>`.
+  No network lookup or company-name lookup is involved.
+- **Limits:** changing a canonical host, job path, or native ID changes the
+  v2 identifier. Custom-domain aliases are not automatically merged. Two
+  feeds exposing the same canonical URL and native ID share an identifier.
 - **Fallback:** when `ats_id` is missing, empty after whitespace strip,
   or contains control characters (`\n` / `\t` / `\0`), `global_id`
   becomes a fresh UUID4 string and the offending row is logged with an
   ERROR. This keeps the scrape moving instead of crashing on bad data;
   the responsible scraper still gets flagged in the logs.
-- **Don't pass it manually.** A `model_validator` computes it from
-  `ats_type` + `ats_id`, overwriting any value you supplied.
+- **Don't pass it manually.** A `model_validator` computes it using the policy
+  above, overwriting any value supplied to `Job(...)`.
 - **Case is preserved.** Workday's `R0136150` ≠ `r0136150` — collapsing
   case would risk merging legitimately distinct postings.
+
+#### Migration from the original composite format
+
+This changes newly derived IDs for **all rows of the four named sources**, not
+only colliding rows. It deliberately does not depend on which other jobs happen
+to appear in a snapshot. Native `ats_id`, `url` and catalog columns are unchanged;
+no `company_name` or legacy-ID column is added.
+
+The runner now writes `global_id` to CSV. The publisher fills absent/blank IDs
+before producing CSV and Parquet, including older local scrape files, so every
+artifact from one publication carries the same value. The client uses the same
+policy for older downloads without IDs and fills blank cells in mixed snapshots.
+**Nonblank published IDs are preserved**, including historical composite IDs;
+loading a historical artifact is not an implicit rewrite of its primary keys.
+An old row without a usable URL cannot safely receive a v2 ID and gets a logged
+UUID fallback instead. Invalid native IDs also retain the UUID fallback; such
+IDs are not stable across independent reconstructions.
+
+Before deploying, export an old-to-new mapping from `ats_type`, `ats_id` and
+`url`, rebuild downstream primary/foreign keys, and compare row counts. Never
+join solely on the old composite ID: it may map to multiple tenant-scoped IDs.
+Stage the client and publisher together, and retain the old snapshot for
+rollback. Existing clients that preserve published IDs can consume new files;
+consumers that split `global_id` or assume its previous shape must migrate first.
+CSV readers keep IDs as text. PyArrow reads use pandas nullable dtypes to avoid
+rounding integer IDs in older Parquet files containing nulls. If an older
+artifact already stored rounded numbers or discarded leading zeros, recover
+from the source CSV or rescrape; identity generation cannot reconstruct lost data.
+No release or production migration is performed by the identity PR itself.
 
 ### `url` &nbsp;`HttpUrl` &nbsp;*(required)*
 
@@ -86,8 +128,10 @@ enum in `src/ats_scrapers/models.py` for the known library sources.
 
 ### `ats_id` &nbsp;`str | None` &nbsp;*(optional, defensive)*
 
-Per-ATS identifier. Unique within `ats_type` but not globally — use
-`global_id` for that. Form depends on the ATS:
+Per-ATS identifier. Its uniqueness scope depends on the source: it may be
+tenant-local, globally allocated, or already tenant-qualified by the scraper.
+Do not assume `(ats_type, ats_id)` is unique across employers. Form depends on
+the ATS:
 
 | ATS | Typical `ats_id` |
 |---|---|
@@ -332,8 +376,8 @@ a JSON string in CSV exports, native dict in parquet.
 - `ats_id` is the ATS-platform's internal id (different per platform).
 - `requisition_id` is the *employer's* internal id (same across
   platforms when one job is mirrored on multiple ATSes).
-- `global_id` is ats-scrapers's `{ats_type}:{ats_id}` composite — the unique
-  identifier for the row in the dataset.
+- `global_id` is ats-scrapers's opaque posting identity, using the
+  provider-specific policy documented above.
 
 **`employment_type` vs `commitment`** —
 - `employment_type` is a 5-value enum (full-time / part-time /

@@ -60,6 +60,7 @@ import polars as pl
 from ats_scrapers._version import __version__
 from ats_scrapers.enrichment import infer_is_remote, parse_salary_range
 from ats_scrapers.exceptions import StorageError
+from ats_scrapers.identity import build_global_id
 from ats_scrapers.models import ATSType
 
 # Pull the keyword list used by ``infer_is_remote`` so the lazy
@@ -97,6 +98,7 @@ FORMATS_PER_ATS = ("csv", "parquet")
 _SCAN_CSV_KWARGS: dict[str, object] = {
     "infer_schema_length": 10000,
     "ignore_errors": True,
+    "schema_overrides": {"ats_id": pl.String, "global_id": pl.String},
 }
 
 
@@ -208,6 +210,7 @@ class DatasetPublisher:
                 # Build the lazy enriched chain for this ATS slice.
                 lf = pl.scan_csv(source_path, **_SCAN_CSV_KWARGS)
                 lf = lf.with_columns(pl.lit(ats.value).alias("ats_type"))
+                lf = _with_global_ids(lf)
                 lf = _enrich_lazy(lf)
 
                 try:
@@ -998,6 +1001,23 @@ def _phase2_fuzzy_drops(
 
 
 # --- helpers ---------------------------------------------------------------
+
+
+def _with_global_ids(lf: pl.LazyFrame) -> pl.LazyFrame:
+    """Backfill absent IDs once before writing any CSV or Parquet artifacts."""
+    columns = lf.collect_schema().names()
+    for name in ("ats_id", "url", "global_id"):
+        if name not in columns:
+            lf = lf.with_columns(pl.lit(None, dtype=pl.String).alias(name))
+    current = pl.col("global_id").cast(pl.String)
+    missing = current.is_null() | current.str.strip_chars().eq("")
+    inputs = pl.when(missing).then(pl.struct("ats_type", "ats_id", "url")).otherwise(None)
+    generated = inputs.map_elements(
+        lambda row: build_global_id(row["ats_type"], row["ats_id"], row["url"] or ""),
+        return_dtype=pl.String,
+        skip_nulls=True,
+    )
+    return lf.with_columns(pl.when(missing).then(generated).otherwise(current).alias("global_id"))
 
 
 def _enrich_lazy(lf: pl.LazyFrame) -> pl.LazyFrame:

@@ -5,6 +5,21 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Identity migration:** newly derived Greenhouse, Lever, Ashby and Recruitee
+  `global_id` values use a versioned hash of canonical posting URL and native
+  ID rather than assuming native IDs are unique across tenants. Other sources
+  retain their existing format. Read `ats_id` directly instead of parsing
+  `global_id`; see `docs/JOB_SCHEMA.md` for migration and rollback guidance.
+
+### Fixed
+
+- Persist `global_id` through runner CSV, published CSV/Parquet and client
+  loading. Backfill only absent/blank IDs, preserving published historical IDs.
+- Preserve textual native IDs (including leading zeros and long numbers)
+  during CSV ingestion, and align model/client control-character rejection.
+
 ## [0.3.0] — 2026-09-02
 
 ### Added
