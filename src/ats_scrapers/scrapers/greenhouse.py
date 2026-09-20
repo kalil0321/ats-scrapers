@@ -42,6 +42,27 @@ _TAG_RE = re.compile(r"<[^>]+>")
 class GreenhouseScraper(BaseScraper):
     ats = ATSType.GREENHOUSE
 
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        timeout: float = 30.0,
+        company_name: str | None = None,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
+    ) -> None:
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
+        self.company_name = (
+            company_name.strip()
+            if company_name and company_name.strip()
+            else self.company_slug
+        )
+
     async def afetch(self) -> list[Job]:
         url = API_TEMPLATE.format(slug=self.company_slug)
         async with self.make_fetcher() as fetch:
@@ -96,7 +117,7 @@ class GreenhouseScraper(BaseScraper):
         return Job(
             url=item["absolute_url"],
             title=item["title"],
-            company=self.company_slug,
+            company=self.company_name,
             ats_type=ATSType.GREENHOUSE,
             ats_id=str(item["id"]),
             location=(item.get("location") or {}).get("name"),

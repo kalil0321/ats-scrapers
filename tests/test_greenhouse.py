@@ -54,6 +54,12 @@ def test_parses_basic_job(httpx_mock) -> None:
     assert job.location == "Remote"
 
 
+def test_uses_configured_company_name(httpx_mock) -> None:
+    httpx_mock.add_response(url=API, json={"jobs": [_job()]})
+    jobs = GreenhouseScraper("acme", company_name="Acme Holdings").fetch()
+    assert jobs[0].company == "Acme Holdings"
+
+
 def test_returns_empty_for_no_jobs(httpx_mock) -> None:
     httpx_mock.add_response(url=API, json={"jobs": []})
     assert GreenhouseScraper("acme").fetch() == []

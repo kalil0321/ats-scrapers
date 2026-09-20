@@ -86,6 +86,49 @@ def test_oracle_dedupes_same_tenant_job_across_named_sites() -> None:
     assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
 
 
+def test_greenhouse_uses_the_single_catalog_name() -> None:
+    config = runner.CONFIGS["greenhouse"]
+    row = {
+        "name": "  Acme Holdings  ",
+        "slug": "acme",
+        "url": "https://job-boards.greenhouse.io/acme",
+        "company_name": "Obsolete duplicate must be ignored",
+    }
+
+    assert config["kwargs"](row) == {"company_name": "Acme Holdings"}
+    assert config["kwargs"]({}) == {"company_name": None}
+    assert config["kwargs"]({"name": "  "}) == {"company_name": None}
+
+
+@pytest.mark.parametrize("name", ["Job Board", "The Status Network (TEST, DO NOT REMOVE)",
+                                  "Third-Party Job Posts", "Internal Job Board", "Private Jobs",
+                                  "CTC Lateral - External, Not Advertised",
+                                  "CTC Campus - External, Not Advertised"])
+def test_greenhouse_does_not_promote_unresolved_page_labels(name: str) -> None:
+    assert runner.CONFIGS["greenhouse"]["kwargs"]({"name": name}) == {"company_name": None}
+
+
+def test_greenhouse_catalog_has_only_one_company_name_column() -> None:
+    path = runner.DATA_ROOT / runner.CONFIGS["greenhouse"]["csv"]
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == ["name", "slug", "url"]
+        rows = list(reader)
+    assert rows
+    assert all(row["name"].strip() and None not in row and None not in row.values() for row in rows)
+    assert len({row["slug"] for row in rows}) == len(rows)
+    assert next(row["name"] for row in rows if row["slug"] == "cobblestoneenergy") == (
+        "Cobblestone Energy"
+    )
+
+
+def test_greenhouse_preserves_private_in_real_employer_names() -> None:
+    config = runner.CONFIGS["greenhouse"]
+    assert config["kwargs"]({"name": "Private Division"}) == {
+        "company_name": "Private Division",
+    }
+
+
 def test_icims_dedupes_exact_job_url_across_named_portals() -> None:
     first = Job(
         url="https://careers-acme.icims.com/jobs/1/engineer/job?in_iframe=1",
