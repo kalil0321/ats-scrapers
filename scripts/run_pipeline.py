@@ -1775,8 +1775,11 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                             scraper = cfg["scraper"](
                                 slug, timeout=timeout, **targets[priority][1],
                             )
+                            needs_fetch = not (
+                                job.description or _cached_description(job, description_cache)
+                            )
                             await _ensure_description(scraper, job, description_cache)
-                            if description_delay:
+                            if description_delay and needs_fetch:
                                 await asyncio.sleep(description_delay)
                         writer.writerow(_job_to_row(job))
 

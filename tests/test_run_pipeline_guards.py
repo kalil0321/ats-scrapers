@@ -173,6 +173,49 @@ def test_job_spool_keeps_winners_on_disk_and_cleans_up() -> None:
     assert not directory.exists()
 
 
+def test_spooled_description_delay_only_applies_to_fetches(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("ATS_SCRAPERS_JOBS_ROOT", raising=False)
+    monkeypatch.delenv("JOBHIVE_JOBS_ROOT", raising=False)
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    (tmp_path / "tenants.csv").write_text("name,slug,url\nAcme,acme,https://acme.example\n")
+    jobs = [
+        Job(
+            url=f"https://acme.example/jobs/{title}", title=title, company="Acme",
+            ats_type=ATSType.TEAMTAILOR, ats_id=title,
+            description="Present description" if title == "Present" else None,
+        )
+        for title in ("Present", "Cached", "Missing")
+    ]
+    delays = []
+
+    async def fake_scrape(_scraper, slug, *_args, **_kwargs):
+        return slug, object(), jobs, None
+
+    async def fake_enrich(_scraper, job, _cache):
+        job.description = "Complete description"
+        return "fetched"
+
+    async def record_delay(seconds):
+        delays.append(seconds)
+
+    monkeypatch.setattr(runner, "_run_scraper", fake_scrape)
+    monkeypatch.setattr(runner, "_ensure_description", fake_enrich)
+    monkeypatch.setattr(
+        runner, "_cached_description",
+        lambda job, _cache: "Cached description" if job.title == "Cached" else None,
+    )
+    monkeypatch.setattr(runner.asyncio, "sleep", record_delay)
+    monkeypatch.setitem(runner.CONFIGS, "spooled", {
+        "scraper": lambda *_args, **_kwargs: object(),
+        "slug": lambda row: row["slug"], "csv": "tenants.csv",
+        "output": "spooled/jobs.csv", "deterministic_dedupe": True,
+        "dedupe_by_ats_id": True, "description_delay_seconds": 0.5,
+        "skip_normalize": True,
+    })
+    assert asyncio.run(runner.run("spooled", 1, None, 1)) == 0
+    assert delays == [0.5]
+
+
 def test_deterministic_job_choice_prefers_authoritative_hostname() -> None:
     canonical = Job(
         url="https://canonical.teamtailor.com/jobs/123-engineer",
