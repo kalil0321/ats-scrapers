@@ -183,11 +183,16 @@ def test_untrusted_feed_links_fail_closed(httpx_mock, url) -> None:
     assert len(httpx_mock.get_requests()) == 1
 
 
-def test_redirect_does_not_follow_an_untrusted_page(httpx_mock) -> None:
-    httpx_mock.add_response(url=FEED, status_code=302, headers={"Location": "https://example.org/login"})
+@pytest.mark.parametrize("target", [FEED, DETAIL])
+def test_redirect_does_not_follow_untrusted_destinations(httpx_mock, target) -> None:
+    if target == DETAIL:
+        httpx_mock.add_response(url=FEED, text=_feed())
+    httpx_mock.add_response(url=target, status_code=302, headers={"Location": "https://example.org/login"})
     with pytest.raises(ScraperError, match="302"):
         VarbiScraper("acme").fetch()
-    assert len(httpx_mock.get_requests()) == 1
+    assert [str(request.url) for request in httpx_mock.get_requests()] == (
+        [FEED, DETAIL] if target == DETAIL else [FEED]
+    )
 
 
 def test_mismatched_detail_fails_closed(httpx_mock) -> None:
