@@ -174,6 +174,8 @@ def test_deterministic_job_choice_prefers_authoritative_hostname() -> None:
 def test_deterministic_provider_dedupe_ignores_completion_order(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.delenv("ATS_SCRAPERS_JOBS_ROOT", raising=False)
+    monkeypatch.delenv("JOBHIVE_JOBS_ROOT", raising=False)
     (tmp_path / "ats-companies").mkdir()
     (tmp_path / "ats-companies" / "mirrored.csv").write_text(
         "name,slug,url\n"
