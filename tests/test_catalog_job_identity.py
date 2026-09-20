@@ -112,3 +112,24 @@ def test_recruitee_apply_url_preserves_job_identity() -> None:
 ])
 def test_catalog_url_preserves_non_default_endpoints(url, expected) -> None:
     assert runner._catalog_job_url(url, "greenhouse") == expected
+
+
+@pytest.mark.parametrize("url", [
+    "https://host:abc/job", "https://host:99999/job", "https://[broken/job",
+])
+def test_malformed_cached_urls_do_not_abort_normalization(url) -> None:
+    assert runner._catalog_job_url(url, "greenhouse") == url
+    assert runner._row_description_keys({"ats_type": "greenhouse", "url": url}) == [
+        ("url", url),
+    ]
+
+
+@pytest.mark.parametrize("host", [
+    "boards.greenhouse.io", "job-boards.greenhouse.io",
+    "boards.eu.greenhouse.io", "job-boards.eu.greenhouse.io",
+])
+def test_greenhouse_redundant_query_id_uses_the_path_identity(host) -> None:
+    url = f"https://{host}/acme/jobs/123"
+    canonical = runner._catalog_job_url(url, "greenhouse")
+    assert runner._catalog_job_url(f"{url}?gh_jid=123", "greenhouse") == canonical
+    assert runner._catalog_job_url(f"{url}?gh_jid=456", "greenhouse") != canonical
