@@ -33,7 +33,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
 from ats_scrapers.exceptions import CompanyNotFoundError
 from ats_scrapers.models import Job
@@ -1203,10 +1203,28 @@ class DescriptionCache:
         self.count += max(0, new_keys)
 
 
+def _catalog_job_url(url: str, provider: str) -> str:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").casefold()
+    if parsed.port and parsed.port not in {80, 443}:
+        host = f"{host}:{parsed.port}"
+    path = parsed.path.rstrip("/")
+    if provider == "recruitee" and path.startswith("/o/"):
+        path = path.removesuffix("/apply")
+    query = urlencode(sorted(
+        (key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if not key.casefold().startswith("utm_")
+        and key.casefold() not in {"gh_src", "lever-source", "lever-origin"}
+    ))
+    return f"{host}{path}" + (f"?{query}" if query else "")
+
+
 def _description_keys(job: Job) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
     url = str(job.url).strip()
-    if job.ats_type.value in {"icims", "greenhouse", "lever", "ashby", "recruitee"}:
+    if job.ats_type.value in {"greenhouse", "lever", "ashby", "recruitee"}:
+        return [("url", _catalog_job_url(url, job.ats_type.value))] if url else []
+    if job.ats_type.value == "icims":
         return [("url", url)] if url else []
     company = (job.company or "").strip()
     ats_id = (job.ats_id or "").strip()
@@ -1232,16 +1250,17 @@ def _job_dedupe_key(
     if config.get("dedupe_by_ats_id"):
         return "", ats_id
     if job.ats_type.value in {"greenhouse", "lever", "ashby", "recruitee"}:
-        return str(job.url), ats_id
+        return _catalog_job_url(str(job.url), job.ats_type.value), ats_id
     return job.company, ats_id
 
 
 def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
     url = (row.get("url") or "").strip()
-    if (row.get("ats_type") or "").strip().casefold() in {
-        "icims", "greenhouse", "lever", "ashby", "recruitee",
-    }:
+    provider = (row.get("ats_type") or "").strip().casefold()
+    if provider in {"greenhouse", "lever", "ashby", "recruitee"}:
+        return [("url", _catalog_job_url(url, provider))] if url else []
+    if provider == "icims":
         return [("url", url)] if url else []
     company = (row.get("company") or "").strip()
     ats_id = (row.get("ats_id") or "").strip()
