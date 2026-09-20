@@ -80,7 +80,7 @@ class VarbiScraper(BaseScraper):
             company_slug, timeout=timeout, include_descriptions=include_descriptions,
             proxy=proxy,
         )
-        self.company_slug = require_host_label(company_slug, provider="VarbiScraper")
+        self.company_slug = require_host_label(company_slug, provider="VarbiScraper").lower()
         if self.company_slug in {"www", "api", "support", "login"}:
             raise ScraperError("Varbi requires an employer-specific tenant")
         self.host = f"{self.company_slug}.varbi.com"
@@ -284,6 +284,8 @@ def _date(value: str) -> date | None:
 def _employment_type(metadata: dict[str, str]) -> EmploymentType | None:
     contract = metadata.get("type-of-employment", "").casefold()
     hours = metadata.get("hours", "").casefold()
+    if contract.strip() in {"contract", "contractor"}:
+        return "CONTRACT"
     if any(word in contract for word in ("internship", "praktik")):
         return "INTERN"
     if any(word in contract for word in ("temporary", "vikariat", "visstid", "tidsbegräns", "tidsbegrænset", "midlertidig")) or contract.startswith("bepaalde tijd"):

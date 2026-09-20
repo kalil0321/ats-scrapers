@@ -263,3 +263,18 @@ def test_missing_location_is_optional(httpx_mock) -> None:
         detail = detail.replace(f'quick-info-{field}', f'unrelated-{field}')
     httpx_mock.add_response(url=DETAIL, text=detail)
     assert VarbiScraper("acme").fetch()[0].location is None
+
+
+def test_uppercase_tenant_uses_canonical_host(httpx_mock) -> None:
+    httpx_mock.add_response(url=FEED, text=_feed())
+    httpx_mock.add_response(url=DETAIL, text=_detail())
+    job = VarbiScraper("AcMe").fetch()[0]
+    assert job.ats_id == "acme:123"
+    assert job.apply_url is not None
+
+
+@pytest.mark.parametrize("contract", ["Contract", "Contractor", " CONTRACT "])
+def test_contract_employment_type(httpx_mock, contract) -> None:
+    httpx_mock.add_response(url=FEED, text=_feed())
+    httpx_mock.add_response(url=DETAIL, text=_detail().replace("Permanent position", contract))
+    assert VarbiScraper("acme").fetch()[0].employment_type == "CONTRACT"
