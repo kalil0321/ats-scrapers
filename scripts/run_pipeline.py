@@ -544,6 +544,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/teamtailor.csv",
         "output": "teamtailor/jobs.csv",
         "fail_closed_on_empty": True,
+        "fail_closed_on_any_error": True,
     },
     "ukg": {
         "scraper": UKGProScraper,
@@ -1272,6 +1273,42 @@ def _deterministic_job_choice(
     return min(current, candidate, key=preference)
 
 
+class _JobSpool:
+    def __init__(self) -> None:
+        self.directory = tempfile.TemporaryDirectory(prefix="ats-job-spool-")
+        self.conn = sqlite3.connect(Path(self.directory.name) / "jobs.sqlite3")
+        self.conn.execute(
+            "CREATE TABLE jobs (identity TEXT PRIMARY KEY, priority INTEGER, "
+            "slug TEXT, payload TEXT)"
+        )
+
+    def add(self, key: tuple[str, str], candidate: tuple[int, str, Job]) -> bool:
+        identity = json.dumps(key)
+        row = self.conn.execute(
+            "SELECT priority, slug, payload FROM jobs WHERE identity = ?", (identity,),
+        ).fetchone()
+        current = (row[0], row[1], Job.model_validate_json(row[2])) if row else None
+        chosen = _deterministic_job_choice(current, candidate)
+        if chosen is candidate:
+            priority, slug, job = candidate
+            self.conn.execute(
+                "INSERT OR REPLACE INTO jobs VALUES (?, ?, ?, ?)",
+                (identity, priority, slug, job.model_dump_json()),
+            )
+        return row is None
+
+    def jobs(self):
+        self.conn.commit()
+        for priority, slug, payload in self.conn.execute(
+            "SELECT priority, slug, payload FROM jobs ORDER BY identity"
+        ):
+            yield priority, slug, Job.model_validate_json(payload)
+
+    def close(self) -> None:
+        self.conn.close()
+        self.directory.cleanup()
+
+
 def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
     url = (row.get("url") or "").strip()
@@ -1540,12 +1577,12 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             f"({location} cache at {description_cache.path})"
         )
     seen_keys: set[tuple[str, str]] = set()  # (company, ats_id) for cross-tenant dedup
-    buffered_jobs: dict[tuple[str, str], tuple[int, str, Job]] | None = (
-        {} if cfg.get("deterministic_dedupe") else None
-    )
+    buffered_jobs = None
 
     t0 = time.time()
     try:
+        if cfg.get("deterministic_dedupe"):
+            buffered_jobs = _JobSpool()
         with tmp_output_path.open("w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=JOB_CSV_FIELDS)
             writer.writeheader()
@@ -1678,10 +1715,12 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                     }
                     for job in jobs:
                         key = _job_dedupe_key(job, cfg)
-                        if buffered_jobs is None and key in seen_keys:
+                        if buffered_jobs is not None:
+                            counts["jobs"] += buffered_jobs.add(key, (catalog_priority, slug, job))
                             continue
-                        if buffered_jobs is None:
-                            seen_keys.add(key)
+                        if key in seen_keys:
+                            continue
+                        seen_keys.add(key)
                         if scraper is not None and not cfg.get("skip_description_enrichment"):
                             if _cached_description(job, description_cache) or job.description:
                                 desc_status = await _ensure_description(
@@ -1697,18 +1736,8 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                                         if description_delay:
                                             await asyncio.sleep(description_delay)
                             desc_stats[desc_status] += 1
-                        if buffered_jobs is None:
-                            writer.writerow(_job_to_row(job))
-                            counts["jobs"] += 1
-                        else:
-                            current = buffered_jobs.get(key)
-                            chosen = _deterministic_job_choice(
-                                current,
-                                (catalog_priority, slug, job),
-                            )
-                            buffered_jobs[key] = chosen
-                            if current is None:
-                                counts["jobs"] += 1
+                        writer.writerow(_job_to_row(job))
+                        counts["jobs"] += 1
                     elapsed = time.time() - started
                     if elapsed >= float(cfg.get("slow_tenant_log_seconds", 300)):
                         print(
@@ -1741,8 +1770,14 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                     )
 
                 if buffered_jobs is not None:
-                    for key in sorted(buffered_jobs):
-                        _, _, job = buffered_jobs[key]
+                    for priority, slug, job in buffered_jobs.jobs():
+                        if not cfg.get("skip_description_enrichment"):
+                            scraper = cfg["scraper"](
+                                slug, timeout=timeout, **targets[priority][1],
+                            )
+                            await _ensure_description(scraper, job, description_cache)
+                            if description_delay:
+                                await asyncio.sleep(description_delay)
                         writer.writerow(_job_to_row(job))
 
         elapsed = time.time() - t0
@@ -1872,6 +1907,8 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             return 1
         return 0
     finally:
+        if buffered_jobs is not None:
+            buffered_jobs.close()
         description_cache.close()
 
 

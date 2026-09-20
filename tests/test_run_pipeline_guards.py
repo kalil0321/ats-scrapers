@@ -18,6 +18,7 @@ def test_bamboohr_pipeline_fails_closed_on_empty() -> None:
 
 def test_teamtailor_pipeline_fails_closed_on_empty() -> None:
     assert runner.CONFIGS["teamtailor"]["fail_closed_on_empty"] is True
+    assert runner.CONFIGS["teamtailor"]["fail_closed_on_any_error"] is True
 
 
 def test_jobs_output_root_defaults_to_repository_root(
@@ -151,6 +152,25 @@ def test_deterministic_job_choice_preserves_catalog_priority() -> None:
         runner._deterministic_job_choice(mirrored_entry, canonical_entry)
         is canonical_entry
     )
+
+
+def test_job_spool_keeps_winners_on_disk_and_cleans_up() -> None:
+    canonical = Job(
+        url="https://canonical.teamtailor.com/jobs/123",
+        title="Engineer", company="Canonical", ats_type=ATSType.TEAMTAILOR,
+        ats_id="123", description="Details " * 1000,
+    )
+    mirrored = canonical.model_copy(update={"company": "Mirror"})
+    spool = runner._JobSpool()
+    directory = Path(spool.directory.name)
+    try:
+        assert spool.add(("", "123"), (0, "mirror", mirrored)) is True
+        assert spool.add(("", "123"), (1, "canonical", canonical)) is False
+        assert list(spool.jobs()) == [(1, "canonical", canonical)]
+        assert (directory / "jobs.sqlite3").stat().st_size > 0
+    finally:
+        spool.close()
+    assert not directory.exists()
 
 
 def test_deterministic_job_choice_prefers_authoritative_hostname() -> None:
