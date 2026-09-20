@@ -289,6 +289,21 @@ Validation:
    consumed by the scraper.
 3. Reject case-normalized URLs that redirect or fetch a different tenant.
 
+### Varbi
+
+- Use `name,slug,url` with a single employer tenant and
+  `https://{slug}.varbi.com/`; never use the aggregate Varbi marketplace.
+- Validate both the public board and `/what:rssfeed/` with the actual scraper,
+  including detail enrichment. RSS titles can use a different language from
+  the linked detail page; verify the detail's `og:url` identity instead.
+- Deduplicate translated items by the numeric job ID within the employer.
+- Reject scholarship-only advertisements, expressions of interest, obsolete
+  feeds and aliases. A working RSS endpoint is not proof of an active employer.
+- Preserve unknown metadata as unknown. Date-only application deadlines belong
+  in `raw.application_deadline_date`, not a fabricated midnight timestamp.
+- Review cross-source overlap with public employment services before claiming
+  that the direct-source vacancies are net-new jobs.
+
 ## Automation Hints
 
 An automated discovery agent should keep separate stages:

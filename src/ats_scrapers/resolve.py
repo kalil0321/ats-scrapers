@@ -135,6 +135,12 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             return ResolvedCareersUrl(ATSType.HERP, segments[1])
         return None
 
+    if host.endswith(".varbi.com"):
+        slug = host.removesuffix(".varbi.com")
+        if _DNS_LABEL_RE.fullmatch(slug) and slug not in {"api", "support", "login"}:
+            return ResolvedCareersUrl(ATSType.VARBI, slug)
+        return None
+
     if host == "hrmos.co":
         segments = [segment for segment in parsed.path.split("/") if segment]
         if (

@@ -67,6 +67,7 @@ class ATSType(StrEnum):
     SOFTGARDEN = "softgarden"
     SUCCESSFACTORS = "successfactors"
     UKG = "ukg"
+    VARBI = "varbi"
     WORKABLE = "workable"
     WORKDAY = "workday"
     # Big-tech custom careers systems (single-tenant, bespoke APIs)
