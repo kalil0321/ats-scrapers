@@ -33,7 +33,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
 from ats_scrapers.exceptions import CompanyNotFoundError
 from ats_scrapers.models import Job
@@ -612,6 +612,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "ashby": {
         "scraper": AshbyScraper,
         "slug": _ashby_slug,
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
         "csv": "ats-companies/ashby.csv",
         "output": "ashby/jobs.csv",
     },
@@ -1202,9 +1203,42 @@ class DescriptionCache:
         self.count += max(0, new_keys)
 
 
+def _catalog_job_url(url: str, provider: str) -> str:
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").casefold()
+        port = parsed.port
+    except ValueError:
+        return url.strip()
+    if ":" in host:
+        host = f"[{host}]"
+    default_port = {"http": 80, "https": 443}.get(parsed.scheme.casefold())
+    if port is not None and port != default_port:
+        host = f"{host}:{port}"
+    path = parsed.path.rstrip("/")
+    if provider == "recruitee" and re.fullmatch(r"/o/[^/]+/apply", path):
+        path = path.removesuffix("/apply")
+    greenhouse_job = (
+        re.fullmatch(r"/[^/]+/jobs/(\d+)", path)
+        if provider == "greenhouse" and host in {
+            "boards.greenhouse.io", "job-boards.greenhouse.io",
+            "boards.eu.greenhouse.io", "job-boards.eu.greenhouse.io",
+        } else None
+    )
+    query = urlencode(sorted(
+        (key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if not key.casefold().startswith("utm_")
+        and key.casefold() not in {"gh_src", "lever-source", "lever-origin"}
+        and not (key == "gh_jid" and greenhouse_job and value == greenhouse_job[1])
+    ))
+    return f"{host}{path}" + (f"?{query}" if query else "")
+
+
 def _description_keys(job: Job) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
     url = str(job.url).strip()
+    if job.ats_type.value in {"greenhouse", "lever", "ashby", "recruitee"}:
+        return [("url", _catalog_job_url(url, job.ats_type.value))] if url else []
     if job.ats_type.value == "icims":
         return [("url", url)] if url else []
     company = (job.company or "").strip()
@@ -1230,13 +1264,18 @@ def _job_dedupe_key(
     ats_id = job.ats_id or ""
     if config.get("dedupe_by_ats_id"):
         return "", ats_id
+    if job.ats_type.value in {"greenhouse", "lever", "ashby", "recruitee"}:
+        return _catalog_job_url(str(job.url), job.ats_type.value), ats_id
     return job.company, ats_id
 
 
 def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
     url = (row.get("url") or "").strip()
-    if (row.get("ats_type") or "").strip().casefold() == "icims":
+    provider = (row.get("ats_type") or "").strip().casefold()
+    if provider in {"greenhouse", "lever", "ashby", "recruitee"}:
+        return [("url", _catalog_job_url(url, provider))] if url else []
+    if provider == "icims":
         return [("url", url)] if url else []
     company = (row.get("company") or "").strip()
     ats_id = (row.get("ats_id") or "").strip()
