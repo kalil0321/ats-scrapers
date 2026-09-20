@@ -109,6 +109,11 @@ def test_recruitee_catalog_has_only_one_company_name_column() -> None:
     assert rows
     assert all(row["name"].strip() and None not in row and None not in row.values() for row in rows)
     assert len({row["slug"] for row in rows}) == len(rows)
+    body_masters = next(row for row in rows if row["slug"] == "bodymasters")
+    assert body_masters["name"] == "Body Masters"
+    assert runner.CONFIGS["recruitee"]["kwargs"](body_masters) == {
+        "company_name": "Body Masters",
+    }
 
 
 @pytest.mark.parametrize("row", [
