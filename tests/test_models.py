@@ -216,13 +216,13 @@ def test_job_lat_lon_optional() -> None:
 # --- Job.global_id -----------------------------------------------------------
 #
 # The global_id is the cross-ATS unique identifier for a posting.
-# Format: f"{ats_type}:{ats_id}". Falls back to a UUID4 when ats_id is
+# Format is provider-specific. Falls back to a UUID4 when ats_id is
 # missing or contains characters that would corrupt CSV / JSON output.
 
 
 def test_global_id_default_format() -> None:
-    job = _minimal_job(ats_type=ATSType.ASHBY, ats_id="abc-123")
-    assert job.global_id == "ashby:abc-123"
+    job = _minimal_job(ats_type=ATSType.ASHBY, ats_id="001", url="https://jobs.example.com/acme/001")
+    assert job.global_id == "ashby:v2:e20dade34c09c6b4d41a06641c6b041412c778959be86d2cf2fd8f5ecb1d2f4f"
 
 
 def test_global_id_preserves_case() -> None:
@@ -286,7 +286,7 @@ def test_global_id_strips_trailing_crlf_and_keeps_valid() -> None:
     """\\r\\n at the end of ats_id is stripped — once gone, the
     remaining value is fine, no UUID fallback needed."""
     job = _minimal_job(ats_type=ATSType.LEVER, ats_id="abc\r\n")
-    assert job.global_id == "lever:abc"
+    assert job.global_id == _minimal_job(ats_type=ATSType.LEVER, ats_id="abc").global_id
     assert job.ats_id == "abc"
 
 
@@ -321,10 +321,10 @@ def test_global_id_round_trips_through_model_dump() -> None:
     """The computed global_id is preserved across serialization, and
     re-parsing produces the same value (validator runs on validate())."""
     original = _minimal_job(ats_type=ATSType.ASHBY, ats_id="abc-123")
-    assert original.global_id == "ashby:abc-123"
+    assert original.global_id.startswith("ashby:v2:")
     payload = original.model_dump(mode="json")
     restored = Job.model_validate(payload)
-    assert restored.global_id == "ashby:abc-123"
+    assert restored.global_id == original.global_id
 
 
 def test_global_id_user_supplied_value_is_overwritten() -> None:
@@ -339,7 +339,7 @@ def test_global_id_user_supplied_value_is_overwritten() -> None:
         ats_id="123",
         global_id="some-bogus-value",
     )
-    assert job.global_id == "greenhouse:123"
+    assert job.global_id == _minimal_job().global_id
 
 
 # --- Job.country_iso, region, language --------------------------------------

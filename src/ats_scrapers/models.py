@@ -14,13 +14,14 @@ view onto them.
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from datetime import datetime
 from enum import StrEnum
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+
+from ats_scrapers.identity import INVALID_ID_CHARS, build_global_id
 
 log = logging.getLogger(__name__)
 
@@ -145,12 +146,6 @@ class Company(BaseModel):
 EmploymentType = Literal["FULL_TIME", "PART_TIME", "CONTRACT", "INTERN", "TEMPORARY"]
 
 
-# Control characters that would corrupt a CSV / JSON line if they
-# made it into ``ats_id`` (and thus ``global_id``). Newline / tab /
-# carriage return / NULL — anything else printable stays.
-_ATS_ID_FORBIDDEN_CHARS = re.compile(r"[\x00\t\r\n]")
-
-
 class Job(BaseModel):
     """A job posting — the canonical row across the entire dataset.
 
@@ -216,11 +211,11 @@ class Job(BaseModel):
     global_id: str = Field(
         default="",
         description=(
-            "Globally unique identifier for the posting, formatted as "
-            "``{ats_type}:{ats_id}`` when both are set (e.g. "
-            "``ashby:engineer-2026`` or ``workday:R0136150``). The "
-            "separator is a colon — parsers should split on the FIRST "
-            "colon since ``ats_id`` may itself contain colons. When "
+            "Opaque posting identifier. Greenhouse, Lever, Ashby and "
+            "Recruitee use ``{ats_type}:v2:{sha256}``, hashing the canonical "
+            "posting URL and native ID to distinguish tenants. Other sources "
+            "retain ``{ats_type}:{ats_id}``. Read the separate ats_id field "
+            "rather than parsing global_id. When "
             "``ats_id`` is missing, malformed, or contains control "
             "characters, falls back to a random UUID4 and an error is "
             "logged. Populated automatically by a model validator; do "
@@ -264,9 +259,9 @@ class Job(BaseModel):
         default=None,
         description=(
             "Per-ATS identifier for the posting — Greenhouse numeric "
-            "id, Workday requisition slug, Lever UUID, etc. Unique "
-            "within ``ats_type`` but not globally (use ``global_id`` "
-            "for that). Optional defensively: when null/empty/malformed, "
+            "id, Workday requisition slug, Lever UUID, etc. Its uniqueness "
+            "scope depends on the source; do not assume uniqueness across "
+            "tenants. Optional defensively: when null/empty/malformed, "
             "``global_id`` falls back to UUID4 instead of crashing the "
             "row, and an error is logged so the broken scraper is "
             "noticed."
@@ -519,7 +514,7 @@ class Job(BaseModel):
 
     @model_validator(mode="after")
     def _populate_global_id(self) -> Self:
-        """Compute ``global_id`` from ``ats_type`` + ``ats_id``.
+        """Compute ``global_id`` using the shared source identity policy.
 
         Runs after the rest of the model is validated so we can read
         the validated values. ``ats_id`` may be missing, empty, or
@@ -530,7 +525,7 @@ class Job(BaseModel):
         normalized_id: str | None = None
         if self.ats_id is not None:
             stripped = self.ats_id.strip()
-            if stripped and not _ATS_ID_FORBIDDEN_CHARS.search(stripped):
+            if stripped and not INVALID_ID_CHARS.search(stripped):
                 normalized_id = stripped
 
         if normalized_id is None:
@@ -548,7 +543,7 @@ class Job(BaseModel):
             if normalized_id != self.ats_id:
                 object.__setattr__(self, "ats_id", normalized_id)
             object.__setattr__(
-                self, "global_id", f"{self.ats_type.value}:{normalized_id}"
+                self, "global_id", build_global_id(self.ats_type.value, normalized_id, str(self.url))
             )
         return self
 

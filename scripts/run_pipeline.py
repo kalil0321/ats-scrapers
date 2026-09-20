@@ -945,7 +945,7 @@ def _jobs_output_root() -> Path:
 
 
 JOB_CSV_FIELDS = [
-    "url", "title", "company", "ats_type", "ats_id", "location",
+    "global_id", "url", "title", "company", "ats_type", "ats_id", "location",
     "country_iso", "region", "language", "lat", "lon",
     "is_remote", "salary_min", "salary_max", "salary_currency",
     "salary_period", "salary_summary", "employment_type",
@@ -1354,6 +1354,7 @@ def _job_to_row(job: Job) -> dict[str, Any]:
         except (TypeError, ValueError):
             raw_json = ""
     return {
+        "global_id": job.global_id,
         "url": str(job.url),
         "title": job.title,
         "company": job.company,
