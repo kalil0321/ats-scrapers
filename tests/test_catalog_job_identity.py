@@ -5,10 +5,12 @@ import pytest
 import scripts.run_pipeline as runner
 from ats_scrapers.models import ATSType, Job
 
-
-@pytest.mark.parametrize("provider", [
+CATALOG_PROVIDERS = (
     ATSType.GREENHOUSE, ATSType.LEVER, ATSType.ASHBY, ATSType.RECRUITEE,
-])
+)
+
+
+@pytest.mark.parametrize("provider", CATALOG_PROVIDERS)
 def test_display_names_do_not_define_job_identity(provider: ATSType) -> None:
     first = Job(
         url="https://careers.example.com/jobs?tenant=first&job=123",
@@ -37,9 +39,7 @@ def test_display_names_do_not_define_job_identity(provider: ATSType) -> None:
     )
 
 
-@pytest.mark.parametrize("provider", [
-    ATSType.GREENHOUSE, ATSType.LEVER, ATSType.ASHBY, ATSType.RECRUITEE,
-])
+@pytest.mark.parametrize("provider", CATALOG_PROVIDERS)
 def test_description_cache_does_not_cross_tenants(tmp_path, provider: ATSType) -> None:
     first = Job(
         url="https://first.example.com/jobs/123",
@@ -58,9 +58,7 @@ def test_description_cache_does_not_cross_tenants(tmp_path, provider: ATSType) -
         cache.close()
 
 
-@pytest.mark.parametrize("provider", [
-    ATSType.GREENHOUSE, ATSType.LEVER, ATSType.ASHBY, ATSType.RECRUITEE,
-])
+@pytest.mark.parametrize("provider", CATALOG_PROVIDERS)
 def test_job_url_variations_share_dedupe_and_cache_keys(tmp_path, provider) -> None:
     first = Job(
         url="http://CAREERS.example.com/jobs/AbC/?tenant=one&gh_jid=123&utm_source=feed",
