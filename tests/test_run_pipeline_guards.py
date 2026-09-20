@@ -21,6 +21,7 @@ def test_ashby_catalog_preserves_disambiguated_employer_names() -> None:
     with path.open(newline="", encoding="utf-8") as handle:
         names = {row["slug"]: row["name"] for row in csv.DictReader(handle)}
     assert names["finch-legal"] == "Finch Legal"
+    assert names["cribl"] == "Cribl"
     assert names["dittoai"] == "Ditto (agentic social)"
     assert names["light-inc"] == "Light (finance platform)"
     assert names["zedfinancial"] == "Zed Financial"
