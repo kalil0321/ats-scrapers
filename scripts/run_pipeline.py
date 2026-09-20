@@ -1204,20 +1204,32 @@ class DescriptionCache:
 
 
 def _catalog_job_url(url: str, provider: str) -> str:
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").casefold()
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").casefold()
+        port = parsed.port
+    except ValueError:
+        return url.strip()
     if ":" in host:
         host = f"[{host}]"
     default_port = {"http": 80, "https": 443}.get(parsed.scheme.casefold())
-    if parsed.port is not None and parsed.port != default_port:
-        host = f"{host}:{parsed.port}"
+    if port is not None and port != default_port:
+        host = f"{host}:{port}"
     path = parsed.path.rstrip("/")
     if provider == "recruitee" and re.fullmatch(r"/o/[^/]+/apply", path):
         path = path.removesuffix("/apply")
+    greenhouse_job = (
+        re.fullmatch(r"/[^/]+/jobs/(\d+)", path)
+        if provider == "greenhouse" and host in {
+            "boards.greenhouse.io", "job-boards.greenhouse.io",
+            "boards.eu.greenhouse.io", "job-boards.eu.greenhouse.io",
+        } else None
+    )
     query = urlencode(sorted(
         (key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
         if not key.casefold().startswith("utm_")
         and key.casefold() not in {"gh_src", "lever-source", "lever-origin"}
+        and not (key == "gh_jid" and greenhouse_job and value == greenhouse_job[1])
     ))
     return f"{host}{path}" + (f"?{query}" if query else "")
 
