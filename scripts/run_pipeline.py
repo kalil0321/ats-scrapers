@@ -1206,10 +1206,13 @@ class DescriptionCache:
 def _catalog_job_url(url: str, provider: str) -> str:
     parsed = urlparse(url)
     host = (parsed.hostname or "").casefold()
-    if parsed.port and parsed.port not in {80, 443}:
+    if ":" in host:
+        host = f"[{host}]"
+    default_port = {"http": 80, "https": 443}.get(parsed.scheme.casefold())
+    if parsed.port is not None and parsed.port != default_port:
         host = f"{host}:{parsed.port}"
     path = parsed.path.rstrip("/")
-    if provider == "recruitee" and path.startswith("/o/"):
+    if provider == "recruitee" and re.fullmatch(r"/o/[^/]+/apply", path):
         path = path.removesuffix("/apply")
     query = urlencode(sorted(
         (key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
