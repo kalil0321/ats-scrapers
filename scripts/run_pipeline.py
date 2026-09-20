@@ -1206,7 +1206,7 @@ class DescriptionCache:
 def _description_keys(job: Job) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
     url = str(job.url).strip()
-    if job.ats_type.value == "icims":
+    if job.ats_type.value in {"icims", "greenhouse", "lever", "ashby", "recruitee"}:
         return [("url", url)] if url else []
     company = (job.company or "").strip()
     ats_id = (job.ats_id or "").strip()
@@ -1231,13 +1231,17 @@ def _job_dedupe_key(
     ats_id = job.ats_id or ""
     if config.get("dedupe_by_ats_id"):
         return "", ats_id
+    if job.ats_type.value in {"greenhouse", "lever", "ashby", "recruitee"}:
+        return str(job.url), ats_id
     return job.company, ats_id
 
 
 def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
     url = (row.get("url") or "").strip()
-    if (row.get("ats_type") or "").strip().casefold() == "icims":
+    if (row.get("ats_type") or "").strip().casefold() in {
+        "icims", "greenhouse", "lever", "ashby", "recruitee",
+    }:
         return [("url", url)] if url else []
     company = (row.get("company") or "").strip()
     ats_id = (row.get("ats_id") or "").strip()
