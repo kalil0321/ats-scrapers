@@ -257,6 +257,21 @@ def _greenhouse_slug(row: dict[str, Any]) -> str | None:
     return name or None
 
 
+def _greenhouse_company_name(row: dict[str, Any]) -> str | None:
+    """Read the sole catalog name, preserving slug fallback for page labels."""
+    name = (row.get("name") or "").strip()
+    if re.search(
+        r"\b(?:job board|career site|careers page|sandbox|test|demo|internal|"
+        r"private|referral|unlisted|template)\b|invite.only",
+        name, re.IGNORECASE,
+    ) or name.casefold() in {
+        "jobs", "careers", "campus opportunities", "third-party job posts",
+        "converted board dana", "employment opportunities",
+    }:
+        return None
+    return name or None
+
+
 def _ashby_slug(row: dict[str, Any]) -> str | None:
     if (slug := _slug_col(row)):
         return slug.lower()
@@ -625,7 +640,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "scraper": GreenhouseScraper,
         "slug": _greenhouse_slug,
         "kwargs": lambda r: {
-            "company_name": (r.get("company_name") or "").strip() or None,
+            "company_name": _greenhouse_company_name(r),
         },
         "csv": "ats-companies/greenhouse.csv",
         "output": "greenhouse/jobs.csv",
