@@ -1,7 +1,7 @@
-name,slug,url,company_name
+name,slug,url
 12Build,12build,https://12build.recruitee.com
 1X Technologies AS,1x,https://1x.recruitee.com
-2am,2am,https://2am.recruitee.com
+2am.tech,2am,https://2am.recruitee.com
 3PBIOVIAN,biovian,https://biovian.recruitee.com
 433,by433,https://by433.recruitee.com
 5280 High School,5280highschool,https://5280highschool.recruitee.com
@@ -341,7 +341,7 @@ Mathrix,mathrix,https://mathrix.recruitee.com
 Maxflow BV / CrazyGames,crazygames,https://crazygames.recruitee.com
 McDugald Steele,mcdugaldsteele,https://mcdugaldsteele.recruitee.com
 MedMe Health,medmehealth,https://medmehealth.recruitee.com
-MedSpa Partners Inc.,medspapartnersinc,https://medspapartnersinc.recruitee.com
+Vos Collection,medspapartnersinc,https://medspapartnersinc.recruitee.com
 Mediengruppe Pressedruck,pdkarriere,https://pdkarriere.recruitee.com
 Mercedes-Benz.io GmbH,mbio,https://mbio.recruitee.com
 Merkur Versicherung AG,merkur,https://merkur.recruitee.com
@@ -425,7 +425,7 @@ PrimeWorks,primeworks,https://primeworks.recruitee.com
 Primegate consulting GmbH,primegateconsultinggmbh,https://primegateconsultinggmbh.recruitee.com
 Projective,projectivegroup,https://projectivegroup.recruitee.com
 Pronto Fulfillment LLC,prontofulfillmentllc,https://prontofulfillmentllc.recruitee.com
-Provence Metropole Logement,hmp,https://hmp.recruitee.com
+Provence Métropole Logement,hmp,https://hmp.recruitee.com
 Psyned B.V.,werkenbijpsyned,https://werkenbijpsyned.recruitee.com
 Pullup Entertainment,focusentertainment,https://focusentertainment.recruitee.com
 PureGym AG,puregymswiss,https://puregymswiss.recruitee.com
@@ -480,7 +480,7 @@ Synapse Analytics,synapseanalytics,https://synapseanalytics.recruitee.com
 SÜDKURIER Medienhaus,skkarriere,https://skkarriere.recruitee.com
 T.E.S,tes,https://tes.recruitee.com
 TBI BANK RO,tbibankro,https://tbibankro.recruitee.com
-TD Business & Performance GmbH,tdfitnessperformance,https://tdfitnessperformance.recruitee.com
+Till Duve Business & Performance GmbH,tdfitnessperformance,https://tdfitnessperformance.recruitee.com
 TECOSIM GmbH,tecosim,https://tecosim.recruitee.com
 TFP Fertility,tfpfertilitygroup,https://tfpfertilitygroup.recruitee.com
 THE ENTOURAGE GROUP,theentouragegroup,https://theentouragegroup.recruitee.com
@@ -572,7 +572,7 @@ Württemberger Wohnkonzepte GmbH,wurttembergerwohnkonzeptegmbh,https://wurttembe
 xalution,xalution,https://xalution.recruitee.com
 XIAO Beteiligungsgesellschaft mbH,xiaorestaurant,https://xiaorestaurant.recruitee.com
 Xebia Group,xccelerated,https://xccelerated.recruitee.com
-Xebia Group,xebiacareers,https://xebiacareers.recruitee.com
+Xebia,xebiacareers,https://xebiacareers.recruitee.com
 Xebia sp. z o.o.,xebiapoland,https://xebiapoland.recruitee.com
 xfive,xfive,https://xfive.recruitee.com
 XITE,xite,https://xite.recruitee.com
@@ -598,13 +598,13 @@ againbio,againbio,https://againbio.recruitee.com
 Akur8,akur8,https://akur8.recruitee.com
 Allredi,allredi,https://allredi.recruitee.com
 AlmavivA de Belgique,almavivadebelgique,https://almavivadebelgique.recruitee.com
-amilia,amilia,https://amilia.recruitee.com
+Amilia,amilia,https://amilia.recruitee.com
 Ananda Ventures GmbH,anandaventuresgmbh,https://anandaventuresgmbh.recruitee.com
 Anchr,anchr,https://anchr.recruitee.com
 Appetiser,appetiser,https://appetiser.recruitee.com
 arbio,arbio,https://arbio.recruitee.com
 Artifact,artifactsa,https://artifactsa.recruitee.com
-ascendingai,ascendingai,https://ascendingai.recruitee.com
+Ascending AI,ascendingai,https://ascendingai.recruitee.com
 Ascension Island Government,ascensionisland,https://ascensionisland.recruitee.com
 ASMPT,asmpthk,https://asmpthk.recruitee.com
 ASTONTEC,astontec,https://astontec.recruitee.com
@@ -620,7 +620,7 @@ bibliu,bibliu,https://bibliu.recruitee.com
 bunq,bunq,https://bunq.recruitee.com
 bwhhotelsemea,bwhhotelsemea,https://bwhhotelsemea.recruitee.com
 byte-code spa,bytecode,https://bytecode.recruitee.com
-campact,campact,https://campact.recruitee.com
+Campact e.V.,campact,https://campact.recruitee.com
 captain,captain,https://captain.recruitee.com
 carbyon,carbyon,https://carbyon.recruitee.com
 careerswcc,careerswcc,https://careerswcc.recruitee.com
@@ -631,8 +631,8 @@ celebrate company GmbH,celebratecompany,https://celebratecompany.recruitee.com
 cellexgmbh,cellexgmbh,https://cellexgmbh.recruitee.com
 centerfortechandciviclife,centerfortechandciviclife,https://centerfortechandciviclife.recruitee.com
 CENTREON,centreon,https://centreon.recruitee.com
-cityscience,cityscience,https://cityscience.recruitee.com
-ClanX,clanx,https://clanx.recruitee.com
+City Science,cityscience,https://cityscience.recruitee.com
+CLANX,clanx,https://clanx.recruitee.com
 "Codeless, Interactive LLC",codelessinteractivellc,https://codelessinteractivellc.recruitee.com
 CoffeeSpace,coffeespace,https://coffeespace.recruitee.com
 Compelson,compelson,https://compelson.recruitee.com
@@ -655,7 +655,7 @@ Dataline nv,dataline,https://dataline.recruitee.com
 deCircle,decircletalentpartner,https://decircletalentpartner.recruitee.com
 deepomatic,deepomatic,https://deepomatic.recruitee.com
 DEMV Systems Gmbh,demvsystemsgmbh,https://demvsystemsgmbh.recruitee.com
-dexterenergyservices,dexterenergyservices,https://dexterenergyservices.recruitee.com
+Dexter Energy,dexterenergyservices,https://dexterenergyservices.recruitee.com
 die Bayerische,diebayerische,https://diebayerische.recruitee.com
 digital dna,digitaldna,https://digitaldna.recruitee.com
 Dipont Education,diponteducation,https://diponteducation.recruitee.com
@@ -718,13 +718,13 @@ Ginmon GmbH,ginmon,https://ginmon.recruitee.com
 Glassix,glassix,https://glassix.recruitee.com
 Global Jet Luxembourg,globaljetluxembourg,https://globaljetluxembourg.recruitee.com
 Global Reporting Initiative,gri,https://gri.recruitee.com
-goedemiddag,goedemiddag,https://goedemiddag.recruitee.com
+Goedemiddag!,goedemiddag,https://goedemiddag.recruitee.com
 Golmed GmbH,golmedgmbh,https://golmedgmbh.recruitee.com
 gpvsweden,gpvsweden,https://gpvsweden.recruitee.com
 Hygraph,graphcms,https://graphcms.recruitee.com
 gravity9,gravity9,https://gravity9.recruitee.com
 GRB Gemeinnütziges Rheinisches Bildungszentrum GmbH,grb,https://grb.recruitee.com
-gridscale,gridscale,https://gridscale.recruitee.com
+gridscale GmbH,gridscale,https://gridscale.recruitee.com
 ELAN Languages,elan,https://elan.recruitee.com
 Elanza,elanza,https://elanza.recruitee.com
 Elektro Supersaxo AG,elektrosupersaxoag,https://elektrosupersaxoag.recruitee.com
@@ -733,7 +733,7 @@ Hard Rock Digital,hardrockdigital,https://hardrockdigital.recruitee.com
 Hasco NV,hascoinvest,https://hascoinvest.recruitee.com
 HatchTech B.V.,hatchtech,https://hatchtech.recruitee.com
 Haus für Sicherheit,hausfursicherheit,https://hausfursicherheit.recruitee.com
-healthiergeneration,healthiergeneration,https://healthiergeneration.recruitee.com
+Alliance for a Healthier Generation Inc.,healthiergeneration,https://healthiergeneration.recruitee.com
 HeatTransformers BV,heattransformers,https://heattransformers.recruitee.com
 Heembouw,heembouw,https://heembouw.recruitee.com
 HeinenoordZicht Groep,fidusheinenoord,https://fidusheinenoord.recruitee.com
@@ -755,7 +755,7 @@ ICF Tech Hungary,icftechhungary,https://icftechhungary.recruitee.com
 iChoosr,ichoosr,https://ichoosr.recruitee.com
 iddi,iddi,https://iddi.recruitee.com
 "Illinois Energy Windows and Siding, Inc.",illinoisenergywindowsandsidinginc,https://illinoisenergywindowsandsidinginc.recruitee.com
-incentivio,incentivio,https://incentivio.recruitee.com
+Incentivio,incentivio,https://incentivio.recruitee.com
 independentstaffingservices,independentstaffingservices,https://independentstaffingservices.recruitee.com
 INDIVIDUALS,individuals,https://individuals.recruitee.com
 intent,intent,https://intent.recruitee.com
@@ -803,7 +803,7 @@ Lamm HR GmbH,lammhr,https://lammhr.recruitee.com
 Land Life,landlifecompany,https://landlifecompany.recruitee.com
 Leadership Pathway,leadershippathway,https://leadershippathway.recruitee.com
 "Learn By Doing, Inc.",learnbydoinginc,https://learnbydoinginc.recruitee.com
-LegalFly,legalfly,https://legalfly.recruitee.com
+LEGALFLY,legalfly,https://legalfly.recruitee.com
 LLEVERAGE,lleverage,https://lleverage.recruitee.com
 LOAVIES,loavies,https://loavies.recruitee.com
 LOGEX,logex,https://logex.recruitee.com
@@ -896,7 +896,7 @@ Sterling Fab Tech,sterlingfabricationtechnology,https://sterlingfabricationtechn
 "Strategy Engineering & Consulting, LLC.",strategyeng,https://strategyeng.recruitee.com
 Student Medicover,studentmedicover,https://studentmedicover.recruitee.com
 superlist,superlist,https://superlist.recruitee.com
-surfly,surfly,https://surfly.recruitee.com
+Surfly,surfly,https://surfly.recruitee.com
 Sustainable Comfort Inc,sustainablecomfort,https://sustainablecomfort.recruitee.com
 Sutton's,suttons,https://suttons.recruitee.com
 swisselect ag,swisselect,https://swisselect.recruitee.com
@@ -913,7 +913,7 @@ tensortechnologies,tensortechnologies,https://tensortechnologies.recruitee.com
 TransPerfect,tgs,https://tgs.recruitee.com
 "Codest Ltd. Company No. 12590542, VAT number: GB363431020",thecodest,https://thecodest.recruitee.com
 The July B.V.,thejulyhotels,https://thejulyhotels.recruitee.com
-thepottershouseone1,thepottershouseone1,https://thepottershouseone1.recruitee.com
+ONE | A Potter’s House Church,thepottershouseone1,https://thepottershouseone1.recruitee.com
 Third Way,thirdway,https://thirdway.recruitee.com
 thorizon,thorizon,https://thorizon.recruitee.com
 tinybeans,tinybeans,https://tinybeans.recruitee.com
@@ -934,7 +934,7 @@ vicotx,vicotx,https://vicotx.recruitee.com
 Vilgain s.r.o.,vilgain,https://vilgain.recruitee.com
 vineyardusa,vineyardusa,https://vineyardusa.recruitee.com
 virtual7 GmbH,virtual7jobs,https://virtual7jobs.recruitee.com
-viryah2,viryah2,https://viryah2.recruitee.com
+Virya Energy Hydrogen Belgium,viryah2,https://viryah2.recruitee.com
 VLT,vlt,https://vlt.recruitee.com
 vly,vlyfoods,https://vlyfoods.recruitee.com
 VNO-NCW en MKB-Nederland,werkenbijvnoncwmkb,https://werkenbijvnoncwmkb.recruitee.com
@@ -949,7 +949,7 @@ whiffle,whiffle,https://whiffle.recruitee.com
 WhiteCoat,whitecoatglobal1,https://whitecoatglobal1.recruitee.com
 XMCO,xmco,https://xmco.recruitee.com
 Young & Laramore,youngandlaramore,https://youngandlaramore.recruitee.com
-zackdfilms,zackdfilms,https://zackdfilms.recruitee.com
+Zack D Films LLC,zackdfilms,https://zackdfilms.recruitee.com
 ZADRA-Gruppe,zadragruppe,https://zadragruppe.recruitee.com
 zara,zara,https://zara.recruitee.com
 Zero Motorcycles Inc.,zeromotorcycles,https://zeromotorcycles.recruitee.com
@@ -1012,7 +1012,7 @@ LessonUp,lessonup,https://lessonup.recruitee.com
 Lister,lister,https://lister.recruitee.com
 KP Snacks,kpsnacks,https://kpsnacks.recruitee.com
 Atiba,jobs.atiba.com,https://jobs.atiba.com
-PIAGROUP Netherlands Beheer B.V.,piagroupnetherlands,https://piagroupnetherlands.recruitee.com
+PIA Group Nederland,piagroupnetherlands,https://piagroupnetherlands.recruitee.com
 pladis France,pladisfrance,https://pladisfrance.recruitee.com
 Polaroid,polaroid,https://polaroid.recruitee.com
 Pragmatic Coders,pragmaticcoders,https://pragmaticcoders.recruitee.com
@@ -1086,7 +1086,7 @@ Yellowtail Conclusion,yellowtail,https://yellowtail.recruitee.com
 Kodify,kodify,https://kodify.recruitee.com
 Carano Software Solutions GmbH,carano,https://carano.recruitee.com
 CarbonBetter,carbonbetter,https://carbonbetter.recruitee.com
-CARE EXPERT B.V.,careexpert,https://careexpert.recruitee.com
+Care Expert,careexpert,https://careexpert.recruitee.com
 CB,cb,https://cb.recruitee.com
 CCM Europe,ccmeurope,https://ccmeurope.recruitee.com
 CENTRALE LYON,ecolecentraledelyon,https://ecolecentraledelyon.recruitee.com
@@ -1110,7 +1110,7 @@ Craftzing,craftzing,https://craftzing.recruitee.com
 Crunch Analytics,crunchanalyticscareers,https://crunchanalyticscareers.recruitee.com
 CSC – IT Center for Science,cscfi,https://cscfi.recruitee.com
 CTICC,cticc,https://cticc.recruitee.com
-CURRENTA Gruppe Ausbildung,azubi,https://azubi.recruitee.com
+CURRENTA GRUPPE Ausbildung,azubi,https://azubi.recruitee.com
 livedepartment crew support GmbH,jobs.livedepartment.com,https://jobs.livedepartment.com
 Livio,livio,https://livio.recruitee.com
 Loyalty Key A/S,loyaltykey,https://loyaltykey.recruitee.com
@@ -1479,7 +1479,7 @@ ICU IT Services,icuitservices,https://icuitservices.recruitee.com
 IFV Performance GmbH,verkaufspsychologie,https://verkaufspsychologie.recruitee.com
 ILF Consulting Engineers Germany GmbH,jobsger,https://jobsger.recruitee.com
 IMB.Berlin GmbH,imbgmbh,https://imbgmbh.recruitee.com
-Body Masters,bodymasters,https://bodymasters.recruitee.com,Body Masters
+info@bodymasters.de,bodymasters,https://bodymasters.recruitee.com
 Infomedics,infomedics,https://infomedics.recruitee.com
 INFOMEDIJI d.o.o.,infomedijidoo,https://infomedijidoo.recruitee.com
 Ingenieurgruppe Steen-Meyers-Schmiddem beratende Ingenieure PartG mbB,smskarriere,https://smskarriere.recruitee.com
@@ -1511,7 +1511,7 @@ Jeff & Jill Uitzendspecialist,jeffjill,https://jeffjill.recruitee.com
 JELLY,scallent,https://scallent.recruitee.com
 Jeugdprofessionals Nederland,jeugdprofessionalsnederland,https://jeugdprofessionalsnederland.recruitee.com
 JEX Nederland B.V.,jex,https://jex.recruitee.com
-Jobnino BV,jobninobv,https://jobninobv.recruitee.com
+Jobnino BV:,jobninobv,https://jobninobv.recruitee.com
 Jumpfactor,jumpfactor,https://jumpfactor.recruitee.com
 Kalle-Bäcker GmbH & Co. KG,kallebaecker,https://kallebaecker.recruitee.com
 Kantega,kantega,https://kantega.recruitee.com

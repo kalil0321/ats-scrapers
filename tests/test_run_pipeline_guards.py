@@ -86,20 +86,29 @@ def test_oracle_dedupes_same_tenant_job_across_named_sites() -> None:
     assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
 
 
-def test_recruitee_company_name_override_is_opt_in() -> None:
+def test_recruitee_uses_the_single_catalog_name() -> None:
     config = runner.CONFIGS["recruitee"]
-    ordinary_row = {
-        "name": "Acme Catalog Name",
+    row = {
+        "name": "  Acme Holdings  ",
         "slug": "acme",
         "url": "https://acme.recruitee.com",
-    }
-    corrected_row = {
-        **ordinary_row,
-        "company_name": "Acme Holdings",
+        "company_name": "Obsolete duplicate must be ignored",
     }
 
-    assert config["kwargs"](ordinary_row) == {"company_name": None}
-    assert config["kwargs"](corrected_row) == {"company_name": "Acme Holdings"}
+    assert config["kwargs"](row) == {"company_name": "Acme Holdings"}
+    assert config["kwargs"]({}) == {"company_name": None}
+    assert config["kwargs"]({"name": "  "}) == {"company_name": None}
+
+
+def test_recruitee_catalog_has_only_one_company_name_column() -> None:
+    path = runner.DATA_ROOT / runner.CONFIGS["recruitee"]["csv"]
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == ["name", "slug", "url"]
+        rows = list(reader)
+    assert rows
+    assert all(row["name"].strip() and None not in row for row in rows)
+    assert len({row["slug"] for row in rows}) == len(rows)
 
 
 def test_icims_dedupes_exact_job_url_across_named_portals() -> None:

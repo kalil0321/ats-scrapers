@@ -607,7 +607,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # from the URL when one is present.
         "slug": _recruitee_slug,
         "kwargs": lambda r: {
-            "company_name": (r.get("company_name") or "").strip() or None,
+            "company_name": (r.get("name") or "").strip() or None,
         },
         "csv": "ats-companies/recruitee.csv",
         "output": "recruitee/jobs.csv",
