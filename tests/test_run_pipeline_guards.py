@@ -107,8 +107,17 @@ def test_recruitee_catalog_has_only_one_company_name_column() -> None:
         assert reader.fieldnames == ["name", "slug", "url"]
         rows = list(reader)
     assert rows
-    assert all(row["name"].strip() and None not in row for row in rows)
+    assert all(row["name"].strip() and None not in row and None not in row.values() for row in rows)
     assert len({row["slug"] for row in rows}) == len(rows)
+
+
+@pytest.mark.parametrize("row", [
+    {"name": "bunq", "slug": "bunq", "url": "https://bunq.recruitee.com"},
+    {"name": " BUNQ ", "url": "https://bunq.recruitee.com"},
+    {"name": "acme", "slug": "acme", "url": "https://careers.acme.example"},
+])
+def test_recruitee_preserves_api_names_for_bare_catalog_slugs(row) -> None:
+    assert runner.CONFIGS["recruitee"]["kwargs"](row) == {"company_name": None}
 
 
 def test_icims_dedupes_exact_job_url_across_named_portals() -> None:

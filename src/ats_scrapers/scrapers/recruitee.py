@@ -92,8 +92,9 @@ class RecruiteeScraper(BaseScraper):
         location = _format_location(offer)
         loc_obj = offer.get("location") if isinstance(offer.get("location"), dict) else {}
         company = self.company_name or offer.get("company_name") or self.company_slug
-        if isinstance(company, str):
-            company = unicodedata.normalize("NFC", company)
+        if not isinstance(company, str) or not company.strip():
+            company = self.company_slug
+        company = unicodedata.normalize("NFC", company.strip())
 
         url = offer.get("careers_url") or offer.get("careers_apply_url") or _fallback_url(self.company_slug, offer)
         apply_url = offer.get("careers_apply_url")

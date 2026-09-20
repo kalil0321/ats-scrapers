@@ -54,6 +54,15 @@ def test_company_name_is_normalized_to_nfc(httpx_mock) -> None:
     assert jobs[0].company == "Göcke GmbH"
 
 
+@pytest.mark.parametrize("value", [None, "", "  ", {}, [], 123])
+def test_invalid_company_name_falls_back_to_tenant(httpx_mock, value) -> None:
+    offer = _offer()
+    offer["company_name"] = value
+    httpx_mock.add_response(url=API, json={"offers": [offer]})
+    jobs = RecruiteeScraper("acme").fetch()
+    assert jobs[0].company == "acme"
+
+
 def test_returns_empty_offers(httpx_mock) -> None:
     httpx_mock.add_response(url=API, json={"offers": []})
     assert RecruiteeScraper("acme").fetch() == []
