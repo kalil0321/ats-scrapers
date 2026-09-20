@@ -16,6 +16,16 @@ def test_bamboohr_pipeline_fails_closed_on_empty() -> None:
     assert runner.CONFIGS["bamboohr"]["fail_closed_on_empty"] is True
 
 
+def test_ashby_catalog_preserves_disambiguated_employer_names() -> None:
+    path = runner.DATA_ROOT / runner.CONFIGS["ashby"]["csv"]
+    with path.open(newline="", encoding="utf-8") as handle:
+        names = {row["slug"]: row["name"] for row in csv.DictReader(handle)}
+    assert names["finch-legal"] == "Finch Legal"
+    assert names["dittoai"] == "Ditto (agentic social)"
+    assert names["light-inc"] == "Light (finance platform)"
+    assert names["zedfinancial"] == "Zed Financial"
+
+
 def test_jobs_output_root_defaults_to_repository_root(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
