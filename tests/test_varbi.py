@@ -278,3 +278,16 @@ def test_contract_employment_type(httpx_mock, contract) -> None:
     httpx_mock.add_response(url=FEED, text=_feed())
     httpx_mock.add_response(url=DETAIL, text=_detail().replace("Permanent position", contract))
     assert VarbiScraper("acme").fetch()[0].employment_type == "CONTRACT"
+
+
+@pytest.mark.parametrize(("job_id", "accepted"), [("123", True), ("999", False)])
+def test_quick_apply_links_must_match_the_listed_job(httpx_mock, job_id, accepted) -> None:
+    httpx_mock.add_response(url=FEED, text=_feed())
+    quick_path = f"en/apply/positionquick/{job_id}/"
+    detail = _detail().replace("en/what:login/jobID:123/type:job/apply:1/", quick_path)
+    httpx_mock.add_response(url=DETAIL, text=detail)
+    job = VarbiScraper("acme").fetch()[0]
+    if accepted:
+        assert str(job.apply_url) == f"https://acme.varbi.com/{quick_path}"
+    else:
+        assert job.apply_url is None

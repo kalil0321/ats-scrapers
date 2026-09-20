@@ -227,7 +227,8 @@ class VarbiScraper(BaseScraper):
                 parsed.scheme == "https" and parsed.netloc.lower() == self.host
                 and not parsed.query and not parsed.fragment
                 and re.fullmatch(
-                    rf"/(?:[a-z]{{2}}/)?what:login/jobID:{re.escape(job_id)}/type:job/apply:1/",
+                    rf"/(?:[a-z]{{2}}/)?(?:what:login/jobID:{re.escape(job_id)}/type:job/apply:1"
+                    rf"|apply/positionquick/{re.escape(job_id)})/",
                     parsed.path,
                 )
             ):
