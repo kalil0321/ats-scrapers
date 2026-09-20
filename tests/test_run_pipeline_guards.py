@@ -86,6 +86,45 @@ def test_oracle_dedupes_same_tenant_job_across_named_sites() -> None:
     assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
 
 
+def test_recruitee_uses_the_single_catalog_name() -> None:
+    config = runner.CONFIGS["recruitee"]
+    row = {
+        "name": "  Acme Holdings  ",
+        "slug": "acme",
+        "url": "https://acme.recruitee.com",
+        "company_name": "Obsolete duplicate must be ignored",
+    }
+
+    assert config["kwargs"](row) == {"company_name": "Acme Holdings"}
+    assert config["kwargs"]({}) == {"company_name": None}
+    assert config["kwargs"]({"name": "  "}) == {"company_name": None}
+
+
+def test_recruitee_catalog_has_only_one_company_name_column() -> None:
+    path = runner.DATA_ROOT / runner.CONFIGS["recruitee"]["csv"]
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == ["name", "slug", "url"]
+        rows = list(reader)
+    assert rows
+    assert all(row["name"].strip() and None not in row and None not in row.values() for row in rows)
+    assert len({row["slug"] for row in rows}) == len(rows)
+    body_masters = next(row for row in rows if row["slug"] == "bodymasters")
+    assert body_masters["name"] == "Body Masters"
+    assert runner.CONFIGS["recruitee"]["kwargs"](body_masters) == {
+        "company_name": "Body Masters",
+    }
+
+
+@pytest.mark.parametrize("row", [
+    {"name": "bunq", "slug": "bunq", "url": "https://bunq.recruitee.com"},
+    {"name": " BUNQ ", "url": "https://bunq.recruitee.com"},
+    {"name": "acme", "slug": "acme", "url": "https://careers.acme.example"},
+])
+def test_recruitee_preserves_api_names_for_bare_catalog_slugs(row) -> None:
+    assert runner.CONFIGS["recruitee"]["kwargs"](row) == {"company_name": None}
+
+
 def test_icims_dedupes_exact_job_url_across_named_portals() -> None:
     first = Job(
         url="https://careers-acme.icims.com/jobs/1/engineer/job?in_iframe=1",

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import html as html_mod
 import re
+import unicodedata
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
@@ -46,6 +47,7 @@ class RecruiteeScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = 30.0,
+        company_name: str | None = None,
         include_descriptions: bool = True,
         proxy: str | None = None,
     ) -> None:
@@ -60,6 +62,11 @@ class RecruiteeScraper(BaseScraper):
             self.company_slug = require_http_url(slug, provider="RecruiteeScraper")
         else:
             self.company_slug = require_host_label(slug, provider="RecruiteeScraper")
+        self.company_name = (
+            company_name.strip()
+            if company_name and company_name.strip()
+            else None
+        )
 
     async def afetch(self) -> list[Job]:
         api_url = self._resolve_api_url()
@@ -84,6 +91,10 @@ class RecruiteeScraper(BaseScraper):
     def _parse_offer(self, offer: dict[str, Any]) -> Job:
         location = _format_location(offer)
         loc_obj = offer.get("location") if isinstance(offer.get("location"), dict) else {}
+        company = self.company_name or offer.get("company_name") or self.company_slug
+        if not isinstance(company, str) or not company.strip():
+            company = self.company_slug
+        company = unicodedata.normalize("NFC", company.strip())
 
         url = offer.get("careers_url") or offer.get("careers_apply_url") or _fallback_url(self.company_slug, offer)
         apply_url = offer.get("careers_apply_url")
@@ -105,7 +116,7 @@ class RecruiteeScraper(BaseScraper):
         return Job(
             url=url,
             title=offer.get("title") or offer.get("position") or "Untitled",
-            company=offer.get("company_name") or self.company_slug,
+            company=company,
             ats_type=ATSType.RECRUITEE,
             ats_id=str(offer.get("id") or offer.get("slug") or ""),
             location=location,
