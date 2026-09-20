@@ -16,6 +16,10 @@ def test_bamboohr_pipeline_fails_closed_on_empty() -> None:
     assert runner.CONFIGS["bamboohr"]["fail_closed_on_empty"] is True
 
 
+def test_teamtailor_pipeline_fails_closed_on_empty() -> None:
+    assert runner.CONFIGS["teamtailor"]["fail_closed_on_empty"] is True
+
+
 def test_jobs_output_root_defaults_to_repository_root(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

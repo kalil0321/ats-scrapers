@@ -543,6 +543,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "deterministic_dedupe": True,
         "csv": "ats-companies/teamtailor.csv",
         "output": "teamtailor/jobs.csv",
+        "fail_closed_on_empty": True,
     },
     "ukg": {
         "scraper": UKGProScraper,
