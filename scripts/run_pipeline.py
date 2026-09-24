@@ -545,6 +545,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "output": "teamtailor/jobs.csv",
         "fail_closed_on_empty": True,
         "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
     },
     "ukg": {
         "scraper": UKGProScraper,

@@ -21,6 +21,69 @@ def test_teamtailor_pipeline_fails_closed_on_empty() -> None:
     assert runner.CONFIGS["teamtailor"]["fail_closed_on_any_error"] is True
 
 
+@pytest.mark.parametrize("has_previous", [True, False])
+@pytest.mark.parametrize("second_status", [200, 404])
+def test_teamtailor_pipeline_requires_all_rss_endpoints(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock,
+    capsys: pytest.CaptureFixture[str],
+    has_previous: bool,
+    second_status: int,
+) -> None:
+    monkeypatch.delenv("ATS_SCRAPERS_JOBS_ROOT", raising=False)
+    monkeypatch.delenv("JOBHIVE_JOBS_ROOT", raising=False)
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    # Use the production Teamtailor config, scraper and runner; mock only HTTP.
+    cfg = runner.CONFIGS["teamtailor"]
+    catalog_path = tmp_path / cfg["csv"]
+    catalog_path.parent.mkdir()
+    catalog_path.write_text(
+        "name,slug,url\n"
+        "Good,good,https://good.teamtailor.com\n"
+        "Other,other,https://other.teamtailor.com\n",
+        encoding="utf-8",
+    )
+    output_path = tmp_path / cfg["output"]
+    output_path.parent.mkdir()
+    previous = (
+        b"url,title,company,ats_type,ats_id\n"
+        b"https://other.teamtailor.com/jobs/99-old,Old,Other,teamtailor,99\n"
+    )
+    if has_previous:
+        output_path.write_bytes(previous)
+
+    for job_id, slug, status in ((1, "good", 200), (2, "other", second_status)):
+        httpx_mock.add_response(
+            url=f"https://{slug}.teamtailor.com/jobs.rss",
+            status_code=status,
+            text=(
+                "<rss><channel><item>"
+                f"<title>Job {job_id}</title>"
+                f"<link>https://{slug}.teamtailor.com/jobs/{job_id}-engineer</link>"
+                "<description>Complete description.</description>"
+                "</item></channel></rss>"
+                if status == 200 else "Not Found"
+            ),
+        )
+
+    rc = asyncio.run(runner.run("teamtailor", concurrency=2, max_tenants=None, timeout=1))
+
+    if second_status == 404:
+        assert "1 OK, 1 not-found, 0 errors, 1 jobs" in capsys.readouterr().out
+        assert rc == 1
+        if has_previous:
+            assert output_path.read_bytes() == previous
+        else:
+            assert not output_path.exists()
+    else:
+        assert rc == 0
+        with output_path.open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        assert {row["ats_id"] for row in rows} == {"1", "2"}
+    assert not output_path.with_name(".jobs.csv.tmp").exists()
+
+
 def test_jobs_output_root_defaults_to_repository_root(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
