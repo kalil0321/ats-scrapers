@@ -538,8 +538,14 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "teamtailor": {
         "scraper": TeamtailorScraper,
         "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
+        "dedupe_by_ats_id": True,
+        "deterministic_dedupe": True,
         "csv": "ats-companies/teamtailor.csv",
         "output": "teamtailor/jobs.csv",
+        "fail_closed_on_empty": True,
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
     },
     "ukg": {
         "scraper": UKGProScraper,
@@ -1233,6 +1239,77 @@ def _job_dedupe_key(
     return job.company, ats_id
 
 
+def _deterministic_job_choice(
+    current: tuple[int, str, Job] | None,
+    candidate: tuple[int, str, Job],
+) -> tuple[int, str, Job]:
+    if current is None:
+        return candidate
+
+    def preference(
+        item: tuple[int, str, Job],
+    ) -> tuple[int, int, str, str, str, str]:
+        catalog_priority, source_slug, job = item
+        job_hostname = (urlparse(str(job.url)).hostname or "").casefold()
+        normalized_source = source_slug.strip().casefold()
+        if normalized_source.startswith(("http://", "https://")):
+            source_hostname = (
+                urlparse(normalized_source).hostname or ""
+            ).casefold()
+            owns_job_url = source_hostname == job_hostname
+        else:
+            owns_job_url = (
+                job_hostname == normalized_source
+                or job_hostname.startswith(f"{normalized_source}.")
+            )
+        return (
+            0 if owns_job_url else 1,
+            catalog_priority,
+            (job.company or "").casefold(),
+            str(job.url).casefold(),
+            job.ats_id or "",
+            json.dumps(job.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
+        )
+
+    return min(current, candidate, key=preference)
+
+
+class _JobSpool:
+    def __init__(self) -> None:
+        self.directory = tempfile.TemporaryDirectory(prefix="ats-job-spool-")
+        self.conn = sqlite3.connect(Path(self.directory.name) / "jobs.sqlite3")
+        self.conn.execute(
+            "CREATE TABLE jobs (identity TEXT PRIMARY KEY, priority INTEGER, "
+            "slug TEXT, payload TEXT)"
+        )
+
+    def add(self, key: tuple[str, str], candidate: tuple[int, str, Job]) -> bool:
+        identity = json.dumps(key)
+        row = self.conn.execute(
+            "SELECT priority, slug, payload FROM jobs WHERE identity = ?", (identity,),
+        ).fetchone()
+        current = (row[0], row[1], Job.model_validate_json(row[2])) if row else None
+        chosen = _deterministic_job_choice(current, candidate)
+        if chosen is candidate:
+            priority, slug, job = candidate
+            self.conn.execute(
+                "INSERT OR REPLACE INTO jobs VALUES (?, ?, ?, ?)",
+                (identity, priority, slug, job.model_dump_json()),
+            )
+        return row is None
+
+    def jobs(self):
+        self.conn.commit()
+        for priority, slug, payload in self.conn.execute(
+            "SELECT priority, slug, payload FROM jobs ORDER BY identity"
+        ):
+            yield priority, slug, Job.model_validate_json(payload)
+
+    def close(self) -> None:
+        self.conn.close()
+        self.directory.cleanup()
+
+
 def _row_description_keys(row: dict[str, str]) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
     url = (row.get("url") or "").strip()
@@ -1501,9 +1578,12 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             f"({location} cache at {description_cache.path})"
         )
     seen_keys: set[tuple[str, str]] = set()  # (company, ats_id) for cross-tenant dedup
+    buffered_jobs = None
 
     t0 = time.time()
     try:
+        if cfg.get("deterministic_dedupe"):
+            buffered_jobs = _JobSpool()
         with tmp_output_path.open("w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=JOB_CSV_FIELDS)
             writer.writeheader()
@@ -1595,7 +1675,11 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                     print(f"  [{ats}] streaming failed: {type(exc).__name__}: "
                           f"{str(exc)[:200]}")
             else:
-                async def scrape_tenant(slug: str, kw: dict[str, Any]) -> None:
+                async def scrape_tenant(
+                    catalog_priority: int,
+                    slug: str,
+                    kw: dict[str, Any],
+                ) -> None:
                     started = time.time()
                     async with sem:
                         try:
@@ -1632,6 +1716,9 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                     }
                     for job in jobs:
                         key = _job_dedupe_key(job, cfg)
+                        if buffered_jobs is not None:
+                            counts["jobs"] += buffered_jobs.add(key, (catalog_priority, slug, job))
+                            continue
                         if key in seen_keys:
                             continue
                         seen_keys.add(key)
@@ -1668,7 +1755,12 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                 batch_size = 50
                 for i in range(0, len(targets), batch_size):
                     batch = targets[i:i + batch_size]
-                    await asyncio.gather(*(scrape_tenant(s, kw) for s, kw in batch))
+                    await asyncio.gather(
+                        *(
+                            scrape_tenant(priority, slug, kw)
+                            for priority, (slug, kw) in enumerate(batch, start=i)
+                        )
+                    )
                     f.flush()
                     elapsed = time.time() - t0
                     print(
@@ -1677,6 +1769,20 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                         f"{counts['success']} OK, {counts['not_found']} not-found, "
                         f"{counts['error']} errors, {counts['jobs']:,} jobs"
                     )
+
+                if buffered_jobs is not None:
+                    for priority, slug, job in buffered_jobs.jobs():
+                        if not cfg.get("skip_description_enrichment"):
+                            scraper = cfg["scraper"](
+                                slug, timeout=timeout, **targets[priority][1],
+                            )
+                            needs_fetch = not (
+                                job.description or _cached_description(job, description_cache)
+                            )
+                            await _ensure_description(scraper, job, description_cache)
+                            if description_delay and needs_fetch:
+                                await asyncio.sleep(description_delay)
+                        writer.writerow(_job_to_row(job))
 
         elapsed = time.time() - t0
         print(
@@ -1805,6 +1911,8 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             return 1
         return 0
     finally:
+        if buffered_jobs is not None:
+            buffered_jobs.close()
         description_cache.close()
 
 

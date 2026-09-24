@@ -16,6 +16,74 @@ def test_bamboohr_pipeline_fails_closed_on_empty() -> None:
     assert runner.CONFIGS["bamboohr"]["fail_closed_on_empty"] is True
 
 
+def test_teamtailor_pipeline_fails_closed_on_empty() -> None:
+    assert runner.CONFIGS["teamtailor"]["fail_closed_on_empty"] is True
+    assert runner.CONFIGS["teamtailor"]["fail_closed_on_any_error"] is True
+
+
+@pytest.mark.parametrize("has_previous", [True, False])
+@pytest.mark.parametrize("second_status", [200, 404])
+def test_teamtailor_pipeline_requires_all_rss_endpoints(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock,
+    capsys: pytest.CaptureFixture[str],
+    has_previous: bool,
+    second_status: int,
+) -> None:
+    monkeypatch.delenv("ATS_SCRAPERS_JOBS_ROOT", raising=False)
+    monkeypatch.delenv("JOBHIVE_JOBS_ROOT", raising=False)
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    # Use the production Teamtailor config, scraper and runner; mock only HTTP.
+    cfg = runner.CONFIGS["teamtailor"]
+    catalog_path = tmp_path / cfg["csv"]
+    catalog_path.parent.mkdir()
+    catalog_path.write_text(
+        "name,slug,url\n"
+        "Good,good,https://good.teamtailor.com\n"
+        "Other,other,https://other.teamtailor.com\n",
+        encoding="utf-8",
+    )
+    output_path = tmp_path / cfg["output"]
+    output_path.parent.mkdir()
+    previous = (
+        b"url,title,company,ats_type,ats_id\n"
+        b"https://other.teamtailor.com/jobs/99-old,Old,Other,teamtailor,99\n"
+    )
+    if has_previous:
+        output_path.write_bytes(previous)
+
+    for job_id, slug, status in ((1, "good", 200), (2, "other", second_status)):
+        httpx_mock.add_response(
+            url=f"https://{slug}.teamtailor.com/jobs.rss",
+            status_code=status,
+            text=(
+                "<rss><channel><item>"
+                f"<title>Job {job_id}</title>"
+                f"<link>https://{slug}.teamtailor.com/jobs/{job_id}-engineer</link>"
+                "<description>Complete description.</description>"
+                "</item></channel></rss>"
+                if status == 200 else "Not Found"
+            ),
+        )
+
+    rc = asyncio.run(runner.run("teamtailor", concurrency=2, max_tenants=None, timeout=1))
+
+    if second_status == 404:
+        assert "1 OK, 1 not-found, 0 errors, 1 jobs" in capsys.readouterr().out
+        assert rc == 1
+        if has_previous:
+            assert output_path.read_bytes() == previous
+        else:
+            assert not output_path.exists()
+    else:
+        assert rc == 0
+        with output_path.open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        assert {row["ats_id"] for row in rows} == {"1", "2"}
+    assert not output_path.with_name(".jobs.csv.tmp").exists()
+
+
 def test_jobs_output_root_defaults_to_repository_root(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -84,6 +152,225 @@ def test_oracle_dedupes_same_tenant_job_across_named_sites() -> None:
         runner._job_dedupe_key(second, oracle_config)
     )
     assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
+
+
+def test_teamtailor_dedupes_same_job_across_mirrored_tenant_feeds() -> None:
+    first = Job(
+        url="https://careers.example.com/jobs/123-engineer",
+        title="Engineer",
+        company="parent-feed",
+        ats_type=ATSType.TEAMTAILOR,
+        ats_id="123",
+    )
+    second = first.model_copy(
+        update={
+            "url": "https://careers-subsidiary.example.com/jobs/123-engineer",
+            "company": "subsidiary-feed",
+        }
+    )
+
+    teamtailor_config = runner.CONFIGS["teamtailor"]
+    assert runner._job_dedupe_key(first, teamtailor_config) == (
+        runner._job_dedupe_key(second, teamtailor_config)
+    )
+    assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
+
+
+def test_teamtailor_pipeline_passes_catalog_company_name() -> None:
+    row = {
+        "name": "Acme Holdings",
+        "slug": "acme",
+        "url": "https://acme.teamtailor.com",
+    }
+
+    assert runner.CONFIGS["teamtailor"]["kwargs"](row) == {
+        "company_name": "Acme Holdings"
+    }
+
+
+def test_deterministic_job_choice_preserves_catalog_priority() -> None:
+    canonical = Job(
+        url="https://shared.example.com/jobs/123-engineer",
+        title="Engineer",
+        company="z-feed",
+        ats_type=ATSType.TEAMTAILOR,
+        ats_id="123",
+    )
+    mirrored = Job(
+        url="https://shared.example.com/jobs/123-engineer",
+        title="Engineer",
+        company="a-feed",
+        ats_type=ATSType.TEAMTAILOR,
+        ats_id="123",
+    )
+
+    canonical_entry = (0, "z-feed", canonical)
+    mirrored_entry = (1, "a-feed", mirrored)
+    assert runner._deterministic_job_choice(None, canonical_entry) is canonical_entry
+    assert (
+        runner._deterministic_job_choice(canonical_entry, mirrored_entry)
+        is canonical_entry
+    )
+    assert (
+        runner._deterministic_job_choice(mirrored_entry, canonical_entry)
+        is canonical_entry
+    )
+
+
+def test_job_spool_keeps_winners_on_disk_and_cleans_up() -> None:
+    canonical = Job(
+        url="https://canonical.teamtailor.com/jobs/123",
+        title="Engineer", company="Canonical", ats_type=ATSType.TEAMTAILOR,
+        ats_id="123", description="Details " * 1000,
+    )
+    mirrored = canonical.model_copy(update={"company": "Mirror"})
+    spool = runner._JobSpool()
+    directory = Path(spool.directory.name)
+    try:
+        assert spool.add(("", "123"), (0, "mirror", mirrored)) is True
+        assert spool.add(("", "123"), (1, "canonical", canonical)) is False
+        assert list(spool.jobs()) == [(1, "canonical", canonical)]
+        assert (directory / "jobs.sqlite3").stat().st_size > 0
+    finally:
+        spool.close()
+    assert not directory.exists()
+
+
+def test_spooled_description_delay_only_applies_to_fetches(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("ATS_SCRAPERS_JOBS_ROOT", raising=False)
+    monkeypatch.delenv("JOBHIVE_JOBS_ROOT", raising=False)
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    (tmp_path / "tenants.csv").write_text("name,slug,url\nAcme,acme,https://acme.example\n")
+    jobs = [
+        Job(
+            url=f"https://acme.example/jobs/{title}", title=title, company="Acme",
+            ats_type=ATSType.TEAMTAILOR, ats_id=title,
+            description="Present description" if title == "Present" else None,
+        )
+        for title in ("Present", "Cached", "Missing")
+    ]
+    delays = []
+
+    async def fake_scrape(_scraper, slug, *_args, **_kwargs):
+        return slug, object(), jobs, None
+
+    async def fake_enrich(_scraper, job, _cache):
+        job.description = "Complete description"
+        return "fetched"
+
+    async def record_delay(seconds):
+        delays.append(seconds)
+
+    monkeypatch.setattr(runner, "_run_scraper", fake_scrape)
+    monkeypatch.setattr(runner, "_ensure_description", fake_enrich)
+    monkeypatch.setattr(
+        runner, "_cached_description",
+        lambda job, _cache: "Cached description" if job.title == "Cached" else None,
+    )
+    monkeypatch.setattr(runner.asyncio, "sleep", record_delay)
+    monkeypatch.setitem(runner.CONFIGS, "spooled", {
+        "scraper": lambda *_args, **_kwargs: object(),
+        "slug": lambda row: row["slug"], "csv": "tenants.csv",
+        "output": "spooled/jobs.csv", "deterministic_dedupe": True,
+        "dedupe_by_ats_id": True, "description_delay_seconds": 0.5,
+        "skip_normalize": True,
+    })
+    assert asyncio.run(runner.run("spooled", 1, None, 1)) == 0
+    assert delays == [0.5]
+
+
+def test_deterministic_job_choice_prefers_authoritative_hostname() -> None:
+    canonical = Job(
+        url="https://canonical.teamtailor.com/jobs/123-engineer",
+        title="Engineer",
+        company="canonical",
+        ats_type=ATSType.TEAMTAILOR,
+        ats_id="123",
+    )
+    mirrored = canonical.model_copy(update={"company": "mirror"})
+    earlier_mirror = (0, "mirror", mirrored)
+    later_canonical = (1, "canonical", canonical)
+
+    assert (
+        runner._deterministic_job_choice(earlier_mirror, later_canonical)
+        is later_canonical
+    )
+    assert (
+        runner._deterministic_job_choice(later_canonical, earlier_mirror)
+        is later_canonical
+    )
+
+
+def test_deterministic_provider_dedupe_ignores_completion_order(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ATS_SCRAPERS_JOBS_ROOT", raising=False)
+    monkeypatch.delenv("JOBHIVE_JOBS_ROOT", raising=False)
+    (tmp_path / "ats-companies").mkdir()
+    (tmp_path / "ats-companies" / "mirrored.csv").write_text(
+        "name,slug,url\n"
+        "Zulu,zulu,https://zulu.example.com\n"
+        "Alpha,alpha,https://alpha.example.com\n",
+        encoding="utf-8",
+    )
+    delays: dict[str, float] = {}
+
+    async def fake_run_scraper(
+        _scraper_cls,
+        slug,
+        _kwargs=None,
+        _timeout=30,
+        *,
+        include_descriptions=True,
+    ):
+        await asyncio.sleep(delays[slug])
+        return (
+            slug,
+            object(),
+            [
+                Job(
+                    url=f"https://{slug}.example.com/jobs/123-engineer",
+                    title="Engineer",
+                    company=slug,
+                    ats_type=ATSType.TEAMTAILOR,
+                    ats_id="123",
+                )
+            ],
+            None,
+        )
+
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setattr(runner, "_run_scraper", fake_run_scraper)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "mirrored",
+        {
+            "scraper": object,
+            "slug": lambda row: row["slug"],
+            "csv": "ats-companies/mirrored.csv",
+            "output": "mirrored/jobs.csv",
+            "dedupe_by_ats_id": True,
+            "deterministic_dedupe": True,
+            "skip_description_enrichment": True,
+        },
+    )
+
+    def run_with_delays(alpha: float, zulu: float) -> dict[str, str]:
+        delays.update(alpha=alpha, zulu=zulu)
+        rc = asyncio.run(
+            runner.run("mirrored", concurrency=2, max_tenants=None, timeout=1)
+        )
+        assert rc == 0
+        with (tmp_path / "mirrored" / "jobs.csv").open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        assert len(rows) == 1
+        return rows[0]
+
+    alpha_first = run_with_delays(alpha=0, zulu=0.01)
+    zulu_first = run_with_delays(alpha=0.01, zulu=0)
+
+    assert alpha_first == zulu_first
+    assert alpha_first["company"] == "zulu"
 
 
 def test_icims_dedupes_exact_job_url_across_named_portals() -> None:
