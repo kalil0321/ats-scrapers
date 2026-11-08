@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import pickle
 from datetime import UTC, datetime
 from typing import Any
 
@@ -112,6 +114,15 @@ def test_base_get_details_default_does_not_mutate_input_when_hook_mutates() -> N
     assert result is not job
     assert result.description == "filled"
     assert result.location == "Seattle, WA"
+
+
+def test_base_get_details_default_applies_refreshed_description() -> None:
+    job = _job(ats_type=ATSType.CUSTOM, description="old")
+
+    result = _dummy_scraper("new").get_details(job)
+
+    assert result.description == "new"
+    assert job.description == "old"
 
 
 def test_base_get_details_default_truncates_long_description() -> None:
@@ -241,3 +252,22 @@ def test_workday_get_description_returns_existing_description_without_request(
 
 def test_detail_fetch_error_is_scraper_error() -> None:
     assert isinstance(DetailFetchError("x", status_code=404, url="u"), ScraperError)
+
+
+def test_detail_fetch_error_round_trips_through_pickle() -> None:
+    err = DetailFetchError("m", status_code=429, url="u")
+
+    back = pickle.loads(pickle.dumps(err))
+
+    assert isinstance(back, DetailFetchError)
+    assert back.status_code == 429
+    assert back.url == "u"
+    assert str(back) == "m"
+
+
+def test_detail_fetch_error_supports_copy() -> None:
+    err = DetailFetchError("m", status_code=429, url="u")
+
+    for clone in (copy.copy(err), copy.deepcopy(err)):
+        assert clone.status_code == 429
+        assert clone.url == "u"

@@ -1,5 +1,7 @@
 """Exception hierarchy for ats-scrapers."""
 
+from typing import Any
+
 
 class ATSScrapersError(Exception):
     """Base class for all ats-scrapers errors."""
@@ -40,3 +42,16 @@ class DetailFetchError(ScraperError):
         self.status_code = status_code
         self.url = url
         super().__init__(message)
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        # BaseException pickles as cls(*args), which cannot supply the required keywords.
+        return (
+            _rebuild_detail_fetch_error,
+            (str(self.args[0]) if self.args else "", self.status_code, self.url),
+        )
+
+
+def _rebuild_detail_fetch_error(
+    message: str, status_code: int | None, url: str
+) -> DetailFetchError:
+    return DetailFetchError(message, status_code=status_code, url=url)

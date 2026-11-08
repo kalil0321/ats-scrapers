@@ -158,7 +158,7 @@ class BaseScraper(ABC):
         # detached copy and the caller's job is never touched.
         candidate = job.model_copy(deep=True)
         description = self.get_description(candidate)
-        if description and not candidate.description:
+        if description and description != candidate.description:
             candidate = candidate.model_copy(update={"description": description[:25_000]})
         elif candidate.description and len(candidate.description) > 25_000:
             candidate = candidate.model_copy(
