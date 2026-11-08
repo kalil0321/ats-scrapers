@@ -19,3 +19,23 @@ class ScraperError(ATSScrapersError):
 
 class CompanyNotFoundError(ScraperError):
     """Raised when a company is not present on the requested ATS."""
+
+
+class DetailFetchError(ScraperError):
+    """Raised when a per-job detail request fails.
+
+    ``status_code`` is the HTTP status of the final response, or ``None``
+    for transport errors (the transport exception is chained as
+    ``__cause__``). ``url`` is the detail URL that was requested.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        url: str = "",
+    ) -> None:
+        self.status_code = status_code
+        self.url = url
+        super().__init__(message)

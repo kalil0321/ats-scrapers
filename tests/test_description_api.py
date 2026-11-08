@@ -67,6 +67,26 @@ def test_two_step_providers_override_get_description() -> None:
     assert missing == []
 
 
+def test_workday_overrides_get_details() -> None:
+    assert "get_details" in ScraperRegistry.get(ATSType.WORKDAY).__dict__
+
+
+def test_get_details_overrides_also_define_get_description() -> None:
+    """A provider that overrides ``get_details`` must also define
+    ``get_description`` in its own class, as the thin wrapper derived from
+    ``get_details``. Otherwise the inherited base ``get_description`` would
+    return only ``job.description`` and skip the detail fetch, and the base
+    ``get_details`` / ``get_description`` pair must never call each other.
+    """
+    offenders = sorted(
+        cls.__name__
+        for cls in ScraperRegistry.all().values()
+        if "get_details" in cls.__dict__ and "get_description" not in cls.__dict__
+    )
+
+    assert offenders == []
+
+
 def test_base_get_description_returns_existing_description() -> None:
     class DummyScraper(BaseScraper):
         ats = ATSType.CUSTOM

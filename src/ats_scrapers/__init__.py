@@ -19,6 +19,7 @@ from ats_scrapers.client import Client, find_company, list_ats, search
 from ats_scrapers.exceptions import (
     ATSScrapersError,
     CompanyNotFoundError,
+    DetailFetchError,
     ManifestError,
     ScraperError,
     StorageError,
@@ -34,6 +35,7 @@ __all__ = [
     "Client",
     "Company",
     "CompanyNotFoundError",
+    "DetailFetchError",
     "EmploymentType",
     "FetchResponse",
     "Fetcher",

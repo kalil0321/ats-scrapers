@@ -131,6 +131,29 @@ class BaseScraper(ABC):
         """
         return job.description
 
+    def get_details(self, job: Job) -> Job:
+        """Return an enriched copy of ``job`` from the provider's per-job detail
+        request (description, and for providers that expose them resolved
+        location and posting dates in ``raw``); never mutates the input.
+
+        Contract: providers that override this method raise
+        :class:`~ats_scrapers.exceptions.DetailFetchError` when the detail
+        request fails (``status_code`` set for HTTP failures, ``None`` for
+        transport errors), so callers can tell a 404 (posting gone) from a
+        429 (rate-limited). The default implementation adapts
+        :meth:`get_description` and therefore returns ``job`` unchanged when
+        the provider could not fetch, because existing ``get_description``
+        implementations swallow errors.
+
+        Implementers: override exactly one of ``get_details`` /
+        ``get_description`` and derive the other from it; never have both
+        call each other.
+        """
+        description = self.get_description(job)
+        if description and description != job.description:
+            return job.model_copy(update={"description": description[:25_000]})
+        return job
+
     def enrich_descriptions(self, jobs: list[Job]) -> list[Job]:
         """Fill missing descriptions in ``jobs`` when the provider supports it.
 
