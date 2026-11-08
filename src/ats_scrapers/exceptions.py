@@ -25,16 +25,17 @@ class DetailFetchError(ScraperError):
     """Raised when a per-job detail request fails.
 
     ``status_code`` is the HTTP status of the final response, or ``None``
-    for transport errors (the transport exception is chained as
-    ``__cause__``). ``url`` is the detail URL that was requested.
+    when no HTTP response was received (transport error, or the request
+    could not be built); when a transport exception caused it, it is
+    chained as ``__cause__``. ``url`` is the detail URL that was requested.
     """
 
     def __init__(
         self,
         message: str,
         *,
-        status_code: int | None = None,
-        url: str = "",
+        status_code: int | None,
+        url: str,
     ) -> None:
         self.status_code = status_code
         self.url = url

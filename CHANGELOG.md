@@ -8,10 +8,12 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 ### Added
 
 - `BaseScraper.get_details(job)` returns an enriched copy of a job from the
-  provider's per-job detail request and raises `DetailFetchError` (with
-  `status_code` and `url`) when that request fails; the default adapts
-  `get_description`, and Workday implements it natively, returning the
-  resolved location and posting dates alongside the description.
+  provider's per-job detail request. Native implementations (Workday in this
+  release) raise `DetailFetchError` (with `status_code` and `url`) when that
+  request fails, so callers can tell a gone posting from a rate limit; the
+  default adapts the provider's existing `get_description` and cannot report
+  failures that method swallows. Workday returns the resolved location and
+  posting dates alongside the description.
 
 ## [0.3.0] — 2026-09-02
 

@@ -6,6 +6,7 @@ from datetime import datetime
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers import BreezyScraper, SmartRecruitersScraper, WorkableScraper
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
+from ats_scrapers.scrapers.workday import WorkdayScraper
 
 TWO_STEP_PROVIDERS = {
     ATSType.ADP,
@@ -68,20 +69,21 @@ def test_two_step_providers_override_get_description() -> None:
 
 
 def test_workday_overrides_get_details() -> None:
-    assert "get_details" in ScraperRegistry.get(ATSType.WORKDAY).__dict__
+    assert WorkdayScraper.get_details is not BaseScraper.get_details
 
 
 def test_get_details_overrides_also_define_get_description() -> None:
-    """A provider that overrides ``get_details`` must also define
-    ``get_description`` in its own class, as the thin wrapper derived from
-    ``get_details``. Otherwise the inherited base ``get_description`` would
-    return only ``job.description`` and skip the detail fetch, and the base
-    ``get_details`` / ``get_description`` pair must never call each other.
+    """A provider with a native ``get_details`` (own or inherited) must not
+    fall back to the base ``get_description``: it must define
+    ``get_description`` as the one-way wrapper over ``get_details``.
+    Otherwise the inherited base ``get_description`` would return only
+    ``job.description`` and skip the detail fetch.
     """
     offenders = sorted(
         cls.__name__
         for cls in ScraperRegistry.all().values()
-        if "get_details" in cls.__dict__ and "get_description" not in cls.__dict__
+        if cls.get_details is not BaseScraper.get_details
+        and cls.get_description is BaseScraper.get_description
     )
 
     assert offenders == []

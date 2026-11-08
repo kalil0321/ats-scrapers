@@ -256,7 +256,7 @@ class WorkdayScraper(BaseScraper):
                 url=url,
             )
         try:
-            payload: dict[str, Any] = response.json()
+            payload = response.json()
         except ValueError as exc:
             ct = response.headers.get("Content-Type", "unknown")
             raise DetailFetchError(
@@ -264,6 +264,19 @@ class WorkdayScraper(BaseScraper):
                 status_code=200,
                 url=url,
             ) from exc
+        if not isinstance(payload, dict):
+            raise DetailFetchError(
+                f"Workday detail returned an unexpected JSON payload for {url}",
+                status_code=200,
+                url=url,
+            )
+        jpi = payload.get("jobPostingInfo")
+        if jpi is not None and not isinstance(jpi, dict):
+            raise DetailFetchError(
+                f"Workday detail returned an unexpected jobPostingInfo for {url}",
+                status_code=200,
+                url=url,
+            )
         return payload
 
     async def _fetch_all(

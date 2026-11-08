@@ -91,6 +91,38 @@ def test_base_get_details_default_returns_job_unchanged_when_no_description() ->
     assert _dummy_scraper(None).get_details(job) is job
 
 
+def test_base_get_details_default_does_not_mutate_input_when_hook_mutates() -> None:
+    class MutatingScraper(BaseScraper):
+        ats = ATSType.CUSTOM
+
+        async def afetch(self) -> list[Job]:
+            return []
+
+        def get_description(self, job: Job) -> str | None:
+            job.description = "filled"
+            job.location = "Seattle, WA"
+            return job.description
+
+    job = _job(ats_type=ATSType.CUSTOM, description=None, location="2 Locations")
+
+    result = MutatingScraper("dummy").get_details(job)
+
+    assert job.description is None
+    assert job.location == "2 Locations"
+    assert result is not job
+    assert result.description == "filled"
+    assert result.location == "Seattle, WA"
+
+
+def test_base_get_details_default_truncates_long_description() -> None:
+    job = _job(ats_type=ATSType.CUSTOM)
+
+    result = _dummy_scraper("x" * 30_000).get_details(job)
+
+    assert result.description is not None
+    assert len(result.description) == 25_000
+
+
 # --- Workday -----------------------------------------------------------------
 
 
@@ -160,6 +192,26 @@ def test_workday_get_details_raises_on_non_json_200(httpx_mock) -> None:
 
     assert excinfo.value.status_code == 200
     assert "text/html" in str(excinfo.value)
+
+
+def test_workday_get_details_raises_on_non_dict_json(httpx_mock) -> None:
+    httpx_mock.add_response(url=DETAIL_URL, json=[1, 2])
+
+    with pytest.raises(DetailFetchError) as excinfo:
+        WorkdayScraper(TENANT).get_details(_workday_job())
+
+    assert excinfo.value.status_code == 200
+    assert excinfo.value.url == DETAIL_URL
+
+
+def test_workday_get_details_raises_on_non_dict_job_posting_info(httpx_mock) -> None:
+    httpx_mock.add_response(url=DETAIL_URL, json={"jobPostingInfo": "oops"})
+
+    with pytest.raises(DetailFetchError) as excinfo:
+        WorkdayScraper(TENANT).get_details(_workday_job())
+
+    assert excinfo.value.status_code == 200
+    assert excinfo.value.url == DETAIL_URL
 
 
 def test_workday_get_details_raises_without_external_path(httpx_mock) -> None:

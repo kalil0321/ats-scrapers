@@ -133,26 +133,38 @@ class BaseScraper(ABC):
 
     def get_details(self, job: Job) -> Job:
         """Return an enriched copy of ``job`` from the provider's per-job detail
-        request (description, and for providers that expose them resolved
-        location and posting dates in ``raw``); never mutates the input.
+        request (description, and for providers that expose them a resolved
+        top-level ``location`` and posting dates in ``raw``); never mutates
+        the input.
 
         Contract: providers that override this method raise
         :class:`~ats_scrapers.exceptions.DetailFetchError` when the detail
-        request fails (``status_code`` set for HTTP failures, ``None`` for
-        transport errors), so callers can tell a 404 (posting gone) from a
-        429 (rate-limited). The default implementation adapts
+        request fails (``status_code`` set for HTTP failures, ``None`` when
+        no HTTP response was received), so callers can tell a 404 (posting
+        gone) from a 429 (rate-limited). The default implementation adapts
         :meth:`get_description` and therefore returns ``job`` unchanged when
         the provider could not fetch, because existing ``get_description``
         implementations swallow errors.
 
-        Implementers: override exactly one of ``get_details`` /
-        ``get_description`` and derive the other from it; never have both
-        call each other.
+        Implementers: exactly one method owns the detail fetch. A provider
+        with a native ``get_details`` also defines ``get_description`` as a
+        one-way wrapper over it (``return get_details(job).description``,
+        catching ``DetailFetchError``); a provider with only
+        ``get_description`` inherits this default. Never have both call
+        each other.
         """
-        description = self.get_description(job)
-        if description and description != job.description:
-            return job.model_copy(update={"description": description[:25_000]})
-        return job
+        # Legacy get_description overrides may mutate their argument in place
+        # (HERP fills description, location and dates), so the hook gets a
+        # detached copy and the caller's job is never touched.
+        candidate = job.model_copy(deep=True)
+        description = self.get_description(candidate)
+        if description and not candidate.description:
+            candidate = candidate.model_copy(update={"description": description[:25_000]})
+        elif candidate.description and len(candidate.description) > 25_000:
+            candidate = candidate.model_copy(
+                update={"description": candidate.description[:25_000]}
+            )
+        return candidate if candidate != job else job
 
     def enrich_descriptions(self, jobs: list[Job]) -> list[Job]:
         """Fill missing descriptions in ``jobs`` when the provider supports it.
