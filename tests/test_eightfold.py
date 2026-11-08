@@ -17,6 +17,7 @@ These tests pin four contracts:
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -32,7 +33,12 @@ from ats_scrapers.scrapers import (
     ScraperRegistry,
     get_scraper,
 )
-from ats_scrapers.scrapers.eightfold import _extract_remote, _format_location, _parse_ts
+from ats_scrapers.scrapers.eightfold import (
+    PAGE_SIZE,
+    _extract_remote,
+    _format_location,
+    _parse_ts,
+)
 
 # Detail enrichment fires per-job ``position_details`` GET calls after
 # the search pass; tests that don't care about description ignore them.
@@ -968,3 +974,133 @@ def test_httpcloak_non_200_raises(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "httpcloak", fake_httpcloak)
     with pytest.raises(ScraperError, match=r"Dolby.*503"):
         EightfoldScraper("dolby", client_kind="httpcloak").fetch()
+
+
+# --- Detail enrichment: backoff and block handling --------------------------
+
+DETAIL_URL = re.compile(r"https://dolby\.eightfold\.ai/api/pcsx/position_details\?.*")
+
+
+def _detail_requests(httpx_mock) -> list[httpx.Request]:
+    return [r for r in httpx_mock.get_requests() if r.url.path.endswith("/position_details")]
+
+
+def _search_with_jobs(httpx_mock, ids: list[str]) -> None:
+    """Mock a two-page listing (count=11). Detail enrichment only runs on the
+    multi-page path, so a single-page mock would never reach it."""
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page(
+            [
+                _position(job_id=i, position_url=f"/careers/job/{i}", location=None)
+                for i in ids
+            ],
+            count=PAGE_SIZE + 1,
+        ),
+    )
+    httpx_mock.add_response(url=_mock_url(PAGE_SIZE), json=_page([], count=PAGE_SIZE + 1))
+
+
+def _detail_ok(description: str = "<p>Desc</p>") -> dict[str, Any]:
+    return {"data": {"jobDescription": description}}
+
+
+@pytest.fixture
+def detail_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+    monkeypatch.setattr(ef, "MAX_RETRIES", 3)
+    monkeypatch.setattr(ef, "RETRY_BASE_DELAY", 0)
+
+
+def test_detail_retries_on_429_then_succeeds(detail_retries, httpx_mock) -> None:
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(
+        url=DETAIL_URL, status_code=429, headers={"Retry-After": "0"}
+    )
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok())
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].description == "<p>Desc</p>"
+    assert len(_detail_requests(httpx_mock)) == 2
+
+
+def test_detail_gives_up_after_max_retries_on_429(detail_retries, httpx_mock) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(
+        url=DETAIL_URL,
+        status_code=429,
+        headers={"Retry-After": "0"},
+        is_reusable=True,
+    )
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].description is None
+    assert len(_detail_requests(httpx_mock)) == ef.MAX_RETRIES
+
+
+def test_detail_retries_on_5xx(detail_retries, httpx_mock) -> None:
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(url=DETAIL_URL, status_code=502)
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok())
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].description == "<p>Desc</p>"
+    assert len(_detail_requests(httpx_mock)) == 2
+
+
+@pytest.mark.parametrize("status", [403, 405])
+def test_detail_stops_swarm_on_block(
+    detail_retries, httpx_mock, monkeypatch, status: int
+) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+
+    # Serialise the swarm so the outcome doesn't depend on task scheduling.
+    monkeypatch.setattr(ef, "DETAIL_CONCURRENCY", 1)
+    _search_with_jobs(httpx_mock, ["100", "101", "102"])
+    httpx_mock.add_response(url=DETAIL_URL, status_code=status, is_reusable=True)
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert [j.description for j in jobs] == [None, None, None]
+    assert len(_detail_requests(httpx_mock)) == 1
+
+
+def test_detail_block_flag_resets_on_next_fetch(detail_retries, httpx_mock) -> None:
+    scraper = EightfoldScraper("dolby")
+    scraper._detail_blocked = True
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok())
+
+    jobs = scraper.fetch()
+    assert jobs[0].description == "<p>Desc</p>"
+
+
+def test_detail_404_is_not_retried(detail_retries, httpx_mock) -> None:
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(url=DETAIL_URL, status_code=404)
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].description is None
+    assert len(_detail_requests(httpx_mock)) == 1
+
+
+def test_get_description_retries_on_429(detail_retries, httpx_mock) -> None:
+    from ats_scrapers.models import Job
+
+    httpx_mock.add_response(
+        url=DETAIL_URL, status_code=429, headers={"Retry-After": "0"}
+    )
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok("<p>Solo</p>"))
+
+    job = Job(
+        url="https://dolby.eightfold.ai/careers/job/100",
+        title="Engineer",
+        company="Dolby",
+        ats_type=ATSType.EIGHTFOLD,
+        ats_id="100",
+        fetched_at=datetime.now(UTC),
+    )
+    assert EightfoldScraper("dolby").get_description(job) == "<p>Solo</p>"
+    assert len(_detail_requests(httpx_mock)) == 2
+

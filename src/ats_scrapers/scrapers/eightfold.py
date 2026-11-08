@@ -100,6 +100,9 @@ class EightfoldScraper(BaseScraper):
         # render job URLs on a different one. Default to the API host.
         self.job_url_host = (job_url_host or self.base_url).rstrip("/")
         self.client_kind: ClientKind = client_kind
+        # Set when position_details answers 403/405 so the remaining per-job
+        # detail calls are skipped instead of hammering a blocking tenant.
+        self._detail_blocked: bool = False
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -124,6 +127,7 @@ class EightfoldScraper(BaseScraper):
     async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
+        self._detail_blocked = False
 
         if self.client_kind == "httpcloak":
             await asyncio.to_thread(self._fetch_via_httpcloak_sync, seen, all_jobs)
@@ -234,28 +238,15 @@ class EightfoldScraper(BaseScraper):
         Best-effort — non-200 responses, JSON-shape changes, or transient
         WAF hits leave the listing-derived fields intact.
         """
+        if self._detail_blocked:
+            return
         # Use the position id (matches search response's ``id``, not
         # ``displayJobId``). The id is encoded in the position URL.
         position_id = _position_id_from_url(job.url)
         if not position_id:
             return
-        async with sem:
-            try:
-                response = await client.get(
-                    f"{self.base_url}/api/pcsx/position_details",
-                    params={
-                        "position_id": position_id,
-                        "domain": self.domain,
-                        "hl": "en",
-                    },
-                    headers={
-                        "User-Agent": "Mozilla/5.0",
-                        "Accept": "application/json",
-                    },
-                )
-            except httpx.HTTPError:
-                return
-        if response.status_code != 200:
+        response = await self._get_position_details(client, sem, position_id)
+        if response is None:
             return
         try:
             payload = response.json()
@@ -265,6 +256,65 @@ class EightfoldScraper(BaseScraper):
         desc_html = data.get("jobDescription")
         if isinstance(desc_html, str) and desc_html.strip() and not job.description:
             job.description = _html_unescape_for_desc(desc_html, cap=25_000) or None
+
+    async def _get_position_details(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        position_id: str,
+    ) -> httpx.Response | None:
+        """GET ``position_details`` with retry; ``None`` means give up.
+
+        Retries network errors, 429 (honouring ``Retry-After``) and 5xx. A
+        403/405 is a block: it is not retried and sets ``_detail_blocked`` so
+        the rest of the detail swarm stops. The backoff sleeps happen while
+        holding the semaphore slot on purpose, so a rate limit throttles the
+        whole swarm and not just this one job.
+        """
+        async with sem:
+            for attempt in range(1, MAX_RETRIES + 1):
+                # A sibling task may have hit a block while we waited.
+                if self._detail_blocked:
+                    return None
+                try:
+                    response = await client.get(
+                        f"{self.base_url}/api/pcsx/position_details",
+                        params={
+                            "position_id": position_id,
+                            "domain": self.domain,
+                            "hl": "en",
+                        },
+                        headers={
+                            "User-Agent": "Mozilla/5.0",
+                            "Accept": "application/json",
+                        },
+                    )
+                except httpx.HTTPError:
+                    if attempt == MAX_RETRIES:
+                        return None
+                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
+                    continue
+                if response.status_code == 200:
+                    return response
+                if response.status_code in (403, 405):
+                    self._note_detail_blocked(response.status_code)
+                    return None
+                if not _is_retryable_status(response.status_code):
+                    return None
+                if attempt == MAX_RETRIES:
+                    return None
+                await asyncio.sleep(_detail_retry_delay(response, attempt))
+        return None
+
+    def _note_detail_blocked(self, status: int) -> None:
+        if not self._detail_blocked:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Eightfold (%s) position_details blocked (%d); "
+                "skipping remaining detail calls",
+                self.company_name, status,
+            )
+        self._detail_blocked = True
 
     async def _fetch_page_httpx(
         self, client: httpx.AsyncClient, *, start: int
@@ -321,9 +371,7 @@ class EightfoldScraper(BaseScraper):
                         f"start={start} after {MAX_RETRIES} retries"
                     )
                 # Honour Retry-After if present, else exponential
-                retry_after = response.headers.get("Retry-After")
-                delay = float(retry_after) if retry_after and retry_after.isdigit() else RETRY_BASE_DELAY * (2 ** attempt)
-                await asyncio.sleep(delay)
+                await asyncio.sleep(_retry_after_seconds(response, attempt))
                 continue
             if 500 <= response.status_code < 600:
                 if attempt == MAX_RETRIES:
@@ -392,13 +440,7 @@ class EightfoldScraper(BaseScraper):
                         f"{response.status_code} at start={start} after "
                         f"{MAX_RETRIES} retries"
                     )
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after)
-                    if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
-                )
-                await asyncio.sleep(delay)
+                await asyncio.sleep(_retry_after_seconds(response, attempt))
                 continue
             raise ScraperError(
                 f"Eightfold ({self.company_name}) SmartApply returned "
@@ -594,6 +636,26 @@ def _is_pcsx_unavailable(response: httpx.Response) -> bool:
         return False
     message = str(payload.get("message") or "").lower()
     return "pcsx is not enabled" in message or "not authorized for pcsx" in message
+
+
+def _retry_after_seconds(response: httpx.Response, attempt: int) -> float:
+    """Delay before retrying a 429: honour a numeric ``Retry-After`` header,
+    else back off exponentially from ``RETRY_BASE_DELAY``."""
+    retry_after = response.headers.get("Retry-After")
+    if retry_after and retry_after.isdigit():
+        return float(retry_after)
+    return float(RETRY_BASE_DELAY * (2 ** attempt))
+
+
+def _is_retryable_status(status: int) -> bool:
+    return status == 429 or 500 <= status < 600
+
+
+def _detail_retry_delay(response: httpx.Response, attempt: int) -> float:
+    """429 honours ``Retry-After`` / exponential; 5xx backs off linearly."""
+    if response.status_code == 429:
+        return _retry_after_seconds(response, attempt)
+    return float(RETRY_BASE_DELAY * attempt)
 
 
 def _position_id_from_url(url: object) -> str | None:
