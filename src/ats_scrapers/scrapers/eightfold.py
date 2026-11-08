@@ -107,6 +107,9 @@ class EightfoldScraper(BaseScraper):
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
+        # A standalone detail call is its own run; a block seen during an
+        # earlier afetch must not silence it.
+        self._detail_blocked = False
         copy = job.model_copy()
 
         async def run() -> str | None:

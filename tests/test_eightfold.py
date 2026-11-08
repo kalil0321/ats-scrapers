@@ -1221,3 +1221,33 @@ def test_detail_retries_on_transport_error_then_succeeds(
     assert jobs[0].description == "<p>Desc</p>"
     assert len(_detail_requests(httpx_mock)) == 2
 
+
+def test_get_description_runs_after_block_in_earlier_fetch(
+    detail_retries, httpx_mock, monkeypatch
+) -> None:
+    """A 403/405 block seen during fetch() must not silence a later
+    standalone get_description() call on the same instance."""
+    import ats_scrapers.scrapers.eightfold as ef
+    from ats_scrapers.models import Job
+
+    monkeypatch.setattr(ef, "DETAIL_CONCURRENCY", 1)
+    scraper = EightfoldScraper("dolby")
+
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(url=DETAIL_URL, status_code=405)
+    scraper.fetch()
+    assert scraper._detail_blocked is True
+    assert len(_detail_requests(httpx_mock)) == 1
+
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok("<p>Later</p>"))
+    job = Job(
+        url="https://dolby.eightfold.ai/careers/job/200",
+        title="Engineer",
+        company="Dolby",
+        ats_type=ATSType.EIGHTFOLD,
+        ats_id="200",
+        fetched_at=datetime.now(UTC),
+    )
+    assert scraper.get_description(job) == "<p>Later</p>"
+    assert len(_detail_requests(httpx_mock)) == 2
+
