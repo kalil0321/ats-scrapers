@@ -35,9 +35,12 @@ from ats_scrapers.scrapers import (
 )
 from ats_scrapers.scrapers.eightfold import (
     PAGE_SIZE,
+    _detail_retry_delay,
     _extract_remote,
     _format_location,
+    _is_retryable_status,
     _parse_ts,
+    _retry_after_seconds,
 )
 
 # Detail enrichment fires per-job ``position_details`` GET calls after
@@ -1102,5 +1105,119 @@ def test_get_description_retries_on_429(detail_retries, httpx_mock) -> None:
         fetched_at=datetime.now(UTC),
     )
     assert EightfoldScraper("dolby").get_description(job) == "<p>Solo</p>"
+    assert len(_detail_requests(httpx_mock)) == 2
+
+
+# --- Retry helpers: delay shapes ---------------------------------------------
+
+
+@pytest.fixture
+def real_delay(monkeypatch: pytest.MonkeyPatch) -> float:
+    """The autouse fixture zeroes RETRY_BASE_DELAY, which would make every
+    delay assertion trivially 0. Restore the production value (1.5 s)."""
+    import ats_scrapers.scrapers.eightfold as ef
+    monkeypatch.setattr(ef, "RETRY_BASE_DELAY", 1.5)
+    return 1.5
+
+
+def test_retry_after_seconds_honours_numeric_header(real_delay) -> None:
+    resp = httpx.Response(429, headers={"Retry-After": "7"})
+    assert _retry_after_seconds(resp, 1) == 7.0
+
+
+@pytest.mark.parametrize("attempt", [1, 2, 3])
+def test_retry_after_seconds_falls_back_to_exponential(real_delay, attempt: int) -> None:
+    resp = httpx.Response(429)
+    assert _retry_after_seconds(resp, attempt) == real_delay * (2 ** attempt)
+
+
+def test_retry_after_seconds_ignores_http_date(real_delay) -> None:
+    """Only numeric Retry-After is parsed; an HTTP-date uses the fallback."""
+    resp = httpx.Response(429, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"})
+    assert _retry_after_seconds(resp, 1) == real_delay * 2
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (429, True),
+        (500, True),
+        (503, True),
+        (599, True),
+        (404, False),
+        (403, False),
+        (405, False),
+        (200, False),
+        (600, False),
+    ],
+)
+def test_is_retryable_status(status: int, expected: bool) -> None:
+    assert _is_retryable_status(status) is expected
+
+
+def test_detail_retry_delay_shapes(real_delay) -> None:
+    assert _detail_retry_delay(httpx.Response(429), 2) == real_delay * 4
+    assert _detail_retry_delay(httpx.Response(502), 2) == real_delay * 2
+    assert _detail_retry_delay(httpx.Response(429, headers={"Retry-After": "3"}), 2) == 3.0
+
+
+def _record_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Replace ``asyncio.sleep`` (the module does ``import asyncio``, so a
+    global patch is what the code under test sees) with a recorder."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    return sleeps
+
+
+def test_detail_429_backoff_is_exponential(
+    real_delay, detail_retries, monkeypatch, httpx_mock
+) -> None:
+    """Two 429s without Retry-After: delays are base * 2**attempt."""
+    import ats_scrapers.scrapers.eightfold as ef
+    # ``detail_retries`` zeroes the delay; re-apply the production value.
+    monkeypatch.setattr(ef, "RETRY_BASE_DELAY", real_delay)
+    sleeps = _record_sleeps(monkeypatch)
+
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(url=DETAIL_URL, status_code=429)
+    httpx_mock.add_response(url=DETAIL_URL, status_code=429)
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok())
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].description == "<p>Desc</p>"
+    assert sleeps == [real_delay * 2, real_delay * 4]
+
+
+def test_detail_5xx_backoff_is_linear(
+    real_delay, detail_retries, monkeypatch, httpx_mock
+) -> None:
+    """502 then 503: delays are base * attempt."""
+    import ats_scrapers.scrapers.eightfold as ef
+    monkeypatch.setattr(ef, "RETRY_BASE_DELAY", real_delay)
+    sleeps = _record_sleeps(monkeypatch)
+
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(url=DETAIL_URL, status_code=502)
+    httpx_mock.add_response(url=DETAIL_URL, status_code=503)
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok())
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].description == "<p>Desc</p>"
+    assert sleeps == [real_delay * 1, real_delay * 2]
+
+
+def test_detail_retries_on_transport_error_then_succeeds(
+    detail_retries, httpx_mock
+) -> None:
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_exception(httpx.ConnectError("boom"), url=DETAIL_URL)
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok())
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].description == "<p>Desc</p>"
     assert len(_detail_requests(httpx_mock)) == 2
 
