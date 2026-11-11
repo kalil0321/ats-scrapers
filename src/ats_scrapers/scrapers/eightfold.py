@@ -632,15 +632,21 @@ def _strip_html(text: str) -> str:
 
 def _format_location(item: dict[str, Any]) -> str | None:
     """Eightfold returns `locations` / `standardizedLocations` as string lists
-    (e.g. ``"United States, Washington, Redmond"``). Older tenants use dicts."""
+    (e.g. ``"United States, Washington, Redmond"``). Older tenants use dicts.
+    A multi-location posting lists every office; entries already contain
+    commas, so they are joined with ``; `` (as paycom's and jobvite's are)."""
     for key in ("standardizedLocations", "locations"):
         locs = item.get(key) or []
-        if isinstance(locs, list) and locs:
-            first = locs[0]
-            if isinstance(first, str) and first.strip():
-                return first.strip()
-            if isinstance(first, dict):
-                return first.get("city") or first.get("country") or first.get("name")
+        if not isinstance(locs, list):
+            continue
+        names: list[str] = []
+        for loc in locs:
+            if isinstance(loc, dict):
+                loc = loc.get("city") or loc.get("country") or loc.get("name")
+            if isinstance(loc, str) and loc.strip():
+                names.append(loc.strip())
+        if names:
+            return "; ".join(dict.fromkeys(names))
     primary = item.get("primaryLocation") or item.get("primary_location")
     if isinstance(primary, dict):
         return primary.get("city") or primary.get("country")
