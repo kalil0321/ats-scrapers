@@ -32,3 +32,37 @@ def test_missing_display_name_keeps_slug() -> None:
     job = _job("acme")
     _apply_display_name(job, "acme", {})
     assert job.company == "acme"
+
+
+def test_phenom_hostname_gets_display_name() -> None:
+    job = _job("jobs.bell.ca")
+    _apply_display_name(job, "https://jobs.bell.ca", {"https://jobs.bell.ca": "Bell Canada"})
+    assert job.company == "Bell Canada"
+
+
+def test_oracle_hostname_gets_display_name() -> None:
+    slug = "https://ebwg.fa.us2.oraclecloud.com?site_number=CX"
+    job = _job("ebwg.fa.us2.oraclecloud.com")
+    _apply_display_name(job, slug, {slug: "ACI Worldwide"})
+    assert job.company == "ACI Worldwide"
+
+
+def test_personio_subdomain_host_gets_display_name() -> None:
+    job = _job("4screen.jobs.personio.com")
+    _apply_display_name(job, "4screen", {"4screen": "4Screen GmbH"})
+    assert job.company == "4Screen GmbH"
+
+
+def test_other_domain_name_is_kept() -> None:
+    # A source-provided name that only looks like a domain stays.
+    job = _job("monday.com")
+    _apply_display_name(job, "acme", {"acme": "Acme"})
+    assert job.company == "monday.com"
+
+
+def test_source_domain_sharing_slug_prefix_is_kept() -> None:
+    # Workable / Recruitee read the name from the source: "acme.io" for
+    # slug "acme" is a real value, not a scraper fallback.
+    job = _job("acme.io")
+    _apply_display_name(job, "acme", {"acme": "Acme Holdings"})
+    assert job.company == "acme.io"

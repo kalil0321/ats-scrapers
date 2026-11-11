@@ -1361,8 +1361,31 @@ def _apply_display_name(job: Job, slug: str, display_names: dict[str, str]) -> N
     names a scraper read from the source itself are kept.
     """
     name = display_names.get(slug)
-    if name and _norm_company(job.company) == _norm_company(slug):
+    if name and _is_slug_fallback(job.company, slug):
         job.company = name
+
+
+def _is_slug_fallback(company: str | None, slug: str) -> bool:
+    """True when ``company`` is a value the scraper derived from ``slug``.
+
+    Scrapers fall back to the slug itself (Greenhouse ``openai``), to the
+    hostname of a URL slug (Phenom ``jobs.bell.ca``, Oracle
+    ``ebwg.fa.us2.oraclecloud.com``) or to the tenant subdomain host
+    (Personio ``4screen.jobs.personio.com`` for slug ``4screen``).
+    """
+    c = (company or "").strip().casefold()
+    s = slug.strip().casefold()
+    if not c or _norm_company(c) == _norm_company(s):
+        return True
+    if "://" in s and c == (urlparse(s).hostname or ""):
+        return True
+    return c in {f"{s}{suffix}" for suffix in _TENANT_HOST_SUFFIXES}
+
+
+# Hosts scrapers build from a bare slug and store as company. Kept to
+# known ATS domains so a source-provided name like ``acme.io`` for slug
+# ``acme`` is never overwritten.
+_TENANT_HOST_SUFFIXES = (".jobs.personio.com", ".jobs.personio.de")
 
 
 def _job_to_row(job: Job) -> dict[str, Any]:
