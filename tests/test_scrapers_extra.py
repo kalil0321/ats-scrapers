@@ -367,6 +367,32 @@ def test_join_com_resolves_id_and_lists_jobs(httpx_mock) -> None:
     assert jobs[0].ats_id == "100"
 
 
+def test_join_com_workplace_type_sets_is_remote(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://join.com/companies/acme",
+        text='<html><script>{"company":{"id":"42","slug":"acme"}}</script></html>',
+    )
+    httpx_mock.add_response(
+        url=(
+            "https://join.com/api/public/companies/42/jobs"
+            "?locale=en-us&page=1&pageSize=100&withAggregations=true&sort=%2Btitle"
+        ),
+        json={
+            "items": [
+                {"id": 1, "title": "A", "workplaceType": "REMOTE",
+                 "remoteType": "ANYWHERE"},
+                {"id": 2, "title": "B", "workplaceType": "ONSITE"},
+                {"id": 3, "title": "C", "workplaceType": "HYBRID"},
+                {"id": 4, "title": "D"},
+            ],
+            "pagination": {"totalPages": 1},
+        },
+    )
+    jobs = JoinComScraper("acme", include_descriptions=False).fetch()
+    assert [j.is_remote for j in jobs] == [True, False, None, None]
+    assert jobs[0].raw == {"workplaceType": "REMOTE"}
+
+
 def test_join_com_404(httpx_mock) -> None:
     httpx_mock.add_response(url="https://join.com/companies/missing", status_code=404)
     with pytest.raises(CompanyNotFoundError):
