@@ -2,16 +2,27 @@
 
 The public dataset is a single snapshot that every publish overwrites, so
 yesterday's jobs are gone once today's run lands. This script copies the
-current snapshot (manifest, ``all.parquet``, ``companies.parquet``) into a
-separate, private archive bucket, one folder per publish:
+current snapshot into a separate, private archive bucket:
 
     s3://<ARCHIVE_BUCKET>/snapshots/<generated_at>/manifest.json
     s3://<ARCHIVE_BUCKET>/snapshots/<generated_at>/all.parquet
     s3://<ARCHIVE_BUCKET>/snapshots/<generated_at>/companies.parquet
-    s3://<ARCHIVE_BUCKET>/index.jsonl          # one line per archived publish
+    s3://<ARCHIVE_BUCKET>/companies/<last_modified>.parquet   # every companies version
+    s3://<ARCHIVE_BUCKET>/index.jsonl                         # one line per snapshot
 
-Copies are server-side (no download through the runner). A publish that is
-already archived is skipped, so the workflow can run often and cheaply.
+Copies are server-side (no download through the runner). Work that is
+already done is skipped, so the workflow can run often and cheaply.
+
+Consistency: both publishers (``pipeline/publisher.py`` and
+``.github/scripts/publish_companies.py``) upload their files first and
+write ``manifest.json`` last. So:
+
+* a source file newer than the manifest means a publish is in progress:
+  skip this run, the next one will pick up the finished publish;
+* each source file's ETag is recorded before the copy and checked again
+  after it, together with the manifest's ETag; any change aborts the
+  snapshot (copied files are deleted) instead of archiving a mix of two
+  publishes. ``manifest.json`` is written last and marks completion.
 
 The archive bucket must NOT have a public domain attached: it holds the
 history, which is not part of the free dataset.
@@ -35,6 +46,13 @@ import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError
 
+MISSING = {"404", "NoSuchKey", "NotFound", "NoSuchBucket"}
+TRANSFER = TransferConfig(multipart_threshold=256 * 1024**2, multipart_chunksize=256 * 1024**2)
+
+
+class SourceChanged(Exception):
+    """A publish touched the source while we were copying it."""
+
 
 def env(name: str, default: str | None = None) -> str:
     value = os.environ.get(name) or default
@@ -53,13 +71,16 @@ def make_client():
     )
 
 
-def exists(client, bucket: str, key: str) -> bool:
+def is_missing(exc: ClientError) -> bool:
+    return exc.response.get("Error", {}).get("Code") in MISSING
+
+
+def head(client, bucket: str, key: str) -> dict | None:
     try:
-        client.head_object(Bucket=bucket, Key=key)
-        return True
+        return client.head_object(Bucket=bucket, Key=key)
     except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") in {"404", "NoSuchKey", "NotFound"}:
-            return False
+        if is_missing(exc):
+            return None
         raise
 
 
@@ -68,8 +89,8 @@ def ensure_bucket(client, bucket: str) -> None:
         client.head_bucket(Bucket=bucket)
         return
     except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code")
-        if code not in {"404", "NoSuchBucket", "NotFound"}:
+        if not is_missing(exc):
+            code = exc.response.get("Error", {}).get("Code")
             sys.exit(
                 f"FATAL: cannot access archive bucket {bucket!r} ({code}). "
                 "Create it in Cloudflare R2 (no public domain) and give the "
@@ -96,6 +117,39 @@ def key_from_entry(value: str | None, prefix: str) -> str | None:
     return value if value.startswith(prefix) else f"{prefix}/{value.lstrip('/')}"
 
 
+def stamp_of(dt: datetime) -> str:
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
+
+
+def copy_checked(client, src_bucket, src_key, src_head, dst_bucket, dst_key, manifest_etag, manifest_key):
+    """Server-side copy, then confirm neither the file nor the manifest moved."""
+    client.copy(
+        {"Bucket": src_bucket, "Key": src_key}, dst_bucket, dst_key, Config=TRANSFER
+    )
+    after = head(client, src_bucket, src_key)
+    manifest_after = head(client, src_bucket, manifest_key)
+    if (
+        after is None
+        or after["ETag"] != src_head["ETag"]
+        or manifest_after is None
+        or manifest_after["ETag"] != manifest_etag
+    ):
+        raise SourceChanged(f"{src_key} or the manifest changed during the copy")
+    copied = head(client, dst_bucket, dst_key)
+    if copied is None or copied["ContentLength"] != src_head["ContentLength"]:
+        raise SourceChanged(f"size mismatch after copying {src_key}")
+    return src_head["ContentLength"]
+
+
+def read_index(client, bucket: str) -> bytes:
+    try:
+        return client.get_object(Bucket=bucket, Key="index.jsonl")["Body"].read()
+    except ClientError as exc:
+        if is_missing(exc):
+            return b""
+        raise  # never start a fresh index on a transient error: it would erase history
+
+
 def main() -> None:
     client = make_client()
     src_bucket = env("R2_BUCKET")
@@ -108,80 +162,118 @@ def main() -> None:
     ensure_bucket(client, dst_bucket)
 
     manifest_key = f"{prefix}/manifest.json"
-    manifest_bytes = client.get_object(Bucket=src_bucket, Key=manifest_key)["Body"].read()
+    obj = client.get_object(Bucket=src_bucket, Key=manifest_key)
+    manifest_bytes = obj["Body"].read()
+    manifest_etag, manifest_mtime = obj["ETag"], obj["LastModified"]
     manifest = json.loads(manifest_bytes)
 
     generated_at = manifest["generated_at"]
-    stamp = (
-        datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
-        .astimezone(UTC)
-        .strftime("%Y-%m-%dT%H-%M-%SZ")
-    )
+    stamp = stamp_of(datetime.fromisoformat(generated_at.replace("Z", "+00:00")))
     folder = f"snapshots/{stamp}"
 
-    if exists(client, dst_bucket, f"{folder}/manifest.json"):
-        print(f"snapshot {stamp} already archived, nothing to do")
-        return
-
-    copies = {
+    sources = {
         "all.parquet": key_from_entry((manifest.get("all") or {}).get("parquet"), prefix),
         "companies.parquet": key_from_entry(
             (manifest.get("companies") or {}).get("parquet"), prefix
         ),
     }
-    if not copies["all.parquet"]:
+    if not sources["all.parquet"]:
         sys.exit("FATAL: manifest has no all.parquet entry")
 
-    transfer = TransferConfig(multipart_threshold=256 * 1024**2, multipart_chunksize=256 * 1024**2)
-    copied = {}
-    for name, src_key in copies.items():
+    heads = {}
+    for name, src_key in sources.items():
         if not src_key:
             print(f"skip {name}: not in manifest")
             continue
-        size = client.head_object(Bucket=src_bucket, Key=src_key)["ContentLength"]
-        client.copy(
-            {"Bucket": src_bucket, "Key": src_key},
-            dst_bucket,
-            f"{folder}/{name}",
-            Config=transfer,
+        h = head(client, src_bucket, src_key)
+        if h is None:
+            sys.exit(f"FATAL: {src_key} listed in the manifest but missing")
+        if h["LastModified"] > manifest_mtime:
+            print(f"{src_key} is newer than the manifest: publish in progress, retry next run")
+            return
+        heads[name] = h
+
+    summary_lines: list[str] = []
+
+    # 1. The snapshot itself (jobs + companies at that publish).
+    if head(client, dst_bucket, f"{folder}/manifest.json") is None:
+        copied_keys = []
+        try:
+            for name, h in heads.items():
+                dst_key = f"{folder}/{name}"
+                copied_keys.append(dst_key)
+                size = copy_checked(
+                    client, src_bucket, sources[name], h, dst_bucket, dst_key,
+                    manifest_etag, manifest_key,
+                )
+                print(f"copied {sources[name]} -> {dst_key} ({size:,} bytes)")
+        except SourceChanged as exc:
+            for key in copied_keys:
+                client.delete_object(Bucket=dst_bucket, Key=key)
+            print(f"aborted snapshot {stamp}: {exc}. Retrying next run.")
+            return
+        # Manifest last: its presence marks the snapshot as complete.
+        client.put_object(
+            Bucket=dst_bucket,
+            Key=f"{folder}/manifest.json",
+            Body=manifest_bytes,
+            ContentType="application/json",
         )
-        copied[name] = size
-        print(f"copied {src_key} -> s3://{dst_bucket}/{folder}/{name} ({size:,} bytes)")
+        summary_lines.append(f"archived snapshot {generated_at}")
+    else:
+        print(f"snapshot {stamp} already archived")
 
-    # Manifest last: its presence marks the snapshot as complete.
-    client.put_object(
-        Bucket=dst_bucket,
-        Key=f"{folder}/manifest.json",
-        Body=manifest_bytes,
-        ContentType="application/json",
-    )
-
-    line = {
-        "generated_at": generated_at,
-        "folder": folder,
-        "archived_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "total_jobs": (manifest.get("stats") or {}).get("total_jobs"),
-        "bytes": copied,
+    # 2. Index: add the snapshot if it is missing (also repairs a run that
+    #    stopped between the manifest write and the index write).
+    index = read_index(client, dst_bucket)
+    folders = {
+        json.loads(line).get("folder") for line in index.decode().splitlines() if line.strip()
     }
-    try:
-        index = client.get_object(Bucket=dst_bucket, Key="index.jsonl")["Body"].read()
-    except ClientError:
-        index = b""
-    client.put_object(
-        Bucket=dst_bucket,
-        Key="index.jsonl",
-        Body=index + (json.dumps(line) + "\n").encode(),
-        ContentType="application/x-ndjson",
-    )
-    print(json.dumps(line, indent=2))
+    if folder not in folders:
+        sizes = {}
+        for name in heads:
+            h = head(client, dst_bucket, f"{folder}/{name}")
+            if h is not None:
+                sizes[name] = h["ContentLength"]
+        line = {
+            "generated_at": generated_at,
+            "folder": folder,
+            "archived_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "total_jobs": (manifest.get("stats") or {}).get("total_jobs"),
+            "bytes": sizes,
+        }
+        client.put_object(
+            Bucket=dst_bucket,
+            Key="index.jsonl",
+            Body=index + (json.dumps(line) + "\n").encode(),
+            ContentType="application/x-ndjson",
+        )
+        print("indexed", json.dumps(line))
+        summary_lines.append(f"indexed {folder} ({line['total_jobs']} jobs)")
 
+    # 3. Companies change on their own schedule (ats-companies/ pushes keep
+    #    the jobs generated_at), so version them separately.
+    if "companies.parquet" in heads:
+        h = heads["companies.parquet"]
+        dst_key = f"companies/{stamp_of(h['LastModified'])}.parquet"
+        if head(client, dst_bucket, dst_key) is None:
+            try:
+                size = copy_checked(
+                    client, src_bucket, sources["companies.parquet"], h, dst_bucket,
+                    dst_key, manifest_etag, manifest_key,
+                )
+                print(f"copied companies version -> {dst_key} ({size:,} bytes)")
+                summary_lines.append(f"archived {dst_key}")
+            except SourceChanged as exc:
+                client.delete_object(Bucket=dst_bucket, Key=dst_key)
+                print(f"skipped companies version: {exc}. Retrying next run.")
+
+    if not summary_lines:
+        print("nothing to do")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
-    if summary:
+    if summary and summary_lines:
         with open(summary, "a") as fh:
-            fh.write(f"### Archived snapshot {generated_at}\n\n")
-            fh.write(f"- jobs: {line['total_jobs']:,}\n" if line["total_jobs"] else "")
-            for name, size in copied.items():
-                fh.write(f"- {name}: {size / 1024**2:,.0f} MB\n")
+            fh.write("### Archive\n\n" + "".join(f"- {s}\n" for s in summary_lines))
 
 
 if __name__ == "__main__":

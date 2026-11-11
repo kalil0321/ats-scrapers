@@ -2,7 +2,7 @@ name: archive snapshot
 
 # Copies each published snapshot into a private R2 bucket so the dataset
 # keeps its history (the public snapshot is overwritten on every publish).
-# Runs every 6 hours; a publish that is already archived is skipped.
+# Runs hourly; work already done is skipped, so most runs take seconds.
 #
 # Uses the same R2 secrets as publish-ats-companies, plus:
 #   ARCHIVE_BUCKET   private bucket name (no public domain attached)
@@ -10,7 +10,7 @@ name: archive snapshot
 
 on:
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
   push:
     branches: [claude/archive-snapshots]
