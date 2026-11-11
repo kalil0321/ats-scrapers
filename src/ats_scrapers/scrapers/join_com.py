@@ -191,6 +191,17 @@ class JoinComScraper(BaseScraper):
         department = _name_or_none(item.get("department"))
         employment_type = _name_or_none(item.get("employmentType"))
 
+        # ``workplaceType``: REMOTE and ONSITE set ``is_remote``; HYBRID
+        # and anything else stay None.
+        is_remote = None
+        wp = item.get("workplaceType")
+        if isinstance(wp, str):
+            wp = wp.strip().upper()
+            if wp == "REMOTE":
+                is_remote = True
+            elif wp == "ONSITE":
+                is_remote = False
+
         # The browser-visible URL uses the slug-style ``idParam``, not the
         # numeric id (which only the API uses). Falling back to a numeric
         # path 404s.
@@ -206,6 +217,7 @@ class JoinComScraper(BaseScraper):
             ats_type=ATSType.JOIN_COM,
             ats_id=str(item["id"]),
             location=location,
+            is_remote=is_remote,
             department=department,
             commitment=employment_type,
             posted_at=_parse_iso(item.get("publishedAt") or item.get("createdAt")),
