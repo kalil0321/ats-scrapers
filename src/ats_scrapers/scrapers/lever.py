@@ -181,6 +181,6 @@ def _parse_ms(value: int | None) -> datetime | None:
     if value is None:
         return None
     try:
-        return datetime.fromtimestamp(value / 1000)
+        return datetime.fromtimestamp(value / 1000, tz=UTC)
     except (ValueError, OSError):
         return None

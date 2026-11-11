@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from ats_scrapers.exceptions import CompanyNotFoundError
@@ -23,7 +25,7 @@ def _job(jid: str = "x1", text: str = "SWE",
         "text": text,
         "hostedUrl": f"https://jobs.lever.co/acme/{jid}",
         "categories": {"location": location, "team": "Eng"},
-        "createdAt": 1714521600000,  # ~2026-04-30
+        "createdAt": 1714521600000,  # 2024-05-01T00:00:00Z
     }
 
 
@@ -57,3 +59,12 @@ def test_5xx_retries(httpx_mock) -> None:
     httpx_mock.add_response(url=API, status_code=502)
     httpx_mock.add_response(url=API, json=[_job()])
     assert len(LeverScraper("acme").fetch()) == 1
+
+
+def test_posted_at_is_utc(httpx_mock) -> None:
+    """``createdAt`` is epoch milliseconds; ``posted_at`` must be that
+    instant in UTC, not the host's local wall-clock time."""
+    httpx_mock.add_response(url=API, json=[_job()])
+    job = LeverScraper("acme").fetch()[0]
+    assert job.posted_at == datetime(2024, 5, 1, tzinfo=UTC)
+    assert job.posted_at.tzinfo is UTC

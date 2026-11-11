@@ -624,6 +624,9 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "greenhouse": {
         "scraper": GreenhouseScraper,
         "slug": _greenhouse_slug,
+        # A CSV name saves the board-name request; without one the
+        # scraper reads the display name from the board itself.
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip() or None},
         "csv": "ats-companies/greenhouse.csv",
         "output": "greenhouse/jobs.csv",
     },
@@ -1345,6 +1348,46 @@ async def _ensure_description(
     return "missing"
 
 
+def _norm_company(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").casefold())
+
+
+def _apply_display_name(job: Job, slug: str, display_names: dict[str, str]) -> None:
+    """Replace a slug-valued ``company`` with the tenant's display name.
+
+    Most scrapers only know the tenant slug (``openai``) and store it as
+    ``company``. The tenant CSV usually carries the real name
+    (``OpenAI``). Only rewrite when ``company`` is still the slug, so
+    names a scraper read from the source itself are kept.
+    """
+    name = display_names.get(slug)
+    if name and _is_slug_fallback(job.company, slug):
+        job.company = name
+
+
+def _is_slug_fallback(company: str | None, slug: str) -> bool:
+    """True when ``company`` is a value the scraper derived from ``slug``.
+
+    Scrapers fall back to the slug itself (Greenhouse ``openai``), to the
+    hostname of a URL slug (Phenom ``jobs.bell.ca``, Oracle
+    ``ebwg.fa.us2.oraclecloud.com``) or to the tenant subdomain host
+    (Personio ``4screen.jobs.personio.com`` for slug ``4screen``).
+    """
+    c = (company or "").strip().casefold()
+    s = slug.strip().casefold()
+    if not c or _norm_company(c) == _norm_company(s):
+        return True
+    if "://" in s and c == (urlparse(s).hostname or ""):
+        return True
+    return c in {f"{s}{suffix}" for suffix in _TENANT_HOST_SUFFIXES}
+
+
+# Hosts scrapers build from a bare slug and store as company. Kept to
+# known ATS domains so a source-provided name like ``acme.io`` for slug
+# ``acme`` is never overwritten.
+_TENANT_HOST_SUFFIXES = (".jobs.personio.com", ".jobs.personio.de")
+
+
 def _job_to_row(job: Job) -> dict[str, Any]:
     """Flatten a Job to CSV-friendly fields. ``raw`` is JSON-serialized."""
     raw_json = ""
@@ -1425,6 +1468,7 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
         concurrency = min(concurrency, max(1, configured_max_concurrency))
 
     targets: list[tuple[str, dict[str, Any]]] = []
+    display_names: dict[str, str] = {}
     if cfg.get("singleton"):
         # Single-tenant scraper (big-tech bespoke careers). No CSV — call
         # the scraper once with the ATS name as a placeholder slug; the
@@ -1443,6 +1487,9 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             if slug:
                 kw = kwargs_factory(r) if kwargs_factory else {}
                 targets.append((slug, kw))
+                name = (r.get("name") or "").strip()
+                if name:
+                    display_names[slug] = name
 
     configured_target_count = len(targets)
     omitted_required_shards = 0
@@ -1650,6 +1697,9 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                                         if description_delay:
                                             await asyncio.sleep(description_delay)
                             desc_stats[desc_status] += 1
+                        # After dedupe + description cache lookups, which
+                        # are keyed on the scraper's own company value.
+                        _apply_display_name(job, slug, display_names)
                         writer.writerow(_job_to_row(job))
                         counts["jobs"] += 1
                     elapsed = time.time() - started
