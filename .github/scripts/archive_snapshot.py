@@ -7,7 +7,7 @@ current snapshot into a separate, private archive bucket:
     s3://<ARCHIVE_BUCKET>/snapshots/<generated_at>/manifest.json
     s3://<ARCHIVE_BUCKET>/snapshots/<generated_at>/all.parquet
     s3://<ARCHIVE_BUCKET>/snapshots/<generated_at>/companies.parquet
-    s3://<ARCHIVE_BUCKET>/companies/<last_modified>.parquet   # every companies version
+    s3://<ARCHIVE_BUCKET>/companies/<last_modified>-<etag>.parquet   # every companies version
     s3://<ARCHIVE_BUCKET>/index.jsonl                         # one line per snapshot
 
 Copies are server-side (no download through the runner). Work that is
@@ -22,7 +22,13 @@ write ``manifest.json`` last. So:
 * each source file's ETag is recorded before the copy and checked again
   after it, together with the manifest's ETag; any change aborts the
   snapshot (copied files are deleted) instead of archiving a mix of two
-  publishes. ``manifest.json`` is written last and marks completion.
+  publishes;
+* the archived ``all.parquet`` is hashed and compared with the
+  ``parquet_sha256`` the manifest declares.
+
+``manifest.json`` is written last and marks completion. It is kept verbatim
+as provenance: its URLs point to the public files of that day, while the
+archived copies sit next to it in the same folder.
 
 The archive bucket must NOT have a public domain attached: it holds the
 history, which is not part of the free dataset.
@@ -36,6 +42,7 @@ Env:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -50,7 +57,7 @@ MISSING = {"404", "NoSuchKey", "NotFound", "NoSuchBucket"}
 TRANSFER = TransferConfig(multipart_threshold=256 * 1024**2, multipart_chunksize=256 * 1024**2)
 
 
-class SourceChanged(Exception):
+class SourceChangedError(Exception):
     """A publish touched the source while we were copying it."""
 
 
@@ -134,11 +141,19 @@ def copy_checked(client, src_bucket, src_key, src_head, dst_bucket, dst_key, man
         or manifest_after is None
         or manifest_after["ETag"] != manifest_etag
     ):
-        raise SourceChanged(f"{src_key} or the manifest changed during the copy")
+        raise SourceChangedError(f"{src_key} or the manifest changed during the copy")
     copied = head(client, dst_bucket, dst_key)
     if copied is None or copied["ContentLength"] != src_head["ContentLength"]:
-        raise SourceChanged(f"size mismatch after copying {src_key}")
+        raise SourceChangedError(f"size mismatch after copying {src_key}")
     return src_head["ContentLength"]
+
+
+def sha256_of(client, bucket: str, key: str) -> str:
+    h = hashlib.sha256()
+    body = client.get_object(Bucket=bucket, Key=key)["Body"]
+    for chunk in iter(lambda: body.read(8 * 1024 * 1024), b""):
+        h.update(chunk)
+    return h.hexdigest()
 
 
 def read_index(client, bucket: str) -> bytes:
@@ -207,7 +222,15 @@ def main() -> None:
                     manifest_etag, manifest_key,
                 )
                 print(f"copied {sources[name]} -> {dst_key} ({size:,} bytes)")
-        except SourceChanged as exc:
+            # Strongest check: the manifest records the all.parquet hash, so
+            # the archived bytes must be exactly the ones this manifest describes.
+            expected = (manifest.get("all") or {}).get("parquet_sha256")
+            if expected and "all.parquet" in heads:
+                got = sha256_of(client, dst_bucket, f"{folder}/all.parquet")
+                if got != expected:
+                    raise SourceChangedError("all.parquet does not match the manifest sha256")
+                print("all.parquet sha256 matches the manifest")
+        except SourceChangedError as exc:
             for key in copied_keys:
                 client.delete_object(Bucket=dst_bucket, Key=key)
             print(f"aborted snapshot {stamp}: {exc}. Retrying next run.")
@@ -255,7 +278,8 @@ def main() -> None:
     #    the jobs generated_at), so version them separately.
     if "companies.parquet" in heads:
         h = heads["companies.parquet"]
-        dst_key = f"companies/{stamp_of(h['LastModified'])}.parquet"
+        etag = h["ETag"].strip('"')[:12]
+        dst_key = f"companies/{stamp_of(h['LastModified'])}-{etag}.parquet"
         if head(client, dst_bucket, dst_key) is None:
             try:
                 size = copy_checked(
@@ -264,7 +288,7 @@ def main() -> None:
                 )
                 print(f"copied companies version -> {dst_key} ({size:,} bytes)")
                 summary_lines.append(f"archived {dst_key}")
-            except SourceChanged as exc:
+            except SourceChangedError as exc:
                 client.delete_object(Bucket=dst_bucket, Key=dst_key)
                 print(f"skipped companies version: {exc}. Retrying next run.")
 

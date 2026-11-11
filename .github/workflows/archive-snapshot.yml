@@ -12,8 +12,6 @@ on:
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
-  push:
-    branches: [claude/archive-snapshots]
 
 concurrency:
   group: archive-snapshot
@@ -26,6 +24,9 @@ jobs:
   archive:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # R2 secrets only on the default branch: a manual dispatch from another
+    # ref must not run unreviewed code with write access to the buckets.
+    if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
