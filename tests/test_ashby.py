@@ -40,6 +40,12 @@ def test_parses_basic_job(httpx_mock) -> None:
     assert job.ats_type is ATSType.ASHBY
 
 
+def test_uses_configured_company_name(httpx_mock) -> None:
+    httpx_mock.add_response(url=API, json={"jobs": [_job()]})
+    jobs = AshbyScraper("acme", company_name="Acme Holdings").fetch()
+    assert jobs[0].company == "Acme Holdings"
+
+
 def test_returns_empty_list(httpx_mock) -> None:
     httpx_mock.add_response(url=API, json={"jobs": []})
     assert AshbyScraper("acme").fetch() == []
