@@ -160,6 +160,7 @@ class LeverScraper(BaseScraper):
             ats_type=ATSType.LEVER,
             ats_id=item["id"],
             location=categories.get("location"),
+            country_iso=_country_iso(item.get("country")),
             department=categories.get("department"),
             team=categories.get("team"),
             commitment=commitment,
@@ -184,3 +185,11 @@ def _parse_ms(value: int | None) -> datetime | None:
         return datetime.fromtimestamp(value / 1000, tz=UTC)
     except (ValueError, OSError):
         return None
+
+
+def _country_iso(value: object) -> str | None:
+    """Lever's posting ``country`` is an ISO 3166-1 alpha-2 code or null."""
+    if not isinstance(value, str):
+        return None
+    code = value.strip().upper()
+    return code if len(code) == 2 and code.isalpha() else None
