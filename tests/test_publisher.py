@@ -3,7 +3,9 @@
 Covers the v2.0 layout:
 
     jobhive/v1/manifest.json
-    jobhive/v1/all.parquet
+    jobhive/v1/job-snapshots/<sha>.{csv,parquet}
+    jobhive/v1/<ats>/job-snapshots/<sha>.{csv,parquet}
+    jobhive/v1/all.{csv,parquet}
     jobhive/v1/<ats>/jobs.{csv,parquet}
 
 The publisher owns jobs entries in ``manifest.json``. Companies (top-level
@@ -18,15 +20,21 @@ import csv
 import hashlib
 import io
 import json
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import pytest
 
-from ats_scrapers.exceptions import StorageError
+from ats_scrapers.exceptions import StorageConflictError, StorageError
 from pipeline.publisher import (
+    CACHE_CONTROL_IMMUTABLE,
     CACHE_CONTROL_LATEST,
     DEFAULT_PREFIX,
+    PUBLICATION_LEASE_POLL_SECONDS,
+    PUBLICATION_LEASE_TTL,
+    PUBLICATION_LEASE_WAIT_ATTEMPTS,
     DatasetPublisher,
+    _distributed_publication_lease,
 )
 
 # --- Layout -----------------------------------------------------------------
@@ -103,9 +111,10 @@ def test_manifest_contains_expected_structure(ats_csv_dir, fake_r2) -> None:
     assert manifest["stats"]["ats_count"] == 3
     assert "greenhouse" in manifest["by_ats"]
     assert manifest["by_ats"]["greenhouse"]["rows"] == 3
-    # `all` lives at the top level now and ships both formats.
-    assert manifest["all"]["parquet"].endswith("/all.parquet")
-    assert manifest["all"]["csv"].endswith("/all.csv")
+    assert "/job-snapshots/" in manifest["all"]["parquet"]
+    assert manifest["all"]["parquet"].endswith(".parquet")
+    assert "/job-snapshots/" in manifest["all"]["csv"]
+    assert manifest["all"]["csv"].endswith(".csv")
 
 
 def test_manifest_includes_generator_string(ats_csv_dir, fake_r2) -> None:
@@ -144,8 +153,12 @@ def test_manifest_falls_back_to_keys_when_no_public_url(
     manifest = json.loads(
         fake_r2_no_public.uploads["jobhive/v1/manifest.json"]["data"]
     )
-    assert manifest["all"]["parquet"] == "jobhive/v1/all.parquet"
-    assert manifest["by_ats"]["greenhouse"]["csv"] == "jobhive/v1/greenhouse/jobs.csv"
+    assert manifest["all"]["parquet"].startswith(
+        "jobhive/v1/job-snapshots/"
+    )
+    assert manifest["by_ats"]["greenhouse"]["csv"].startswith(
+        "jobhive/v1/greenhouse/job-snapshots/"
+    )
 
 
 def test_manifest_includes_schema_version_and_columns(ats_csv_dir, fake_r2) -> None:
@@ -234,7 +247,106 @@ def test_manifest_patch_preserves_companies_block(ats_csv_dir, fake_r2) -> None:
     assert manifest["by_ats_companies"] == pre_existing["by_ats_companies"]
     # And jobs entries got refreshed.
     assert manifest["by_ats"]["greenhouse"]["rows"] == 3
-    assert manifest["all"]["parquet"].endswith("/all.parquet")
+    assert "/job-snapshots/" in manifest["all"]["parquet"]
+
+
+def test_manifest_cas_retry_preserves_concurrent_company_update(
+    ats_csv_dir,
+    fake_r2,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_upload = fake_r2.upload_bytes_if_current
+    injected = False
+    companies = {
+        "csv": "jobhive/v1/company-snapshots/new.csv",
+        "rows": 42,
+    }
+
+    def race_once(data, key, **kwargs):
+        nonlocal injected
+        if key.endswith("/manifest.json") and not injected:
+            injected = True
+            fake_r2.upload_bytes(
+                json.dumps(
+                    {
+                        "version": "2.0",
+                        "companies": companies,
+                        "by_ats_companies": {},
+                    }
+                ).encode(),
+                key,
+                content_type="application/json",
+            )
+            raise StorageConflictError("companies writer won")
+        return original_upload(data, key, **kwargs)
+
+    monkeypatch.setattr(
+        fake_r2,
+        "upload_bytes_if_current",
+        race_once,
+    )
+
+    DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    assert injected is True
+    assert manifest["companies"] == companies
+    assert manifest["stats"]["total_jobs"] == 9
+
+
+def test_older_run_cannot_replace_newer_jobs_generation(
+    ats_csv_dir,
+    fake_r2,
+) -> None:
+    future = datetime.now(tz=UTC) + timedelta(days=1)
+    current = {
+        "version": "2.0",
+        "generated_at": future.isoformat(),
+        "all": {"csv": "jobhive/v1/job-snapshots/current.csv"},
+        "by_ats": {},
+    }
+    fake_r2.upload_bytes(
+        json.dumps(current).encode(),
+        "jobhive/v1/manifest.json",
+        content_type="application/json",
+    )
+
+    with pytest.raises(StorageConflictError, match="newer jobs generation"):
+        DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+            ats_csv_dir
+        )
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    assert manifest == current
+    assert "jobhive/v1/all.csv" not in fake_r2.uploads
+
+
+def test_alias_failure_does_not_invalidate_committed_manifest(
+    ats_csv_dir,
+    fake_r2,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_copy(*_args, **_kwargs):
+        raise StorageError("copy unavailable")
+
+    monkeypatch.setattr(fake_r2, "copy", fail_copy)
+
+    with pytest.raises(
+        StorageError,
+        match="manifest committed to immutable artifacts",
+    ):
+        DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+            ats_csv_dir
+        )
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    csv_key = manifest["all"]["csv"].removeprefix(
+        "https://cdn.example.com/"
+    )
+    assert "/job-snapshots/" in csv_key
+    assert fake_r2.uploads[csv_key]["data"]
 
 
 def test_manifest_patch_drops_legacy_fields(ats_csv_dir, fake_r2) -> None:
@@ -340,6 +452,22 @@ def test_cache_control_short_for_latest_files(ats_csv_dir, fake_r2) -> None:
     )
 
 
+def test_manifest_artifacts_are_immutable(ats_csv_dir, fake_r2) -> None:
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+
+    for entry in [
+        manifest["all"],
+        *manifest["by_ats"].values(),
+    ]:
+        for field in ("csv", "parquet"):
+            key = entry[field].removeprefix("https://cdn.example.com/")
+            assert fake_r2.uploads[key]["cache_control"] == (
+                CACHE_CONTROL_IMMUTABLE
+            )
+
+
 def test_per_ats_csv_content_type(ats_csv_dir, fake_r2) -> None:
     publisher = DatasetPublisher(fake_r2, write_parquet=True)
     publisher.publish_from_directory(ats_csv_dir)
@@ -370,28 +498,198 @@ def test_manifest_content_type(ats_csv_dir, fake_r2) -> None:
 # --- Ordering ---------------------------------------------------------------
 
 
-def test_manifest_uploaded_after_data_files(ats_csv_dir, fake_r2) -> None:
-    """The manifest must be uploaded last — a half-finished publish must
-    never expose a manifest pointing at missing files."""
+def test_manifest_uploaded_after_immutable_artifacts(
+    ats_csv_dir,
+    fake_r2,
+) -> None:
+    """Canonical immutable artifacts exist before the manifest switches."""
     publisher = DatasetPublisher(fake_r2, write_parquet=True)
     publisher.publish_from_directory(ats_csv_dir)
-    keys = [
+    immutable_keys = [
         k
         for k in fake_r2.uploads
-        # Ignore the pre-existing manifest seeded by other tests'
-        # paths through this fixture.
-        if not k.endswith("/manifest.json")
+        if "/job-snapshots/" in k
     ]
     assert "jobhive/v1/manifest.json" in fake_r2.uploads
-    last_manifest_index = max(
+    manifest_index = max(
         i
         for i, k in enumerate(fake_r2.uploads)
         if k == "jobhive/v1/manifest.json"
     )
-    last_data_index = max(
-        i for i, k in enumerate(fake_r2.uploads) if k in keys
+    last_immutable_index = max(
+        i for i, k in enumerate(fake_r2.uploads) if k in immutable_keys
     )
-    assert last_manifest_index > last_data_index
+    assert manifest_index > last_immutable_index
+
+
+# --- Publication lease ------------------------------------------------------
+
+
+def test_default_lease_wait_reaches_expiry_boundary() -> None:
+    available_wait = (
+        PUBLICATION_LEASE_WAIT_ATTEMPTS - 1
+    ) * PUBLICATION_LEASE_POLL_SECONDS
+    assert available_wait >= PUBLICATION_LEASE_TTL.total_seconds()
+
+
+def test_distributed_publication_lease_releases_after_success(fake_r2) -> None:
+    key = "jobhive/v1/.locks/jobs-publication.json"
+
+    with _distributed_publication_lease(fake_r2, prefix="jobhive/v1"):
+        active = json.loads(fake_r2.uploads[key]["data"])
+        assert datetime.fromisoformat(active["expires_at"]) > datetime.now(
+            tz=UTC
+        )
+
+    released = json.loads(fake_r2.uploads[key]["data"])
+    assert released["owner"] == active["owner"]
+    assert datetime.fromisoformat(released["expires_at"]) <= datetime.now(
+        tz=UTC
+    )
+
+
+def test_distributed_publication_lease_takes_over_expired_owner(
+    fake_r2,
+) -> None:
+    key = "jobhive/v1/.locks/jobs-publication.json"
+    fake_r2.upload_bytes(
+        json.dumps(
+            {
+                "owner": "dead-publisher",
+                "expires_at": (
+                    datetime.now(tz=UTC) - timedelta(minutes=1)
+                ).isoformat(),
+            }
+        ).encode(),
+        key,
+    )
+
+    with _distributed_publication_lease(fake_r2, prefix="jobhive/v1"):
+        active = json.loads(fake_r2.uploads[key]["data"])
+        assert active["owner"] != "dead-publisher"
+
+
+def test_distributed_publication_lease_times_out_for_active_owner(
+    fake_r2,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pipeline.publisher as publisher_module
+
+    key = "jobhive/v1/.locks/jobs-publication.json"
+    fake_r2.upload_bytes(
+        json.dumps(
+            {
+                "owner": "active-publisher",
+                "expires_at": (
+                    datetime.now(tz=UTC) + timedelta(minutes=1)
+                ).isoformat(),
+            }
+        ).encode(),
+        key,
+    )
+    monkeypatch.setattr(
+        publisher_module,
+        "PUBLICATION_LEASE_WAIT_ATTEMPTS",
+        2,
+    )
+    monkeypatch.setattr(
+        publisher_module,
+        "PUBLICATION_LEASE_POLL_SECONDS",
+        0.0,
+    )
+
+    with (
+        pytest.raises(StorageError, match="Timed out waiting"),
+        _distributed_publication_lease(
+            fake_r2,
+            prefix="jobhive/v1",
+        ),
+    ):
+        raise AssertionError("lease should not be acquired")
+
+
+def test_expired_owner_cannot_release_successor_lease(fake_r2) -> None:
+    key = "jobhive/v1/.locks/jobs-publication.json"
+
+    with _distributed_publication_lease(fake_r2, prefix="jobhive/v1"):
+        successor = {
+            "owner": "successor",
+            "expires_at": (
+                datetime.now(tz=UTC) + timedelta(minutes=20)
+            ).isoformat(),
+        }
+        fake_r2.upload_bytes(json.dumps(successor).encode(), key)
+
+    assert json.loads(fake_r2.uploads[key]["data"]) == successor
+
+
+def test_publisher_stops_alias_writes_after_lease_is_lost(
+    ats_csv_dir,
+    fake_r2,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = "jobhive/v1/.locks/jobs-publication.json"
+    original_copy = fake_r2.copy
+    copies = 0
+    successor = {
+        "owner": "successor",
+        "expires_at": (
+            datetime.now(tz=UTC) + timedelta(minutes=20)
+        ).isoformat(),
+    }
+
+    def steal_after_first_copy(*args, **kwargs):
+        nonlocal copies
+        copies += 1
+        result = original_copy(*args, **kwargs)
+        if copies == 1:
+            fake_r2.upload_bytes(json.dumps(successor).encode(), key)
+        return result
+
+    monkeypatch.setattr(fake_r2, "copy", steal_after_first_copy)
+
+    with pytest.raises(
+        StorageError,
+        match="stable compatibility aliases",
+    ):
+        DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+            ats_csv_dir
+        )
+
+    assert copies == 1
+    assert json.loads(fake_r2.uploads[key]["data"]) == successor
+
+
+def test_alias_copy_retries_when_destination_changes_after_head(
+    ats_csv_dir,
+    fake_r2,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_copy = fake_r2.copy
+    raced = False
+    raced_source = ""
+    raced_destination = ""
+
+    def race_once(source_key, destination_key, **kwargs):
+        nonlocal raced, raced_destination, raced_source
+        if not raced:
+            raced = True
+            raced_source = source_key
+            raced_destination = destination_key
+            fake_r2.upload_bytes(b"newer-owner", destination_key)
+        return original_copy(source_key, destination_key, **kwargs)
+
+    monkeypatch.setattr(fake_r2, "copy", race_once)
+
+    DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
+
+    assert raced is True
+    assert (
+        fake_r2.uploads[raced_destination]["data"]
+        == fake_r2.uploads[raced_source]["data"]
+    )
 
 
 # --- Legacy cleanup ---------------------------------------------------------
@@ -562,8 +860,8 @@ def test_result_reports_counts_and_duration(ats_csv_dir, fake_r2) -> None:
     assert result.ats_count == 3
     assert result.duration_seconds >= 0.0
     assert result.manifest_key == "jobhive/v1/manifest.json"
-    # 3 ATS slices × 2 formats + all.{csv,parquet} + manifest.json = 9 files
-    assert len(result.files) == 9
+    # 8 immutable artifacts + manifest + 8 compatibility aliases.
+    assert len(result.files) == 17
 
 
 # --- Cross-ATS deduplication ------------------------------------------------

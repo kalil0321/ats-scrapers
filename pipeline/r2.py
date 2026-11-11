@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ats_scrapers.exceptions import StorageError
+from ats_scrapers.exceptions import StorageConflictError, StorageError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -107,6 +108,11 @@ class R2Client:
             aws_secret_access_key=config.secret_access_key,
             region_name="auto",
         )
+        self._copy_destination_condition = threading.local()
+        self._client.meta.events.register(
+            "before-call.s3.CopyObject",
+            self._add_copy_destination_condition,
+        )
 
     @property
     def bucket(self) -> str:
@@ -158,11 +164,140 @@ class R2Client:
             raise StorageError(f"R2 upload failed for {key}: {exc}") from exc
         return key
 
+    def upload_bytes_if_current(
+        self,
+        data: bytes,
+        key: str,
+        *,
+        expected_etag: str | None,
+        content_type: str | None = None,
+        cache_control: str | None = None,
+    ) -> str:
+        """Conditionally replace ``key`` and return its new ETag.
+
+        ``expected_etag=None`` means the key must not exist. Otherwise
+        the current object must match that exact ETag.
+        """
+        from botocore.exceptions import ClientError
+
+        extra: dict[str, Any] = (
+            {"IfMatch": expected_etag}
+            if expected_etag is not None
+            else {"IfNoneMatch": "*"}
+        )
+        if content_type:
+            extra["ContentType"] = content_type
+        if cache_control:
+            extra["CacheControl"] = cache_control
+        try:
+            response = self._client.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=data,
+                **extra,
+            )
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            status = exc.response.get("ResponseMetadata", {}).get(
+                "HTTPStatusCode"
+            )
+            if status in {409, 412} or code in {
+                "ConditionalRequestConflict",
+                "PreconditionFailed",
+            }:
+                raise StorageConflictError(
+                    f"R2 conditional write lost a race for {key}"
+                ) from exc
+            raise StorageError(f"R2 upload failed for {key}: {exc}") from exc
+        except Exception as exc:
+            raise StorageError(f"R2 upload failed for {key}: {exc}") from exc
+        etag = response.get("ETag")
+        if not isinstance(etag, str) or not etag:
+            raise StorageError(f"R2 conditional write omitted ETag for {key}")
+        return etag
+
+    def copy(
+        self,
+        source_key: str,
+        destination_key: str,
+        *,
+        expected_destination_etag: str | None,
+        content_type: str | None = None,
+        cache_control: str | None = None,
+    ) -> str:
+        """Conditionally copy an immutable object to a compatibility alias."""
+        from botocore.exceptions import ClientError
+
+        condition = (
+            {"cf-copy-destination-if-match": expected_destination_etag}
+            if expected_destination_etag is not None
+            else {"cf-copy-destination-if-none-match": "*"}
+        )
+        extra: dict[str, Any] = {
+            "CopySource": {
+                "Bucket": self.bucket,
+                "Key": source_key,
+            },
+            "MetadataDirective": "REPLACE",
+        }
+        if content_type:
+            extra["ContentType"] = content_type
+        if cache_control:
+            extra["CacheControl"] = cache_control
+        try:
+            self._copy_destination_condition.headers = condition
+            self._client.copy_object(
+                Bucket=self.bucket,
+                Key=destination_key,
+                **extra,
+            )
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            status = exc.response.get("ResponseMetadata", {}).get(
+                "HTTPStatusCode"
+            )
+            if status in {409, 412} or code in {
+                "ConditionalRequestConflict",
+                "PreconditionFailed",
+            }:
+                raise StorageConflictError(
+                    f"R2 conditional copy lost a race for {destination_key}"
+                ) from exc
+            raise StorageError(
+                f"R2 copy failed for {source_key} → {destination_key}: {exc}"
+            ) from exc
+        except Exception as exc:
+            raise StorageError(
+                f"R2 copy failed for {source_key} → {destination_key}: {exc}"
+            ) from exc
+        finally:
+            self._copy_destination_condition.headers = None
+        return destination_key
+
+    def _add_copy_destination_condition(
+        self,
+        params: dict[str, Any],
+        **_kwargs: Any,
+    ) -> None:
+        headers = getattr(self._copy_destination_condition, "headers", None)
+        if headers:
+            params["headers"].update(headers)
+
     def head(self, key: str) -> dict[str, Any] | None:
+        from botocore.exceptions import ClientError
+
         try:
             return self._client.head_object(Bucket=self.bucket, Key=key)
-        except Exception:
-            return None
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            status = exc.response.get("ResponseMetadata", {}).get(
+                "HTTPStatusCode"
+            )
+            if status == 404 or code in {"404", "NoSuchKey", "NotFound"}:
+                return None
+            raise StorageError(f"R2 head failed for {key}: {exc}") from exc
+        except Exception as exc:
+            raise StorageError(f"R2 head failed for {key}: {exc}") from exc
 
     def get_bytes(self, key: str) -> bytes | None:
         """Return the object body, or ``None`` if the key doesn't exist.
@@ -172,16 +307,31 @@ class R2Client:
         ``companies`` block; the publisher patches the ``by_ats`` jobs
         block; both must coexist in one manifest.json).
         """
+        body, _etag = self.get_bytes_with_etag(key)
+        return body
+
+    def get_bytes_with_etag(
+        self,
+        key: str,
+    ) -> tuple[bytes | None, str | None]:
+        """Return object bytes and ETag, or ``(None, None)`` if absent."""
         from botocore.exceptions import ClientError
 
         try:
             response = self._client.get_object(Bucket=self.bucket, Key=key)
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
-            if code in ("NoSuchKey", "404"):
-                return None
+            status = exc.response.get("ResponseMetadata", {}).get(
+                "HTTPStatusCode"
+            )
+            if status == 404 or code in {"404", "NoSuchKey", "NotFound"}:
+                return None, None
             raise StorageError(f"R2 get failed for {key}: {exc}") from exc
-        return response["Body"].read()
+        etag = response.get("ETag")
+        return (
+            response["Body"].read(),
+            etag if isinstance(etag, str) and etag else None,
+        )
 
     def list(self, prefix: str = "") -> Iterator[dict[str, Any]]:
         paginator = self._client.get_paginator("list_objects_v2")

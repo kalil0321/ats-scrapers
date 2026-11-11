@@ -13,6 +13,10 @@ class StorageError(ATSScrapersError):
     """Raised when reading from or writing to remote storage fails."""
 
 
+class StorageConflictError(StorageError):
+    """Raised when a conditional storage write loses a race."""
+
+
 class ScraperError(ATSScrapersError):
     """Raised when an ATS scraper fails to fetch or parse jobs."""
 
