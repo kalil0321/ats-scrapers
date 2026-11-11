@@ -1445,7 +1445,7 @@ def _tenant_status_row(
     ats: str,
     slug: str,
     row: dict[str, str],
-    jobs: list[Job],
+    jobs: int,
     err: str | None,
     run_started_at: str,
 ) -> dict[str, Any]:
@@ -1461,7 +1461,7 @@ def _tenant_status_row(
         "name": row.get("name", ""),
         "url": row.get("url", ""),
         "status": status,
-        "jobs": len(jobs),
+        "jobs": jobs,
         "error": err if status == "error" else "",
         "run_started_at": run_started_at,
         "checked_at": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -1605,6 +1605,7 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
     seen_keys: set[tuple[str, str]] = set()  # (company, ats_id) for cross-tenant dedup
     tenant_status: list[dict[str, Any]] = []
     run_started_at = datetime.now(UTC).isoformat(timespec="seconds")
+    stream_error: str | None = None
 
     t0 = time.time()
     try:
@@ -1696,8 +1697,16 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                     for task in pending_descriptions:
                         task.cancel()
                     counts["error"] = 1
+                    stream_error = f"{type(exc).__name__}: {str(exc)[:120]}"
                     print(f"  [{ats}] streaming failed: {type(exc).__name__}: "
                           f"{str(exc)[:200]}")
+                if counts["not_found"]:
+                    stream_error = "not_found"
+                tenant_status.append(
+                    _tenant_status_row(
+                        ats, ats, {}, counts["jobs"], stream_error, run_started_at
+                    )
+                )
             else:
                 async def scrape_tenant(slug: str, kw: dict[str, Any]) -> None:
                     started = time.time()
@@ -1717,7 +1726,7 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                                 await asyncio.sleep(tenant_delay)
                     tenant_status.append(
                         _tenant_status_row(
-                            ats, slug, tenant_rows.get(slug, {}), jobs, err,
+                            ats, slug, tenant_rows.get(slug, {}), len(jobs), err,
                             run_started_at,
                         )
                     )

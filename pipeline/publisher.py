@@ -185,7 +185,7 @@ class DatasetPublisher:
             per_ats_entries: dict[ATSType, dict[str, object]] = {}
             schema_union: list[str] = []
             seen_cols: set[str] = set()
-            tenant_status_paths: list[Path] = []
+            tenant_status_paths = _find_tenant_status_files(source_dir, ats_csv_pattern)
 
             any_csv_found = False
             for ats in ATSType:
@@ -194,11 +194,6 @@ class DatasetPublisher:
                 source_path = source_dir / ats_csv_pattern.format(ats=ats.value)
                 if not source_path.exists():
                     continue
-                # The VPS publisher passes jobs.csv as a symlink into a temp
-                # directory, so the status file is looked up next to the target.
-                status_path = source_path.resolve().parent / TENANT_STATUS_FILENAME
-                if status_path.is_file():
-                    tenant_status_paths.append(status_path)
                 # Defense against the publisher firing while a scraper
                 # is mid-write (cron + ad-hoc publish race): a 0-byte
                 # CSV will blow up ``collect_schema`` with NoDataError.
@@ -1144,6 +1139,35 @@ def _safe_parse_salary(value: object) -> dict[str, float | None]:
         return {"min": None, "max": None}
     mn, mx = parse_salary_range(value)
     return {"min": mn, "max": mx}
+
+
+def _find_tenant_status_files(source_dir: Path, ats_csv_pattern: str) -> list[Path]:
+    """Status files of every provider, including those without a jobs.csv
+    (a first run that failed still has outcomes worth publishing).
+
+    The VPS publisher passes each jobs.csv as a symlink into a temp
+    directory, so the real jobs root behind those symlinks is searched too.
+    """
+    depth = len(Path(ats_csv_pattern).parts)
+    roots = [source_dir]
+    for ats in ATSType:
+        jobs_path = source_dir / ats_csv_pattern.format(ats=ats.value)
+        if jobs_path.is_symlink():
+            real_root = jobs_path.resolve().parents[depth - 1]
+            if real_root not in roots:
+                roots.append(real_root)
+    found: list[Path] = []
+    for ats in ATSType:
+        if ats is ATSType.CUSTOM:
+            continue
+        for root in roots:
+            status_path = (
+                root / ats_csv_pattern.format(ats=ats.value)
+            ).parent / TENANT_STATUS_FILENAME
+            if status_path.is_file():
+                found.append(status_path)
+                break
+    return found
 
 
 def _collect_uploaded_keys(entry: dict[str, object]) -> list[str]:

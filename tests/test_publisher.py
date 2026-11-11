@@ -1030,11 +1030,29 @@ def test_publish_finds_tenant_status_behind_symlinked_jobs_csv(
     ats_csv_dir, tmp_path_factory, fake_r2
 ) -> None:
     _write_status(ats_csv_dir / "ashby" / "tenant_status.csv", [("acme", "ok", 1)])
+    # A provider whose first run failed has a status file but no jobs.csv.
+    (ats_csv_dir / "workable").mkdir()
+    _write_status(ats_csv_dir / "workable" / "tenant_status.csv", [("x", "error", 0)])
     selected = tmp_path_factory.mktemp("selected")
     (selected / "ashby").mkdir()
     (selected / "ashby" / "jobs.csv").symlink_to(ats_csv_dir / "ashby" / "jobs.csv")
 
     DatasetPublisher(fake_r2).publish_from_directory(selected)
+
+    df = pd.read_parquet(io.BytesIO(fake_r2.uploads["jobhive/v1/tenant_status.parquet"]["data"]))
+    assert sorted(zip(df["ats"], df["slug"], strict=True)) == [
+        ("ashby", "acme"),
+        ("workable", "x"),
+    ]
+
+
+def test_publish_includes_status_of_provider_without_jobs_csv(
+    ats_csv_dir, fake_r2
+) -> None:
+    (ats_csv_dir / "workable").mkdir()
+    _write_status(ats_csv_dir / "workable" / "tenant_status.csv", [("x", "error", 0)])
+
+    DatasetPublisher(fake_r2).publish_from_directory(ats_csv_dir)
 
     manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
     assert manifest["tenant_status"]["rows"] == 1

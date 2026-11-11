@@ -91,3 +91,52 @@ def test_partial_run_keeps_previous_status_file(fake_ats) -> None:
     asyncio.run(runner.run("fake", concurrency=1, max_tenants=1, timeout=1))
 
     assert fake_ats.read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize(
+    ("failure", "status", "error"),
+    [
+        (None, "ok", ""),
+        (CompanyNotFoundError("gone"), "not_found", ""),
+        (RuntimeError("feed down"), "error", "RuntimeError: feed down"),
+    ],
+)
+def test_streaming_run_records_its_outcome(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, failure, status, error
+) -> None:
+    class StreamingScraper:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def fetch_stream(self):
+            yield Job(
+                url="https://example.com/jobs/1",
+                title="Engineer",
+                company="Acme",
+                ats_type=ATSType.CUSTOM,
+                ats_id="1",
+            )
+            if failure is not None:
+                raise failure
+
+    monkeypatch.delenv("ATS_SCRAPERS_JOBS_ROOT", raising=False)
+    monkeypatch.delenv("JOBHIVE_JOBS_ROOT", raising=False)
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "stream",
+        {
+            "scraper": StreamingScraper,
+            "singleton": True,
+            "output": "stream/jobs.csv",
+            "skip_description_enrichment": True,
+            "skip_normalize": True,
+        },
+    )
+
+    asyncio.run(runner.run("stream", concurrency=1, max_tenants=None, timeout=1))
+
+    rows = _read(tmp_path / "stream" / runner.TENANT_STATUS_FILENAME)
+    assert rows["stream"]["status"] == status
+    assert rows["stream"]["jobs"] == "1"
+    assert rows["stream"]["error"] == error
