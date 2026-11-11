@@ -68,3 +68,17 @@ def test_posted_at_is_utc(httpx_mock) -> None:
     job = LeverScraper("acme").fetch()[0]
     assert job.posted_at == datetime(2024, 5, 1, tzinfo=UTC)
     assert job.posted_at.tzinfo is UTC
+
+
+@pytest.mark.parametrize(
+    ("country", "expected"),
+    [("DE", "DE"), ("gb", "GB"), (" de ", "DE"), (None, None), ("", None), ("USA", None)],
+)
+def test_country_iso_from_posting_country(
+    httpx_mock, country: str | None, expected: str | None,
+) -> None:
+    """Lever documents the posting-level ``country`` as an ISO 3166-1
+    alpha-2 code (or null); it should land in ``country_iso``."""
+    httpx_mock.add_response(url=API, json=[{**_job(), "country": country}])
+    job = LeverScraper("acme").fetch()[0]
+    assert job.country_iso == expected
