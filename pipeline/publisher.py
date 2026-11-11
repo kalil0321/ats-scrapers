@@ -80,6 +80,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_PREFIX = "jobhive/v1"
+# Written by scripts/run_pipeline.py next to each provider's jobs.csv.
+TENANT_STATUS_FILENAME = "tenant_status.csv"
 CACHE_CONTROL_LATEST = "public, max-age=300"  # manifest + latest data files
 
 # ``all`` ships both formats — parquet for typed pandas / DuckDB
@@ -183,6 +185,7 @@ class DatasetPublisher:
             per_ats_entries: dict[ATSType, dict[str, object]] = {}
             schema_union: list[str] = []
             seen_cols: set[str] = set()
+            tenant_status_paths: list[Path] = []
 
             any_csv_found = False
             for ats in ATSType:
@@ -191,6 +194,11 @@ class DatasetPublisher:
                 source_path = source_dir / ats_csv_pattern.format(ats=ats.value)
                 if not source_path.exists():
                     continue
+                # The VPS publisher passes jobs.csv as a symlink into a temp
+                # directory, so the status file is looked up next to the target.
+                status_path = source_path.resolve().parent / TENANT_STATUS_FILENAME
+                if status_path.is_file():
+                    tenant_status_paths.append(status_path)
                 # Defense against the publisher firing while a scraper
                 # is mid-write (cron + ad-hoc publish race): a 0-byte
                 # CSV will blow up ``collect_schema`` with NoDataError.
@@ -266,6 +274,10 @@ class DatasetPublisher:
             )
             files_uploaded.extend(_collect_uploaded_keys(all_entry))
 
+            tenant_status_entry = self._upload_tenant_status(tenant_status_paths)
+            if tenant_status_entry is not None:
+                files_uploaded.extend(_collect_uploaded_keys(tenant_status_entry))
+
             manifest_key = self._patch_and_upload_manifest(
                 generated_at=started,
                 stats_factory=lambda existing: {
@@ -279,6 +291,7 @@ class DatasetPublisher:
                 all_entry=all_entry,
                 by_ats=per_ats_entries,
                 existing_manifest=existing_manifest,
+                tenant_status=tenant_status_entry,
             )
             files_uploaded.append(manifest_key)
 
@@ -481,6 +494,7 @@ class DatasetPublisher:
         all_entry: dict[str, object],
         by_ats: dict[ATSType, dict[str, object]],
         existing_manifest: dict[str, object] | None = None,
+        tenant_status: dict[str, object] | None = None,
     ) -> str:
         """Read existing manifest, replace jobs-related fields, preserve
         the companies block written by the CI."""
@@ -505,6 +519,8 @@ class DatasetPublisher:
         manifest["stats"] = stats_factory(existing)
         manifest["all"] = all_entry
         manifest["by_ats"] = {ats.value: entry for ats, entry in by_ats.items()}
+        if tenant_status is not None:
+            manifest["tenant_status"] = tenant_status
 
         # Drop fields from the pre-2.0 layout if they survived the
         # legacy-path prune. Their data is gone so the entries point
@@ -522,6 +538,28 @@ class DatasetPublisher:
             cache_control=CACHE_CONTROL_LATEST,
         )
         return key
+
+    def _upload_tenant_status(self, paths: list[Path]) -> dict[str, object] | None:
+        """Concatenate every provider's latest per-tenant scrape outcome
+        into ``<prefix>/tenant_status.{csv,parquet}``."""
+        frames: list[pl.DataFrame] = []
+        for path in paths:
+            try:
+                frames.append(pl.read_csv(path, infer_schema_length=0))
+            except (pl.exceptions.NoDataError, pl.exceptions.ComputeError) as exc:
+                logger.warning("%s: unreadable tenant status (%s); skipping.", path, exc)
+        if not frames:
+            return None
+        df = pl.concat(frames, how="diagonal").with_columns(
+            pl.col("jobs").cast(pl.Int64, strict=False)
+        )
+        base_key = f"{self._prefix}/tenant_status"
+        with _temp_file(".csv") as csv_path:
+            df.write_csv(csv_path)
+            entry, _ = self._upload_per_ats_streaming(
+                csv_path=csv_path, base_key=base_key
+            )
+        return entry
 
     def _public_or_key(self, key: str) -> str:
         return self._r2.public_url(key) or key
