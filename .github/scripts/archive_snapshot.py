@@ -233,8 +233,9 @@ def main() -> None:
         except SourceChangedError as exc:
             for key in copied_keys:
                 client.delete_object(Bucket=dst_bucket, Key=key)
-            print(f"aborted snapshot {stamp}: {exc}. Retrying next run.")
-            return
+            # Fail the run (red in Actions, email to the owner) so a mismatch
+            # that keeps repeating cannot silently stop the history.
+            sys.exit(f"aborted snapshot {stamp}: {exc}. Retrying next run.")
         # Manifest last: its presence marks the snapshot as complete.
         client.put_object(
             Bucket=dst_bucket,
