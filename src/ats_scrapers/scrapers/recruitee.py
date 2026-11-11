@@ -109,6 +109,7 @@ class RecruiteeScraper(BaseScraper):
             ats_type=ATSType.RECRUITEE,
             ats_id=str(offer.get("id") or offer.get("slug") or ""),
             location=location,
+            country_iso=_country_iso(offer),
             lat=_to_float(offer.get("lat") or loc_obj.get("lat")),
             lon=_to_float(offer.get("lng") or loc_obj.get("lng")),
             is_remote=is_remote,
@@ -178,6 +179,28 @@ def _format_location(offer: dict[str, Any]) -> str | None:
     parts = [offer.get("city"), offer.get("state_code"), offer.get("country_code")]
     formatted = ", ".join(p for p in parts if p)
     return formatted or None
+
+
+def _country_iso(offer: dict[str, Any]) -> str | None:
+    """The one ``country_code`` the ``locations`` entries that carry one
+    share (``None`` when they differ), else the offer-level ``country_code``."""
+    locations = offer.get("locations")
+    entries = locations if isinstance(locations, list) else []
+    for values in (
+        [loc.get("country_code") for loc in entries if isinstance(loc, dict)],
+        [offer.get("country_code")],
+    ):
+        codes = {
+            value.strip().upper()
+            for value in values
+            if isinstance(value, str)
+            and len(value.strip()) == 2
+            and value.strip().isascii()
+            and value.strip().isalpha()
+        }
+        if codes:
+            return codes.pop() if len(codes) == 1 else None
+    return None
 
 
 def _compose_description(offer: dict[str, Any]) -> str | None:
