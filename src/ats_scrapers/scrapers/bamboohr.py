@@ -252,7 +252,10 @@ class BambooHRScraper(BaseScraper):
         zero-jobs tenant, not an error.
         """
         if not isinstance(payload, dict):
-            return []
+            raise ScraperError(
+                f"BambooHR widget for {self.company_slug} returned JSON that "
+                "is not an object"
+            )
         # An explicit application-level failure must not masquerade as an
         # empty board — the silent-empty class this parser guards against.
         if payload.get("success") is False:
@@ -260,9 +263,14 @@ class BambooHRScraper(BaseScraper):
                 f"BambooHR widget for {self.company_slug} reported failure "
                 "(success=false)"
             )
+        # Empty boards send ``"departments": []``; a missing or mistyped key
+        # is an unknown shape, not an empty board.
         departments = payload.get("departments")
         if not isinstance(departments, list):
-            return []
+            raise ScraperError(
+                f"BambooHR widget for {self.company_slug} returned JSON "
+                "without a departments list"
+            )
         jobs: list[Job] = []
         seen: set[str] = set()
         positions_seen = 0

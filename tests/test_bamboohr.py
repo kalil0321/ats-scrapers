@@ -703,6 +703,20 @@ def test_json_widget_success_false_raises(httpx_mock) -> None:
         BambooHRScraper("acme", include_descriptions=False).fetch()
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"success": true}',
+        '{"departments": null, "success": true}',
+        '{"departments": {"id": 1}, "success": true}',
+    ],
+)
+def test_json_widget_unknown_shape_raises(httpx_mock, body: str) -> None:
+    httpx_mock.add_response(url=WIDGET_URL, text=body)
+    with pytest.raises(ScraperError, match="without a departments list"):
+        BambooHRScraper("acme", include_descriptions=False).fetch()
+
+
 def test_json_widget_malformed_url_falls_back_to_share_url(httpx_mock) -> None:
     """A position URL that carries the http prefix but no host (e.g.
     "https://") must not blow up the whole board — fall back to the
