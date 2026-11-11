@@ -72,6 +72,27 @@ _COMMITMENT_TO_EMPLOYMENT_TYPE = {
 class LeverScraper(BaseScraper):
     ats = ATSType.LEVER
 
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        timeout: float = 30.0,
+        company_name: str | None = None,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
+    ) -> None:
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
+        self.company_name = (
+            company_name.strip()
+            if company_name and company_name.strip()
+            else self.company_slug
+        )
+
     async def afetch(self) -> list[Job]:
         url = API_TEMPLATE.format(slug=self.company_slug)
         async with self.make_fetcher() as fetch:
@@ -156,7 +177,7 @@ class LeverScraper(BaseScraper):
         return Job(
             url=item["hostedUrl"],
             title=item["text"],
-            company=self.company_slug,
+            company=self.company_name,
             ats_type=ATSType.LEVER,
             ats_id=item["id"],
             location=categories.get("location"),
