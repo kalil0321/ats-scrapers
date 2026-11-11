@@ -468,3 +468,33 @@ def test_description_is_truncated(httpx_mock) -> None:
     job = BambooHRScraper("acme").fetch()[0]
     assert job.description is not None
     assert len(job.description) <= 25_000
+
+
+@pytest.mark.parametrize(
+    ("location_type", "expected"),
+    [
+        ("0", False),  # on-site
+        ("1", True),  # remote
+        ("2", None),  # hybrid: neither purely remote nor on-site
+        (2, None),
+        ("remote", True),
+    ],
+)
+def test_location_type_maps_to_is_remote(
+    httpx_mock, location_type: Any, expected: bool | None
+) -> None:
+    """``locationType`` is 0 = on-site, 1 = remote, 2 = hybrid; a hybrid
+    opening keeps its office in ``location``."""
+    httpx_mock.add_response(url=WIDGET_URL, text=_widget_html([
+        {"id": 1, "name": "Eng", "jobs": [{"id": 100, "title": "X", "location": "Toronto, ON"}]},
+    ]))
+    httpx_mock.add_response(
+        url="https://acme.bamboohr.com/careers/100/detail",
+        json=_detail_payload(
+            locationType=location_type,
+            location={"city": "Toronto", "state": "Ontario"},
+        ),
+    )
+    job = BambooHRScraper("acme").fetch()[0]
+    assert job.is_remote is expected
+    assert job.location == "Toronto, Ontario"

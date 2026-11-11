@@ -325,11 +325,12 @@ def _apply_opening_to_job(job: Job, opening: dict) -> None:
             # Listing only has "City, ST" — replace with full canonical.
             job.location = canonical
 
-    # ``locationType`` "1" / "remote" indicates a remote role; "0" =
-    # on-site/hybrid (BambooHR doesn't distinguish hybrid).
+    # ``locationType``: "0" = on-site, "1" = remote, "2" = hybrid (the
+    # office stays in ``location``). Hybrid stays None — neither purely
+    # remote nor on-site.
     loc_type = opening.get("locationType")
     if loc_type is not None and job.is_remote is None:
-        if str(loc_type).strip() in ("1", "2", "true") or (
+        if str(loc_type).strip() in ("1", "true") or (
             isinstance(loc_type, str) and "remote" in loc_type.lower()
         ):
             job.is_remote = True
