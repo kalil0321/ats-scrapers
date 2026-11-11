@@ -27,6 +27,7 @@ from pipeline.publisher import (
     CACHE_CONTROL_LATEST,
     DEFAULT_PREFIX,
     DatasetPublisher,
+    _compact,
 )
 
 # --- Layout -----------------------------------------------------------------
@@ -318,6 +319,61 @@ def test_manifest_patch_handles_corrupt_existing_manifest(
     assert "did not parse as JSON" in caplog.text
     manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
     assert manifest["version"] == "2.0"
+
+
+# --- README badges ----------------------------------------------------------
+
+
+def test_publish_writes_badge_values_from_manifest_stats(ats_csv_dir, fake_r2) -> None:
+    DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(ats_csv_dir)
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    upload = fake_r2.uploads["jobhive/v1/badges.json"]
+    assert json.loads(upload["data"]) == {
+        "jobs": str(manifest["stats"]["total_jobs"]),
+        "companies": str(manifest["stats"]["total_companies"]),
+        "sources": str(manifest["stats"]["ats_count"]),
+        "updated": manifest["generated_at"][:10],
+    }
+    assert upload["content_type"] == "application/json"
+    assert upload["cache_control"] == CACHE_CONTROL_LATEST
+
+
+def test_badge_upload_failure_does_not_fail_publish(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    upload_bytes = fake_r2.upload_bytes
+
+    def failing_badges(data, key, **kwargs):
+        if key.endswith("/badges.json"):
+            raise StorageError("R2 upload failed")
+        return upload_bytes(data, key, **kwargs)
+
+    monkeypatch.setattr(fake_r2, "upload_bytes", failing_badges)
+    result = DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
+
+    assert result.total_jobs == 9
+    assert "jobhive/v1/manifest.json" in fake_r2.uploads
+    assert "jobhive/v1/badges.json" not in fake_r2.uploads
+
+
+@pytest.mark.parametrize(
+    ("n", "expected"),
+    [
+        (0, "0"),
+        (64, "64"),
+        (999, "999"),
+        (1_000, "1K"),
+        (80_390, "80.4K"),
+        (999_999, "1M"),
+        (4_886_484, "4.9M"),
+        (2_400_000_000, "2.4B"),
+    ],
+)
+def test_compact(n: int, expected: str) -> None:
+    assert _compact(n) == expected
 
 
 # --- Cache headers ----------------------------------------------------------

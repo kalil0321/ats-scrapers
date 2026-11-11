@@ -3,6 +3,7 @@
 Layout produced under ``<prefix>`` (default ``jobhive/v1``):
 
     jobhive/v1/manifest.json
+    jobhive/v1/badges.json           # pre-formatted README badge values
     jobhive/v1/all.{csv,parquet}     # full snapshot, both formats
     jobhive/v1/<ats>/jobs.csv        # per-ATS jobs slice
     jobhive/v1/<ats>/jobs.parquet    # idem in parquet
@@ -53,7 +54,7 @@ from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
@@ -502,7 +503,8 @@ class DatasetPublisher:
         # writer ran most recently. Format matches what the CI script
         # writes: UTC ``Z``-suffixed seconds.
         manifest["updated_at"] = generated_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-        manifest["stats"] = stats_factory(existing)
+        stats = stats_factory(existing)
+        manifest["stats"] = stats
         manifest["all"] = all_entry
         manifest["by_ats"] = {ats.value: entry for ats, entry in by_ats.items()}
 
@@ -512,6 +514,7 @@ class DatasetPublisher:
         for legacy in ("by_date", "companies_by_ats"):
             manifest.pop(legacy, None)
 
+        self._upload_badges(stats, generated_at)
         body = json.dumps(manifest, indent=2, sort_keys=True, default=str).encode(
             "utf-8"
         )
@@ -522,6 +525,29 @@ class DatasetPublisher:
             cache_control=CACHE_CONTROL_LATEST,
         )
         return key
+
+    def _upload_badges(self, stats: dict[str, Any], generated_at: datetime) -> None:
+        """Shields' dynamic JSON badge can't format numbers, so the README
+        reads pre-formatted values from this file.
+
+        A failed upload is logged, not raised: badges are cosmetic and must
+        not block the manifest.
+        """
+        badges = {
+            "jobs": _compact(stats["total_jobs"]),
+            "companies": _compact(stats["total_companies"]),
+            "sources": str(stats["ats_count"]),
+            "updated": generated_at.strftime("%Y-%m-%d"),
+        }
+        try:
+            self._r2.upload_bytes(
+                json.dumps(badges).encode("utf-8"),
+                f"{self._prefix}/badges.json",
+                content_type="application/json",
+                cache_control=CACHE_CONTROL_LATEST,
+            )
+        except StorageError as exc:
+            logger.warning("Badge upload failed: %s", exc)
 
     def _public_or_key(self, key: str) -> str:
         return self._r2.public_url(key) or key
@@ -1196,6 +1222,18 @@ def _guard_suspicious_empty_job_slices(
             "providers.\n- "
             + "\n- ".join(suspicious)
         )
+
+
+def _compact(n: int) -> str:
+    """Same output as stapply.ai's ``Intl.NumberFormat`` compact notation,
+    e.g. 4886484 -> "4.9M"."""
+    value, suffix = float(n), ""
+    for next_suffix in ("K", "M", "B"):
+        if round(value, 1) < 1000:
+            break
+        value /= 1000
+        suffix = next_suffix
+    return f"{value:.1f}".removesuffix(".0") + suffix
 
 
 def _entry_rows(entry: object) -> int:
