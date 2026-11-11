@@ -1379,7 +1379,13 @@ def _is_slug_fallback(company: str | None, slug: str) -> bool:
         return True
     if "://" in s and c == (urlparse(s).hostname or ""):
         return True
-    return " " not in c and c.startswith(s + ".")
+    return c in {f"{s}{suffix}" for suffix in _TENANT_HOST_SUFFIXES}
+
+
+# Hosts scrapers build from a bare slug and store as company. Kept to
+# known ATS domains so a source-provided name like ``acme.io`` for slug
+# ``acme`` is never overwritten.
+_TENANT_HOST_SUFFIXES = (".jobs.personio.com", ".jobs.personio.de")
 
 
 def _job_to_row(job: Job) -> dict[str, Any]:

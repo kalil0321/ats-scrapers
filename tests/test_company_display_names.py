@@ -58,3 +58,11 @@ def test_other_domain_name_is_kept() -> None:
     job = _job("monday.com")
     _apply_display_name(job, "acme", {"acme": "Acme"})
     assert job.company == "monday.com"
+
+
+def test_source_domain_sharing_slug_prefix_is_kept() -> None:
+    # Workable / Recruitee read the name from the source: "acme.io" for
+    # slug "acme" is a real value, not a scraper fallback.
+    job = _job("acme.io")
+    _apply_display_name(job, "acme", {"acme": "Acme Holdings"})
+    assert job.company == "acme.io"
