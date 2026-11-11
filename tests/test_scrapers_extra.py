@@ -11,7 +11,6 @@ import pytest
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.scrapers import (
     GemScraper,
-    JoinComScraper,
     OracleScraper,
     PersonioScraper,
     RipplingScraper,
@@ -21,7 +20,7 @@ from ats_scrapers.scrapers import (
 )
 
 # Several scrapers now fan out per-job detail fetches after the listing
-# pass (Gem batched GraphQL, join.com JSON-LD, etc.). Tests below mock
+# pass (Gem batched GraphQL, etc.). Tests below mock
 # only the listing call and rely on this module-level relax-mark to
 # tolerate the unmatched detail requests.
 pytestmark = pytest.mark.httpx_mock(
@@ -343,34 +342,6 @@ def test_gem_empty_response(httpx_mock) -> None:
         json=[{"data": {"oatsExternalJobPostings": {"jobPostings": []}}}],
     )
     assert GemScraper("empty").fetch() == []
-
-
-# --- Join.com ----------------------------------------------------------------
-
-def test_join_com_resolves_id_and_lists_jobs(httpx_mock) -> None:
-    httpx_mock.add_response(
-        url="https://join.com/companies/acme",
-        text='<html><script>{"company":{"id":"42","slug":"acme"}}</script></html>',
-    )
-    httpx_mock.add_response(
-        url=(
-            "https://join.com/api/public/companies/42/jobs"
-            "?locale=en-us&page=1&pageSize=100&withAggregations=true&sort=%2Btitle"
-        ),
-        json={
-            "items": [{"id": 100, "title": "Designer", "location": "Berlin"}],
-            "pagination": {"totalPages": 1},
-        },
-    )
-    jobs = JoinComScraper("acme").fetch()
-    assert jobs[0].title == "Designer"
-    assert jobs[0].ats_id == "100"
-
-
-def test_join_com_404(httpx_mock) -> None:
-    httpx_mock.add_response(url="https://join.com/companies/missing", status_code=404)
-    with pytest.raises(CompanyNotFoundError):
-        JoinComScraper("missing").fetch()
 
 
 # --- Workday -----------------------------------------------------------------
