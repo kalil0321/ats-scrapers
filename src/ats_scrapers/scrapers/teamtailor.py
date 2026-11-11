@@ -141,19 +141,24 @@ class TeamtailorScraper(BaseScraper):
 
 
 def _format_location(item: ET.Element) -> str | None:
-    """Compose 'City, Country' from the first `<tt:location>` child."""
-    loc = item.find("tt:locations/tt:location", TT_NS)
-    if loc is None:
-        return None
-    parts: list[str] = []
-    for tag in ("city", "country"):
-        value = (loc.findtext(f"tt:{tag}", namespaces=TT_NS) or "").strip()
-        if value:
-            parts.append(value)
-    if parts:
-        return ", ".join(parts)
-    name = (loc.findtext("tt:name", namespaces=TT_NS) or "").strip()
-    return name or None
+    """Compose 'City, Country' for every `<tt:location>` child.
+
+    Multi-office postings list one child per office; they are joined
+    with '; ' in feed order, duplicates dropped."""
+    rendered: list[str] = []
+    for loc in item.findall("tt:locations/tt:location", TT_NS):
+        parts: list[str] = []
+        for tag in ("city", "country"):
+            value = (loc.findtext(f"tt:{tag}", namespaces=TT_NS) or "").strip()
+            if value:
+                parts.append(value)
+        if parts:
+            rendered.append(", ".join(parts))
+            continue
+        name = (loc.findtext("tt:name", namespaces=TT_NS) or "").strip()
+        if name:
+            rendered.append(name)
+    return "; ".join(dict.fromkeys(rendered)) or None
 
 
 def _extract_remote(item: ET.Element) -> bool | None:
