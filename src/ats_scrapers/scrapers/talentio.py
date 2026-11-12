@@ -18,7 +18,7 @@ import asyncio
 import json
 import re
 from datetime import UTC, datetime
-from html import escape, unescape
+from html import escape
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import ParseResult, urlparse
 
@@ -264,7 +264,7 @@ class TalentioScraper(BaseScraper):
                 return True
         if response.status_code in _DETAIL_HANDLED:
             return False
-        detail = _job_posting_json_ld(response.text)
+        detail = _job_posting_json_ld(response.text, job.ats_id)
         if detail is not None:
             _apply_detail(job, detail, namespace=self.namespace)
         else:
@@ -302,7 +302,10 @@ def _react_payload(html: str, component: str) -> dict[str, Any]:
     if element is None:
         raise ScraperError(f"Talentio response omitted {component} bootstrap")
     try:
-        payload = json.loads(unescape(str(element["data-react-props"])))
+        # BeautifulSoup has already decoded the attribute escaping; a second
+        # unescape would turn content entities such as &quot; into raw quotes
+        # inside JSON strings.
+        payload = json.loads(str(element["data-react-props"]))
     except (KeyError, TypeError, ValueError) as exc:
         raise ScraperError(f"Talentio {component} bootstrap was malformed") from exc
     if not isinstance(payload, dict):
@@ -358,8 +361,15 @@ def _valid_official_url(parsed: ParseResult) -> bool:
     )
 
 
-def _job_posting_json_ld(html: str) -> dict[str, Any] | None:
+def _job_posting_json_ld(html: str, job_id: str | None = None) -> dict[str, Any] | None:
+    """Return the ``JobPosting`` block for ``job_id``.
+
+    A page can carry several ``JobPosting`` blocks; the one whose
+    ``identifier.value`` matches wins. Without a match the first block is
+    returned so the caller's ID check reports the mismatch.
+    """
     soup = BeautifulSoup(html, "html.parser")
+    first: dict[str, Any] | None = None
     for script in soup.select('script[type="application/ld+json"]'):
         try:
             payload = json.loads(script.get_text())
@@ -373,9 +383,16 @@ def _job_posting_json_ld(html: str) -> dict[str, Any] | None:
         else:
             candidates = [payload]
         for candidate in candidates:
-            if isinstance(candidate, dict) and candidate.get("@type") == "JobPosting":
+            if not (isinstance(candidate, dict) and candidate.get("@type") == "JobPosting"):
+                continue
+            if job_id is None:
                 return candidate
-    return None
+            identifier = candidate.get("identifier")
+            if isinstance(identifier, dict) and str(identifier.get("value") or "") == job_id:
+                return candidate
+            if first is None:
+                first = candidate
+    return first
 
 
 def _apply_detail(job: Job, detail: dict[str, Any], *, namespace: str) -> None:
@@ -480,7 +497,7 @@ def _apply_react_detail(job: Job, html: str, *, namespace: str) -> bool:
     requisition_language = (
         requisition.get("language") if isinstance(requisition, dict) else None
     )
-    language = _language(payload.get("language")) or _language(requisition_language)
+    language = _language(requisition_language) or _language(payload.get("language"))
     if language:
         job.language = language
     location = _react_location(page)
@@ -608,7 +625,7 @@ def _location(value: object) -> tuple[str | None, str | None]:
     if not isinstance(address, dict):
         return None, None
     parts = [
-        str(address[key]).strip()
+        text
         for key in (
             "streetAddress",
             "addressLocality",
@@ -616,9 +633,18 @@ def _location(value: object) -> tuple[str | None, str | None]:
             "postalCode",
             "addressCountry",
         )
-        if address.get(key)
+        if (text := _address_part(address.get(key)))
     ]
     return ", ".join(parts) or None, _country_iso(address.get("addressCountry"))
+
+
+def _address_part(value: object) -> str | None:
+    """A schema.org address field as text; ``Country`` objects give their name."""
+    if isinstance(value, dict):
+        value = value.get("name")
+    if value is None or isinstance(value, (dict, list)):
+        return None
+    return _optional_text(str(value))
 
 
 def _country_iso(value: object) -> str | None:
@@ -641,7 +667,9 @@ def _parse_datetime(value: object) -> datetime | None:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _positive_int(value: object) -> int | None:

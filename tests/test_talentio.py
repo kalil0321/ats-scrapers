@@ -319,3 +319,60 @@ def test_resolver_builds_talentio_scraper() -> None:
 def test_resolver_rejects_detail_url() -> None:
     with pytest.raises(ScraperError, match="Could not recognize"):
         get_scraper_for_url(JOB_URL)
+
+
+# --- review fixes -------------------------------------------------------
+
+
+def test_react_props_keep_content_entities() -> None:
+    """BeautifulSoup decodes the attribute once; a content entity such as
+    ``&quot;`` inside a JSON string must survive as text, not break JSON."""
+    from ats_scrapers.scrapers.talentio import _react_payload
+
+    props = '{"text": "say &amp;quot;hi&amp;quot;"}'
+    html = (
+        '<div data-react-class="RecruitmentOpenPageHomeView" '
+        f"data-react-props='{props}'></div>"
+    )
+    assert _react_payload(html, "RecruitmentOpenPageHomeView") == {
+        "text": "say &quot;hi&quot;"
+    }
+
+
+def test_structured_country_is_rendered_as_its_name() -> None:
+    from ats_scrapers.scrapers.talentio import _location
+
+    text, iso = _location({
+        "address": {
+            "addressLocality": "Tokyo",
+            "addressCountry": {"@type": "Country", "name": "JP"},
+        }
+    })
+    assert text == "Tokyo, JP"
+    assert iso == "JP"
+
+
+def test_aware_timestamps_are_converted_to_utc() -> None:
+    from datetime import UTC, datetime
+
+    from ats_scrapers.scrapers.talentio import _parse_datetime
+
+    parsed = _parse_datetime("2026-07-29T09:00:00+09:00")
+    assert parsed == datetime(2026, 7, 29, 0, 0, tzinfo=UTC)
+    assert parsed is not None and parsed.utcoffset().total_seconds() == 0
+
+
+def test_json_ld_picks_the_block_for_the_requested_job() -> None:
+    import json as _json
+
+    from ats_scrapers.scrapers.talentio import _job_posting_json_ld
+
+    blocks = [
+        {"@type": "JobPosting", "identifier": {"value": "111"}, "title": "Other"},
+        {"@type": "JobPosting", "identifier": {"value": "222"}, "title": "Wanted"},
+    ]
+    html = f'<script type="application/ld+json">{_json.dumps(blocks)}</script>'
+    picked = _job_posting_json_ld(html, "222")
+    assert picked is not None and picked["title"] == "Wanted"
+    fallback = _job_posting_json_ld(html, "999")
+    assert fallback is not None and fallback["title"] == "Other"

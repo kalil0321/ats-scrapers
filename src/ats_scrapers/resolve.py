@@ -146,7 +146,16 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         return None
 
     if host in {"open.talentio.com", "recruit.talentio.co.jp"}:
-        if parsed.query or parsed.fragment:
+        # Same origin checks as TalentioScraper: anything it would reject
+        # is not a usable resolution.
+        if (
+            parsed.scheme != "https"
+            or parsed.username
+            or parsed.password
+            or parsed.port is not None
+            or parsed.query
+            or parsed.fragment
+        ):
             return None
         match = re.fullmatch(
             r"/r/1/c/[A-Za-z0-9._-]+/homes/[1-9]\d*/?",

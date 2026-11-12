@@ -363,3 +363,15 @@ def test_get_scraper_for_url_from_fresh_interpreter() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "AshbyScraper openai"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://open.talentio.com/r/1/c/acme/homes/123",
+        "https://user@open.talentio.com/r/1/c/acme/homes/123",
+        "https://open.talentio.com:8443/r/1/c/acme/homes/123",
+    ],
+)
+def test_talentio_rejects_urls_the_scraper_would_reject(url: str) -> None:
+    assert resolve_careers_url(url) is None
