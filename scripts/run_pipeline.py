@@ -93,6 +93,7 @@ from ats_scrapers.scrapers import (
     SmartRecruitersScraper,
     SoftgardenScraper,
     SuccessFactorsScraper,
+    TalentBrewScraper,
     TaleoScraper,
     TeamtailorScraper,
     TeslaScraper,
@@ -546,6 +547,30 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
         "fail_closed_tolerance": 0.02,
+    },
+    "talentbrew": {
+        # Radancy TalentBrew career sites on the employer's own domain.
+        # The result list only has title, location and link; the posting
+        # date, country, employment type and description are on the detail
+        # page. The scraper therefore reads every detail page on every run
+        # (no defer_descriptions_to_cache, which would keep only the
+        # description for postings already in the cache).
+        "scraper": TalentBrewScraper,
+        "slug": lambda r: (r.get("url") or "").strip() or _slug_col(r),
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip() or None},
+        "dedupe_by_ats_id": True,
+        "csv": "ats-companies/talentbrew.csv",
+        "output": "talentbrew/jobs.csv",
+        "max_concurrency": 4,
+        # Publish the new file only when at most one site in ten failed or
+        # went missing (the catalogue is small, so the usual 2% would be
+        # zero). Above that, or when the run returns no job at all, the
+        # previous dataset is kept. A tolerated failure leaves that
+        # employer out of the new file until its next successful run.
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        "fail_closed_tolerance": 0.1,
     },
     "dayforce": {
         "scraper": DayforceScraper,

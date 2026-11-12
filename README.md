@@ -118,6 +118,7 @@ Scraper adapters include:
 - First-party company APIs: Amazon, Apple, Google, TikTok, and Uber.
 - Public and regional sources: EURES, Bundesagentur, Arbetsformedlingen,
   Welcome to the Jungle, and others.
+- Career-site platforms on the employer's own domain: Radancy TalentBrew.
 
 Run `python -c "from ats_scrapers import list_ats; print(*list_ats())"` for the
 sources currently present in the hosted dataset. The dataset can list a source
