@@ -131,6 +131,7 @@ class WorkableMarketplaceScraper(BaseScraper):
         jobs: dict[str, Job] = {}
         total: int | None = None
         token: str | None = None
+        seen_tokens: set[str] = set()
         pages = 0
         async with self.make_fetcher() as fetch:
             while pages < self.max_pages:
@@ -150,17 +151,27 @@ class WorkableMarketplaceScraper(BaseScraper):
                     total = payload["totalSize"]
                 for item in payload["jobs"]:
                     if not isinstance(item, dict):
-                        continue
-                    job = _parse_job(item)
+                        raise ScraperError(
+                            "Workable marketplace API shape changed: "
+                            "a 'jobs' entry is not an object"
+                        )
+                    job = _parse_job(item, include_description=self.include_descriptions)
                     if job is not None and job.ats_id:
                         jobs.setdefault(job.ats_id, job)
                 next_token = payload.get("nextPageToken")
-                if not payload["jobs"] or not isinstance(next_token, str):
-                    break
-                if next_token == token:
+                if next_token is not None and not isinstance(next_token, str):
+                    # A cursor in another shape is not "no more pages".
                     raise ScraperError(
-                        "Workable marketplace returned the same page token twice"
+                        "Workable marketplace API shape changed: "
+                        "nextPageToken is not a string"
                     )
+                if not payload["jobs"] or not next_token:
+                    break
+                if next_token in seen_tokens:
+                    raise ScraperError(
+                        "Workable marketplace returned a page token it already used"
+                    )
+                seen_tokens.add(next_token)
                 token = next_token
                 if self.page_delay > 0:
                     await asyncio.sleep(self.page_delay)
@@ -169,6 +180,10 @@ class WorkableMarketplaceScraper(BaseScraper):
                     f"Workable marketplace walk hit max_pages={self.max_pages} "
                     "before the last page"
                 )
+        if not jobs:
+            # The marketplace is never empty. An empty walk is an outage or
+            # a schema change; raising keeps the previous dataset published.
+            raise ScraperError("Workable marketplace walk returned no postings")
         if total and len(jobs) < total * 0.5:
             # The cursor walk stopped far short of the reported total:
             # publishing would silently drop most of the marketplace.
@@ -179,7 +194,7 @@ class WorkableMarketplaceScraper(BaseScraper):
         return list(jobs.values())
 
 
-def _parse_job(item: dict[str, Any]) -> Job | None:
+def _parse_job(item: dict[str, Any], *, include_description: bool = True) -> Job | None:
     job_id = item.get("id")
     title = item.get("title")
     url = item.get("url")
@@ -197,8 +212,9 @@ def _parse_job(item: dict[str, Any]) -> Job | None:
     is_remote: bool | None = None
     if workplace == "remote":
         is_remote = True
-    elif workplace in ("on_site", "onsite", "hybrid"):
+    elif workplace in ("on_site", "onsite"):
         is_remote = False
+    # Hybrid is neither: leave it unset, the label stays in ``raw``.
 
     employment_raw = item.get("employmentType")
     employment_type = None
@@ -236,7 +252,7 @@ def _parse_job(item: dict[str, Any]) -> Job | None:
         employment_type=employment_type,
         commitment=commitment,
         language=language if isinstance(language, str) and language else None,
-        description=_description(item),
+        description=_description(item) if include_description else None,
         posted_at=_parse_iso(item.get("created")),
         fetched_at=datetime.now(UTC),
         raw=raw or None,

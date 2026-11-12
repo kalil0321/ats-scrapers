@@ -86,8 +86,45 @@ def test_dedupes_repeated_postings(httpx_mock) -> None:
 def test_repeated_token_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=API_RE, json=_page([_job("a")], "same", 2))
     httpx_mock.add_response(url=API_RE, json=_page([_job("b")], "same", 2))
-    with pytest.raises(ScraperError, match="same page token"):
+    with pytest.raises(ScraperError, match="page token it already used"):
         _scraper().fetch()
+
+
+def test_token_cycle_raises(httpx_mock) -> None:
+    """A cursor that loops A, B, A is caught on the first repeat."""
+    for token in ("A", "B", "A"):
+        httpx_mock.add_response(url=API_RE, json=_page([_job(token + "1")], token, 9))
+    with pytest.raises(ScraperError, match="page token it already used"):
+        _scraper().fetch()
+    assert len(httpx_mock.get_requests()) == 3
+
+
+@pytest.mark.parametrize("token", [123, ["t"], {"next": "t"}, True])
+def test_non_string_token_raises(httpx_mock, token) -> None:
+    httpx_mock.add_response(url=API_RE, json=_page([_job("a")], None, 1) | {"nextPageToken": token})
+    with pytest.raises(ScraperError, match="nextPageToken is not a string"):
+        _scraper().fetch()
+
+
+def test_non_object_entry_raises(httpx_mock) -> None:
+    httpx_mock.add_response(url=API_RE, json=_page([_job("a"), "oops"], None, 2))
+    with pytest.raises(ScraperError, match="entry is not an object"):
+        _scraper().fetch()
+
+
+@pytest.mark.parametrize("total", [0, 5])
+def test_empty_walk_raises(httpx_mock, total: int) -> None:
+    payload = _page([], None, total)
+    if not total:
+        del payload["totalSize"]
+    httpx_mock.add_response(url=API_RE, json=payload)
+    with pytest.raises(ScraperError, match="returned no postings"):
+        _scraper().fetch()
+
+
+def test_descriptions_can_be_skipped(httpx_mock) -> None:
+    httpx_mock.add_response(url=API_RE, json=_page([_job("a")], None, 1))
+    assert _scraper(include_descriptions=False).fetch()[0].description is None
 
 
 def test_partial_walk_raises(httpx_mock) -> None:
@@ -152,12 +189,21 @@ def test_on_site_and_unknown_workplace(httpx_mock) -> None:
     httpx_mock.add_response(
         url=API_RE,
         json=_page(
-            [_job("a", workplace="on_site"), _job("b", workplace=None)], None, 2,
+            [
+                _job("a", workplace="on_site"),
+                _job("b", workplace=None),
+                _job("c", workplace="hybrid"),
+            ],
+            None,
+            3,
         ),
     )
     by_id = {j.ats_id: j for j in _scraper().fetch()}
     assert by_id["a"].is_remote is False
     assert by_id["b"].is_remote is None
+    # Hybrid is neither remote nor on-site; the label is kept in raw.
+    assert by_id["c"].is_remote is None
+    assert by_id["c"].raw["workplace"] == "hybrid"
 
 
 def test_skips_unpublished_and_incomplete(httpx_mock) -> None:
