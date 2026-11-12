@@ -68,6 +68,9 @@ class ATSType(StrEnum):
     SUCCESSFACTORS = "successfactors"
     UKG = "ukg"
     WORKABLE = "workable"
+    # Workable's public job marketplace: every customer's live postings
+    # in one paginated feed (single-source scraper).
+    WORKABLE_MARKETPLACE = "workable_marketplace"
     WORKDAY = "workday"
     # Big-tech custom careers systems (single-tenant, bespoke APIs)
     AMAZON = "amazon"
