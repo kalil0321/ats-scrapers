@@ -539,9 +539,11 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/jibe.csv",
         "output": "jibe/jobs.csv",
         "max_concurrency": 4,
-        # A failed employer must not vanish from the published file: keep
-        # the previous dataset unless (almost) every employer succeeded.
+        # A failed or missing employer must not vanish from the published
+        # file: keep the previous dataset unless (almost) every employer
+        # succeeded. A site that answers 404 counts like any other failure.
         "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
         "fail_closed_tolerance": 0.02,
     },
