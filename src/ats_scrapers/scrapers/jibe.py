@@ -26,8 +26,10 @@ state are then picked up category by category. The ``descending``
 parameter does not change the order, so walking a list "from the other
 end" is not an option.
 
-The scraper fails closed: a walk that ends with clearly fewer postings
-than the API announced raises instead of returning a partial board.
+The scraper fails closed: a walk that ends with fewer than 90% of the
+announced rows raises instead of returning a partial board. Coverage is
+counted on rows that parse into a posting: one requisition listed for
+several locations or languages is several rows but a single posting.
 
 ``company_slug`` is the career-site host or URL.
 """
@@ -108,47 +110,41 @@ class JibeScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         jobs: dict[str, Job] = {}
+        # One entry per valid row the API returned. A requisition listed in
+        # several places or languages is several rows but one posting, so
+        # coverage is measured on rows, not on postings.
+        rows_seen: set[str] = set()
         async with self.make_fetcher() as fetch:
             first = await self._page(fetch, 1, {})
             total = _total(first)
             if total == 0:
                 return []
-            self._absorb(first, jobs)
+            self._absorb(first, jobs, rows_seen)
 
             if total <= QUERY_CAP:
-                # One list holds everything. Rows repeat a requisition per
-                # language or location, so count rows, not unique postings.
-                rows_seen = len(first["jobs"])
-                rows_seen += await self._walk(fetch, {}, total, jobs, start=2)
-                if rows_seen < math.floor(total * MIN_COVERAGE):
-                    raise ScraperError(
-                        f"Jibe ({self.host}) returned {rows_seen} of {total} "
-                        "announced rows"
-                    )
-                return list(jobs.values())
+                await self._walk(fetch, {}, total, jobs, rows_seen, start=2)
             else:
-                expected = _expected_unique(first, total)
                 categories = _categories(first)
                 for term, count in _state_facet(first) or _states_from_locations(first):
                     if count <= QUERY_CAP:
-                        await self._walk(fetch, {"state": term}, count, jobs)
+                        await self._walk(fetch, {"state": term}, count, jobs, rows_seen)
                         continue
                     for category, _ in categories:
                         await self._walk(
-                            fetch, {"state": term, "categories": category}, QUERY_CAP, jobs,
+                            fetch, {"state": term, "categories": category},
+                            QUERY_CAP, jobs, rows_seen,
                         )
-                if len(jobs) < expected:
+                if len(rows_seen) < total:
                     # Postings without a state.
                     for category, count in categories:
-                        await self._walk(fetch, {"categories": category}, count, jobs)
-                if len(jobs) < expected:
-                    await self._walk(fetch, {}, total, jobs, start=2)
+                        await self._walk(fetch, {"categories": category}, count, jobs, rows_seen)
+                if len(rows_seen) < total:
+                    await self._walk(fetch, {}, total, jobs, rows_seen, start=2)
 
-        expected = _expected_unique(first, total)
-        if len(jobs) < math.floor(expected * MIN_COVERAGE):
+        if len(rows_seen) < math.ceil(total * MIN_COVERAGE):
             raise ScraperError(
-                f"Jibe ({self.host}) returned {len(jobs)} of {expected} "
-                "announced postings"
+                f"Jibe ({self.host}) returned {len(rows_seen)} of {total} "
+                "announced rows"
             )
         return list(jobs.values())
 
@@ -158,19 +154,15 @@ class JibeScraper(BaseScraper):
         filters: dict[str, str],
         expected: int,
         jobs: dict[str, Job],
+        rows_seen: set[str],
         *,
         start: int = 1,
-    ) -> int:
-        """Walk one filtered list; return how many rows its pages held."""
-        rows_seen = 0
+    ) -> None:
         last_page = min(MAX_PAGE, max(1, math.ceil(expected / PAGE_SIZE)))
         for page in range(start, last_page + 1):
             payload = await self._page(fetch, page, filters)
-            rows = self._absorb(payload, jobs)
-            rows_seen += rows
-            if rows < PAGE_SIZE:
+            if self._absorb(payload, jobs, rows_seen) < PAGE_SIZE:
                 break
-        return rows_seen
 
     async def _page(
         self,
@@ -191,22 +183,30 @@ class JibeScraper(BaseScraper):
             )
         return payload
 
-    def _absorb(self, payload: dict[str, Any], jobs: dict[str, Job]) -> int:
-        """Add a page's postings to ``jobs``; return how many rows the page held."""
+    def _absorb(
+        self, payload: dict[str, Any], jobs: dict[str, Job], rows_seen: set[str],
+    ) -> int:
+        """Add a page's postings to ``jobs``; return how many rows the page held.
+
+        Only rows that parse into a posting are recorded in ``rows_seen``,
+        so a feed whose rows lost their id or title fails the coverage check.
+        """
         rows = payload["jobs"]
         for row in rows:
             data = row.get("data") if isinstance(row, dict) else None
             if not isinstance(data, dict):
                 raise ScraperError(f"Jibe ({self.host}) returned a posting without data")
             job = self._parse_job(data)
-            if job is not None and job.ats_id:
-                # English first: the list is not ordered by language, so a
-                # translated twin never replaces a row already kept.
-                existing = jobs.get(job.ats_id)
-                if existing is None or (
-                    (existing.language or "") != "en" and job.language == "en"
-                ):
-                    jobs[job.ats_id] = job
+            if job is None or not job.ats_id:
+                continue
+            rows_seen.add(_row_key(job.ats_id, data))
+            # English first: the list is not ordered by language, so a
+            # translated twin never replaces a row already kept.
+            existing = jobs.get(job.ats_id)
+            if existing is None or (
+                (existing.language or "") != "en" and job.language == "en"
+            ):
+                jobs[job.ats_id] = job
         return len(rows)
 
     def _parse_job(self, data: dict[str, Any]) -> Job | None:
@@ -292,24 +292,14 @@ def _total(payload: dict[str, Any]) -> int:
     return total
 
 
-def _expected_unique(payload: dict[str, Any], total: int) -> int:
-    """Postings we should hold once translated twins are merged.
-
-    ``totalCount`` counts every language; ``languageCounts`` splits it.
-    The largest single-language count is the floor for unique postings.
-    """
-    counts = payload.get("languageCounts")
-    if isinstance(counts, dict):
-        per_language = [
-            entry["count"]
-            for entry in counts.values()
-            if isinstance(entry, dict)
-            and isinstance(entry.get("count"), int)
-            and not isinstance(entry.get("count"), bool)
-        ]
-        if per_language:
-            return min(total, max(per_language))
-    return total
+def _row_key(ats_id: str, data: dict[str, Any]) -> str:
+    """Identity of one listed row: the requisition plus where and in which
+    language it is listed."""
+    parts = (
+        _text(data.get(key)) or ""
+        for key in ("language", "location_name", "full_location", "city", "postal_code")
+    )
+    return "|".join((ats_id, *parts))
 
 
 def _state_facet(payload: dict[str, Any]) -> list[tuple[str, int]]:

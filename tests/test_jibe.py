@@ -16,7 +16,6 @@ from ats_scrapers.scrapers.jibe import (
     PAGE_SIZE,
     QUERY_CAP,
     JibeScraper,
-    _expected_unique,
     _normalize_host,
     _parse_datetime,
     _states_from_locations,
@@ -189,7 +188,7 @@ def test_capped_board_is_split_by_state_then_category(httpx_mock) -> None:
     httpx_mock.add_callback(reply, url=API, is_reusable=True)
     scraper = JibeScraper(HOST, include_descriptions=False)
     # The fixture holds 301 postings, far below the announced total.
-    with pytest.raises(ScraperError, match="returned 301 of"):
+    with pytest.raises(ScraperError, match="returned 301 of 10300 announced rows"):
         scraper.fetch()
 
     assert ("Small", None, 1) in seen and ("Small", None, 2) in seen
@@ -332,12 +331,55 @@ def test_parse_datetime(value, expected) -> None:
     assert _parse_datetime(value) == expected
 
 
-def test_expected_unique_uses_the_largest_language() -> None:
-    payload = {"languageCounts": {"en-us": {"count": 90}, "es-mx": {"count": 10}}}
+def test_rows_that_do_not_parse_fail_the_coverage_check(httpx_mock) -> None:
+    rows = [_posting("", req_id="") for _ in range(20)]
+    httpx_mock.add_response(url=API, json=_payload(rows, 20))
 
-    assert _expected_unique(payload, 100) == 90
-    assert _expected_unique({}, 100) == 100
-    assert _expected_unique({"languageCounts": {"en-us": {"count": True}}}, 100) == 100
+    with pytest.raises(ScraperError, match="returned 0 of 20 announced rows"):
+        JibeScraper(HOST).fetch()
+
+
+@pytest.mark.parametrize(("returned", "raises"), [(9, True), (10, False)])
+def test_coverage_floor_rounds_up(httpx_mock, returned: int, raises: bool) -> None:
+    """11 announced rows need 10 (90% rounded up), not 9."""
+    rows = [_posting(str(i)) for i in range(returned)]
+    httpx_mock.add_response(url=API, json=_payload(rows, 11))
+
+    if raises:
+        with pytest.raises(ScraperError, match="returned 9 of 11"):
+            JibeScraper(HOST).fetch()
+    else:
+        assert len(JibeScraper(HOST).fetch()) == 10
+
+
+def test_capped_board_with_repeated_locations_is_complete(httpx_mock) -> None:
+    """Above the cap, a requisition listed in two cities is two rows, one posting."""
+    total = QUERY_CAP + 2 * PAGE_SIZE
+    per_state = total // 2
+    filters = {
+        "filter": {
+            "facetList": {
+                "state": [{"term": "East", "count": per_state}, {"term": "West", "count": per_state}],
+            },
+        },
+    }
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        query = parse_qs(urlparse(str(request.url)).query)
+        state = query.get("state", ["East"])[0]
+        page = int(query["page"][0])
+        first = (page - 1) * PAGE_SIZE
+        rows = [
+            _posting(str(i), state=state, city=state, full_location=state, location_name=state)
+            for i in range(first, min(first + PAGE_SIZE, per_state))
+        ]
+        return httpx.Response(200, json=_payload(rows, total, **filters))
+
+    httpx_mock.add_callback(reply, url=API, is_reusable=True)
+
+    jobs = JibeScraper(HOST, include_descriptions=False).fetch()
+
+    assert len(jobs) == per_state
 
 
 def test_states_from_locations_sums_cities() -> None:
