@@ -9,13 +9,17 @@ free RSS feed at `/jobs.rss` with all the structured fields we need:
 Each `<item>` carries title, link, pubDate, guid, custom `tt:` location
 (city, country, name), `tt:department`, `tt:role`, and an HTML description.
 
-This is a single-request scrape — Teamtailor's RSS includes every open job,
-no pagination. Tenants with hundreds of jobs return ~200KB of XML.
+The feed returns at most 100 items per request. A tenant with more open
+jobs is read page by page with ``?offset=100``, ``?offset=200``, ... until
+a page comes back short or brings no posting that was not already seen.
+The first request carries no parameter, so a tenant with fewer than 100
+jobs is still a single-request scrape.
 """
 
 from __future__ import annotations
 
 import html
+import logging
 import re
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -30,7 +34,11 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     pass
 
+logger = logging.getLogger(__name__)
+
 RSS_TEMPLATE = "https://{slug}.teamtailor.com/jobs.rss"
+PAGE_SIZE = 100  # items the feed returns per request
+MAX_PAGES = 200  # 20,000 postings: a guard against a feed that never ends
 TT_NS = {"tt": "https://teamtailor.com/locations"}
 
 # URL form: `https://{slug}.teamtailor.com/jobs/{numeric_id}-{slug-title}`
@@ -69,11 +77,37 @@ class TeamtailorScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         url = RSS_TEMPLATE.format(slug=self.company_slug)
+        jobs: list[Job] = []
+        seen: set[str] = set()
         async with self.make_fetcher() as fetch:
-            xml_text = await fetch.get_text(url)
-        return self._parse_rss(xml_text)
+            for page in range(MAX_PAGES):
+                # The first request is the plain feed; later pages add the
+                # offset. A failed later page raises: a partial list must
+                # not pass for the tenant's full catalogue.
+                params = {"offset": str(page * PAGE_SIZE)} if page else None
+                xml_text = await fetch.get_text(url, params=params)
+                items, added = self._absorb(xml_text, jobs, seen)
+                if items < PAGE_SIZE or added == 0:
+                    # A short page is the last one. A full page with nothing
+                    # new means the feed ignored the offset or the walk has
+                    # wrapped around: either way there is nothing more to read.
+                    break
+            else:
+                logger.warning(
+                    "Teamtailor (%s) still returned full pages after %d "
+                    "postings; stopped there",
+                    self.company_slug, len(jobs),
+                )
+        return jobs
 
-    def _parse_rss(self, xml_text: str) -> list[Job]:
+    def _absorb(
+        self, xml_text: str, jobs: list[Job], seen: set[str],
+    ) -> tuple[int, int]:
+        """Add one feed page to ``jobs``.
+
+        Returns ``(items, added)``: how many ``<item>`` elements the page
+        held, and how many of them were postings not seen before.
+        """
         try:
             root = ET.fromstring(xml_text)
         except ET.ParseError as exc:
@@ -89,15 +123,17 @@ class TeamtailorScraper(BaseScraper):
                 f"root element <{root.tag}> is not <rss>"
             )
 
-        jobs: list[Job] = []
-        seen: set[str] = set()
+        items = 0
+        added = 0
         for item in root.iter("item"):
+            items += 1
             job = self._parse_item(item)
             if job is None or job.ats_id in seen:
                 continue
             seen.add(job.ats_id)
             jobs.append(job)
-        return jobs
+            added += 1
+        return items, added
 
     def _parse_item(self, item: ET.Element) -> Job | None:
         link = (item.findtext("link") or "").strip()
