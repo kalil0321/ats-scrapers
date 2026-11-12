@@ -1379,3 +1379,129 @@ def test_streaming_pipeline_fetches_missing_descriptions_concurrently(
         "2": "streamed description 2",
     }
     assert StreamingScraper.calls == 3
+
+
+@pytest.mark.parametrize(
+    ("raw", "targets", "expected"),
+    [
+        (None, 100, 0),
+        (0, 100, 0),
+        (0.02, 100, 2),
+        (0.02, 49, 0),
+        (0.5, 3, 1),
+        (2, 10, 10),
+        (-1, 10, 0),
+        (True, 10, 0),
+        ("0.5", 10, 0),
+        (float("nan"), 10, 0),
+        (10**400, 10, 10),
+        (-(10**400), 10, 0),
+    ],
+)
+def test_tolerated_shard_failures(raw, targets: int, expected: int) -> None:
+    cfg = {} if raw is None else {"fail_closed_tolerance": raw}
+
+    assert runner._tolerated_shard_failures(cfg, targets) == expected
+
+
+def _write_tolerance_fixture(tmp_path: Path, slugs: list[str]) -> Path:
+    (tmp_path / "ats-companies").mkdir()
+    (tmp_path / "ats-companies" / "shards.csv").write_text(
+        "name,slug,url\n"
+        + "".join(f"{s},{s},https://{s}\n" for s in slugs),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "sharded"
+    out_dir.mkdir()
+    return out_dir / "jobs.csv"
+
+
+class _ToleranceScraper:
+    def __init__(self, slug, **_kwargs) -> None:
+        self.slug = slug
+
+    def fetch(self):
+        if self.slug.startswith("missing"):
+            raise CompanyNotFoundError("board missing")
+        if self.slug.startswith("broken"):
+            raise RuntimeError("board timed out")
+        return [
+            Job(
+                url=f"https://example.com/{self.slug}",
+                title="Engineer",
+                company="Acme",
+                ats_type=ATSType.CUSTOM,
+                ats_id=self.slug,
+            )
+        ]
+
+
+@pytest.mark.parametrize(
+    ("slugs", "tolerance", "expected_rc"),
+    [
+        (["a", "b", "c", "missing"], 0.25, 0),
+        (["a", "b", "c", "broken"], 0.25, 0),
+        (["a", "b", "missing", "broken"], 0.25, 1),
+        (["a", "b", "c", "missing"], 0, 1),
+    ],
+)
+def test_fail_closed_tolerance_allows_a_few_failed_shards(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    slugs: list[str],
+    tolerance: float,
+    expected_rc: int,
+) -> None:
+    out_path = _write_tolerance_fixture(tmp_path, slugs)
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "sharded",
+        {
+            "scraper": _ToleranceScraper,
+            "slug": lambda row: row["slug"],
+            "csv": "ats-companies/shards.csv",
+            "output": "sharded/jobs.csv",
+            "fail_closed_on_any_error": True,
+            "fail_closed_on_not_found": True,
+            "fail_closed_tolerance": tolerance,
+        },
+    )
+
+    rc = asyncio.run(
+        runner.run("sharded", concurrency=2, max_tenants=None, timeout=1)
+    )
+
+    assert rc == expected_rc
+    if expected_rc == 0:
+        rows = list(csv.DictReader(out_path.open(newline="")))
+        healthy = [s for s in slugs if s not in {"missing", "broken"}]
+        assert sorted(row["ats_id"] for row in rows) == sorted(healthy)
+    else:
+        assert not out_path.exists()
+
+
+def test_fail_closed_tolerance_does_not_cover_omitted_shards(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_path = _write_tolerance_fixture(tmp_path, ["a", "b", "c", "d"])
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "sharded",
+        {
+            "scraper": _ToleranceScraper,
+            "slug": lambda row: row["slug"],
+            "csv": "ats-companies/shards.csv",
+            "output": "sharded/jobs.csv",
+            "fail_closed_on_any_error": True,
+            "fail_closed_tolerance": 0.5,
+        },
+    )
+
+    rc = asyncio.run(
+        runner.run("sharded", concurrency=1, max_tenants=3, timeout=1)
+    )
+
+    assert rc == 1
+    assert not out_path.exists()
