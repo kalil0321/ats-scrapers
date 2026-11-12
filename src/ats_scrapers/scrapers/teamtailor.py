@@ -19,7 +19,6 @@ jobs is still a single-request scrape.
 from __future__ import annotations
 
 import html
-import logging
 import re
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -34,11 +33,9 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     pass
 
-logger = logging.getLogger(__name__)
-
 RSS_TEMPLATE = "https://{slug}.teamtailor.com/jobs.rss"
 PAGE_SIZE = 100  # items the feed returns per request
-MAX_PAGES = 200  # 20,000 postings: a guard against a feed that never ends
+MAX_PAGES = 200  # 20,000 postings: past this the walk raises instead of going on
 TT_NS = {"tt": "https://teamtailor.com/locations"}
 
 # URL form: `https://{slug}.teamtailor.com/jobs/{numeric_id}-{slug-title}`
@@ -93,10 +90,12 @@ class TeamtailorScraper(BaseScraper):
                     # wrapped around: either way there is nothing more to read.
                     break
             else:
-                logger.warning(
-                    "Teamtailor (%s) still returned full pages after %d "
-                    "postings; stopped there",
-                    self.company_slug, len(jobs),
+                # Every page up to the guard was full: the list is cut, and
+                # a cut list must not pass for the tenant's full catalogue.
+                raise ScraperError(
+                    f"Teamtailor ({self.company_slug}) still returned full "
+                    f"pages after {len(jobs)} postings (page guard "
+                    f"{MAX_PAGES}); refusing to return a partial list"
                 )
         return jobs
 

@@ -439,16 +439,23 @@ def test_malformed_later_page_raises(httpx_mock) -> None:
         TeamtailorScraper("acme").fetch()
 
 
-def test_page_guard_stops_an_endless_feed(monkeypatch, httpx_mock, caplog) -> None:
+def test_page_guard_raises_instead_of_returning_a_cut_list(monkeypatch, httpx_mock) -> None:
     import ats_scrapers.scrapers.teamtailor as module
 
     monkeypatch.setattr(module, "MAX_PAGES", 2)
     httpx_mock.add_response(url=RSS_URL, text=_page(1, 100))
     httpx_mock.add_response(url=f"{RSS_URL}?offset=100", text=_page(101, 100))
 
-    with caplog.at_level("WARNING"):
-        jobs = TeamtailorScraper("acme").fetch()
-
-    assert len(jobs) == 200
-    assert "still returned full pages after 200 postings" in caplog.text
+    with pytest.raises(ScraperError, match="still returned full pages after 200 postings"):
+        TeamtailorScraper("acme").fetch()
     assert len(httpx_mock.get_requests()) == 2
+
+
+def test_last_allowed_page_may_be_short(monkeypatch, httpx_mock) -> None:
+    import ats_scrapers.scrapers.teamtailor as module
+
+    monkeypatch.setattr(module, "MAX_PAGES", 2)
+    httpx_mock.add_response(url=RSS_URL, text=_page(1, 100))
+    httpx_mock.add_response(url=f"{RSS_URL}?offset=100", text=_page(101, 12))
+
+    assert len(TeamtailorScraper("acme").fetch()) == 112
