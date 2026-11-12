@@ -68,6 +68,7 @@ from ats_scrapers.scrapers import (
     JobBankCAScraper,
     JobsChScraper,
     JobsCzScraper,
+    JibeScraper,
     JobviteScraper,
     JoinComScraper,
     KekaScraper,
@@ -102,6 +103,7 @@ from ats_scrapers.scrapers import (
     WantedScraper,
     WellfoundScraper,
     WeWorkRemotelyScraper,
+    WorkableMarketplaceScraper,
     WorkableScraper,
     WorkdayScraper,
     YCombinatorScraper,
@@ -424,6 +426,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "max_concurrency": 6,
         "fail_closed_on_empty": True,
         "fail_closed_on_any_error": True,
+        "fail_closed_tolerance": 0.02,
     },
     "keka": {
         "scraper": KekaScraper,
@@ -526,6 +529,24 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "output": "bamboohr/jobs.csv",
         "fail_closed_on_empty": True,
     },
+    "jibe": {
+        # iCIMS career sites (formerly Jibe) on the employer's own domain.
+        # The URL column is the site origin, e.g. https://careers.costco.com.
+        "scraper": JibeScraper,
+        "slug": lambda r: (r.get("url") or "").strip() or _slug_col(r),
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip() or None},
+        "dedupe_by_ats_id": True,
+        "csv": "ats-companies/jibe.csv",
+        "output": "jibe/jobs.csv",
+        "max_concurrency": 4,
+        # A failed or missing employer must not vanish from the published
+        # file: keep the previous dataset unless (almost) every employer
+        # succeeded. A site that answers 404 counts like any other failure.
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        "fail_closed_tolerance": 0.02,
+    },
     "dayforce": {
         "scraper": DayforceScraper,
         "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
@@ -533,6 +554,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/dayforce.csv",
         "output": "dayforce/jobs.csv",
         "fail_closed_on_any_error": True,
+        "fail_closed_tolerance": 0.02,
         "fail_closed_on_empty": True,
     },
     "teamtailor": {
@@ -548,6 +570,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/ukg.csv",
         "output": "ukg/jobs.csv",
         "fail_closed_on_any_error": True,
+        "fail_closed_tolerance": 0.02,
         "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
     },
@@ -566,6 +589,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/jobvite.csv",
         "output": "jobvite/jobs.csv",
         "fail_closed_on_any_error": True,
+        "fail_closed_tolerance": 0.02,
         "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
     },
@@ -576,6 +600,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/pageup.csv",
         "output": "pageup/jobs.csv",
         "fail_closed_on_any_error": True,
+        "fail_closed_tolerance": 0.02,
         "fail_closed_on_empty": True,
     },
     "paycom": {
@@ -595,7 +620,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
         "csv": "ats-companies/paylocity.csv",
         "output": "paylocity/jobs.csv",
-        "max_concurrency": 1,
+        # Thousands of small employer boards: a few closed or slow boards
+        # must not freeze the whole provider.
+        "max_concurrency": 4,
+        "fail_closed_tolerance": 0.02,
         "fail_closed_on_any_error": True,
         "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
@@ -699,6 +727,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "max_concurrency": 8,
         "fail_closed_on_empty": True,
         "fail_closed_on_any_error": True,
+        "fail_closed_tolerance": 0.02,
     },
     "personio": {
         "scraper": PersonioScraper,
@@ -859,6 +888,14 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # path for the bot-protected detail pages.
         "scraper": ProgramathorScraper, "singleton": True,
         "output": "programathor/jobs.csv",
+    },
+    "workable_marketplace": {
+        # Workable's public job marketplace: every customer's live postings
+        # (~170k in Nov 2026) in one cursor walk at ~1 page/s, 20 per page.
+        # A full pass takes about 3 hours.
+        "scraper": WorkableMarketplaceScraper, "singleton": True,
+        "output": "workable_marketplace/jobs.csv",
+        "publish_previous_while_running": True,
     },
     "remoteok": {
         # RemoteOK — remote-only listings, US-heavy. ~100 live.
@@ -1426,6 +1463,27 @@ def _job_to_row(job: Job) -> dict[str, Any]:
     }
 
 
+def _tolerated_shard_failures(cfg: dict[str, Any], targets: int) -> int:
+    """How many required shards may fail before a fail-closed run aborts.
+
+    ``fail_closed_tolerance`` is a fraction of the configured tenants. It
+    lets providers with thousands of small boards publish when a handful
+    of boards close or time out, while a wider outage still keeps the
+    previous dataset. Missing or invalid values mean no tolerance.
+    """
+    raw = cfg.get("fail_closed_tolerance", 0)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return 0
+    try:
+        fraction = float(raw)
+    except OverflowError:  # an integer too large for a float
+        fraction = 1.0 if raw > 0 else 0.0
+    if fraction != fraction:  # NaN
+        return 0
+    fraction = min(max(fraction, 0.0), 1.0)
+    return int(fraction * max(targets, 0))
+
+
 def _bounded_concurrency(cfg: dict[str, Any], requested: int) -> int:
     if requested < 1:
         raise ValueError("concurrency must be at least 1")
@@ -1776,13 +1834,25 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             if cfg.get("fail_closed_on_not_found")
             else 0
         )
-        sharded_failure = (
-            (
-                bool(cfg.get("fail_closed_on_any_error"))
-                and (counts["error"] > 0 or omitted_required_shards > 0)
-            )
-            or required_not_found > 0
+        required_errors = (
+            counts["error"] if cfg.get("fail_closed_on_any_error") else 0
         )
+        tolerated_failures = _tolerated_shard_failures(
+            cfg, configured_target_count
+        )
+        sharded_failure = (
+            bool(cfg.get("fail_closed_on_any_error"))
+            and omitted_required_shards > 0
+        ) or required_errors + required_not_found > tolerated_failures
+        if (
+            not sharded_failure
+            and required_errors + required_not_found > 0
+        ):
+            print(
+                f"[{ats}] tolerated {required_errors + required_not_found}/"
+                f"{configured_target_count} failed required shards "
+                f"(limit {tolerated_failures})"
+            )
         if sharded_failure:
             tmp_output_path.unlink(missing_ok=True)
             required_failures = (

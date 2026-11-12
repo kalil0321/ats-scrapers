@@ -1,4 +1,18 @@
 name,slug,url
+#QueroSerMercantil,estagiomercantil,https://estagiomercantil.gupy.io
+#SejaShopper,shopper,https://shopper.gupy.io
+#VemParaAltona,vagasaltona,https://vagasaltona.gupy.io
+#vempranexa Brasil,vempranexa,https://vempranexa.gupy.io
+#VemserEcoporto🍃,ecoporto,https://ecoporto.gupy.io
+#VemserEcoviasAraguaia🍃,ecoviasdoaraguaia,https://ecoviasdoaraguaia.gupy.io
+#VemserEcoviasCerrado🍃,ecoviasdocerrado,https://ecoviasdocerrado.gupy.io
+#VemserEcoviasMinasGoias🍃,eco050,https://eco050.gupy.io
+#VemserEcoviasNorteMinas🍃,eco135,https://eco135.gupy.io
+#VemserEcoviasPonte🍃,ecoponte,https://ecoponte.gupy.io
+#VemserEcoviasRioMinas🍃,ecoriominas,https://ecoriominas.gupy.io
+(IFF) Instituto Fernando Filgueiras,vemseriff,https://vemseriff.gupy.io
++A Educação,maisaedu,https://maisaedu.gupy.io
+2Com Consulting,2comconsulting,https://2comconsulting.gupy.io
 3C Services,3cservices,https://3cservices.gupy.io
 3tentos,3tentos,https://3tentos.gupy.io
 4MK Solutions,4mk,https://4mk.gupy.io
@@ -7,9 +21,16 @@ A3 Consultoria,a3consultoria,https://a3consultoria.gupy.io
 AACD,aacd,https://aacd.gupy.io
 Abakids,abakids,https://abakids.gupy.io
 Academia Wave,academiawave,https://academiawave.gupy.io
+Aché Laboratórios Farmacêuticos,vagasache,https://vagasache.gupy.io
+Acrisure,acrisure,https://acrisure.gupy.io
 AD Promotora,adpromotora,https://adpromotora.gupy.io
 ADAMA,adama,https://adama.gupy.io
+ADAMÉTAL,ada,https://ada.gupy.io
+Aegea Saneamento,aegea,https://aegea.gupy.io
+Aegro,aegro,https://aegro.gupy.io
+Aeris Energy,aeris,https://aeris.gupy.io
 Afinz,afinz,https://afinz.gupy.io
+Afip,afip,https://afip.gupy.io
 AFPESP,afpesp,https://afpesp.gupy.io
 Afya,afya,https://afya.gupy.io
 Ageplan,ageplan,https://ageplan.gupy.io
@@ -17,55 +38,115 @@ AGRIBRASIL,agribrasil,https://agribrasil.gupy.io
 Agriness,agriness,https://agriness.gupy.io
 Agrivalle,agrivalle,https://agrivalle.gupy.io
 Agrofel,agrofel,https://agrofel.gupy.io
+Agronegócio,grupofertipar,https://grupofertipar.gupy.io
+AGROTIS,agrotis,https://agrotis.gupy.io
+Ajinomoto do Brasil,ajinomotoabr,https://ajinomotoabr.gupy.io
+ALE Combustíveis,oportunidadesale,https://oportunidadesale.gupy.io
+Alfa Rede de Ensino,alfarededeensino,https://alfarededeensino.gupy.io
 ALGAR,algar,https://algar.gupy.io
 Aliare,aliare,https://aliare.gupy.io
 Allcare Gestora de Saúde,allcare,https://allcare.gupy.io
+Allianz Partners Brasil,allianzpartners,https://allianzpartners.gupy.io
+Allonda,allonda,https://allonda.gupy.io
+ALLOS,carreirasallos,https://carreirasallos.gupy.io
 Allrede Telecom,allrede,https://allrede.gupy.io
+Almaviva Solutions,almavivasolutions,https://almavivasolutions.gupy.io
 Alpargatas,alpargatas,https://alpargatas.gupy.io
+Alper Carreiras,alpercarreiras,https://alpercarreiras.gupy.io
 Alphaville,alphaville,https://alphaville.gupy.io
+ALS LIFE SCIENCES,alslifesciences,https://alslifesciences.gupy.io
+Alterdata Software,alterdata,https://alterdata.gupy.io
+Alvoar Lácteos,alvoarlacteos,https://alvoarlacteos.gupy.io
+Alvorada Produtos Agropecuários,vemseralvorada,https://vemseralvorada.gupy.io
+Amara NZero - Página de talentos,amaranzero,https://amaranzero.gupy.io
 Ambar Tech,ambartech,https://ambartech.gupy.io
 Ambev,ambev,https://ambev.gupy.io
 Ambev Tech,ambevtech,https://ambevtech.gupy.io
 AME (Amigos Metroviários dos Excepcionais),ame,https://ame.gupy.io
+AME Jardim dos Prados - SPDM Afiliadas,amejardimdosprados,https://amejardimdosprados.gupy.io
 Americanas,americanas,https://americanas.gupy.io
+Amo,amo,https://amo.gupy.io
+Andrade Gutierrez,estagioandradegutierrez,https://estagioandradegutierrez.gupy.io
+ANIMALE,animale,https://animale.gupy.io
 Aprova,aprovadigital,https://aprovadigital.gupy.io
 Araforros,araforros,https://araforros.gupy.io
 Araguaia,araguaia,https://araguaia.gupy.io
+Aramis,aramis,https://aramis.gupy.io
+ArcelorMittal Tuper,tuper,https://tuper.gupy.io
 Arcor do Brasil,arcor,https://arcor.gupy.io
 Arizona,arizona,https://arizona.gupy.io
+Arklok Tecnologia,arkloktecnologia,https://arkloktecnologia.gupy.io
 Armac,armac,https://armac.gupy.io
+Artwalk,artwalk,https://artwalk.gupy.io
 Asaas,asaas,https://asaas.gupy.io
 Asia Shipping,asiashipping,https://asiashipping.gupy.io
 Assaí Atacadista,assai,https://assai.gupy.io
+"ASSIST - Associação dos Servidores Municipais, Estaduais e Federais RJ",vempraassist,https://vempraassist.gupy.io
 Associação Nova Escola,novaescola,https://novaescola.gupy.io
 Astral Pães e Massas,astralpaes,https://astralpaes.gupy.io
 Atento,atento,https://atento.gupy.io
+Atento Executivos,atentoexecutivos,https://atentoexecutivos.gupy.io
+Atlantic Nickel,atlanticnickel,https://atlanticnickel.gupy.io
+Atlantica Hospitality International,vagasahi,https://vagasahi.gupy.io
+Atlético Mineiro,galo,https://galo.gupy.io
+Attus Procuradoria Digital,attus,https://attus.gupy.io
 Auren Energia,aurenenergia,https://aurenenergia.gupy.io
+Aurora Coop,auroracoop,https://auroracoop.gupy.io
 Aurum,aurum,https://aurum.gupy.io
+Auster Nutrição Animal,austernutri,https://austernutri.gupy.io
 Autbank,autbank,https://autbank.gupy.io
 Auto Avaliar,autoavaliar,https://autoavaliar.gupy.io
+Autoamerica Group,autoamerica,https://autoamerica.gupy.io
+AutoForce,autoforce,https://autoforce.gupy.io
+Automob,automob,https://automob.gupy.io
 Auxiliadora Predial,auxiliadorapredial,https://auxiliadorapredial.gupy.io
 Avantia,avantia,https://avantia.gupy.io
 Aviator,aviator,https://aviator.gupy.io
 Aviva Desenvolvimento Infantil,aviva,https://aviva.gupy.io
 Avla Brasil,avla,https://avla.gupy.io
+AXIA Energia,axiaenergia,https://axiaenergia.gupy.io
+"Ayko, juntos para transformar!",aykotech,https://aykotech.gupy.io
 Azul Linhas Aéreas,voeazul,https://voeazul.gupy.io
+AZZAS 2154,azzas2154,https://azzas2154.gupy.io
+AZZAS 2154 / GRUPO SOMA,gruposoma,https://gruposoma.gupy.io
+B2e Group,b2egroup,https://b2egroup.gupy.io
 B4A,b4a,https://b4a.gupy.io
 BAGAGGIO,bagaggio,https://bagaggio.gupy.io
 Banco ABC Brasil,abcbrasil,https://abcbrasil.gupy.io
+Banco Bmg,bmg,https://bmg.gupy.io
+Banco de Talentos Solar Coca-Cola,bancodetalentossolarcocacola,https://bancodetalentossolarcocacola.gupy.io
 Banco Fibra,bancofibra,https://bancofibra.gupy.io
+BANCO INDUSTRIAL DO BRASIL,bib,https://bib.gupy.io
 Banco Sofisa,bancosofisa,https://bancosofisa.gupy.io
 Banco Topázio,bancotopazio,https://bancotopazio.gupy.io
 Barcelos,barcelos,https://barcelos.gupy.io
+BAT Brasil,bat,https://bat.gupy.io
+Baterias Moura,redemoura,https://redemoura.gupy.io
 Bauducco #vemparaBauducco,bauducco,https://bauducco.gupy.io
+Baía Sul Hospital,baiasulhospital,https://baiasulhospital.gupy.io
+Beep Saúde,beepsaude,https://beepsaude.gupy.io
 BeFly,befly,https://befly.gupy.io
+Bel Cosméticos,grupobel,https://grupobel.gupy.io
+Bellinati Perez,bellinatiperez,https://bellinatiperez.gupy.io
 Bemobi,bemobi,https://bemobi.gupy.io
+Benner,vemserbenner,https://vemserbenner.gupy.io
+Bernhoeft,vemserbern,https://vemserbern.gupy.io
 Betunel,betunel,https://betunel.gupy.io
+Bild Desenvolvimento Imobiliário,bild,https://bild.gupy.io
+BioCAZ Bioinsumos,biocaz,https://biocaz.gupy.io
+Biometrix,biometrix,https://biometrix.gupy.io
 BMC Hyundai,bmchyundai,https://bmchyundai.gupy.io
 Boavista Tecnologia,boavista,https://boavista.gupy.io
+Boston Metal do Brasil,bostonmetalbrasil,https://bostonmetalbrasil.gupy.io
 Brado Logística,bradologistica,https://bradologistica.gupy.io
+Brainfarma,brainfarma,https://brainfarma.gupy.io
+Brasal,brasal,https://brasal.gupy.io
+Brasil TecPar,vagasbrasiltecpar,https://vagasbrasiltecpar.gupy.io
+Brasilagro,brasilagro,https://brasilagro.gupy.io
 Brasilseg,brasilseg,https://brasilseg.gupy.io
+BrasPine,braspine,https://braspine.gupy.io
 Braveo,braveo,https://braveo.gupy.io
+Brisanet,brisanet,https://brisanet.gupy.io
 Bruning Tecnometal,bruning,https://bruning.gupy.io
 BRZ ADVOGADOS,brz,https://brz.gupy.io
 BTS,bts,https://bts.gupy.io
@@ -74,237 +155,476 @@ Bunge,bunge,https://bunge.gupy.io
 BYD Brasil,bydbrasil,https://bydbrasil.gupy.io
 C&A Brasil,cea,https://cea.gupy.io
 Cabral Motor Honda,cabralmotor,https://cabralmotor.gupy.io
+Cacau Show,cacaushow,https://cacaushow.gupy.io
 Cadastra,cadastra,https://cadastra.gupy.io
 Caedu,caedu,https://caedu.gupy.io
 Caixa Residencial,caixaresidencial,https://caixaresidencial.gupy.io
 Camed Microcrédito,camedmicrocredito,https://camedmicrocredito.gupy.io
+Camicado,camicadocarreiras,https://camicadocarreiras.gupy.io
+Campos Mello Advogados,vemprocma,https://vemprocma.gupy.io
+Canadian Solar,canadiansolar,https://canadiansolar.gupy.io
+Cantu Inc,cantustore,https://cantustore.gupy.io
 CAPEMISA Seguradora e CAPEMISA Capitalização,capemisa,https://capemisa.gupy.io
 Carbel Auto Group,grupocarbel,https://grupocarbel.gupy.io
 Cargolift,cargolift,https://cargolift.gupy.io
 Carreira Strattner,strattner,https://strattner.gupy.io
+Carreiras Evangélico Hospital,evangelicohospital,https://evangelicohospital.gupy.io
+Carreiras Vera Cruz Hospital,veracruzhospital,https://veracruzhospital.gupy.io
+Carreiras Ypê,carreirasype,https://carreirasype.gupy.io
+Cartpanda,cartpanda,https://cartpanda.gupy.io
+CARVALIMA TRANSPORTES,carvalima,https://carvalima.gupy.io
+CASA & VIDEO,casaevideo,https://casaevideo.gupy.io
 Casa do Celular,casadocelular,https://casadocelular.gupy.io
 Casa do Fitness,casadofitness,https://casadofitness.gupy.io
 Casa dos Ventos,casadosventos,https://casadosventos.gupy.io
+Casa Parente contrata!,vagasvarejocosmeticos,https://vagasvarejocosmeticos.gupy.io
 Casar.com,casarcom,https://casarcom.gupy.io
 Cascione Advogados,cascione,https://cascione.gupy.io
+Castrolanda Cooperativa Agroindustrial,castrolanda,https://castrolanda.gupy.io
 Cataguá Soluções Imobiliárias,catagua,https://catagua.gupy.io
 Catharine Hill,catharinehill,https://catharinehill.gupy.io
 CBA,cba,https://cba.gupy.io
+CBMM,vemsercbmm,https://vemsercbmm.gupy.io
 CCB Construtora,ccbconstrutora,https://ccbconstrutora.gupy.io
 CCEE,ccee,https://ccee.gupy.io
 CCL Industries,ccl,https://ccl.gupy.io
 Cebrace,cebrace,https://cebrace.gupy.io
 Cedisa Central de Aço S/A,cedisa,https://cedisa.gupy.io
+Cedro Mineração,vemsercedro,https://vemsercedro.gupy.io
+CEL Intercultural School,cel,https://cel.gupy.io
+Celk Sistemas,celksistemas,https://celksistemas.gupy.io
 Cellera Farma - Somos gente que cuida de gente,cellerafarma,https://cellerafarma.gupy.io
+Cencosud Brasil,cencosudbrasil,https://cencosudbrasil.gupy.io
+Centauro Talentos,centaurotalentos,https://centaurotalentos.gupy.io
 Central Ailos,centralailos,https://centralailos.gupy.io
 CentralAr.com,centralar,https://centralar.gupy.io
+Centro Nacional de Pesquisa em Energia e Materiais (CNPEM),cnpem,https://cnpem.gupy.io
+Centro Universitário Braz Cubas,brazcubas,https://brazcubas.gupy.io
+Centro Universitário FEI,centrouniversitariofei,https://centrouniversitariofei.gupy.io
 CEPEL,cepel,https://cepel.gupy.io
 Cerpa Cervejaria Paraense S/A,cerpacervejaria,https://cerpacervejaria.gupy.io
 Certisign,certisign,https://certisign.gupy.io
+Cetrel,cetrel,https://cetrel.gupy.io
 Check Up Hospital,checkuphospital,https://checkuphospital.gupy.io
+Cia. Hering,ciahering,https://ciahering.gupy.io
+Cialne,cialne,https://cialne.gupy.io
+CIATC,ciatc,https://ciatc.gupy.io
+Cibra,cibra,https://cibra.gupy.io
+CICV,cicvoportunidades,https://cicvoportunidades.gupy.io
+Cidacs,cidacs,https://cidacs.gupy.io
+Cidadania4u,cidadania4u,https://cidadania4u.gupy.io
 CIEE - Centro de Integração Empresa-Escola,ciee,https://ciee.gupy.io
 CIEE SC,cieesc,https://cieesc.gupy.io
+Cimed,cimed,https://cimed.gupy.io
+Cimento Apodi,cimentoapodi,https://cimentoapodi.gupy.io
 Cinemark,cinemark,https://cinemark.gupy.io
 Cinex Inovacão e Emoção,cinex,https://cinex.gupy.io
+CISER,ciser,https://ciser.gupy.io
 CLAMED Administrativo,clamed,https://clamed.gupy.io
+CLAMED Aprendiz,clamedaprendiz,https://clamedaprendiz.gupy.io
+CLAMED Estagiários,clamedestagio,https://clamedestagio.gupy.io
+CLAMED Farmacêuticos,clamedfarma,https://clamedfarma.gupy.io
+CLAMED Logística,clamedoperacional,https://clamedoperacional.gupy.io
+Claretiano - Colégio,claretianocolegio,https://claretianocolegio.gupy.io
 Claro,vempraclaro,https://vempraclaro.gupy.io
+Claro,lojasclaro,https://lojasclaro.gupy.io
+Claro no Hacktown 2026,claronohacktown2026,https://claronohacktown2026.gupy.io
 ClickBus,clickbus,https://clickbus.gupy.io
+Clicksign,clicksign,https://clicksign.gupy.io
 Club Athletico Paranaense,athletico,https://athletico.gupy.io
 Clube Moms,clubemoms,https://clubemoms.gupy.io
 Clínica Florence,clinicaflorence,https://clinicaflorence.gupy.io
 Clínica Rio de Janeiro,clinicariodejaneiro,https://clinicariodejaneiro.gupy.io
 CMMM Sociedade de Advogados,cmmm,https://cmmm.gupy.io
 CNA Idiomas,cnaidiomas,https://cnaidiomas.gupy.io
+CNP Seguradora,cnpseguradora,https://cnpseguradora.gupy.io
 Coca-Cola Andina Brasil,koandina,https://koandina.gupy.io
 Coca-Cola FEMSA (Temporárias),vagastemporarias-cocacolafemsabr,https://vagastemporarias-cocacolafemsabr.gupy.io
 Coca-Cola FEMSA - Jovens Aprendizes,jovemaprendiz-cocacolafemsabr,https://jovemaprendiz-cocacolafemsabr.gupy.io
 Coca-Cola FEMSA Brasil,cocacolafemsabr,https://cocacolafemsabr.gupy.io
 Cocal,cocal,https://cocal.gupy.io
 Cocamar,cocamar,https://cocamar.gupy.io
+Coco Bambu,cocobambu,https://cocobambu.gupy.io
 Code n' App,codenapp,https://codenapp.gupy.io
 Cogna Educação,cogna,https://cogna.gupy.io
 Cognita Schools,cognita,https://cognita.gupy.io
 Colliers,colliers,https://colliers.gupy.io
+Colégio Santa Amália Saúde,santaamaliasaude,https://santaamaliasaude.gupy.io
+Colégio Visconde de Porto Seguro,colegioportoseguro,https://colegioportoseguro.gupy.io
+ComBio,combioenergia,https://combioenergia.gupy.io
 Comerc Energia,comerc,https://comerc.gupy.io
+Comercial Lucar,comerciallucar,https://comerciallucar.gupy.io
+Comexport,vemsercomexport,https://vemsercomexport.gupy.io
+Compass UOL,compass,https://compass.gupy.io
+Comveima,comveima,https://comveima.gupy.io
 Conac,conac,https://conac.gupy.io
 Concessionária Novo Litoral,concessionarianovolitoral,https://concessionarianovolitoral.gupy.io
 Condor,condor,https://condor.gupy.io
 ConectCar,conectcar,https://conectcar.gupy.io
+CONEXA,conexasaude,https://conexasaude.gupy.io
+Conexia,conexia,https://conexia.gupy.io
 Conexão Talento,conexaotalento,https://conexaotalento.gupy.io
+Confidencial,confidencial21rh,https://confidencial21rh.gupy.io
 Conquer Business School,conquer,https://conquer.gupy.io
+CONSTRUCAP,talentosconstrucap,https://talentosconstrucap.gupy.io
+Construtora Stanza,stanza,https://stanza.gupy.io
 Construtora Tenda,tenda,https://tenda.gupy.io
 Conta Simples,contasimples,https://contasimples.gupy.io
+Contajá Contabilidade Online,trabalhenacontaja,https://trabalhenacontaja.gupy.io
 Convenia,convenia,https://convenia.gupy.io
+Coopercitrus,coopercitrus,https://coopercitrus.gupy.io
 Cootravale,cootravale,https://cootravale.gupy.io
+Copa Energia,carreirascopaenergia,https://carreirascopaenergia.gupy.io
 Copapel,copapel,https://copapel.gupy.io
 COPASTUR VIAGENS E TURISMO,copastur,https://copastur.gupy.io
 Copersucar,copersucar,https://copersucar.gupy.io
 Coplana - Cooperativa Agroindustrial,coplana,https://coplana.gupy.io
+Corsan Aegea,vagascorsanaegea,https://vagascorsanaegea.gupy.io
+Cortex,cortex,https://cortex.gupy.io
 Cosan,cosan,https://cosan.gupy.io
+Costa Brasil,costabrasil,https://costabrasil.gupy.io
+CostaFoods Brasil,costafoodsbrasil,https://costafoodsbrasil.gupy.io
 COTESA Engenharia,cotesa,https://cotesa.gupy.io
 Covre Transportes e Logística,covre,https://covre.gupy.io
 CQA - Centro de Qualidade Analítica,cqa,https://cqa.gupy.io
 Craft Multimodal,craft,https://craft.gupy.io
 Creditas,creditas,https://creditas.gupy.io
 Cresol,cresolcarreiras,https://cresolcarreiras.gupy.io
+Cruzeiro do Sul Educacional S/A,cruzeirodosuleducacional,https://cruzeirodosuleducacional.gupy.io
+CS INFRA,csinfra,https://csinfra.gupy.io
 CSN,csn,https://csn.gupy.io
 CSU Digital,csu,https://csu.gupy.io
+Cubo Global School,cuboglobalschool,https://cuboglobalschool.gupy.io
+CULTURA INGLESA,culturainglesa,https://culturainglesa.gupy.io
+Cuponomia,cuponomia,https://cuponomia.gupy.io
 Cury Construtora,cury,https://cury.gupy.io
 CVC Corp,cvccorp,https://cvccorp.gupy.io
+CVC Viagens,passaporte-franquias-cvc,https://passaporte-franquias-cvc.gupy.io
 Cyrela,cyrela,https://cyrela.gupy.io
 Cyrela Plurall,pcdcyrela,https://pcdcyrela.gupy.io
 Dafiti,dafiti,https://dafiti.gupy.io
+Damásio motopeças,damasiomotopecas,https://damasiomotopecas.gupy.io
+DANIEL,daniel-ip,https://daniel-ip.gupy.io
 Dannemann,dannemann,https://dannemann.gupy.io
 Darede,darede,https://darede.gupy.io
+Dasa,dasaassistencial,https://dasaassistencial.gupy.io
+Dasa,dasaatendimento,https://dasaatendimento.gupy.io
+Dasa,dasaprogramasdeentrada,https://dasaprogramasdeentrada.gupy.io
 Data Engenharia,dataengenharia,https://dataengenharia.gupy.io
+DaVita Tratamento Renal - Apoio Administrativo no Cuidado ao Paciente,apoioadministrativo,https://apoioadministrativo.gupy.io
+DC-DinsmoreCompass,dc,https://dc.gupy.io
 Deliver IT,deliverit,https://deliverit.gupy.io
+Delta Biocombustíveis,deltabio,https://deltabio.gupy.io
 Demarest Advogados,demarest,https://demarest.gupy.io
 Dexco,dexco,https://dexco.gupy.io
+DICON CONTABILIDADE,diconcontabilidade,https://diconcontabilidade.gupy.io
 Disfer Distribuidora,disferdistribuidora,https://disferdistribuidora.gupy.io
 Diálogo Engenharia,dialogo,https://dialogo.gupy.io
 Dotz,dotz,https://dotz.gupy.io
+Dress to,dressto,https://dressto.gupy.io
 Duty Cosméticos,dutycosmeticos,https://dutycosmeticos.gupy.io
 Dê um match com o CIEE/PR,ciee-pr,https://ciee-pr.gupy.io
+Eckermann & Santos - Sociedade de Advogados,talentoseysadvogados,https://talentoseysadvogados.gupy.io
+Econet Editora Empresarial,econet,https://econet.gupy.io
 EcoRodovias,ecorodovias,https://ecorodovias.gupy.io
+Ecossistema ARGENTA,argenta,https://argenta.gupy.io
 EDAG do Brasil,edag,https://edag.gupy.io
 Effecti,effecti,https://effecti.gupy.io
+Efí Bank,sejaefi,https://sejaefi.gupy.io
+Eldorado Brasil,vagaseldoradobrasil,https://vagaseldoradobrasil.gupy.io
+Eletromidia,eletromidia,https://eletromidia.gupy.io
+ELETRONET S.A,eletronet,https://eletronet.gupy.io
 Elgin,sejaelgin,https://sejaelgin.gupy.io
+Elite,elite,https://elite.gupy.io
 Eloware Participações,eloware,https://eloware.gupy.io
+Elson's Produtos Alimentícios,elsons,https://elsons.gupy.io
 Embracon,embracon,https://embracon.gupy.io
 Embrasil Segurança e Serviços,embrasil,https://embrasil.gupy.io
+Empresas Brasif,empresasbrasif,https://empresasbrasif.gupy.io
+Empresas Randon,randon,https://randon.gupy.io
+Enaex Brasil,enaexbrasil,https://enaexbrasil.gupy.io
+Energisa,grupoenergisa,https://grupoenergisa.gupy.io
+Energisa Estágio,estagioenergisa,https://estagioenergisa.gupy.io
+ENGIE Brasil,engiebrasilenergia,https://engiebrasilenergia.gupy.io
 Equatorial Serviços,equatorialservicos,https://equatorialservicos.gupy.io
 Equipe Juparanã,juparana,https://juparana.gupy.io
+Equiplano!,equiplano,https://equiplano.gupy.io
 Escola Bahiana de Medicina e Saúde Pública,escolabahiana,https://escolabahiana.gupy.io
 Escola Britânica de Artes Criativas & Tecnologia,ebac,https://ebac.gupy.io
 Escola Mais,escolamais,https://escolamais.gupy.io
 Escola Moppe,escolamoppe,https://escolamoppe.gupy.io
+Escola Sá Pereira,escolasapereira,https://escolasapereira.gupy.io
 Espaçolaser,espacolaser,https://espacolaser.gupy.io
+Esporte Clube Pinheiros,esporteclubepinheiros,https://esporteclubepinheiros.gupy.io
+Estadão,estadao,https://estadao.gupy.io
+Estácio,vempraestacio,https://vempraestacio.gupy.io
+Estágio Aurora,estagiosauroracoop,https://estagiosauroracoop.gupy.io
 Euro Colchões,eurocolchoes,https://eurocolchoes.gupy.io
 Eurobike,eurobike,https://eurobike.gupy.io
+EuroChem,carreiras,https://carreiras.gupy.io
 Eurofarma,eurofarma,https://eurofarma.gupy.io
+EXPRESSO GUANABARA,expressoguanabara,https://expressoguanabara.gupy.io
+Expresso Nepomuceno,en,https://en.gupy.io
+EXTRA NATAL,heringextranatal,https://heringextranatal.gupy.io
 Faber-Castell Brasil,fabercastell,https://fabercastell.gupy.io
+Faculdade BP,faculdadebp,https://faculdadebp.gupy.io
 Fadami - Software & Innovation,fadami,https://fadami.gupy.io
+FARM,farm,https://farm.gupy.io
+Farmácias de Alto Custo - SPDM Afiliadas,fac,https://fac.gupy.io
+Farmácias Pague Menos,paguemenosextrafarma,https://paguemenosextrafarma.gupy.io
+faro,faroeponto,https://faroeponto.gupy.io
 Fast Shop,fastshop,https://fastshop.gupy.io
+Faça parte da Fundação Unimed,faculdadeunimed,https://faculdadeunimed.gupy.io
+Faça parte do nosso time!,highline,https://highline.gupy.io
 Faça parte do time do Colégio Uirapuru,colegiouirapuru,https://colegiouirapuru.gupy.io
+Faça parte do time Mercantil,mercantil,https://mercantil.gupy.io
 FCamara,fcamara,https://fcamara.gupy.io
+FCC,fcc,https://fcc.gupy.io
 FEBRACIS,febracis,https://febracis.gupy.io
+Feel Alive Co.,feelalive,https://feelalive.gupy.io
 FGM Dental Group,fgmdentalgroup,https://fgmdentalgroup.gupy.io
+FHO | Fundação Hermínio Ometto,fho,https://fho.gupy.io
 FIDI,fidi,https://fidi.gupy.io
 Fin-X,finxapp,https://finxapp.gupy.io
 Findes,findes,https://findes.gupy.io
 Finx,finx,https://finx.gupy.io
 Fiscaltech,fiscaltech,https://fiscaltech.gupy.io
+Fivelabs,fivelabs,https://fivelabs.gupy.io
 Flash Global,flashglobal,https://flashglobal.gupy.io
+Flipside,flipside,https://flipside.gupy.io
 Flora Cosméticos e Limpeza,flora,https://flora.gupy.io
 Fluency,fluencyacademy,https://fluencyacademy.gupy.io
 Fluxo Soluções Integradas,fluxo,https://fluxo.gupy.io
 FMU FIAM FAAM,fmu,https://fmu.gupy.io
+Foco Aluguel de Carros,aluguefoco,https://aluguefoco.gupy.io
+Foresea,foresea,https://foresea.gupy.io
 Forma Turismo,formaturismo,https://formaturismo.gupy.io
+Forno de Minas,fornodeminas,https://fornodeminas.gupy.io
+Fortbras,fortbras,https://fortbras.gupy.io
+Fortlev,fortlev,https://fortlev.gupy.io
+FORÇA DE VENDAS PJ,repcomercial,https://repcomercial.gupy.io
 FRANQ,franq,https://franq.gupy.io
 Freitas,freitas,https://freitas.gupy.io
+Fruki,vagasfruki,https://vagasfruki.gupy.io
+FSG - Centro Universitário da Serra Gaúcha,fsg,https://fsg.gupy.io
 Funcional Health Tech,funcionalhealthtech,https://funcionalhealthtech.gupy.io
+Fundação Cásper Líbero,fcl,https://fcl.gupy.io
 Fundação Itaú,fundacaoitau,https://fundacaoitau.gupy.io
+Fundação José Silveira,fundacaojosesilveira,https://fundacaojosesilveira.gupy.io
+Fundação São Paulo,fundasp,https://fundasp.gupy.io
+Fundep,fundep,https://fundep.gupy.io
+G2L Logística,vemprag2l,https://vemprag2l.gupy.io
 Gabardo e Terra Advogados Associados,gabardoeterra,https://gabardoeterra.gupy.io
 Gafisa,gafisa,https://gafisa.gupy.io
+Galapagos Capital,galapagoscapital,https://galapagoscapital.gupy.io
 Galapos,galapos,https://galapos.gupy.io
 Gaudium,gaudium,https://gaudium.gupy.io
+GAV Resorts,gavresorts,https://gavresorts.gupy.io
 GBOEX,gboex,https://gboex.gupy.io
+GDSUL - Construção Inteligente,gdsul,https://gdsul.gupy.io
 Gelita,gelita,https://gelita.gupy.io
+Geopixel,geopixel,https://geopixel.gupy.io
 Geração Cyrela,geracaocyrela,https://geracaocyrela.gupy.io
 Gertec Brasil,gertec,https://gertec.gupy.io
+GIF International,gifinternational,https://gifinternational.gupy.io
 GIRO.TECH,girotech,https://girotech.gupy.io
+GL events Brasil,gleventsbrasilcarreiras,https://gleventsbrasilcarreiras.gupy.io
+Globalweb,sejaglobalweb,https://sejaglobalweb.gupy.io
 Globo,globo,https://globo.gupy.io
 GMI Distribuidora,gmidistribuidora,https://gmidistribuidora.gupy.io
 GnTech Exames,gntech,https://gntech.gupy.io
+Goiás Verde Alimentos,goiasverde,https://goiasverde.gupy.io
 GOL Linhas Aéreas,golcarreiras,https://golcarreiras.gupy.io
+Golin,golin,https://golin.gupy.io
 GoodStorage,goodstorage,https://goodstorage.gupy.io
 Governança Brasil,governancabrasil,https://governancabrasil.gupy.io
 GPA,gpa,https://gpa.gupy.io
 GPA - Estagiários e Aprendizes,estagiarioseaprendizesgpa,https://estagiarioseaprendizesgpa.gupy.io
 GPA Corporação,corporacaogpa,https://corporacaogpa.gupy.io
+Gran,vemsergran,https://vemsergran.gupy.io
 Granado - Desde 1870,granado,https://granado.gupy.io
+Greenlife Academias,vemsergreen,https://vemsergreen.gupy.io
+Greenpeople,greenpeople,https://greenpeople.gupy.io
+Grendene,facapartegrendene,https://facapartegrendene.gupy.io
+Gringo & Zapay,gringoezapay,https://gringoezapay.gupy.io
 GRPCOM,grpcom,https://grpcom.gupy.io
 Grupo 3corações,3coracoes,https://3coracoes.gupy.io
 Grupo Alliance,alliance,https://alliance.gupy.io
 Grupo Althaia,grupoalthaia,https://grupoalthaia.gupy.io
+Grupo ARO,grupoarobr,https://grupoarobr.gupy.io
+Grupo Autoglass Jovem Aprendiz,autoglassjovemaprendiz,https://autoglassjovemaprendiz.gupy.io
+Grupo Autoglass Lojas e Centros de Distribuição,autoglasslojas,https://autoglasslojas.gupy.io
+Grupo Açotubo,acotubo,https://acotubo.gupy.io
+Grupo BAUMINAS,grupobauminas,https://grupobauminas.gupy.io
 Grupo Boticário,grupoboticario,https://grupoboticario.gupy.io
+Grupo Caio,grupocaio,https://grupocaio.gupy.io
 Grupo Carburgo,carburgo,https://carburgo.gupy.io
 Grupo Carmehil,carmehil,https://carmehil.gupy.io
+Grupo CEV,grupocev,https://grupocev.gupy.io
 Grupo CM,cmcorp,https://cmcorp.gupy.io
+GRUPO COMETA,grupocometa,https://grupocometa.gupy.io
+Grupo Conceito,grupoconceito,https://grupoconceito.gupy.io
+Grupo CRM,grupocrm,https://grupocrm.gupy.io
+GRUPO CVLB,grupocvlb,https://grupocvlb.gupy.io
+Grupo D. Center,drogacenter,https://drogacenter.gupy.io
 Grupo Diagonal,grupodiagonal,https://grupodiagonal.gupy.io
+Grupo Doce Mel,grupodocemel,https://grupodocemel.gupy.io
 Grupo DX Soluções em EPI,grupodx,https://grupodx.gupy.io
 Grupo EBEG,ebeg,https://ebeg.gupy.io
 Grupo Ei Beleza,eibeleza,https://eibeleza.gupy.io
 Grupo Elettromec,elettromec,https://elettromec.gupy.io
+Grupo Elfa,grupoelfa,https://grupoelfa.gupy.io
+Grupo Elo,grupoelo,https://grupoelo.gupy.io
+GRUPO EP,grupoep,https://grupoep.gupy.io
 Grupo Equatorial,equatorialenergia,https://equatorialenergia.gupy.io
+Grupo FIT - Oportunidades,vagasgrupofit,https://vagasgrupofit.gupy.io
+Grupo Fornecedora,vemserfornecedora,https://vemserfornecedora.gupy.io
+GRUPO FUTURO,grupofuturo,https://grupofuturo.gupy.io
+GRUPO GR,vemsergr,https://vemsergr.gupy.io
+Grupo GSH,grupogsh,https://grupogsh.gupy.io
+Grupo Herval,grupoherval,https://grupoherval.gupy.io
+Grupo HTB,htb,https://htb.gupy.io
+Grupo IESA,grupoiesa,https://grupoiesa.gupy.io
+GRUPO IGL,vagasgrupoigl,https://vagasgrupoigl.gupy.io
+Grupo Ignição Digital,ignicaodigital,https://ignicaodigital.gupy.io
+Grupo Indiana,grupoindiana,https://grupoindiana.gupy.io
+Grupo Itadil,grupoitadil,https://grupoitadil.gupy.io
 Grupo Iter,grupoiter,https://grupoiter.gupy.io
 Grupo ITG,grupoitg,https://grupoitg.gupy.io
 Grupo JRCA,jrca,https://jrca.gupy.io
 Grupo MAG,grupomag,https://grupomag.gupy.io
+Grupo Marista,grupomarista,https://grupomarista.gupy.io
+Grupo Marquise,grupomarquise,https://grupomarquise.gupy.io
+GRUPO MOAS,grupomoas,https://grupomoas.gupy.io
+Grupo Monto,grupomonto,https://grupomonto.gupy.io
+Grupo Moura,grupomoura,https://grupomoura.gupy.io
 Grupo NewChase,gruponewchase,https://gruponewchase.gupy.io
 Grupo Nortène Plásticos,nortene,https://nortene.gupy.io
+Grupo OLX,vemsergrupoolx,https://vemsergrupoolx.gupy.io
 Grupo OVD,ovd,https://ovd.gupy.io
+Grupo Panvel,lojaspanvel,https://lojaspanvel.gupy.io
+Grupo Panvel,corporativopanvel,https://corporativopanvel.gupy.io
+Grupo Partage,partage,https://partage.gupy.io
 Grupo Piracanjuba,piracanjuba,https://piracanjuba.gupy.io
 Grupo Positivo,positivo,https://positivo.gupy.io
+Grupo Ramiro Campelo,gruporamirocampelo,https://gruporamirocampelo.gupy.io
+Grupo Raymundo da Fonte,raymundodafonte,https://raymundodafonte.gupy.io
+Grupo RBS,gruporbs,https://gruporbs.gupy.io
+Grupo Rodonaves,rodonaves,https://rodonaves.gupy.io
 Grupo Roma Brasil,gruporomabrasil,https://gruporomabrasil.gupy.io
+Grupo SA,sagrupo,https://sagrupo.gupy.io
+Grupo Sabin,gruposabin,https://gruposabin.gupy.io
+Grupo Salta Educação,gruposaltaedu,https://gruposaltaedu.gupy.io
+Grupo Santa Clara,santaclaragrupo,https://santaclaragrupo.gupy.io
+Grupo Santa Helena,gruposhbrasil,https://gruposhbrasil.gupy.io
+Grupo Santa Maria,santamaria,https://santamaria.gupy.io
+Grupo SBF,gruposbftalentos,https://gruposbftalentos.gupy.io
+Grupo SEB,gruposeb,https://gruposeb.gupy.io
 Grupo Simões | #VemProTimeGS,gruposimoes,https://gruposimoes.gupy.io
+Grupo Suno,gruposunojobs,https://gruposunojobs.gupy.io
+Grupo TecnoSpeed,grupotecnospeed,https://grupotecnospeed.gupy.io
 Grupo Terral,grupoterral,https://grupoterral.gupy.io
 Grupo Tigre,tigre,https://tigre.gupy.io
 Grupo Tracan,grupotracan,https://grupotracan.gupy.io
 Grupo Vigorito,grupovigorito,https://grupovigorito.gupy.io
 Grupo Vila Nova,vilanova,https://vilanova.gupy.io
+GRUPO VPL,vipleiloes,https://vipleiloes.gupy.io
 Grupo Vyas,vyas,https://vyas.gupy.io
 Grupo WTorre,wtorre,https://wtorre.gupy.io
 Grupo Yamaha Brasil,yamaha,https://yamaha.gupy.io
+GrupoSC Distribuidora de Medicamentos,gruposc,https://gruposc.gupy.io
+Gupy,vempra,https://vempra.gupy.io
+GVC SOLUÇÕES EM COBRANÇA,gvcsolucoes,https://gvcsolucoes.gupy.io
 Hand Talk,handtalk,https://handtalk.gupy.io
 Hapvida NotreDame Intermédica,hapvidandi,https://hapvidandi.gupy.io
+Harald,harald,https://harald.gupy.io
 Hayamax,hayamax,https://hayamax.gupy.io
+Helbor Empreendimentos S. A.,helbor,https://helbor.gupy.io
+helloo,carreirashelloo,https://carreirashelloo.gupy.io
 Heringer,heringer,https://heringer.gupy.io
 Hidrovias do Brasil,hidrovias,https://hidrovias.gupy.io
+Hinode Group,grupohinode,https://grupohinode.gupy.io
 HM Engenharia,hmengenharia,https://hmengenharia.gupy.io
+Honda,honda,https://honda.gupy.io
 Hospital Adventista Manaus,hospitaladventistademanaus,https://hospitaladventistademanaus.gupy.io
+Hospital de Transplantes Dr. Euryclides de Jesus Zerbini - SPDM Afiliadas,htejz,https://htejz.gupy.io
 Hospital Felício Rocho,hospitalfeliciorocho,https://hospitalfeliciorocho.gupy.io
+Hospital Geral de Pedreira - SPDM Afiliadas,hgped,https://hgped.gupy.io
 Hospital Moinhos de Vento,hospitalmoinhos,https://hospitalmoinhos.gupy.io
+Hospital Municipal de Barueri Dr.Francisco Moran - SPDM Afiliadas,hmbfm,https://hmbfm.gupy.io
+Hospital Nipo-Brasileiro,queroserhnipo,https://queroserhnipo.gupy.io
 Hospital Prontocardio,hospital-prontocardio,https://hospital-prontocardio.gupy.io
+Hospital São Francisco,fhsfa,https://fhsfa.gupy.io
+Hospital São Lucas da PUCRS,hospitalsaolucas,https://hospitalsaolucas.gupy.io
 Hospital São Marcos,hospitalsaomarcos,https://hospitalsaomarcos.gupy.io
 HPE Automotores do Brasil,hpe,https://hpe.gupy.io
+HT Micron,htmicron,https://htmicron.gupy.io
+Humânia,humania,https://humania.gupy.io
 Hypera Pharma,hyperapharma,https://hyperapharma.gupy.io
 i4pro,i4pro,https://i4pro.gupy.io
+IAP Cosméticos,vagasiap,https://vagasiap.gupy.io
 Ibema,ibema,https://ibema.gupy.io
 Ibitu Energia,ibitu,https://ibitu.gupy.io
 Ibmec,ibmec,https://ibmec.gupy.io
 Ibyte,ibyte,https://ibyte.gupy.io
 IC Transportes,ictransportes,https://ictransportes.gupy.io
+Icaro Tech,icarotech,https://icarotech.gupy.io
+ICI – Instituto das Cidades Inteligentes,ici,https://ici.gupy.io
 Icomm Group,icommgroup,https://icommgroup.gupy.io
 IGC,igc,https://igc.gupy.io
+Iguá Saneamento,vemserigua,https://vemserigua.gupy.io
 IHARA - Agricultura é a nossa vida.,ihara,https://ihara.gupy.io
 IMDEPA,imdepa,https://imdepa.gupy.io
+Inbrands,inbrands,https://inbrands.gupy.io
 InCompanny Consultoria Contábil,incompanny,https://incompanny.gupy.io
 Indústria (Confidencial),industria,https://industria.gupy.io
 INEC,inec,https://inec.gupy.io
 INFLOR - Evolução por Natureza,inflor,https://inflor.gupy.io
+INOVA SAÚDE,talentosinovasaude,https://talentosinovasaude.gupy.io
+Inpasa Brasil,inpasabrasil,https://inpasabrasil.gupy.io
+Instituto Adimax,institutoadimax,https://institutoadimax.gupy.io
 Instituto Ayrton Senna,institutoayrtonsenna,https://institutoayrtonsenna.gupy.io
+Instituto de Pesquisas ELDORADO,institutoeldorado,https://institutoeldorado.gupy.io
+Instituto de Responsabilidade Social Sírio-Libanês,irssl,https://irssl.gupy.io
 Instituto Homem,institutohomem,https://institutohomem.gupy.io
+Instituto Infnet - venha fazer parte da equipe!,vagas-infnet,https://vagas-infnet.gupy.io
+Instituto Infnet - Venha ser estagiário ou trainee!,estagio-e-trainee-infnet,https://estagio-e-trainee-infnet.gupy.io
+Instituto PENSI,institutopensi,https://institutopensi.gupy.io
 Integra CSC,integracsc,https://integracsc.gupy.io
+Intelipost,intelipost,https://intelipost.gupy.io
 Invillia,invillia,https://invillia.gupy.io
 ioasys,ioasys,https://ioasys.gupy.io
 Ipiranga,ipiranga,https://ipiranga.gupy.io
+iPlace - Apple Premium Reseller - Oficial,iplace,https://iplace.gupy.io
 Ipê Digital,ipedigital,https://ipedigital.gupy.io
+ISA ENERGIA BRASIL,isaenergiabrasil,https://isaenergiabrasil.gupy.io
 ISH Tecnologia,ishtecnologia,https://ishtecnologia.gupy.io
 IT Universe Tecnologia,ituniverse,https://ituniverse.gupy.io
+Itaú Cultural,itaucultural,https://itaucultural.gupy.io
 Itaú Social,itausocial,https://itausocial.gupy.io
 Itaú Unibanco,vemproitau,https://vemproitau.gupy.io
 Ivan Negócios Imobiliários,ivannegocios,https://ivannegocios.gupy.io
+Japi,japi-sa-industria-comercio,https://japi-sa-industria-comercio.gupy.io
 Jazz Tech,jazztech,https://jazztech.gupy.io
+JBS,grupojbs,https://grupojbs.gupy.io
 JCDecaux Brasil,jcdecaux,https://jcdecaux.gupy.io
 JDREL,jdrel,https://jdrel.gupy.io
+Jequiti Cosméticos,jequiti,https://jequiti.gupy.io
+Jesuítas Brasil,jesuitasbrasil,https://jesuitasbrasil.gupy.io
+JHSF | Holding,jhsf,https://jhsf.gupy.io
 Jirau Energia,jirauenergia,https://jirauenergia.gupy.io
 Join | Creative Tech,jointecnologia,https://jointecnologia.gupy.io
 JS PEÇAS,jspecas,https://jspecas.gupy.io
 JSL,jsl,https://jsl.gupy.io
 Junte-se a Evoltz e impulsione sua carreira,evoltz,https://evoltz.gupy.io
 Junto Seguros,juntoseguros,https://juntoseguros.gupy.io
+Juntos Somos Sinco,juntossomossinco,https://juntossomossinco.gupy.io
+Just a Little Data,justalittledata,https://justalittledata.gupy.io
+Kaizen - A Casa da Autopeça,kaizen,https://kaizen.gupy.io
+Kasvi,kasvi,https://kasvi.gupy.io
+Keep Simple,keepsimple,https://keepsimple.gupy.io
 Kenlo,kenlo,https://kenlo.gupy.io
+Killing Tintas e Adesivos,killing,https://killing.gupy.io
 Kinross Brasil Mineração,kinross,https://kinross.gupy.io
 KLA Advogados,kla,https://kla.gupy.io
 Knewin,knewin,https://knewin.gupy.io
@@ -313,136 +633,281 @@ Kordsa,kordsa,https://kordsa.gupy.io
 KOVI ❤️,kovi,https://kovi.gupy.io
 KRYPTUS,kryptus,https://kryptus.gupy.io
 La Moda,lamoda,https://lamoda.gupy.io
+Lab Vagas.,laboratoriobuainain,https://laboratoriobuainain.gupy.io
 Laboratório Maricondi,laboratoriomaricondi,https://laboratoriomaricondi.gupy.io
+Labtest Diagnóstica S.A,labtest,https://labtest.gupy.io
+Lanlink Informática,vempralanlink,https://vempralanlink.gupy.io
+Lança Perfume,lancaperfume,https://lancaperfume.gupy.io
+Lar Sant`Ana,larsantana,https://larsantana.gupy.io
 Lazzo Secondment,lazzosecondment,https://lazzosecondment.gupy.io
 LBR ENGENHARIA E CONSULTORIA LTDA,lbrengenharia,https://lbrengenharia.gupy.io
 LCA Consultores,lcaconsultores,https://lcaconsultores.gupy.io
+LD Celulose S.A.,ldcelulose,https://ldcelulose.gupy.io
 Leega Consultoria,leega,https://leega.gupy.io
 Lefosse,lefosse,https://lefosse.gupy.io
+Leo Madeiras,leomadeiras,https://leomadeiras.gupy.io
+Letras (letras.mus.br),letras,https://letras.gupy.io
+LG Electronics - Manaus/AM,lge,https://lge.gupy.io
+Light,talentoslight,https://talentoslight.gupy.io
 Linea Alimentos,linea,https://linea.gupy.io
 Livance,livance,https://livance.gupy.io
+Livraria da Vila,livrariadavila,https://livrariadavila.gupy.io
+LIZIE,liziecarreiras,https://liziecarreiras.gupy.io
+LM Mobilidade,lmvagas,https://lmvagas.gupy.io
 Localiza&Co,localiza,https://localiza.gupy.io
+Log,logcp,https://logcp.gupy.io
 Log Lab - Trabalhe Conosco,loglabdigital,https://loglabdigital.gupy.io
+Log-In Logística Integrada,loginlogistica,https://loginlogistica.gupy.io
+Logicalis Latam,vacanteslogicalislatam,https://vacanteslogicalislatam.gupy.io
+Logística,asaploggrupocasasbahia,https://asaploggrupocasasbahia.gupy.io
 Lojacorr Seguros 🚀,redelojacorr,https://redelojacorr.gupy.io
+Lojas Bemol,bemol,https://bemol.gupy.io
+Lojas Buriti,lojasburiti,https://lojasburiti.gupy.io
+Lojas Grupo Casas Bahia,lojasgrupocasasbahia,https://lojasgrupocasasbahia.gupy.io
+Lojas Nalin,nalin,https://nalin.gupy.io
 Lojas Renner,lojasrenner,https://lojasrenner.gupy.io
 Lojas Renner,renner,https://renner.gupy.io
 Lojas Renner - Encantech,encantech,https://encantech.gupy.io
 Lojas Torra,lojastorra,https://lojastorra.gupy.io
 Lojas Vivo,lojasvivo,https://lojasvivo.gupy.io
 Loxam - A Geradora,ageradora,https://ageradora.gupy.io
+Loxam do Brasil,loxambr,https://loxambr.gupy.io
 Luft Logistics Healthcare,luftlogistics,https://luftlogistics.gupy.io
+"Lumiar - Pinheiros, SP",lumiar-pinheiros,https://lumiar-pinheiros.gupy.io
+"Lumiar - Vila Olímpia, SP",lumiar-vila-olimpia,https://lumiar-vila-olimpia.gupy.io
 Lumini IT Solutions,luminiitsolutions,https://luminiitsolutions.gupy.io
 Lumma Despachante,lummadespachante,https://lummadespachante.gupy.io
 Lynx Process,lynx,https://lynx.gupy.io
 M. Dias Branco,mdiasbranco,https://mdiasbranco.gupy.io
 Machado Meyer Advogados,machadomeyer,https://machadomeyer.gupy.io
+MACNOR MARINE,macnor,https://macnor.gupy.io
+Mais Diversidade,maisdiversidade,https://maisdiversidade.gupy.io
 Makro Engenharia,makroengenharia,https://makroengenharia.gupy.io
+MAMINFO SOLUCOES E SERVICOS EM TECNOLOGIA S.A.,maminfo,https://maminfo.gupy.io
+Maple Bear Escolas,maplebearescolas,https://maplebearescolas.gupy.io
 Maqcampo,maqcampo,https://maqcampo.gupy.io
+Marcopolo S.A,carreiramarcopolo,https://carreiramarcopolo.gupy.io
+MARIA FILÓ,mariafilo,https://mariafilo.gupy.io
 Mark Up,markup,https://markup.gupy.io
 Marka Veículos,markaveiculos,https://markaveiculos.gupy.io
+Matriz Educação,matrizeducacao,https://matrizeducacao.gupy.io
 Mattos Filho,mattosfilho,https://mattosfilho.gupy.io
 MCassab Institucional,mcassab,https://mcassab.gupy.io
+McDonald's Restaurante - Arcos Dorados,restaurantemc,https://restaurantemc.gupy.io
+Memed ativo,memed,https://memed.gupy.io
+Mendelics,mendelics,https://mendelics.gupy.io
 Mercafacil,mercafacil,https://mercafacil.gupy.io
+Mercedes-Benz Caminhões & Ônibus,mercedes-benzcaminhoeseonibus,https://mercedes-benzcaminhoeseonibus.gupy.io
 Mercos,mercos,https://mercos.gupy.io
+MEZ ENERGIA,mezenergia,https://mezenergia.gupy.io
 MGITECH Carreiras,mgitech,https://mgitech.gupy.io
+MICHELIN Connected Fleet,michelinconnectedfleet,https://michelinconnectedfleet.gupy.io
+MIGNOW,mignow,https://mignow.gupy.io
+Mills,mills,https://mills.gupy.io
 Mind Lab,mindlab,https://mindlab.gupy.io
+MindMiners,mindminers,https://mindminers.gupy.io
 Minerva Foods,minervafoods,https://minervafoods.gupy.io
+"Minerva Foods Tecnologia – Inovação que conecta, tecnologia que transforma.",minervatech,https://minervatech.gupy.io
 Minha Biblioteca,minhabiblioteca,https://minhabiblioteca.gupy.io
 Minsait,minsait,https://minsait.gupy.io
 Mitre Realty,mitrerealty,https://mitrerealty.gupy.io
+Mobi7,mobi7,https://mobi7.gupy.io
 Mobit Tecnologia,mobit,https://mobit.gupy.io
+MODEC,modec-br,https://modec-br.gupy.io
+Mohawk Brasil,mohawk,https://mohawk.gupy.io
 Mondeléz Brasil,mondelez,https://mondelez.gupy.io
 Monte Carlo Joias,montecarlo,https://montecarlo.gupy.io
 Montreal | Tecnologia e Inovação,montreal,https://montreal.gupy.io
+Motiva,motiva,https://motiva.gupy.io
 Motor Group Brasil,motorgroupbrasil,https://motorgroupbrasil.gupy.io
+MOTTA AGROPECUÁRIA,agrojem,https://agrojem.gupy.io
+Motz,motz,https://motz.gupy.io
 Movida,movida,https://movida.gupy.io
 MPD Engenharia,mpdengenharia,https://mpdengenharia.gupy.io
+MRM Brasil,mrm,https://mrm.gupy.io
+MRO,mroativa,https://mroativa.gupy.io
 Mulheres de Fibra (Vivo),mulheresdefibra,https://mulheresdefibra.gupy.io
+Museu de Arte de São Paulo Assis Chateaubriand - MASP,masp,https://masp.gupy.io
+Mutant,mutantbrvagas,https://mutantbrvagas.gupy.io
 Méliuz,meliuz,https://meliuz.gupy.io
 Método Grupo,metodo,https://metodo.gupy.io
 Nasajon,nasajon,https://nasajon.gupy.io
+Nazária Distribuidora,nazaria,https://nazaria.gupy.io
+Neogrid Carreiras,neogridcarreiras,https://neogridcarreiras.gupy.io
 Netshow.me,netshowme,https://netshowme.gupy.io
+Neugebauer Alimentos S/A,neugebauer,https://neugebauer.gupy.io
 Nexa Tecnologia,nexatecnologia,https://nexatecnologia.gupy.io
+Nexdom Healthtech,vempranexdom,https://vempranexdom.gupy.io
+Next Fit,nextfit,https://nextfit.gupy.io
+Nidec Global Appliance (Brasil),nidecga-br,https://nidecga-br.gupy.io
 Nitro,nitro,https://nitro.gupy.io
 Nordica,nordica,https://nordica.gupy.io
+Nordware,nordware,https://nordware.gupy.io
+Norte Marketing,nortemkt,https://nortemkt.gupy.io
 Nortox,nortox,https://nortox.gupy.io
 Nova Rota do Oeste,rotadooeste,https://rotadooeste.gupy.io
+Novas oportunidades na Onfly!,onfly,https://onfly.gupy.io
+NSG Group,nsggroup,https://nsggroup.gupy.io
+Nutrien Soluções Agrícolas,vagasnutrien,https://vagasnutrien.gupy.io
+Nutrimental,nutrimental,https://nutrimental.gupy.io
+NV,bynv,https://bynv.gupy.io
 Núclea,nuclea,https://nuclea.gupy.io
 NÚCLEO ENGENHARIA CONSULTIVA S.A.,nucleoengenharia,https://nucleoengenharia.gupy.io
+Obras Sociais Irmã Dulce,obrassociaisirmadulce,https://obrassociaisirmadulce.gupy.io
+Odontoprev,vagasodontoprev,https://vagasodontoprev.gupy.io
 Ogilvy,ogilvy,https://ogilvy.gupy.io
+OH BOY! SACADA,sacadaeohboy,https://sacadaeohboy.gupy.io
 Olsen Indústria e Comércio,olsen,https://olsen.gupy.io
+Omie,carreirasomie,https://carreirasomie.gupy.io
 Omint - Trabalhe Conosco,omint,https://omint.gupy.io
 Oncovit,oncovit,https://oncovit.gupy.io
 OnSet,onset,https://onset.gupy.io
 Open Labs,openlabs,https://openlabs.gupy.io
+Oportunidades,bancorbras,https://bancorbras.gupy.io
 Oportunidades InBetta,inbetta,https://inbetta.gupy.io
+OPPORTUNITY,opportunity,https://opportunity.gupy.io
+OpusMúltipla,opusmultipla,https://opusmultipla.gupy.io
+OR,or,https://or.gupy.io
+Oral Sin Implantes,oralsin,https://oralsin.gupy.io
 Origem Energia,origemenergia,https://origemenergia.gupy.io
+ORTHODONTIC BRASIL,orthodontic,https://orthodontic.gupy.io
+Ouribank,ouribank,https://ouribank.gupy.io
 Ourofino Saúde Animal,ourofino,https://ourofino.gupy.io
+OVAL - VAGAS,oval,https://oval.gupy.io
 Pacco,paccoby,https://paccoby.gupy.io
 Padtec,padtec,https://padtec.gupy.io
 Pagaleve,pagaleve,https://pagaleve.gupy.io
 PagBank,pagseguro,https://pagseguro.gupy.io
+Pague Menos | Vagas em Tecnologia e Transformação Digital,pmenoslab,https://pmenoslab.gupy.io
+Pague Menos | Vagas na Matriz Administrativa em Fortaleza - CE,admpmenos,https://admpmenos.gupy.io
+Paschoalotto,paschoalotto,https://paschoalotto.gupy.io
+Passarelli,carreiraspassarelli,https://carreiraspassarelli.gupy.io
 Pavei Brands,pavei,https://pavei.gupy.io
+Pearson Saúde Animal,pearsonsaudeanimal,https://pearsonsaudeanimal.gupy.io
 Penso - Acesse nossas vagas,penso,https://penso.gupy.io
 Petrobahia S.A.,petrobahia,https://petrobahia.gupy.io
+PETRONAS,petronas,https://petronas.gupy.io
 Petros,petros,https://petros.gupy.io
 Petz,petz,https://petz.gupy.io
 Pharlab Indústria Farmacêutica,pharlab,https://pharlab.gupy.io
+Phiz Chat,phiz,https://phiz.gupy.io
+Phoebus Tecnologia,phoebus,https://phoebus.gupy.io
+Pimenta de Ávila Consultoria,pimentadeavila,https://pimentadeavila.gupy.io
+Piracicabana,grupocomporte,https://grupocomporte.gupy.io
+Pitzi,pitzi,https://pitzi.gupy.io
+Plaenge,grupoplaenge,https://grupoplaenge.gupy.io
 Planit Gerenciamento de Projetos,planit,https://planit.gupy.io
+Plano&Plano,vemserplano,https://vemserplano.gupy.io
 PLC Advogados,plcadvogados,https://plcadvogados.gupy.io
 Plena Alimentos,plena,https://plena.gupy.io
 Ploomes,ploomes,https://ploomes.gupy.io
+Pmweb,pmweb,https://pmweb.gupy.io
 Polirim do Brasil,polirim,https://polirim.gupy.io
 Pollo Engenharia e Construções,polloengenharia,https://polloengenharia.gupy.io
 Populos,populos,https://populos.gupy.io
 Portal de Carreiras | market4u,market4u,https://market4u.gupy.io
 Porto Seguro,porto,https://porto.gupy.io
+Positivo Tecnologia,positivotecnologia,https://positivotecnologia.gupy.io
 Pradolux,pradolux,https://pradolux.gupy.io
 PremieRpet®,premierpet,https://premierpet.gupy.io
 Premix,premix,https://premix.gupy.io
+PRIO,prio,https://prio.gupy.io
+Privalia,privalia,https://privalia.gupy.io
+Probel,probel,https://probel.gupy.io
+Prodal Saude S/A,prodalsaude,https://prodalsaude.gupy.io
 Produttivo,produttivo,https://produttivo.gupy.io
+Programa de Estágio AHEAD - Tauil & Chequer Advogados associado a Mayer Brown,tauilechequerahead,https://tauilechequerahead.gupy.io
+Programa de Estágio ISA ENERGIA BRASIL 2027,programadeestagioisaenergiabr,https://programadeestagioisaenergiabr.gupy.io
+Programa de inicio de carreira Pharlab - Semeando Talentos,pharlab-estagio,https://pharlab-estagio.gupy.io
+Programa Estagiar Grendene,programaestagiargrendene,https://programaestagiargrendene.gupy.io
+Programas de Entrada Usiminas,programasdeentradausiminas,https://programasdeentradausiminas.gupy.io
+Programas Novos Talentos 2023,novostalentosequatorial,https://novostalentosequatorial.gupy.io
+Projedata,projedata,https://projedata.gupy.io
+Prothera,prothera,https://prothera.gupy.io
 Proxxima Telecom,proxxima,https://proxxima.gupy.io
 PUC-SP,pucsp,https://pucsp.gupy.io
+Pulsus,pulsus,https://pulsus.gupy.io
 Página de Carreira - Home Agent,homeagent,https://homeagent.gupy.io
+Página de Carreiras Ipsos Brasil,ipsosbrasil,https://ipsosbrasil.gupy.io
+Página Externa,unifecaf,https://unifecaf.gupy.io
 PÁPRICA COMUNICAÇÃO,paprica,https://paprica.gupy.io
 Qualidados,qualidados,https://qualidados.gupy.io
+Quality Digital,qualitydigital,https://qualitydigital.gupy.io
 Queima Diária,queimadiaria,https://queimadiaria.gupy.io
+Quero ser #APróximaGeração Machado Meyer,aproximageracao,https://aproximageracao.gupy.io
 R Damásio,rdamasio,https://rdamasio.gupy.io
 Raiz Educação,raizeducacao,https://raizeducacao.gupy.io
+Randoncorp,randoncorp,https://randoncorp.gupy.io
+Raízen,genteraizen,https://genteraizen.gupy.io
 RBD Imagem,rbdimagem,https://rbdimagem.gupy.io
+RD Saúde,rdsaude-corporativo,https://rdsaude-corporativo.gupy.io
+RD Saúde - Centro de Distribuição,rdsaude-cd,https://rdsaude-cd.gupy.io
+RD Saúde - Farmácias,rdsaude-farmacia,https://rdsaude-farmacia.gupy.io
 Realize CFI,realize,https://realize.gupy.io
+Rech,rech,https://rech.gupy.io
 Record TV,recordtv,https://recordtv.gupy.io
+Recrutamento para área de tecnologia com Fit Cultural e Aderência Técnica.,werecruiter,https://werecruiter.gupy.io
+recrutamentoGMO,gmofacilities,https://gmofacilities.gupy.io
 Red House International School,redhouse,https://redhouse.gupy.io
+Redbelt Security,redbeltsecurity,https://redbeltsecurity.gupy.io
+Rede Américas,redeamericas,https://redeamericas.gupy.io
+Rede D'Or,rededor,https://rededor.gupy.io
+Rede Damas Educacional,rededamas,https://rededamas.gupy.io
+Rede Decisão,vemprarededecisao,https://vemprarededecisao.gupy.io
 Rede Mais Saúde,redemaissaude,https://redemaissaude.gupy.io
 Rede Uniforça,redeuniforca,https://redeuniforca.gupy.io
+Rede Verbita de Educação,redeverbita,https://redeverbita.gupy.io
 Reis Advogados,reisadvogados,https://reisadvogados.gupy.io
+Rennova,rennova,https://rennova.gupy.io
 Rensz Calçados,rensz,https://rensz.gupy.io
+Representante Comercial Autônomo Braveo,sejaumrepresentantebraveo,https://sejaumrepresentantebraveo.gupy.io
 Reservas Votorantim,reservasvotorantim,https://reservasvotorantim.gupy.io
 Riachuelo,riachuelo,https://riachuelo.gupy.io
+RioMar Aracaju,riomararacaju,https://riomararacaju.gupy.io
 RNP,rnp,https://rnp.gupy.io
 Roldão Atacadista,roldao,https://roldao.gupy.io
 Rota System,rotasystem,https://rotasystem.gupy.io
 Rottas Construtora e Incorporadora,rottas,https://rottas.gupy.io
+RPO Solutions,rposolutions,https://rposolutions.gupy.io
 Rubeus,rubeus,https://rubeus.gupy.io
 Rumo Logística,rumolog,https://rumolog.gupy.io
+S3 Gestão em Saúde,s3saude,https://s3saude.gupy.io
 Saber Educação,saber,https://saber.gupy.io
+Sabesp,vemprasabesp,https://vemprasabesp.gupy.io
+Sabium Sistemas,sabiumcarreiras,https://sabiumcarreiras.gupy.io
 SAF BOTAFOGO,safbotafogo,https://safbotafogo.gupy.io
+Safra,venhasersafra,https://venhasersafra.gupy.io
 Saipos,saipos,https://saipos.gupy.io
+Salesianos - Inspetoria São João Bosco,inspetoriasaojoaobosco,https://inspetoriasaojoaobosco.gupy.io
+Salvador Shopping: Somos diferentes para você!,salvadorshopping,https://salvadorshopping.gupy.io
 Samtronic,samtronic,https://samtronic.gupy.io
+Sanchez e Sanchez Sociedade de Advogados,sanchezadv,https://sanchezadv.gupy.io
+Santa Casa BH,santacasabh,https://santacasabh.gupy.io
+Santa Casa da Bahia,santacasaba,https://santacasaba.gupy.io
 Santa Casa de Porto Alegre,santacasa,https://santacasa.gupy.io
 Santa Colomba,santacolomba,https://santacolomba.gupy.io
 Santa Helena,santahelena,https://santahelena.gupy.io
 Santa Massa,santamassa,https://santamassa.gupy.io
 Saque e Pague,saqueepague,https://saqueepague.gupy.io
 Savvi Marketing de Performance,savvi,https://savvi.gupy.io
+Saúde PASA,saudepasa,https://saudepasa.gupy.io
 SBT,sejasbt,https://sejasbt.gupy.io
+Scala Data Centers,scaladatacenters,https://scaladatacenters.gupy.io
 Scania Latin America,scania,https://scania.gupy.io
 ScanSource,scansource,https://scansource.gupy.io
 Schumann,schumann,https://schumann.gupy.io
+Score Group,scoregroup,https://scoregroup.gupy.io
 Sebrae RS,sebrae-rs,https://sebrae-rs.gupy.io
+Seconci-SP,seconci-sp,https://seconci-sp.gupy.io
 Segala's Alimentos,segalasalimentos,https://segalasalimentos.gupy.io
+Seguralta,seguralta,https://seguralta.gupy.io
+Segware,segware,https://segware.gupy.io
+Selfit Academias,vemserselfit,https://vemserselfit.gupy.io
 Sem Parar Corpay,semparar,https://semparar.gupy.io
+Semeia 3tentos,aprendiz3tentos,https://aprendiz3tentos.gupy.io
 Sementes Estrela,sementesestrela,https://sementesestrela.gupy.io
+Senac Minas,trabalheconoscosenacmg,https://trabalheconoscosenacmg.gupy.io
+SENAI CETIQT,senaicetiqt,https://senaicetiqt.gupy.io
 SENAI GO,senaigo,https://senaigo.gupy.io
 Serhum Consultoria em RH,serhum,https://serhum.gupy.io
 Serilon,serilon,https://serilon.gupy.io
@@ -450,38 +915,57 @@ Servimex Logística,servimexlogistica,https://servimexlogistica.gupy.io
 SESI GO,sesigo,https://sesigo.gupy.io
 SESI SENAI PA,sesisenaipa,https://sesisenaipa.gupy.io
 Shift - Pulsa pela vida,shift,https://shift.gupy.io
+Shoulder,shoulder,https://shoulder.gupy.io
 Sicoob Coopecredi,sicoobcoopecredi,https://sicoobcoopecredi.gupy.io
 Sicoob Cooplivre,sicoobcooplivre,https://sicoobcooplivre.gupy.io
 Sicoob Crediceripa,crediceripa,https://crediceripa.gupy.io
 Sicoob Crediguaçu,sicoobcrediguacu,https://sicoobcrediguacu.gupy.io
 Sicoob Credimota,sicoobcredimota,https://sicoobcredimota.gupy.io
 Sicoob Nosso,sicoobnosso,https://sicoobnosso.gupy.io
+Sicoob Sarom,sicoobsarom,https://sicoobsarom.gupy.io
 Sicoob Sul,sicoobsul,https://sicoobsul.gupy.io
+Sicoob UniCentro Br,sicoobunicentrobr,https://sicoobunicentrobr.gupy.io
 Sicredi,sicredi,https://sicredi.gupy.io
 SiDi,sidi,https://sidi.gupy.io
 SIGVARIS GROUP Brasil,sigvaris,https://sigvaris.gupy.io
 Silva Gym,silvagym,https://silvagym.gupy.io
 Silveiro Advogados,silveiroadvogados,https://silveiroadvogados.gupy.io
 SIMPAR,simpar,https://simpar.gupy.io
+Simples Dental,recursoshumanos,https://recursoshumanos.gupy.io
+Simpress,simpress,https://simpress.gupy.io
 Sinergia Educação,sinergiaeducacao,https://sinergiaeducacao.gupy.io
 Sistema Fiemt,sistemafiemt,https://sistemafiemt.gupy.io
+Sistema Indústria - CNI SESI SENAI IEL - Departamento Nacional,sistemaindustria,https://sistemaindustria.gupy.io
 SJ Imóveis,sjimoveis,https://sjimoveis.gupy.io
 SLC Agrícola,slcagricola,https://slcagricola.gupy.io
 SLC Máquinas,slcmaquinas,https://slcmaquinas.gupy.io
 Smart NX,smartnx,https://smartnx.gupy.io
 Smarthis,smarthis,https://smarthis.gupy.io
+Smartspace,smartspace,https://smartspace.gupy.io
 SoftDesign,softdesign,https://softdesign.gupy.io
 Softex,softex,https://softex.gupy.io
 SoftExpert,softexpert,https://softexpert.gupy.io
 Softplan,softplan,https://softplan.gupy.io
 Software.com.br,software,https://software.gupy.io
 Solar Coca-Cola,solarcocacola,https://solarcocacola.gupy.io
+SolvePlan,solveplan,https://solveplan.gupy.io
 Somos BHS 💙,bhs,https://bhs.gupy.io
+Somos todos Guanabara,guanabara,https://guanabara.gupy.io
+Soprano,soprano,https://soprano.gupy.io
+Soul Malls,soulmalls,https://soulmalls.gupy.io
 Souto Correa Advogados,soutocorrea,https://soutocorrea.gupy.io
+SP Plus,spplus,https://spplus.gupy.io
 Spani Atacadista,spani,https://spani.gupy.io
+SPC Brasil,spcbrasil,https://spcbrasil.gupy.io
+SPDM Hospital São Paulo,spdmhsp,https://spdmhsp.gupy.io
 SPDM/PAIS,spdmpais,https://spdmpais.gupy.io
+SPDM/PAIS RIO DE JANEIRO,spdmpaisrj,https://spdmpaisrj.gupy.io
+Sphere,sphere,https://sphere.gupy.io
+SPL ENGENHARIA,spl,https://spl.gupy.io
 Spread Tecnologia,spread,https://spread.gupy.io
 SPX Imagem,spx,https://spx.gupy.io
+St. Marche Supermercados,stmarche,https://stmarche.gupy.io
+Starian,starian,https://starian.gupy.io
 Stefanini,stefanini,https://stefanini.gupy.io
 Stefanini Latam,stefaninilatam,https://stefaninilatam.gupy.io
 STEMAC,stemac,https://stemac.gupy.io
@@ -492,48 +976,90 @@ Studio Z,studioz,https://studioz.gupy.io
 Sua Carreira na Ecovias Imigrantes 💚,ecovias,https://ecovias.gupy.io
 Suhai Seguradora,suhaiseguradora,https://suhaiseguradora.gupy.io
 Supergasbras,supergasbras,https://supergasbras.gupy.io
+Supermercados Guanabara,supermercadosguanabara,https://supermercadosguanabara.gupy.io
+Supremo Secil Cimentos,supremosecilcimentos,https://supremosecilcimentos.gupy.io
+SURF TELECOM,vagassurftelecom,https://vagassurftelecom.gupy.io
 Suzano,suzano,https://suzano.gupy.io
+Swap,swapfinancial,https://swapfinancial.gupy.io
+Swift,swift,https://swift.gupy.io
+SYN,syn,https://syn.gupy.io
 Synvia,synvia,https://synvia.gupy.io
 Sítio da Serra,sitiodaserra,https://sitiodaserra.gupy.io
+"TACO - Roupas, Moda / Varejo",taco,https://taco.gupy.io
+TAG - Experiências Literárias,taglivros,https://taglivros.gupy.io
 Tahto,tahto,https://tahto.gupy.io
+Tahto - Staff e Executivo #VemSerTahto,vemsertahto,https://vemsertahto.gupy.io
 Talentos AlmapBBDO,almapbbdo,https://almapbbdo.gupy.io
 TALENTOS SMART,smart,https://smart.gupy.io
 TAM Aviação Executiva,tamaviacaoexecutiva,https://tamaviacaoexecutiva.gupy.io
 TANAC,tanac,https://tanac.gupy.io
 Tania Bulhões,tania-bulhoes,https://tania-bulhoes.gupy.io
 Target Sistemas,targetsistemas,https://targetsistemas.gupy.io
+TATU MARCHESAN,marchesan,https://marchesan.gupy.io
+Teadit Group,teadit,https://teadit.gupy.io
 Tecban,tecban,https://tecban.gupy.io
 Techne,techne,https://techne.gupy.io
 Technogym Brasil,technogym,https://technogym.gupy.io
+Techub,grupotecnoset,https://grupotecnoset.gupy.io
 Tecnobank 🔒,tecnobank,https://tecnobank.gupy.io
 Tecnofit,tecnofit,https://tecnofit.gupy.io
 Tecverde S.A.,tecverde,https://tecverde.gupy.io
 Tegma Gestão Logística,tegma,https://tegma.gupy.io
 Tegra Incorporadora,tegraincorporadora,https://tegraincorporadora.gupy.io
 Telefónica Tech,ttech,https://ttech.gupy.io
+Telemarketing LBV,vagaslbvtelemarketing,https://vagaslbvtelemarketing.gupy.io
+TELEMONT,telemont,https://telemont.gupy.io
+Teltec Data,teltecdata,https://teltecdata.gupy.io
 Teltec Solutions,teltecsolutions,https://teltecsolutions.gupy.io
+Tempo,tempo,https://tempo.gupy.io
+Terminal de Contêineres de Paranaguá,tcp,https://tcp.gupy.io
 Terra,terra,https://terra.gupy.io
 Terral Shopping Centers,terral,https://terral.gupy.io
 Terraverde Agro,terraverde,https://terraverde.gupy.io
 teya✱,teya,https://teya.gupy.io
+Thomriss Soluções em Embalagens,thomriss,https://thomriss.gupy.io
+TIC Trens,tictrens,https://tictrens.gupy.io
 TIM Brasil,vemprotime,https://vemprotime.gupy.io
+TIMAC Agro Brasil,timacagro,https://timacagro.gupy.io
+Timenow,time-now,https://time-now.gupy.io
 Tintas Kokar,kokar,https://kokar.gupy.io
 Tirolez,tirolez,https://tirolez.gupy.io
 Tokio Marine Seguradora,tokiomarine,https://tokiomarine.gupy.io
+Toledo do Brasil,toledobrasil,https://toledobrasil.gupy.io
+Tommasi Ambiental,tommasiambiental,https://tommasiambiental.gupy.io
 Topaz LATAM,topaz,https://topaz.gupy.io
 Total Express,totalexpress,https://totalexpress.gupy.io
+TozziniFreire Advogados,tozzinifreire,https://tozzinifreire.gupy.io
 TPC Logística Inteligente,tpc,https://tpc.gupy.io
 Trakto,trakto,https://trakto.gupy.io
 TRANSFEERA,transfeera,https://transfeera.gupy.io
+Transpes,transpes,https://transpes.gupy.io
+Tribanco,tribanco,https://tribanco.gupy.io
+Trio Instituição de Pagamento,vagastrio,https://vagastrio.gupy.io
+Trivia Trens,triviatrens,https://triviatrens.gupy.io
+Tronox Brasil,tronoxbrasil,https://tronoxbrasil.gupy.io
+Tupy,tupy,https://tupy.gupy.io
+Tópico Galpões,topico,https://topico.gupy.io
+Ultracargo,ultracargo,https://ultracargo.gupy.io
+Um Telecom,umtelecom,https://umtelecom.gupy.io
+UNICASA INDÚSTRIA DE MÓVEIS S/A,unicasamoveis,https://unicasamoveis.gupy.io
+Unicred,unicredbr,https://unicredbr.gupy.io
 Unicred - Núcleo Geração,unicred,https://unicred.gupy.io
 Unidas,unidas,https://unidas.gupy.io
+UniFacens,facens,https://facens.gupy.io
 Unifeob,unifeob,https://unifeob.gupy.io
+Unifique Telecomunicações,vemserunifique,https://vemserunifique.gupy.io
+Unilider Distribuidora,unilider,https://unilider.gupy.io
 Unimed Amparo,unimed-amparo,https://unimed-amparo.gupy.io
 Unimed Belém,unimedbelem,https://unimedbelem.gupy.io
 Unimed Campinas,unimedcampinas,https://unimedcampinas.gupy.io
+Unimed CNU,unimednacional,https://unimednacional.gupy.io
+Unimed Cuiabá,unimedcuiaba,https://unimedcuiaba.gupy.io
 Unimed Ferj,unimedhospitalferj,https://unimedhospitalferj.gupy.io
 Unimed Fortaleza,unimedfortaleza,https://unimedfortaleza.gupy.io
 Unimed Goiânia,unimedgoiania,https://unimedgoiania.gupy.io
+Unimed Grande Florianópolis,unimedgrandeflorianopolis,https://unimedgrandeflorianopolis.gupy.io
+Unimed Guarulhos,unimedguarulhos,https://unimedguarulhos.gupy.io
 Unimed Juiz de Fora,unimedjf,https://unimedjf.gupy.io
 Unimed Maceió,unimedmaceio,https://unimedmaceio.gupy.io
 Unimed Piracicaba,unimedpiracicaba,https://unimedpiracicaba.gupy.io
@@ -542,49 +1068,98 @@ Unimed Sul Capixaba,unimedsulcapixaba,https://unimedsulcapixaba.gupy.io
 Unimed São José dos Campos,unimedsjc,https://unimedsjc.gupy.io
 Unimed Teresina,unimedteresina,https://unimedteresina.gupy.io
 Unimed Vale do Caí,unimedvaledocai,https://unimedvaledocai.gupy.io
+Unisinos,unisinos,https://unisinos.gupy.io
+Universidade Católica de Brasília,ucb,https://ucb.gupy.io
 Universidade Cidade de S. Paulo - UNICID,unicid,https://unicid.gupy.io
+Universidade Cruzeiro do Sul,cruzeirodosul,https://cruzeirodosul.gupy.io
+UOL,uol,https://uol.gupy.io
+Upaon,upaon,https://upaon.gupy.io
 Urbitec Construções,urbitec,https://urbitec.gupy.io
 Usiminas,usiminas,https://usiminas.gupy.io
 Usina Santa Adélia,usinasantaadelia,https://usinasantaadelia.gupy.io
 Usina Santa Terezinha,usinasantaterezinha,https://usinasantaterezinha.gupy.io
 V.tal | o futuro passa por aqui,vtal,https://vtal.gupy.io
+Valgroup,valgroup,https://valgroup.gupy.io
 Valid,valid,https://valid.gupy.io
 Vast Infraestrutura,vastinfraestrutura,https://vastinfraestrutura.gupy.io
+Vedamotors,veda,https://veda.gupy.io
+Vem mobilizar sonhos com a gente!,conti,https://conti.gupy.io
+Vem para a Veracel,vemparaaveracel,https://vemparaaveracel.gupy.io
+Vem Pra Pixeon,vemprapixeon,https://vemprapixeon.gupy.io
+Vem pra Rede UniFTC,redeuniftc,https://redeuniftc.gupy.io
+Vem ser Balaroti,vemserbalaroti,https://vemserbalaroti.gupy.io
+Vem ser Bombril,vemparabombril,https://vemparabombril.gupy.io
+Vem ser CASSI,cassi,https://cassi.gupy.io
+Vem Ser Credi-Rural!,recrutamentocredirural,https://recrutamentocredirural.gupy.io
 Vem ser Teknisa,teknisa,https://teknisa.gupy.io
+Vendemmia Logística Integrada,vendemmia,https://vendemmia.gupy.io
+Venha construir o futuro com a gente!,vagas-mrveco,https://vagas-mrveco.gupy.io
+Venha trabalhar no CTE!,cte,https://cte.gupy.io
 Verity,verity,https://verity.gupy.io
+Vernalha Pereira,vernalhapereira,https://vernalhapereira.gupy.io
 VERO,vero,https://vero.gupy.io
 VERT Capital,vert-capital,https://vert-capital.gupy.io
+Vetta Tecnologia,vetta,https://vetta.gupy.io
 VExpenses,vexpenses,https://vexpenses.gupy.io
+Via Brasil BR-163,viabrasilbr163,https://viabrasilbr163.gupy.io
+Via de Acesso,viadeacesso,https://viadeacesso.gupy.io
+Viacerta Promotora,acertapromotora,https://acertapromotora.gupy.io
+"Viaflow | Work Smarter, Not Harder",viaflow,https://viaflow.gupy.io
+Vialaser Depilação,vialaserdepilacao,https://vialaserdepilacao.gupy.io
 Viapol,viapol,https://viapol.gupy.io
 VIASOFT,viasoft,https://viasoft.gupy.io
 Vibra Energia,vibra,https://vibra.gupy.io
 Vibra Energia,vibraenergia,https://vibraenergia.gupy.io
+Viceri SEIDOR,viceri-vagas,https://viceri-vagas.gupy.io
+Vidalink - Seu Plano de Bem-Estar,vidalink,https://vidalink.gupy.io
 Viemar Automotive,viemar,https://viemar.gupy.io
+Villemor Amaral Advogados,villemor,https://villemor.gupy.io
 Visagio,visagio,https://visagio.gupy.io
+Vistra,vistrabrazil,https://vistrabrazil.gupy.io
+VITA SERTÃO,vempravitasertao,https://vempravitasertao.gupy.io
 Vital Work,vitalwork,https://vitalwork.gupy.io
+Vitta Residencial,vittaresidencial,https://vittaresidencial.gupy.io
+ViV,vivsaude,https://vivsaude.gupy.io
 Vivara,vivara,https://vivara.gupy.io
+Vivara Lojas,vivaralojas,https://vivaralojas.gupy.io
 Viveo,viveo,https://viveo.gupy.io
 Vivo,vivo,https://vivo.gupy.io
 Vivo - Áreas Técnicas,areastecnicasvivo,https://areastecnicasvivo.gupy.io
 Vivo Atendimento,atendimentovivo,https://atendimentovivo.gupy.io
 Vivo Digital,vivodigital,https://vivodigital.gupy.io
+Vivo Diversidade,vivodiversidade,https://vivodiversidade.gupy.io
 VLI Logística,vli-vagas-externas,https://vli-vagas-externas.gupy.io
+Voke,voke,https://voke.gupy.io
 Volkswagen Caminhões e Ônibus,vwco,https://vwco.gupy.io
+Volkswagen do Brasil,vwbrasil,https://vwbrasil.gupy.io
 Volkswagen Group Services South America,vwgs-sam,https://vwgs-sam.gupy.io
 Voltz Motors,voltz,https://voltz.gupy.io
 Votorantim Cimentos,votorantimcimentos,https://votorantimcimentos.gupy.io
+Votorantim Cimentos - Bancos de Talentos,votorantimcimentosbancos,https://votorantimcimentosbancos.gupy.io
 Vsoft Tecnologia,vsoft,https://vsoft.gupy.io
 Vyttra,vyttra,https://vyttra.gupy.io
 Víncula,vincula,https://vincula.gupy.io
+Víssimo,vissimo,https://vissimo.gupy.io
 WayCarbon,waycarbon,https://waycarbon.gupy.io
 Webedia Brasil,webedia,https://webedia.gupy.io
+Weber Shandwick,webershandwick,https://webershandwick.gupy.io
 Webmotors,webmotors,https://webmotors.gupy.io
 WEG,weg,https://weg.gupy.io
+Wilson Sons,wilsonsons,https://wilsonsons.gupy.io
 Wiz Co,wiz,https://wiz.gupy.io
+WPP Media Services,wms,https://wms.gupy.io
+WTorre Entretenimento,wtentretenimento,https://wtentretenimento.gupy.io
 Wurth Industry,wurthindustry,https://wurthindustry.gupy.io
+XForce,xforcepromotora,https://xforcepromotora.gupy.io
 YDUQS,yduqs,https://yduqs.gupy.io
 Yooga,yooga,https://yooga.gupy.io
 Youcom,youcom,https://youcom.gupy.io
+Z Deli,zdeli,https://zdeli.gupy.io
 Zanardo Válvulas Industriais,zanardo,https://zanardo.gupy.io
 Zanini Renk,zanini,https://zanini.gupy.io
+Águas do Sertão: nosso compromisso é transformar o futuro!,aguasdosertao,https://aguasdosertao.gupy.io
+Árvore,arvore,https://arvore.gupy.io
 Âncora Group,ancoragroup,https://ancoragroup.gupy.io
+Órigo Energia,origoenergia,https://origoenergia.gupy.io
+🚀 A seleção já está rolando na Track&Field! Vem com a gente?,tfcarreiralojas,https://tfcarreiralojas.gupy.io
+🚀 A seleção já está rolando na Track&Field! Vem com a gente?,tfcarreira,https://tfcarreira.gupy.io

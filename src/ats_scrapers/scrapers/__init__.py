@@ -37,6 +37,7 @@ from ats_scrapers.scrapers.hrmos import HrmosScraper
 from ats_scrapers.scrapers.icims import iCIMSScraper
 from ats_scrapers.scrapers.infojobs_es import InfoJobsSpainScraper
 from ats_scrapers.scrapers.jazzhr import JazzHRScraper
+from ats_scrapers.scrapers.jibe import JibeScraper
 from ats_scrapers.scrapers.jobbankca import JobBankCAScraper
 from ats_scrapers.scrapers.jobs_cz import JobsCzScraper
 from ats_scrapers.scrapers.jobsch import JobsChScraper
@@ -77,6 +78,7 @@ from ats_scrapers.scrapers.welcometothejungle import WTTJScraper
 from ats_scrapers.scrapers.wellfound import WellfoundScraper
 from ats_scrapers.scrapers.weworkremotely import WeWorkRemotelyScraper
 from ats_scrapers.scrapers.workable import WorkableScraper
+from ats_scrapers.scrapers.workable_marketplace import WorkableMarketplaceScraper
 from ats_scrapers.scrapers.workday import WorkdayScraper
 from ats_scrapers.scrapers.ycombinator import YCombinatorScraper
 
@@ -109,6 +111,7 @@ __all__ = [
     "HrmosScraper",
     "InfoJobsSpainScraper",
     "JazzHRScraper",
+    "JibeScraper",
     "JobBankCAScraper",
     "JobsChScraper",
     "JobsCzScraper",
@@ -149,6 +152,7 @@ __all__ = [
     "WantedScraper",
     "WeWorkRemotelyScraper",
     "WellfoundScraper",
+    "WorkableMarketplaceScraper",
     "WorkableScraper",
     "WorkdayScraper",
     "YCombinatorScraper",
