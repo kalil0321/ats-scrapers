@@ -102,6 +102,7 @@ from ats_scrapers.scrapers import (
     WantedScraper,
     WellfoundScraper,
     WeWorkRemotelyScraper,
+    WorkableMarketplaceScraper,
     WorkableScraper,
     WorkdayScraper,
     YCombinatorScraper,
@@ -859,6 +860,14 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # path for the bot-protected detail pages.
         "scraper": ProgramathorScraper, "singleton": True,
         "output": "programathor/jobs.csv",
+    },
+    "workable_marketplace": {
+        # Workable's public job marketplace: every customer's live postings
+        # (~170k in Nov 2026) in one cursor walk at ~1 page/s, 20 per page.
+        # A full pass takes about 3 hours.
+        "scraper": WorkableMarketplaceScraper, "singleton": True,
+        "output": "workable_marketplace/jobs.csv",
+        "publish_previous_while_running": True,
     },
     "remoteok": {
         # RemoteOK — remote-only listings, US-heavy. ~100 live.
