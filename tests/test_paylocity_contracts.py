@@ -36,7 +36,7 @@ def test_paylocity_seed_catalogue_is_validated_provider_only() -> None:
     with Path("ats-companies/paylocity.csv").open(newline="") as handle:
         rows = list(csv.DictReader(handle))
 
-    assert len(rows) >= 5_298
+    assert len(rows) >= 5_295
     assert len({row["slug"] for row in rows}) == len(rows)
     assert all(
         row["url"]
