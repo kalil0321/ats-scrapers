@@ -108,6 +108,25 @@ def test_manifest_contains_expected_structure(ats_csv_dir, fake_r2) -> None:
     assert manifest["all"]["csv"].endswith("/all.csv")
 
 
+def test_manifest_reports_jobs_by_source_kind(ats_csv_dir, fake_r2) -> None:
+    eures = ats_csv_dir / "eures"
+    eures.mkdir()
+    (eures / "jobs.csv").write_text(
+        "url,title,location,company,ats_id\n"
+        "https://eures.example/job/1,Nurse,Berlin,Klinik A,e1\n"
+        "https://eures.example/job/2,Driver,Munich,Spedition B,e2\n"
+    )
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+
+    stats = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])["stats"]
+    assert stats["total_jobs"] == 11
+    assert stats["jobs_by_source_kind"] == {
+        "ats": 9, "company_site": 0, "gov_board": 2, "job_board": 0,
+    }
+    assert stats["ats_jobs"] == 9
+
+
 def test_manifest_includes_generator_string(ats_csv_dir, fake_r2) -> None:
     publisher = DatasetPublisher(fake_r2, write_parquet=True)
     publisher.publish_from_directory(ats_csv_dir)
