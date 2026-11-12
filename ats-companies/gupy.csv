@@ -5,7 +5,6 @@ name,slug,url
 #Vem Ser Dana,dana,https://dana.gupy.io
 #VemParaAltona,vagasaltona,https://vagasaltona.gupy.io
 #vempranexa Brasil,vempranexa,https://vempranexa.gupy.io
-#vempraot,vempraot,https://vempraot.gupy.io
 #VemserEcoporto🍃,ecoporto,https://ecoporto.gupy.io
 #VemserEcopátio🍃,ecopatio,https://ecopatio.gupy.io
 #VemserEcoviasAraguaia🍃,ecoviasdoaraguaia,https://ecoviasdoaraguaia.gupy.io
@@ -27,6 +26,7 @@ name,slug,url
 3CON,trescon,https://trescon.gupy.io
 3S Tecnologia,talentos3stecnologia,https://talentos3stecnologia.gupy.io
 3tentos,3tentos,https://3tentos.gupy.io
+3tentos,estagio3tentos,https://estagio3tentos.gupy.io
 4MK Solutions,4mk,https://4mk.gupy.io
 77Sol,77sol,https://77sol.gupy.io
 A3 Consultoria,a3consultoria,https://a3consultoria.gupy.io
@@ -43,7 +43,6 @@ ADAMA,adama,https://adama.gupy.io
 ADAMÉTAL,ada,https://ada.gupy.io
 Adeste,vemseradeste,https://vemseradeste.gupy.io
 Adimax,adimax,https://adimax.gupy.io
-Administração,medmais,https://medmais.gupy.io
 Adtail,adtail,https://adtail.gupy.io
 Aegea Saneamento,aegea,https://aegea.gupy.io
 Aegro,aegro,https://aegro.gupy.io
@@ -52,6 +51,7 @@ Afinz,afinz,https://afinz.gupy.io
 Afip,afip,https://afip.gupy.io
 AFPESP,afpesp,https://afpesp.gupy.io
 Afya,afya,https://afya.gupy.io
+Afya,afyamedicina,https://afyamedicina.gupy.io
 Ageplan,ageplan,https://ageplan.gupy.io
 Agis Distribuição,vagasagis,https://vagasagis.gupy.io
 AGRIBRASIL,agribrasil,https://agribrasil.gupy.io
@@ -196,7 +196,6 @@ Banco ABC Brasil,abcbrasil,https://abcbrasil.gupy.io
 Banco Bmg,bmg,https://bmg.gupy.io
 BANCO DAYCOVAL,bancodaycoval,https://bancodaycoval.gupy.io
 Banco de Talentos Solar Coca-Cola,bancodetalentossolarcocacola,https://bancodetalentossolarcocacola.gupy.io
-Banco de Talentos Unimed,banco-talentos-unimed,https://banco-talentos-unimed.gupy.io
 Banco Fibra,bancofibra,https://bancofibra.gupy.io
 BANCO INDUSTRIAL DO BRASIL,bib,https://bib.gupy.io
 Banco Sofisa,bancosofisa,https://bancosofisa.gupy.io
@@ -256,6 +255,7 @@ Brasilseg,brasilseg,https://brasilseg.gupy.io
 BrasilTecpar - VagasBH,vagasbhbrasiltecpar,https://vagasbhbrasiltecpar.gupy.io
 Brasol - Soluções Energéticas Inteligentes,brasol,https://brasol.gupy.io
 BrasPine,braspine,https://braspine.gupy.io
+Brava,bravaacelera,https://bravaacelera.gupy.io
 Brava Energia,bravaenergia,https://bravaenergia.gupy.io
 Braveo,braveo,https://braveo.gupy.io
 BRB Seguros,brbseguros,https://brbseguros.gupy.io
@@ -291,15 +291,8 @@ Carbel Auto Group,grupocarbel,https://grupocarbel.gupy.io
 CARDWAY,cardway,https://cardway.gupy.io
 Cargolift,cargolift,https://cargolift.gupy.io
 Carpal,carpal,https://carpal.gupy.io
-Carreira Médica na Afya,afyamedicina,https://afyamedicina.gupy.io
 Carreira Strattner,strattner,https://strattner.gupy.io
-Carreira TSSA,teconsuape,https://teconsuape.gupy.io
-Carreiras - igc partners,carreirasigcp,https://carreirasigcp.gupy.io
-Carreiras Clínica Imagem,clinicaimagem,https://clinicaimagem.gupy.io
-Carreiras Decathlon,carreirasdecathlon,https://carreirasdecathlon.gupy.io
 Carreiras Evangélico Hospital,evangelicohospital,https://evangelicohospital.gupy.io
-Carreiras Pilar Hospital,pilarhospital,https://pilarhospital.gupy.io
-Carreiras Promobit,promobit,https://promobit.gupy.io
 Carreiras Vera Cruz Hospital,veracruzhospital,https://veracruzhospital.gupy.io
 Carreiras Ypê,carreirasype,https://carreirasype.gupy.io
 Cartpanda,cartpanda,https://cartpanda.gupy.io
@@ -356,6 +349,7 @@ Centro Universitário Módulo,modulo,https://modulo.gupy.io
 Centro Universitário Nossa Senhora do Patrocínio - CEUNSP,ceunsp,https://ceunsp.gupy.io
 Centros de Educação Infantil - SPDM Afiliadas,ceis,https://ceis.gupy.io
 CEPEL,cepel,https://cepel.gupy.io
+CEPEL,estagiocepel,https://estagiocepel.gupy.io
 Cepêra,cepera,https://cepera.gupy.io
 Cerpa Cervejaria Paraense S/A,cerpacervejaria,https://cerpacervejaria.gupy.io
 Certisign,certisign,https://certisign.gupy.io
@@ -405,12 +399,15 @@ Club Athletico Paranaense,athletico,https://athletico.gupy.io
 Clube Moms,clubemoms,https://clubemoms.gupy.io
 Clínica da Gávea,clinicadagavea,https://clinicadagavea.gupy.io
 Clínica Florence,clinicaflorence,https://clinicaflorence.gupy.io
+Clínica Imagem,clinicaimagem,https://clinicaimagem.gupy.io
 Clínica Rio de Janeiro,clinicariodejaneiro,https://clinicariodejaneiro.gupy.io
 CMMM Sociedade de Advogados,cmmm,https://cmmm.gupy.io
 CNA Idiomas,cnaidiomas,https://cnaidiomas.gupy.io
 "CNC - Confederação Nacional do Comércio de Bens, Serviços e Turismo",cnc,https://cnc.gupy.io
+CNN Brasil,cnnbrasil,https://cnnbrasil.gupy.io
 CNP Seguradora,cnpseguradora,https://cnpseguradora.gupy.io
 Coca-Cola Andina Brasil,koandina,https://koandina.gupy.io
+Coca-Cola Andina Brasil,programadeestagiokoandina,https://programadeestagiokoandina.gupy.io
 Coca-Cola FEMSA (Temporárias),vagastemporarias-cocacolafemsabr,https://vagastemporarias-cocacolafemsabr.gupy.io
 Coca-Cola FEMSA - Jovens Aprendizes,jovemaprendiz-cocacolafemsabr,https://jovemaprendiz-cocacolafemsabr.gupy.io
 Coca-Cola FEMSA Brasil,cocacolafemsabr,https://cocacolafemsabr.gupy.io
@@ -476,7 +473,6 @@ Construct IN,constructin,https://constructin.gupy.io
 Construmarket,construmarket,https://construmarket.gupy.io
 Construtora Stanza,stanza,https://stanza.gupy.io
 Construtora Tenda,tenda,https://tenda.gupy.io
-consultor vendas externas,consultordevendastahto,https://consultordevendastahto.gupy.io
 Consórcio Ocyan & Mota-Engil,ocyan-motaengil,https://ocyan-motaengil.gupy.io
 Conta Simples,contasimples,https://contasimples.gupy.io
 Contabexpress,contabexpress,https://contabexpress.gupy.io
@@ -552,6 +548,7 @@ DB,db,https://db.gupy.io
 DC Group,dcgroup,https://dcgroup.gupy.io
 DC-DinsmoreCompass,dc,https://dc.gupy.io
 DCBM Data Center Brasil,dcbmdatacenter,https://dcbmdatacenter.gupy.io
+Decathlon,carreirasdecathlon,https://carreirasdecathlon.gupy.io
 Decathlon Mexico,trabajoendecathlon,https://trabajoendecathlon.gupy.io
 Dedalus Prime,dedalus,https://dedalus.gupy.io
 Deliver IT,deliverit,https://deliverit.gupy.io
@@ -572,14 +569,14 @@ DICON CONTABILIDADE,diconcontabilidade,https://diconcontabilidade.gupy.io
 Difatto Contabilidade,difattocontabilidade,https://difattocontabilidade.gupy.io
 Diflex Distribuidora,diflex-vagas,https://diflex-vagas.gupy.io
 Digio,digio,https://digio.gupy.io
-dimona,camisadimona,https://camisadimona.gupy.io
+Dimona,camisadimona,https://camisadimona.gupy.io
 Dinamo,sejadinamo,https://sejadinamo.gupy.io
 Disfer Distribuidora,disferdistribuidora,https://disferdistribuidora.gupy.io
 Diálogo Engenharia,dialogo,https://dialogo.gupy.io
 DMS Logistics,dmslog,https://dmslog.gupy.io
 dnata Brasil,dnatabrasil,https://dnatabrasil.gupy.io
 Docket Brasil,docket,https://docket.gupy.io
-domoinovacao,domo,https://domo.gupy.io
+Domo Inovação,domo,https://domo.gupy.io
 Dotz,dotz,https://dotz.gupy.io
 DPaschoal,ciadpaschoal,https://ciadpaschoal.gupy.io
 dr.consulta - CENTROS MÉDICOS,drconsultacms,https://drconsultacms.gupy.io
@@ -661,6 +658,7 @@ Euro Colchões,eurocolchoes,https://eurocolchoes.gupy.io
 Eurobike,eurobike,https://eurobike.gupy.io
 EuroChem,carreiras,https://carreiras.gupy.io
 Eurofarma,eurofarma,https://eurofarma.gupy.io
+Eurofarma,programaestagioeurofarma,https://programaestagioeurofarma.gupy.io
 Eva Benefícios,eva,https://eva.gupy.io
 Even Construtora e Incorporadora,sejaeven,https://sejaeven.gupy.io
 Evolua,evolua,https://evolua.gupy.io
@@ -828,6 +826,7 @@ Grupo BAUMINAS,grupobauminas,https://grupobauminas.gupy.io
 Grupo Bergerson,bergerson,https://bergerson.gupy.io
 GRUPO BFFC,bffc,https://bffc.gupy.io
 Grupo Bignardi,grupobignardi,https://grupobignardi.gupy.io
+Grupo Bild,programadeestagiogrupobild,https://programadeestagiogrupobild.gupy.io
 Grupo BOM JESUS IELUSC,bomjesusielusc,https://bomjesusielusc.gupy.io
 Grupo Boticário,grupoboticario,https://grupoboticario.gupy.io
 Grupo Brasiliense,grupobrasiliense,https://grupobrasiliense.gupy.io
@@ -939,6 +938,7 @@ Grupo Simões | #VemProTimeGS,gruposimoes,https://gruposimoes.gupy.io
 Grupo Sinal,gruposinal,https://gruposinal.gupy.io
 Grupo Sinosserra,gruposinosserra,https://gruposinosserra.gupy.io
 Grupo Solví,solvinordeste,https://solvinordeste.gupy.io
+Grupo Solví,programaestagiosolvi,https://programaestagiosolvi.gupy.io
 GRUPO SOMA,gruposomapcd,https://gruposomapcd.gupy.io
 Grupo Splice,splice-vagas,https://splice-vagas.gupy.io
 Grupo Suno,gruposunojobs,https://gruposunojobs.gupy.io
@@ -962,8 +962,8 @@ GRUPO VPL,vipleiloes,https://vipleiloes.gupy.io
 Grupo Vyas,vyas,https://vyas.gupy.io
 Grupo WTorre,wtorre,https://wtorre.gupy.io
 Grupo Yamaha Brasil,yamaha,https://yamaha.gupy.io
+Grupo Zenir,grupozenir,https://grupozenir.gupy.io
 GrupoSC Distribuidora de Medicamentos,gruposc,https://gruposc.gupy.io
-grupozenir.gupy.io,grupozenir,https://grupozenir.gupy.io
 Guabi Nutrição e Saúde Animal,guabi,https://guabi.gupy.io
 Guarida,guaridacarreiras,https://guaridacarreiras.gupy.io
 Gupy,vempra,https://vempra.gupy.io
@@ -1040,6 +1040,7 @@ Icomm Group,icommgroup,https://icommgroup.gupy.io
 ICONIC,iconic,https://iconic.gupy.io
 ICTS Security,ictssecurity,https://ictssecurity.gupy.io
 IGC,igc,https://igc.gupy.io
+igc partners,carreirasigcp,https://carreirasigcp.gupy.io
 Iguá Saneamento,vemserigua,https://vemserigua.gupy.io
 IHARA - Agricultura é a nossa vida.,ihara,https://ihara.gupy.io
 ILPEA,ilpea,https://ilpea.gupy.io
@@ -1199,7 +1200,6 @@ Lojas Renner - Encantech,encantech,https://encantech.gupy.io
 Lojas Renner Argentina,rennerargentina,https://rennerargentina.gupy.io
 Lojas Renner S.A.,repassa,https://repassa.gupy.io
 Lojas Renner Uruguai,renneruy,https://renneruy.gupy.io
-Lojas TIM,atendimentoelojastim,https://atendimentoelojastim.gupy.io
 Lojas Torra,lojastorra,https://lojastorra.gupy.io
 Lojas Vivo,lojasvivo,https://lojasvivo.gupy.io
 Loxam - A Geradora,ageradora,https://ageradora.gupy.io
@@ -1239,6 +1239,7 @@ MCassab Nutrição e Saúde Animal,mcassabnutricaoesaudeanimal,https://mcassabnu
 McDonald's Restaurante - Arcos Dorados,restaurantemc,https://restaurantemc.gupy.io
 MDS Group,vemsermds,https://vemsermds.gupy.io
 Medicicor,medicicor,https://medicicor.gupy.io
+Medmais,medmais,https://medmais.gupy.io
 Memed ativo,memed,https://memed.gupy.io
 Mendelics,mendelics,https://mendelics.gupy.io
 Mercadinhos São Luiz,vemprosmercadinhossaoluiz,https://vemprosmercadinhossaoluiz.gupy.io
@@ -1288,6 +1289,7 @@ Movida,movida,https://movida.gupy.io
 MPD Engenharia,mpdengenharia,https://mpdengenharia.gupy.io
 MRM Brasil,mrm,https://mrm.gupy.io
 MRO,mroativa,https://mroativa.gupy.io
+MRV&CO,programadeestagiomrveco,https://programadeestagiomrveco.gupy.io
 MTP Métodos e Tecnologia – Brasil,mtpbrasil,https://mtpbrasil.gupy.io
 Mulheres de Fibra (Vivo),mulheresdefibra,https://mulheresdefibra.gupy.io
 Mundial Logistics,mundiallogisticsgroup,https://mundiallogisticsgroup.gupy.io
@@ -1313,6 +1315,7 @@ NetSecurity Brasil,netsecurity,https://netsecurity.gupy.io
 Netshow.me,netshowme,https://netshowme.gupy.io
 Neugebauer Alimentos S/A,neugebauer,https://neugebauer.gupy.io
 NEW VEGAS,new-vegas,https://new-vegas.gupy.io
+Nexa,practicasnexa,https://practicasnexa.gupy.io
 Nexa Tecnologia,nexatecnologia,https://nexatecnologia.gupy.io
 Nexdom Healthtech,vempranexdom,https://vempranexdom.gupy.io
 Next Fit,nextfit,https://nextfit.gupy.io
@@ -1392,6 +1395,7 @@ Penso - Acesse nossas vagas,penso,https://penso.gupy.io
 Perbras,perbras,https://perbras.gupy.io
 Petrobahia S.A.,petrobahia,https://petrobahia.gupy.io
 PETRONAS,petronas,https://petronas.gupy.io
+PETRONAS,programadeestagiopetronas,https://programadeestagiopetronas.gupy.io
 Petros,petros,https://petros.gupy.io
 Petz,petz,https://petz.gupy.io
 Pharlab Indústria Farmacêutica,pharlab,https://pharlab.gupy.io
@@ -1399,6 +1403,7 @@ Phiz Chat,phiz,https://phiz.gupy.io
 Phoebus Tecnologia,phoebus,https://phoebus.gupy.io
 Pif Paf Alimentos Administrativo,pifpafalimentosadministrativo,https://pifpafalimentosadministrativo.gupy.io
 Pif Paf Alimentos Operações,pifpafalimentosoperacoes,https://pifpafalimentosoperacoes.gupy.io
+Pilar Hospital,pilarhospital,https://pilarhospital.gupy.io
 Pimenta de Ávila Consultoria,pimentadeavila,https://pimentadeavila.gupy.io
 Pingo de Gente e Laviniense,laviniense,https://laviniense.gupy.io
 PipeImob,pipeimob,https://pipeimob.gupy.io
@@ -1439,28 +1444,15 @@ Privalia,privalia,https://privalia.gupy.io
 Probel,probel,https://probel.gupy.io
 Prodal Saude S/A,prodalsaude,https://prodalsaude.gupy.io
 Produttivo,produttivo,https://produttivo.gupy.io
-Programa Cultiva 3tentos,estagio3tentos,https://estagio3tentos.gupy.io
-Programa de Estágio 2026: Brava Acelera,bravaacelera,https://bravaacelera.gupy.io
-Programa de Estágio 2027 - Grupo Solví,programaestagiosolvi,https://programaestagiosolvi.gupy.io
 Programa de Estágio AHEAD - Tauil & Chequer Advogados associado a Mayer Brown,tauilechequerahead,https://tauilechequerahead.gupy.io
-Programa de Estágio Coca-Cola Andina Brasil,programadeestagiokoandina,https://programadeestagiokoandina.gupy.io
-Programa de Estágio do CEPEL,estagiocepel,https://estagiocepel.gupy.io
-Programa de Estágio Eurofarma,programaestagioeurofarma,https://programaestagioeurofarma.gupy.io
-Programa de Estágio Grupo Bild,programadeestagiogrupobild,https://programadeestagiogrupobild.gupy.io
 Programa de Estágio ISA ENERGIA BRASIL 2027,programadeestagioisaenergiabr,https://programadeestagioisaenergiabr.gupy.io
-Programa de Estágio MRV&CO,programadeestagiomrveco,https://programadeestagiomrveco.gupy.io
-PROGRAMA DE ESTÁGIO PETRONAS,programadeestagiopetronas,https://programadeestagiopetronas.gupy.io
-Programa de Estágio Santa Casa BH,programadeestagiosantacasabh,https://programadeestagiosantacasabh.gupy.io
-Programa de Estágio VibraOn,vibraestagio,https://vibraestagio.gupy.io
 Programa de inicio de carreira Pharlab - Semeando Talentos,pharlab-estagio,https://pharlab-estagio.gupy.io
-Programa de Prácticas Nexa - Perú,practicasnexa,https://practicasnexa.gupy.io
-Programa de Trainee SLC Agrícola,traineeslcagricola,https://traineeslcagricola.gupy.io
 Programa Estagiar Grendene,programaestagiargrendene,https://programaestagiargrendene.gupy.io
 Programas de Entrada Usiminas,programasdeentradausiminas,https://programasdeentradausiminas.gupy.io
-Programas de Talentos TIM Brasil,programastim,https://programastim.gupy.io
 Programas Novos Talentos 2023,novostalentosequatorial,https://novostalentosequatorial.gupy.io
 Projedata,projedata,https://projedata.gupy.io
 Projeto Rede - SPDM Afiliadas,projetorede,https://projetorede.gupy.io
+Promobit,promobit,https://promobit.gupy.io
 Pronali RH,pronalirh,https://pronalirh.gupy.io
 Prothera,prothera,https://prothera.gupy.io
 Protiviti,protiviti,https://protiviti.gupy.io
@@ -1561,6 +1553,7 @@ Samtronic,samtronic,https://samtronic.gupy.io
 SAMU 192 - Regional do Alto Vale do Paraíba - SPDM Afiliadas,samusjc,https://samusjc.gupy.io
 Sanchez e Sanchez Sociedade de Advogados,sanchezadv,https://sanchezadv.gupy.io
 Santa Casa BH,santacasabh,https://santacasabh.gupy.io
+Santa Casa BH,programadeestagiosantacasabh,https://programadeestagiosantacasabh.gupy.io
 Santa Casa da Bahia,santacasaba,https://santacasaba.gupy.io
 Santa Casa de Porto Alegre,santacasa,https://santacasa.gupy.io
 Santa Colomba,santacolomba,https://santacolomba.gupy.io
@@ -1591,7 +1584,6 @@ Seguralta,seguralta,https://seguralta.gupy.io
 Segware,segware,https://segware.gupy.io
 Seja Alubar,sejaalubar,https://sejaalubar.gupy.io
 Seja Maga,magaaviation,https://magaaviation.gupy.io
-sejacnn,cnnbrasil,https://cnnbrasil.gupy.io
 Selfit Academias,vemserselfit,https://vemserselfit.gupy.io
 Sem Parar Corpay,semparar,https://semparar.gupy.io
 Semeia 3tentos,aprendiz3tentos,https://aprendiz3tentos.gupy.io
@@ -1646,6 +1638,7 @@ SJ Imóveis,sjimoveis,https://sjimoveis.gupy.io
 SJCC,sjcc,https://sjcc.gupy.io
 Skill Consultoria Empresarial,skillconsultoria,https://skillconsultoria.gupy.io
 SLC Agrícola,slcagricola,https://slcagricola.gupy.io
+SLC Agrícola,traineeslcagricola,https://traineeslcagricola.gupy.io
 SLC Máquinas,slcmaquinas,https://slcmaquinas.gupy.io
 Smart NX,smartnx,https://smartnx.gupy.io
 Smarthis,smarthis,https://smarthis.gupy.io
@@ -1679,6 +1672,7 @@ SP Plus,spplus,https://spplus.gupy.io
 Spani Atacadista,spani,https://spani.gupy.io
 SPC Brasil,spcbrasil,https://spcbrasil.gupy.io
 SPDM - Hospital Estadual de Diadema,hed,https://hed.gupy.io
+SPDM Afiliadas,uais,https://uais.gupy.io
 SPDM Hospital São Paulo,spdmhsp,https://spdmhsp.gupy.io
 SPDM/PAIS,spdmpais,https://spdmpais.gupy.io
 SPDM/PAIS RIO DE JANEIRO,spdmpaisrj,https://spdmpaisrj.gupy.io
@@ -1728,13 +1722,13 @@ Sítio da Serra,sitiodaserra,https://sitiodaserra.gupy.io
 "TACO - Roupas, Moda / Varejo",taco,https://taco.gupy.io
 TAG - Experiências Literárias,taglivros,https://taglivros.gupy.io
 Tahto,tahto,https://tahto.gupy.io
+Tahto,consultordevendastahto,https://consultordevendastahto.gupy.io
 Tahto - Staff e Executivo #VemSerTahto,vemsertahto,https://vemsertahto.gupy.io
 TAKARA,takara,https://takara.gupy.io
 Talent Gestão de Pessoas,talentgp,https://talentgp.gupy.io
 Talento Creditas,talentocreditas,https://talentocreditas.gupy.io
 Talentos AlmapBBDO,almapbbdo,https://almapbbdo.gupy.io
 TALENTOS SMART,smart,https://smart.gupy.io
-Talentos UNIABEU,talentosuniabeu,https://talentosuniabeu.gupy.io
 TAM Aviação Executiva,tamaviacaoexecutiva,https://tamaviacaoexecutiva.gupy.io
 TANAC,tanac,https://tanac.gupy.io
 Tania Bulhões,tania-bulhoes,https://tania-bulhoes.gupy.io
@@ -1753,6 +1747,7 @@ Techub,grupotecnoset,https://grupotecnoset.gupy.io
 Tecnobank 🔒,tecnobank,https://tecnobank.gupy.io
 Tecnofit,tecnofit,https://tecnofit.gupy.io
 Tecnogera Geradores,tecnogera,https://tecnogera.gupy.io
+Tecon Suape,teconsuape,https://teconsuape.gupy.io
 Tecto Data Centers,tecto,https://tecto.gupy.io
 Tecverde S.A.,tecverde,https://tecverde.gupy.io
 Tegma Gestão Logística,tegma,https://tegma.gupy.io
@@ -1779,7 +1774,9 @@ Thomriss Soluções em Embalagens,thomriss,https://thomriss.gupy.io
 Thymos Energia,thymosenergia,https://thymosenergia.gupy.io
 TIC Trens,tictrens,https://tictrens.gupy.io
 Tijuca Alimentos,vagastijuca,https://vagastijuca.gupy.io
+TIM,atendimentoelojastim,https://atendimentoelojastim.gupy.io
 TIM Brasil,vemprotime,https://vemprotime.gupy.io
+TIM Brasil,programastim,https://programastim.gupy.io
 TIMAC Agro Brasil,timacagro,https://timacagro.gupy.io
 Timenow,time-now,https://time-now.gupy.io
 Tintas Kokar,kokar,https://kokar.gupy.io
@@ -1832,11 +1829,11 @@ Ultracargo,ultracargo,https://ultracargo.gupy.io
 Ultragaz,vagasultragaz,https://vagasultragaz.gupy.io
 Ultragaz Energia,ultragazenergia,https://ultragazenergia.gupy.io
 Um Telecom,umtelecom,https://umtelecom.gupy.io
+UNIABEU,talentosuniabeu,https://talentosuniabeu.gupy.io
 Unibeer,unibeer,https://unibeer.gupy.io
 UNICASA INDÚSTRIA DE MÓVEIS S/A,unicasamoveis,https://unicasamoveis.gupy.io
 Unicred,unicredbr,https://unicredbr.gupy.io
 Unicred - Núcleo Geração,unicred,https://unicred.gupy.io
-Unidades de Atendimento Integrado UAI do Município de Uberlândia - SPDM Afiliadas,uais,https://uais.gupy.io
 Unidas,unidas,https://unidas.gupy.io
 UniFacens,facens,https://facens.gupy.io
 Unifeob,unifeob,https://unifeob.gupy.io
@@ -1845,6 +1842,7 @@ Unificado,unificado,https://unificado.gupy.io
 Unifique Telecomunicações,vemserunifique,https://vemserunifique.gupy.io
 UNIG Carreiras,vemserunig,https://vemserunig.gupy.io
 Unilider Distribuidora,unilider,https://unilider.gupy.io
+Unimed,banco-talentos-unimed,https://banco-talentos-unimed.gupy.io
 Unimed Amparo,unimed-amparo,https://unimed-amparo.gupy.io
 Unimed Araruama,unimed-araruama,https://unimed-araruama.gupy.io
 Unimed Belém,unimedbelem,https://unimedbelem.gupy.io
@@ -1890,7 +1888,6 @@ Usina Pagrisa,pagrisa,https://pagrisa.gupy.io
 Usina Santa Adélia,usinasantaadelia,https://usinasantaadelia.gupy.io
 Usina Santa Terezinha,usinasantaterezinha,https://usinasantaterezinha.gupy.io
 USINA SANTA TEREZINHA,programaaaj,https://programaaaj.gupy.io
-v(dev),vdev,https://vdev.gupy.io
 V.tal | o futuro passa por aqui,vtal,https://vtal.gupy.io
 Vale Saúde,valesaude,https://valesaude.gupy.io
 Valenet Carreiras,valenetcarreiras,https://valenetcarreiras.gupy.io
@@ -1949,6 +1946,7 @@ Viacredi Alto Vale,viacredialtovale,https://viacredialtovale.gupy.io
 Vialaser Depilação,vialaserdepilacao,https://vialaserdepilacao.gupy.io
 Viapol,viapol,https://viapol.gupy.io
 VIASOFT,viasoft,https://viasoft.gupy.io
+Vibra,vibraestagio,https://vibraestagio.gupy.io
 Vibra Energia,vibra,https://vibra.gupy.io
 Vibra Energia,vibraenergia,https://vibraenergia.gupy.io
 Viceri SEIDOR,viceri-vagas,https://viceri-vagas.gupy.io
