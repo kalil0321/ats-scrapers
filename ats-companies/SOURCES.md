@@ -1,9 +1,12 @@
 # Seed sources for tenant discovery
 
-Rows in these CSVs are added only after the provider's live API returns
-at least one job (see `docs/DISCOVERY_RULES.md`). Some candidates came
-from the public datasets below. They were used as candidate lists only:
-every row was validated against the live provider before it was added.
+This file lists the outside sources used to find candidate tenants. It
+covers the rows added from those sources, not every row in these CSVs.
+
+A candidate from one of these sources is added only after the provider's
+live job list (its API or its public listing page, as
+`docs/DISCOVERY_RULES.md` allows) returns at least one job. The sources
+are candidate lists only.
 
 | Dataset | Licence | Used for |
 | --- | --- | --- |
