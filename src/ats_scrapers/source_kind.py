@@ -8,7 +8,9 @@ The dataset mixes four kinds of sources:
 - ``gov_board``: a public employment service that republishes postings
   from many employers (EURES, Bundesagentur, Job Bank, ...).
 - ``job_board``: a commercial job board or marketplace where employers
-  post (Welcome to the Jungle, Wellfound, Remote OK, ...).
+  post (Welcome to the Jungle, Wellfound, Remote OK, ...). Mercor and Gem
+  are here too: the publisher's dedup priorities already treat both as
+  hybrid job boards, and Mercor is one feed for many employers.
 
 The headline job count covers ``ats`` and ``company_site`` only: those
 postings come straight from the employer's hiring system.
@@ -27,8 +29,8 @@ SourceKind = Literal["ats", "company_site", "gov_board", "job_board"]
 HEADLINE_KINDS: Final[frozenset[str]] = frozenset({"ats", "company_site"})
 
 COMPANY_SITES: Final[frozenset[str]] = frozenset({
-    "amazon", "apple", "bytedance", "google", "meta", "mercor", "tesla",
-    "tiktok", "uber",
+    "amazon", "apple", "bytedance", "google", "meta", "tesla", "tiktok",
+    "uber",
 })
 
 GOV_BOARDS: Final[frozenset[str]] = frozenset({
@@ -36,9 +38,10 @@ GOV_BOARDS: Final[frozenset[str]] = frozenset({
 })
 
 JOB_BOARDS: Final[frozenset[str]] = frozenset({
-    "builtin", "getonbrd", "infojobs_es", "jobs_cz", "jobsch", "manfred",
-    "programathor", "remoteok", "seek", "thehub", "wanted", "wellfound",
-    "welcometothejungle", "weworkremotely", "ycombinator",
+    "builtin", "gem", "getonbrd", "infojobs_es", "jobs_cz", "jobsch",
+    "manfred", "mercor", "programathor", "remoteok", "seek", "thehub",
+    "wanted", "wellfound", "welcometothejungle", "weworkremotely",
+    "ycombinator",
 })
 
 

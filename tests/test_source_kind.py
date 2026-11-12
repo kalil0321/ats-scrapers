@@ -42,3 +42,11 @@ def test_explicit_lists_name_known_sources() -> None:
 def test_source_kind(source: str, kind: str, headline: bool) -> None:
     assert source_kind(source) == kind
     assert is_headline(source) is headline
+
+
+def test_marketplaces_do_not_count_toward_the_headline() -> None:
+    """Mercor is one feed for many employers and Gem is a hybrid board:
+    the publisher's dedup priorities already rank both as job boards."""
+    for source in ("mercor", "gem"):
+        assert source_kind(source) == "job_board"
+        assert not is_headline(source)
