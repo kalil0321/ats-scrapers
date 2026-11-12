@@ -1446,7 +1446,10 @@ def _tolerated_shard_failures(cfg: dict[str, Any], targets: int) -> int:
     raw = cfg.get("fail_closed_tolerance", 0)
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return 0
-    fraction = float(raw)
+    try:
+        fraction = float(raw)
+    except OverflowError:  # an integer too large for a float
+        fraction = 1.0 if raw > 0 else 0.0
     if fraction != fraction:  # NaN
         return 0
     fraction = min(max(fraction, 0.0), 1.0)

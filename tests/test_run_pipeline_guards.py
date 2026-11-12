@@ -1394,6 +1394,8 @@ def test_streaming_pipeline_fetches_missing_descriptions_concurrently(
         (True, 10, 0),
         ("0.5", 10, 0),
         (float("nan"), 10, 0),
+        (10**400, 10, 10),
+        (-(10**400), 10, 0),
     ],
 )
 def test_tolerated_shard_failures(raw, targets: int, expected: int) -> None:
