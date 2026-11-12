@@ -21,15 +21,17 @@ the same two public resources:
 
 A search stops returning rows after 10,000 postings, so on the few
 sites above that size the walk ends there and a warning is logged with
-the announced total. The scraper fails closed when a page inside the
-walk holds no usable posting, or when the walk returns far fewer
+the announced total. Coverage is measured on distinct postings: the
+scraper fails closed when a page repeats postings it already has
+without adding a new one, or when the walk collects far fewer distinct
 postings than the site announced (the announced total counts a posting
 once per location, so a complete walk can be somewhat short).
 
-Descriptions need one request per posting, so the pipeline runs this
-scraper with ``defer_descriptions_to_cache``: listings come from the
-search endpoint and :meth:`get_description` is only called for postings
-that are not in the description cache yet.
+The result list only carries title, location and link. Everything else
+(description, posting date, country, employment type, requisition id)
+comes from the detail page, so the pipeline reads the detail page of
+every posting on every run rather than deferring descriptions to the
+cache, which would keep the description and lose the other fields.
 
 ``company_slug`` is the career-site host or URL.
 """
@@ -48,6 +50,7 @@ from urllib.parse import urlparse
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._slug import require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -153,33 +156,39 @@ class TalentBrewScraper(BaseScraper):
             total, pages = _totals(fragment)
             if total == 0:
                 return []
-            rows_seen = self._absorb(fragment, jobs)
+            self._absorb(fragment, jobs)
             # Some sites ignore RecordsPerPage and keep their own page size,
             # so follow the page count the site reports, not ours.
             for page in range(2, pages + 1):
-                if rows_seen >= RESULT_CAP:
+                if len(jobs) >= RESULT_CAP:
                     break
-                rows = self._absorb(await self._page(fetch, page), jobs)
-                rows_seen += rows
+                rows, added = self._absorb(await self._page(fetch, page), jobs)
                 if rows == 0:
-                    # A page without a usable posting before the last one
-                    # means the walk was cut.
+                    # The page count comes from the announced total, which
+                    # counts a posting once per location, so the list can
+                    # run out early. The coverage floor below decides
+                    # whether what was collected is enough.
+                    break
+                if added == 0:
+                    # Postings, but none of them new: the site is serving
+                    # the same page again.
                     raise ScraperError(
-                        f"TalentBrew ({self.host}) returned an empty page "
-                        f"{page} of {pages}"
+                        f"TalentBrew ({self.host}) page {page} of {pages} "
+                        "repeated postings without adding a new one"
                     )
 
+            # Distinct postings, not rows: a repeated page must not count.
             expected = min(total, RESULT_CAP)
-            if rows_seen < math.ceil(expected * MIN_COVERAGE):
+            if len(jobs) < math.ceil(expected * MIN_COVERAGE):
                 raise ScraperError(
-                    f"TalentBrew ({self.host}) returned {rows_seen} of "
+                    f"TalentBrew ({self.host}) returned {len(jobs)} of "
                     f"{expected} expected postings"
                 )
             if total > RESULT_CAP:
                 logger.warning(
                     "TalentBrew (%s) announces %d postings; the search stops "
                     "at %d, so %d were read",
-                    self.host, total, RESULT_CAP, rows_seen,
+                    self.host, total, RESULT_CAP, len(jobs),
                 )
             if not self.include_descriptions:
                 return list(jobs.values())
@@ -191,14 +200,20 @@ class TalentBrewScraper(BaseScraper):
         return list(jobs.values())
 
     def get_description(self, job: Job) -> str | None:
+        """Read the posting's detail page.
+
+        Fills ``job`` in place (description, posting date, location,
+        country, employment type, requisition id) and returns the
+        description, so a caller that listed without descriptions does
+        not lose the other detail fields.
+        """
         if job.description:
             return job.description
-        copy = job.model_copy(deep=True)
 
         async def run() -> str | None:
             async with self.make_fetcher() as fetch:
-                await self._enrich(fetch, asyncio.Semaphore(1), copy)
-            return copy.description
+                await self._enrich(fetch, asyncio.Semaphore(1), job)
+            return job.description
 
         return self._run_sync(run())
 
@@ -214,13 +229,17 @@ class TalentBrewScraper(BaseScraper):
             )
         return _parse_html(results)
 
-    def _absorb(self, fragment: BeautifulSoup, jobs: dict[str, Job]) -> int:
+    def _absorb(
+        self, fragment: BeautifulSoup, jobs: dict[str, Job],
+    ) -> tuple[int, int]:
         """Add a page's postings to ``jobs``.
 
-        Returns how many rows of the page parsed into a posting, so a page
-        of rows that lost their id or title counts as empty.
+        Returns ``(rows, added)``: how many rows of the page parsed into a
+        posting (rows that lost their id or title do not count), and how
+        many of those were not in ``jobs`` yet.
         """
         rows = 0
+        added = 0
         seen_on_page: set[str] = set()
         for link in fragment.select("a[data-job-id][href]"):
             href = str(link.get("href") or "")
@@ -236,19 +255,19 @@ class TalentBrewScraper(BaseScraper):
                 continue
             rows += 1
             ats_id = f"{self.host}:{job_id}"
-            jobs.setdefault(
-                ats_id,
-                Job(
-                    url=f"{self.base_url}{href}",
-                    title=title,
-                    company=self.company_name or self.host,
-                    ats_type=ATSType.TALENTBREW,
-                    ats_id=ats_id,
-                    location=_link_location(link),
-                    fetched_at=datetime.now(UTC),
-                ),
+            if ats_id in jobs:
+                continue
+            added += 1
+            jobs[ats_id] = Job(
+                url=f"{self.base_url}{href}",
+                title=title,
+                company=self.company_name or self.host,
+                ats_type=ATSType.TALENTBREW,
+                ats_id=ats_id,
+                location=_link_location(link),
+                fetched_at=datetime.now(UTC),
             )
-        return rows
+        return rows, added
 
     async def _enrich(
         self, fetch: Fetcher, semaphore: asyncio.Semaphore, job: Job,
@@ -298,6 +317,12 @@ def _normalize_host(value: str) -> str:
     host = host.lower().rstrip(".")
     if not _HOST_RE.match(host):
         raise ValueError(f"TalentBrew host is not a valid domain name: {value!r}")
+    try:
+        # Refuse loopback, private and other internal targets (10.0.0.1,
+        # jobs.internal, printer.local): only public hosts are scraped.
+        require_http_url(f"https://{host}", provider="TalentBrew")
+    except ScraperError as exc:
+        raise ValueError(str(exc)) from exc
     return host
 
 

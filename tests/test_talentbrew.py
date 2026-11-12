@@ -147,7 +147,12 @@ def test_get_description_fetches_one_page(httpx_mock) -> None:
     httpx_mock.add_response(url=DETAIL, text=_detail())
 
     assert scraper.get_description(job) == "Protect the site.\n\n- Patrol\n- Report"
-    assert job.description is None
+    # The detail fields land on the posting itself, not on a copy.
+    assert job.description == "Protect the site.\n\n- Patrol\n- Report"
+    assert job.posted_at == datetime(2026, 11, 12, tzinfo=UTC)
+    assert job.country_iso == "US"
+    assert job.employment_type == "FULL_TIME"
+    assert job.requisition_id == "2026-1747835"
 
 
 def test_walks_every_page(httpx_mock) -> None:
@@ -203,11 +208,45 @@ def test_site_with_its_own_page_size_is_walked_to_the_end(httpx_mock) -> None:
     assert len(httpx_mock.get_requests()) == 3
 
 
-def test_empty_page_inside_the_walk_raises(httpx_mock) -> None:
+def test_empty_page_ends_the_walk_and_coverage_decides(httpx_mock) -> None:
+    # Three pages announced, the list runs out after the first: one of
+    # three postings is below the 60% floor.
     httpx_mock.add_response(url=SEARCH, json=_fragment([_row("103")], 3, pages=3))
     httpx_mock.add_response(url=SEARCH, json=_fragment([], 3, pages=3))
 
-    with pytest.raises(ScraperError, match="empty page 2 of 3"):
+    with pytest.raises(ScraperError, match="returned 1 of 3"):
+        TalentBrewScraper(HOST, include_descriptions=False).fetch()
+    assert len(httpx_mock.get_requests()) == 2
+
+
+def test_list_that_runs_out_early_is_complete_above_the_floor(httpx_mock) -> None:
+    # The announced total counts a posting once per location, so the page
+    # count can overshoot: 4 distinct postings for 5 announced is enough.
+    rows = [_row(str(400 + i)) for i in range(4)]
+    httpx_mock.add_response(url=SEARCH, json=_fragment(rows, 5, pages=2))
+    httpx_mock.add_response(url=SEARCH, json=_fragment([], 5, pages=2))
+
+    assert len(TalentBrewScraper(HOST, include_descriptions=False).fetch()) == 4
+
+
+def test_repeated_page_raises(httpx_mock) -> None:
+    rows = [_row(str(500 + i)) for i in range(3)]
+    httpx_mock.add_response(url=SEARCH, json=_fragment(rows, 6, pages=2))
+    httpx_mock.add_response(url=SEARCH, json=_fragment(rows, 6, pages=2))
+
+    with pytest.raises(ScraperError, match="page 2 of 2 repeated postings"):
+        TalentBrewScraper(HOST, include_descriptions=False).fetch()
+
+
+def test_coverage_counts_distinct_postings_not_rows(httpx_mock) -> None:
+    # Page 2 brings one new posting among repeats: 4 distinct of 10
+    # announced is below the floor even though 6 rows were read.
+    first = [_row(str(600 + i)) for i in range(3)]
+    second = [*first[:2], _row("699")]
+    httpx_mock.add_response(url=SEARCH, json=_fragment(first, 10, pages=2))
+    httpx_mock.add_response(url=SEARCH, json=_fragment(second, 10, pages=2))
+
+    with pytest.raises(ScraperError, match="returned 4 of 10"):
         TalentBrewScraper(HOST, include_descriptions=False).fetch()
 
 
@@ -333,6 +372,25 @@ def test_job_posting_reads_type_lists_and_graphs() -> None:
 
     assert _job_posting(typed) == {"@type": ["Thing", "JobPosting"], "title": "A"}
     assert _job_posting(graph) == {"@type": "JobPosting", "title": "B"}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "10.0.0.1",
+        "https://192.168.1.5",
+        "https://169.254.169.254",
+        "127.0.0.1",
+        "jobs.internal",
+        "https://printer.local",
+        "app.localhost",
+    ],
+)
+def test_normalize_host_rejects_internal_targets(value: str) -> None:
+    with pytest.raises(ValueError):
+        _normalize_host(value)
+    with pytest.raises(ValueError):
+        TalentBrewScraper(value)
 
 
 @pytest.mark.parametrize(

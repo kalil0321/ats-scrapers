@@ -550,25 +550,27 @@ CONFIGS: dict[str, dict[str, Any]] = {
     },
     "talentbrew": {
         # Radancy TalentBrew career sites on the employer's own domain.
-        # Listings come from the search endpoint; descriptions need one
-        # detail page per posting, so they go through the description cache.
+        # The result list only has title, location and link; the posting
+        # date, country, employment type and description are on the detail
+        # page. The scraper therefore reads every detail page on every run
+        # (no defer_descriptions_to_cache, which would keep only the
+        # description for postings already in the cache).
         "scraper": TalentBrewScraper,
         "slug": lambda r: (r.get("url") or "").strip() or _slug_col(r),
         "kwargs": lambda r: {"company_name": (r.get("name") or "").strip() or None},
-        "defer_descriptions_to_cache": True,
         "dedupe_by_ats_id": True,
         "csv": "ats-companies/talentbrew.csv",
         "output": "talentbrew/jobs.csv",
         "max_concurrency": 4,
-        "description_concurrency": 4,
-        # A failed or missing employer must not vanish from the published
-        # file: keep the previous dataset unless (almost) every site
-        # answered. The catalogue is small, so the tolerance is one site
-        # in twenty rather than the usual 2%.
+        # Publish the new file only when at most one site in ten failed or
+        # went missing (the catalogue is small, so the usual 2% would be
+        # zero). Above that, or when the run returns no job at all, the
+        # previous dataset is kept. A tolerated failure leaves that
+        # employer out of the new file until its next successful run.
         "fail_closed_on_any_error": True,
         "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
-        "fail_closed_tolerance": 0.05,
+        "fail_closed_tolerance": 0.1,
     },
     "dayforce": {
         "scraper": DayforceScraper,

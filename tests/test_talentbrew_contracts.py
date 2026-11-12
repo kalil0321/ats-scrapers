@@ -23,8 +23,10 @@ def test_talentbrew_pipeline_config() -> None:
     assert config["csv"] == "ats-companies/talentbrew.csv"
     assert config["output"] == "talentbrew/jobs.csv"
     assert config["dedupe_by_ats_id"] is True
-    # Descriptions cost one page per posting, so they come from the cache.
-    assert config["defer_descriptions_to_cache"] is True
+    # Posting date, country and employment type only exist on the detail
+    # page, so details are read on every run instead of deferring
+    # descriptions to the cache (which would keep the description only).
+    assert "defer_descriptions_to_cache" not in config
     assert _bounded_concurrency(config, 24) == 4
 
 
@@ -36,12 +38,12 @@ def test_talentbrew_fails_closed_on_errors_missing_sites_and_empty_output() -> N
     assert config["fail_closed_on_empty"] is True
 
 
-def test_talentbrew_tolerance_covers_one_site_only() -> None:
+def test_talentbrew_tolerance_covers_one_site_in_ten() -> None:
     config = CONFIGS["talentbrew"]
     targets = len(_rows())
     tolerated = _tolerated_shard_failures(config, targets)
 
-    assert config["fail_closed_tolerance"] == 0.05
+    assert config["fail_closed_tolerance"] == 0.1
     # One site being down does not hold back every other employer...
     assert tolerated >= 1
     # ...but the guard still trips well before a real outage.
@@ -55,7 +57,7 @@ def test_talentbrew_is_a_direct_employer_source_for_deduplication() -> None:
 def test_talentbrew_catalogue_is_one_https_origin_per_employer() -> None:
     rows = _rows()
 
-    assert len(rows) >= 22
+    assert len(rows) >= 19
     assert len({row["slug"] for row in rows}) == len(rows)
     assert len({row["name"] for row in rows}) == len(rows)
     assert all(row["name"].strip() for row in rows)

@@ -306,12 +306,22 @@ Validation:
 2. Require HTTP 200 and a JSON object whose ``results`` HTML carries a
    numeric ``data-total-results`` above zero.
 3. Require at least one ``<a href="/job/.../{org}/{id}" data-job-id="{id}">``
-   row, and a schema.org ``JobPosting`` JSON-LD block on that posting's page.
-4. Reject hosts that are an alias of a site already listed (same total and
-   same first posting id).
-5. TalentBrew sits in front of the employer's ATS. Skip an employer whose
-   ATS board is already listed in another provider file: listing both
-   would publish the same postings twice.
+   row (the path may start with a locale, ``/en/job/...`` or
+   ``/fr-fr/job/...``), and a schema.org ``JobPosting`` JSON-LD block on
+   that posting's page.
+4. Record the announced total and run the scraper's full walk. It must
+   collect at least 60% of ``min(total, 10000)`` distinct postings (the
+   announced total counts a posting once per location). A search returns
+   nothing past 10,000 postings: a site above that size is read up to the
+   limit and the scraper logs the announced total, so note it in the PR.
+5. Reject hosts that are an alias of a site already listed. Posting ids are
+   scoped to a host, so an equal total and first id prove nothing: compare
+   several full posting paths (``/job/{city}/{title}/{org}/{id}``) and the
+   title plus location of the postings.
+6. TalentBrew sits in front of the employer's ATS. Skip an employer whose
+   ATS board is already listed in another provider file, unless the two
+   list different postings (say so in the PR): listing both would publish
+   the same postings twice.
 
 ### Avature
 
