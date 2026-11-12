@@ -1,19 +1,13 @@
 name,slug,url
-AC Environnement,fa-ethm-saasfaprod1,https://fa-ethm-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 ACI Worldwide Job Opportunities,ebwg,https://ebwg.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Adara Real Estate Company,fa-etzd-saasfaprod1,https://fa-etzd-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
-Africa World Airlines,fa-epqq-saasfaprod1,https://fa-epqq-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 AirBorneo,airborneo-iacatj,https://airborneo-iacatj.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
-Al Qana Property Management,fa-erbb-saasfaprod1,https://fa-erbb-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_10
-Aldar,fa-ewnp-saasfaprod1,https://fa-ewnp-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Allegheny College,alleghenycollege-ibwwjb,https://alleghenycollege-ibwwjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 APP Recruitment,eify/cx_1001,https://eify.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
-Alpura,ejfg,https://ejfg.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001
-Asharq,emrb,https://emrb.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001
 Aspetar Candidate Experience site,eipb/cx_5,https://eipb.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_5
-Austin Transit Partnership Corporate,fa-ewtx-saasfaprod1,https://fa-ewtx-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 AustralianSuper,ejjl,https://ejjl.fa.ap1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 ABM US,eiqg,https://eiqg.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+AC Environnement,fa-ethm-saasfaprod1,https://fa-ethm-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 ADES Global,epgv,https://epgv.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 ADIB Candidate Experience site,hciq,https://hciq.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 ADNIC Career Portal,eoro,https://eoro.fa.em8.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -28,11 +22,15 @@ Abt Global,egpy,https://egpy.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en
 Abu Dhabi Airports,hcts,https://hcts.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Adani Career Site,eibd,https://eibd.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Adventist Health,ecvz,https://ecvz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Africa World Airlines,fa-epqq-saasfaprod1,https://fa-epqq-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Al Ghurair,iaaxey,https://iaaxey.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Al Moosa Career Portal,edns,https://edns.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Al Qana Property Management,fa-erbb-saasfaprod1,https://fa-erbb-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_10
 Al-Othman Holding Company,eknh,https://eknh.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Albertsons Companies,eofd,https://eofd.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Aldar,fa-ewnp-saasfaprod1,https://fa-ewnp-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Allegheny Intermediate Unit Career Site,einj,https://einj.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Alpura,ejfg,https://ejfg.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001
 American Bureau of Shipping Career Site,hbbq,https://hbbq.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 American Tower Global,hdsn,https://hdsn.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Anywhere,ibmqjb,https://ibmqjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -42,18 +40,18 @@ Arcadis,ebcs,https://ebcs.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/si
 ArcelorMittal,emfg,https://emfg.fa.em4.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Arconic,hdnn,https://hdnn.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Arcor Global,emqm,https://emqm.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Asharq,emrb,https://emrb.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001
 Aspire Zone Candidate Experience site,eipb,https://eipb.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Aster DM Healthcare,hcdt,https://hcdt.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 At Home,hdiy,https://hdiy.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Austin Transit Partnership Corporate,fa-ewtx-saasfaprod1,https://fa-ewtx-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 B-Entity Career Site,ejgk/cx_1001,https://ejgk.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
-BC Energy Regulator,iaaxzv,https://iaaxzv.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/bc-er
 Banco Nacional de Costa Rica,ehuk,https://ehuk.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
 BAS  Kariyer,elvh,https://elvh.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001
 BSC,ecge/cx_1003,https://ecge.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1003
 BTN Career Sites,bankbtn-hcis-iaadnf,https://bankbtn-hcis-iaadnf.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001
-Beltone,fa-epwu-saasfaprod1,https://fa-epwu-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
-Boars Head,icfljb,https://icfljb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/BoarsHeadCareers
 Business Operations and Legal,ehpy,https://ehpy.fa.em5.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
+BC Energy Regulator,iaaxzv,https://iaaxzv.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/bc-er
 BCBSM Career Section,ejko,https://ejko.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 BDO USA Experienced Career Site,ebqb,https://ebqb.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 BE Careers,iadygs,https://iadygs.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -63,7 +61,9 @@ Badger,ejlj,https://ejlj.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sit
 Bank Negara Malaysia - Professional Career Site,iaartj,https://iaartj.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Barrick Mining Corporation,ehkn,https://ehkn.fa.ca2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Baylor Careers,ejof,https://ejof.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Beltone,fa-epwu-saasfaprod1,https://fa-epwu-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Black Box Careers,eoje,https://eoje.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Boars Head,icfljb,https://icfljb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/BoarsHeadCareers
 Brazos County Career Site,ekzl,https://ekzl.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Bristlecone,iaagiz,https://iaagiz.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Brookdale Senior Living Inc.,ibmwjb,https://ibmwjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -77,9 +77,7 @@ Candidate Experience site (CX_1001),elhr/cx_1001,https://elhr.fa.us2.oraclecloud
 Candidate Experience site (MK),ebet,https://ebet.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/MK
 Careers at Myers and Stauffer,ebez/cx_4,https://ebez.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_4
 Careers | BXP,edxn/cx_5001,https://edxn.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_5001
-Catawba,fa-eveq-saasfaprod1,https://fa-eveq-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Cbct,cbct/gallifordtrycareers,https://cbct.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/gallifordtrycareers
-Cellectis,fa-etsl-saasfaprod1,https://fa-etsl-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Centrus Global Career Site,eese/centrusenergycareers,https://eese.fa.us8.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CentrusEnergyCareers
 Cherokee Nation Businesses,ejvp/cx_4001,https://ejvp.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_4001
 Children\'s Careers,egnx,https://egnx.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
@@ -88,12 +86,9 @@ CIMB  Singapore,ejox/cx_6,https://ejox.fa.ap1.oraclecloud.com/hcmUI/CandidateExp
 CIMB Cambodia,ejox/cx_2,https://ejox.fa.ap1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2
 CIMB Vietnam,ejox/cx_11,https://ejox.fa.ap1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_11
 City Of Atlanta Careers,ehxr/city-of-atlanta-careers,https://ehxr.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/City-of-Atlanta-Careers
-City of Fredericton,eihe,https://eihe.fa.ca2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 City of Greeley -,elvp,https://elvp.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
-City of Key West,ibsjjb,https://ibsjjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 City of Memphis,eeim,https://eeim.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CMEM
 COPPEL SA DE CV,fa-eqwz-saasfaprod1,https://fa-eqwz-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_3001
-City of Parramatta,fa-eulx-saasfaprod1,https://fa-eulx-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Corporate Careers | Trueblue,ehnn/cx,https://ehnn.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Corserv Careers Site,ekzo,https://ekzo.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Cottage Health,eglz/cx,https://eglz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
@@ -121,8 +116,10 @@ Careers | BXP,edxn,https://edxn.fa.us2.oraclecloud.com/hcmUI/CandidateExperience
 Careers|CURIA,hcug,https://hcug.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Carnival Corporation,eicl,https://eicl.fa.em5.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Carrington,emvo,https://emvo.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Catawba,fa-eveq-saasfaprod1,https://fa-eveq-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Cbzp,cbzp,https://cbzp.fa.ap1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Cedars-Sinai,hdkk,https://hdkk.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Cellectis,fa-etsl-saasfaprod1,https://fa-etsl-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Centrus Global Career Site,eese,https://eese.fa.us8.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Cherokee Federal,ibtcjb,https://ibtcjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Cherokee Nation Businesses Corporate,ejvp,https://ejvp.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -130,6 +127,9 @@ Choctaw Nation of Oklahoma,egoh,https://egoh.fa.us2.oraclecloud.com/hcmUI/Candid
 Church,epej,https://epej.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Citizens,eeab,https://eeab.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 City Of Atlanta,ehxr,https://ehxr.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+City of Fredericton,eihe,https://eihe.fa.ca2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+City of Key West,ibsjjb,https://ibsjjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+City of Parramatta,fa-eulx-saasfaprod1,https://fa-eulx-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Clean Harbors External Career Site,epyc,https://epyc.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 ClubCorp,ecwl,https://ecwl.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Coherent Corp. US,hcwp,https://hcwp.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -141,9 +141,6 @@ Cottage Health,eglz,https://eglz.fa.us2.oraclecloud.com/hcmUI/CandidateExperienc
 Cummins Arabia External Career Site,hdjd,https://hdjd.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Cytel,iblyjb,https://iblyjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 DC Water Candidate Experience site,elxb/cx,https://elxb.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
-Darling Ingredients,ekgz,https://ekgz.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/DarlingII
-Dauphin County,fa-euyq-saasfaprod1,https://fa-euyq-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
-Day & Ross,fa-emoz-saasfaprod1,https://fa-emoz-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
 DePaul Talent Acquisition,ekze,https://ekze.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
 Diebold Nixdorf,eeug/cx,https://eeug.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 DTU Career Site,efzu/cx_2001,https://efzu.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001
@@ -155,7 +152,10 @@ DP World,ehpv,https://ehpv.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/s
 DTCC Candidate Experience Site,ebxr,https://ebxr.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 DTU Career Site,efzu,https://efzu.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Dallah Recruitment System,eniy,https://eniy.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Darling Ingredients,ekgz,https://ekgz.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/DarlingII
 Datavail Career Site,eifn,https://eifn.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Dauphin County,fa-euyq-saasfaprod1,https://fa-euyq-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Day & Ross,fa-emoz-saasfaprod1,https://fa-emoz-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
 Diebold Nixdorf,eeug,https://eeug.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Digital Realty Global,hdep,https://hdep.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Dubai Holding,esbe,https://esbe.fa.em8.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -568,10 +568,10 @@ Farrans,ejgo,https://ejgo.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/si
 Fda,fda,https://fda.fa.us1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Fidelity,fa-eqva-saasfaprod1,https://fa-eqva-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/FidelityCareerSite
 Fife Council Jobs and Careers,ekmu/cx_6009,https://ekmu.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_6009
-First Horizon Bank,ibpwjb,https://ibpwjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Forward,eguq/movingyouforward,https://eguq.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/MovingYouForward
 FAB |,ehjd,https://ehjd.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Fife Council Jobs and Careers,ekmu,https://ekmu.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+First Horizon Bank,ibpwjb,https://ibpwjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Ford Global Career Site,efds,https://efds.fa.em5.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Fortive Careers,ejta,https://ejta.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Forward,eguq,https://eguq.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -659,7 +659,6 @@ Hdow (CX_1001),hdow/cx_1001,https://hdow.fa.us6.oraclecloud.com/hcmUI/CandidateE
 Hdow (CX_1003),hdow/cx_1003,https://hdow.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1003
 Hdpc,hdpc/campushiring,https://hdpc.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CampusHiring
 Hdrc,hdrc/cx_3001,https://hdrc.fa.ca3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_3001
-Heirs Energies,fa-eurt-saasfaprod1,https://fa-eurt-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2004
 Hoffman Specialty Contracting,efsp/cx_4,https://efsp.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_4
 HUS Urasivusto,ejnv,https://ejnv.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 HBL People,hdcs,https://hdcs.fa.ap1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -671,6 +670,7 @@ Hcgn,hcgn,https://hcgn.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites
 Hdbc,hdbc,https://hdbc.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Hdhe,hdhe,https://hdhe.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Hearst,eevd,https://eevd.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Heirs Energies,fa-eurt-saasfaprod1,https://fa-eurt-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2004
 Heriot-Watt University,enzj,https://enzj.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Hill Minimal 112022,hcib,https://hcib.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Hillside,ebrf,https://ebrf.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -736,7 +736,6 @@ Icbpjb,icbpjb,https://icbpjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en
 Icczjb,icczjb,https://icczjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Icfcjb,icfcjb/aerospace,https://icfcjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/Aerospace
 Inland Revenue Career Site,ekfu,https://ekfu.fa.ap1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
-Inwit Career Site Esterno,fa-euqw-saasfaprod1,https://fa-euqw-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001
 Ipsos,ecqf/cx_2001,https://ecqf.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001
 IB,ejst,https://ejst.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 IFM Investors,enlc,https://enlc.fa.ap1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
@@ -759,15 +758,16 @@ Infoblox Careers,efpv,https://efpv.fa.us6.oraclecloud.com/hcmUI/CandidateExperie
 Inova,elar,https://elar.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Inspira Health,ernh,https://ernh.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Intertek US,hcog,https://hcog.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Inwit Career Site Esterno,fa-euqw-saasfaprod1,https://fa-euqw-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001
 Ipsos,ecqf,https://ecqf.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Jobs @ Carmeuse,ekiz,https://ekiz.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Jefferies,hdid,https://hdid.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Job Opportunities | MCB Group,ekbd,https://ekbd.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Jobs at Acosta,eczy,https://eczy.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+King Ranch,eeof,https://eeof.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/King-Ranch
 Jungbunzlauer,iabuas,https://iabuas.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Jurong Port,ephv,https://ephv.fa.ap2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
 KCHJ,iabbkf,https://iabbkf.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
-King Ranch,eeof,https://eeof.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/King-Ranch
 KLDiscovery,ekug/cx_1001,https://ekug.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
 KPMG,elzw/cx_1001,https://elzw.fa.em8.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
 KPMG Delivery Network India 1,ejgk/cx_3001,https://ejgk.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_3001
@@ -788,12 +788,8 @@ Loma Linda,egln,https://egln.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en
 Lucy Group,hdga,https://hdga.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Masimo,egcu/cx,https://egcu.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Mattson,eidg,https://eidg.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2
-Medusind,medusind-ibzajb,https://medusind-ibzajb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/MedusindCareers
 Messiah Ibvrjb,messiah-ibvrjb,https://messiah-ibvrjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 MHRA,eckx/mhracareers,https://eckx.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/MHRACareers
-Metanet,fa-eozb-saasfaprod1,https://fa-eozb-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_5001
-Metro Nashville Public Schools,ibqhjb,https://ibqhjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/MNPS
-Monrovia,ejbi,https://ejbi.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Mountaire Jobs,ebtg/career-site,https://ebtg.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/Career-Site
 Multiconsult Group Iacabn,multiconsult-group-iacabn,https://multiconsult-group-iacabn.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/Multiconsult
 Mycronic Job Openings,ehtv,https://ehtv.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -810,17 +806,19 @@ Masimo,egcu,https://egcu.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sit
 Mauser Packaging Solutions,hdpn,https://hdpn.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 McDermott External Career Site,edsv,https://edsv.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 McLeod Careers Section,erym,https://erym.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Medusind,medusind-ibzajb,https://medusind-ibzajb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/MedusindCareers
 Metalsa Career Site,hcun,https://hcun.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Metanet,fa-eozb-saasfaprod1,https://fa-eozb-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_5001
+Metro Nashville Public Schools,ibqhjb,https://ibqhjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/MNPS
 Michael Baker International,ebxs,https://ebxs.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Milaha,ejqa,https://ejqa.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Misk Foundation New Career Site Splash Page,ejpi,https://ejpi.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 "Mission Support & Test Services, LLC (MSTS)",ewij,https://ewij.fa.us8.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Monro,ibqmjb,https://ibqmjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Monrovia,ejbi,https://ejbi.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Motherson_North America Careers,hcnh,https://hcnh.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Mountaire Jobs,ebtg,https://ebtg.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Mouser,eabw,https://eabw.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
-NCI,enhi,https://enhi.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/NCICareers
-Nabors,fa-eyem-saasfaprod1,https://fa-eyem-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Namos Solutions,edfl,https://edfl.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
 National Highways,ehcu,https://ehcu.fa.em1.ukg.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_13
 National Pen,eihb,https://eihb.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -828,30 +826,32 @@ NatureScot,ejki,https://ejki.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en
 NHC Innovation,eghj,https://eghj.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_6001
 NMT Career Site,ejvr,https://ejvr.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2
 NRC NORCAP Careers,ekum/cx_2019,https://ekum.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2019
+NCI,enhi,https://enhi.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/NCICareers
 NFL Career Site,hdmm,https://hdmm.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 NMC,eiby,https://eiby.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
-Nexus,elcq,https://elcq.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001
 Nokia,fa-evmr-saasfaprod1,https://fa-evmr-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 NOV,egay,https://egay.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 NRC NORCAP Careers,ekum,https://ekum.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 NSF,hcnz,https://hcnz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Nabors,fa-eyem-saasfaprod1,https://fa-eyem-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Nahdi,efan,https://efan.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Napco Careers,iaeegs,https://iaeegs.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 National Bank of Kenya,eoin,https://eoin.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 NemoursCareerSite,epyz,https://epyz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Nexus,elcq,https://elcq.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2001
 Northwell Career Site,eppr,https://eppr.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Notified,eclz,https://eclz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 ONE Gas,ibedqy,https://ibedqy.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/ONEGas-Careers
 Omicron Iadzgs,omicron-iadzgs,https://omicron-iadzgs.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/OmicronCareers
 Omnicell,elrj,https://elrj.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
 Onity External Career Site,ebhz/onity,https://ebhz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/Onity
-Orascom Construction,fa-esco-saasfaprod1,https://fa-esco-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
-Orion,fa-esaq-saasfaprod1,https://fa-esaq-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/OrionCareers
 Otsuka ICU Med Careers,eduu/cx_1001,https://eduu.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
 Onity External Career Site,ebhz,https://ebhz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Online @ Air Selangor,egek,https://egek.fa.ap1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Opus,iaaxiz,https://iaaxiz.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Oracle,eeho,https://eeho.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Orascom Construction,fa-esco-saasfaprod1,https://fa-esco-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Orion,fa-esaq-saasfaprod1,https://fa-esaq-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/OrionCareers
 Oxford Nanopore Technologies,ejnh,https://ejnh.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 PNI,efyb,https://efyb.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 PSRS,ejrd,https://ejrd.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_4
@@ -865,19 +865,17 @@ Providence,evac,https://evac.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en
 Pyxus,iahome,https://iahome.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 QT External Candidate Site,elus,https://elus.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
 Quest Diagnostics Careers,hdox,https://hdox.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
-RBKC,rbkc-iagrme,https://rbkc-iagrme.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Resideo,ehtl/cx,https://ehtl.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Riyadh Schools,ejpi/cx_5001,https://ejpi.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_5001
 Rjcorphcm Iacbiz,rjcorphcm-iacbiz,https://rjcorphcm-iacbiz.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Rockland Trust Career Site,eehb,https://eehb.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_3001
 R+L Carriers,erhk,https://erhk.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+RBKC,rbkc-iagrme,https://rbkc-iagrme.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 REDCON - Candidate Career site,eiej,https://eiej.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Resideo,ehtl,https://ehtl.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Rice University Minimal Template External Career Site,emdz,https://emdz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Ricoh Careers,cbha,https://cbha.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 S&C Minimal Career Site,ejia/cx_1001,https://ejia.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
-SAIC,eihu,https://eihu.fa.us8.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
-SRG,ecau,https://ecau.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 "Samuel, Son & Co. 1855",ebct,https://ebct.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_3002
 Sana Klinikum Lichtenberg,fa-eycl-saasfaeuraprod1,https://fa-eycl-saasfaeuraprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_4025
 SBC,egsd,https://egsd.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
@@ -890,17 +888,18 @@ Smith Mechanical Electric Plumbing,ekkt/cx_4001,https://ekkt.fa.us2.oraclecloud.
 Specialized Rehabilitation Hospital,eftr,https://eftr.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Springfield Clinic,eify/cx_1004,https://eify.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1004
 St. Croix County Career Section,efff,https://efff.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
-Stanford,fa-exuf-saasfaprod1,https://fa-exuf-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/Stanford
 Sumitomo SHI FW Career,eiox,https://eiox.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Sunflower,ecvu,https://ecvu.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/SunflowerCareers
 Synlait External Careers Site,ekvx,https://ekvx.fa.ap1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
 S&C Minimal Career Site,ejia,https://ejia.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+SAIC,eihu,https://eihu.fa.us8.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 SAIL BSL,iabaiz,https://iabaiz.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 SALIC Career Site,hen,https://hen.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 SBH Careers,eigx,https://eigx.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 SCI Career Site,hcri,https://hcri.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 SHANER,ebwv,https://ebwv.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 SPL - Career Site,iaazkf,https://iaazkf.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+SRG,ecau,https://ecau.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Safaricom Candidate Experience site,egjd,https://egjd.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Samsonite,ekkf,https://ekkf.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Schroders,ekbq,https://ekbq.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -913,6 +912,7 @@ Sitio de Carrera Banregio,ehyn,https://ehyn.fa.us6.oraclecloud.com/hcmUI/Candida
 Sotera Health,eftx,https://eftx.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Southern Company,emje,https://emje.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Standard Aero,cva,https://cva.fa.us1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Stanford,fa-exuf-saasfaprod1,https://fa-exuf-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/Stanford
 Stantec,hdhl,https://hdhl.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Station Casinos,ejfh,https://ejfh.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Stats Perform,eobe,https://eobe.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -922,11 +922,7 @@ Suffolk Jobs Direct,eoce,https://eoce.fa.em3.oraclecloud.com/hcmUI/CandidateExpe
 Sun River Health,edvy,https://edvy.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Sundt Careers,eewl,https://eewl.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 TForce Freight,efjm,https://efjm.fa.ca2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/TForceFreight
-Talent and Recruitment Team - Wafi Energy Pakistan Limited,iahvgs,https://iahvgs.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
-Tarshid,ekqz,https://ekqz.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
-The Alternative Parcels Company Limited,fa-esvb-saasfaprod1,https://fa-esvb-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 The Fedcap Group,eckb/cx_1001,https://eckb.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
-The Lottery Corporation,fa-exnj-saasfaprod1,https://fa-exnj-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/TLC-Careers
 Thurrock Council,egst,https://egst.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Travelport Candidate Experience site,ejzg,https://ejzg.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Trincore Ibvxjb,trincore-ibvxjb,https://trincore-ibvxjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -937,23 +933,23 @@ TG_WFSJobs,iaboey,https://iaboey.fa.ocs.oraclecloud.com/hcmUI/CandidateExperienc
 TTX,ejjc,https://ejjc.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 TWE Global Careers,ebpm,https://ebpm.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Talent Acquisition,enpk,https://enpk.fa.em8.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Talent and Recruitment Team - Wafi Energy Pakistan Limited,iahvgs,https://iahvgs.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Tamaki Health Careers,iaantz,https://iaantz.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Tamer Group Site,eenp,https://eenp.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Tarshid,ekqz,https://ekqz.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
 Tata Capital,eofh,https://eofh.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Teekay,eipv,https://eipv.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Tenet Healthcare Corporation,eodr,https://eodr.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Texas Children's Careers,eohh,https://eohh.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Texas Instruments,edbz,https://edbz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+The Alternative Parcels Company Limited,fa-esvb-saasfaprod1,https://fa-esvb-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 The Arab Energy Fund,iaebkf,https://iaebkf.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 The City of Edinburgh Council,iaghme,https://iaghme.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 The Fedcap Group,eckb,https://eckb.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 The Kroger Co.,eluq,https://eluq.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+The Lottery Corporation,fa-exnj-saasfaprod1,https://fa-exnj-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/TLC-Careers
 Tiffany,eljs,https://eljs.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Trillium Health Partners,iadyup,https://iadyup.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
-UVA Community Health Candidate Experience Site,fa-euzb-saasfaprod1,https://fa-euzb-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
-Uisce Éireann,elyx,https://elyx.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/careers
-United Regional,iaoxqy,https://iaoxqy.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/unitedregionalcareers
-University of Salford,iahgme,https://iahgme.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_3001
 University of Waikato Careers,elhs,https://elhs.fa.ap1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 University of Wollongong,ejgl,https://ejgl.fa.ap1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/UOW
 UoB Employee,edzz,https://edzz.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_6001
@@ -962,10 +958,14 @@ UC Health Career Site,eswt,https://eswt.fa.us6.oraclecloud.com/hcmUI/CandidateEx
 UNDP,estm,https://estm.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 URUS Group,hdjm,https://hdjm.fa.ca2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 USS,icbajb,https://icbajb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+UVA Community Health Candidate Experience Site,fa-euzb-saasfaprod1,https://fa-euzb-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 UW Health,eimy,https://eimy.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Uisce Éireann,elyx,https://elyx.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/careers
+United Regional,iaoxqy,https://iaoxqy.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/unitedregionalcareers
 UnitedLex,ekkk,https://ekkk.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 University of Edinburgh,elxw,https://elxw.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Valaris,efqq,https://efqq.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1008
+University of Salford,iahgme,https://iahgme.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_3001
 VDOT Careers Site,etgi,https://etgi.fa.us8.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 VITAS Healthcare,ejrz,https://ejrz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Vanderbilt University,ecsr,https://ecsr.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
@@ -973,29 +973,29 @@ Vertiv,egup,https://egup.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sit
 Viking Office,ehkf,https://ehkf.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_3003
 VisitScotland,eiht,https://eiht.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Vodafone Qatar,elat,https://elat.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
-Wagner,fa-exad-saasfaprod1,https://fa-exad-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Walsall Council,ejti,https://ejti.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/WMBC
 Wam Iabkey,wam-iabkey,https://wam-iabkey.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_2
 Wearememorial Ibrkjb,wearememorial-ibrkjb,https://wearememorial-ibrkjb.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/Careers
 Werken bij Profource,eccs,https://eccs.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/werkenbij
 West Midlands Police,ecwz/wmp,https://ecwz.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/WMP
 Westpac Group,ebuu/cx,https://ebuu.fa.ap1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
-Whitehorse,fa-evei-saasfaprod1,https://fa-evei-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
-Wingstop Global Support Center,iaxmqy,https://iaxmqy.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Work with us | Copa Airlines - NEW,ejom,https://ejom.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
-WorkplaceNL,fa-etna-saasfaprod1,https://fa-etna-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Worthington Steel,cbdt,https://cbdt.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/WorthingtonSteelCareers
 WM,emcm,https://emcm.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 WSP,emit,https://emit.fa.ca3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 WTW External Careers Site,eedu,https://eedu.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Wagner,fa-exad-saasfaprod1,https://fa-exad-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Well Enterprises - Career Site,hcsb,https://hcsb.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Wesco,eklm,https://eklm.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 West Midlands Police,ecwz,https://ecwz.fa.em3.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Westpac Group,ebuu,https://ebuu.fa.ap1.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Whitehorse,fa-evei-saasfaprod1,https://fa-evei-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001
 Williams-Sonoma,ehac,https://ehac.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+Wingstop Global Support Center,iaxmqy,https://iaxmqy.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX
 Winning Form Careers Site,iagjme,https://iagjme.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Wood,ehif,https://ehif.fa.em2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Working at Signature Aviation,hdbt,https://hdbt.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
+WorkplaceNL,fa-etna-saasfaprod1,https://fa-etna-saasfaprod1.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Yum!,eczd,https://eczd.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 Zeus,cbhm,https://cbhm.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
 ebtw.fa.us2.oraclecloud.com,ebtw,https://ebtw.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1
