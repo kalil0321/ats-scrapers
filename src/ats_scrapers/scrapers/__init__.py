@@ -37,6 +37,7 @@ from ats_scrapers.scrapers.hrmos import HrmosScraper
 from ats_scrapers.scrapers.icims import iCIMSScraper
 from ats_scrapers.scrapers.infojobs_es import InfoJobsSpainScraper
 from ats_scrapers.scrapers.jazzhr import JazzHRScraper
+from ats_scrapers.scrapers.jibe import JibeScraper
 from ats_scrapers.scrapers.jobbankca import JobBankCAScraper
 from ats_scrapers.scrapers.jobs_cz import JobsCzScraper
 from ats_scrapers.scrapers.jobsch import JobsChScraper
@@ -109,6 +110,7 @@ __all__ = [
     "HrmosScraper",
     "InfoJobsSpainScraper",
     "JazzHRScraper",
+    "JibeScraper",
     "JobBankCAScraper",
     "JobsChScraper",
     "JobsCzScraper",
