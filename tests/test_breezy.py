@@ -85,6 +85,12 @@ def test_parses_basic_position(httpx_mock) -> None:
     assert job.posted_at is not None and job.posted_at.year == 2026
 
 
+def test_configured_company_name_overrides_payload_name(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL, json=[_position(company_name="Legacy Name")])
+    jobs = BreezyScraper("acme", company_name="Acme Holdings").fetch()
+    assert jobs[0].company == "Acme Holdings"
+
+
 def test_returns_empty_for_empty_array(httpx_mock) -> None:
     """Tenant has a Breezy site but no open positions."""
     httpx_mock.add_response(url=URL, json=[])

@@ -83,6 +83,7 @@ class BreezyScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = 30.0,
+        company_name: str | None = None,
         include_descriptions: bool = True,
         proxy: str | None = None,
     ) -> None:
@@ -93,6 +94,11 @@ class BreezyScraper(BaseScraper):
             proxy=proxy,
         )
         self.company_slug = require_host_label(company_slug, provider="BreezyScraper")
+        self.company_name = (
+            company_name.strip()
+            if company_name and company_name.strip()
+            else None
+        )
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -218,11 +224,10 @@ class BreezyScraper(BaseScraper):
         employment_type = _TYPE_MAP.get(str(type_id)) if type_id else None
 
         company_info = item.get("company") or {}
-        company_name = (
-            company_info.get("name")
-            if isinstance(company_info, dict) and company_info.get("name")
-            else self.company_slug
-        )
+        company_name = self.company_name
+        if not company_name and isinstance(company_info, dict):
+            company_name = company_info.get("name")
+        company_name = company_name or self.company_slug
 
         raw: dict[str, Any] = {}
         for k in ("category", "experience", "education", "tags"):
