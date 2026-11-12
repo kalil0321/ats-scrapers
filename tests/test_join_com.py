@@ -89,7 +89,10 @@ def test_join_com_lists_jobs_via_graphql(httpx_mock) -> None:
         {
             "companyId": 42,
             "paginationPage": {"page": 1, "pageSize": 100},
-            "sort": [{"name": "title", "direction": "ASC"}],
+            "sort": [
+                {"name": "title", "direction": "ASC"},
+                {"name": "id", "direction": "ASC"},
+            ],
         }
     ]
 
@@ -111,6 +114,35 @@ def test_join_com_follows_page_count_and_dedupes(httpx_mock) -> None:
 
     assert [j.ats_id for j in jobs] == ["1", "2", "3"]
     assert [i["paginationPage"]["page"] for i in _graphql_inputs(httpx_mock)] == [1, 2]
+
+
+def test_join_com_walks_past_an_all_null_page(httpx_mock) -> None:
+    """A page of only null entries (stale search index) is skipped, not
+    taken as the end of the listing."""
+    _company_page(httpx_mock)
+    for items in ([_item(1)], [None], [_item(3)]):
+        httpx_mock.add_response(
+            method="POST",
+            url=GRAPHQL,
+            json=_listing(items, page_count=3, row_count=3),
+        )
+
+    jobs = _scraper().fetch()
+
+    assert [j.ats_id for j in jobs] == ["1", "3"]
+    assert [i["paginationPage"]["page"] for i in _graphql_inputs(httpx_mock)] == [1, 2, 3]
+
+
+def test_join_com_raises_on_empty_page_before_page_count(httpx_mock) -> None:
+    _company_page(httpx_mock)
+    httpx_mock.add_response(
+        method="POST", url=GRAPHQL, json=_listing([_item(1)], page_count=3, row_count=3)
+    )
+    httpx_mock.add_response(
+        method="POST", url=GRAPHQL, json=_listing([], page_count=3, row_count=3)
+    )
+    with pytest.raises(ScraperError, match="empty page 2 of 3"):
+        _scraper().fetch()
 
 
 def test_join_com_company_without_jobs_returns_empty(httpx_mock) -> None:

@@ -200,18 +200,31 @@ class JoinComScraper(BaseScraper):
                         "input": {
                             "companyId": int(company_id),
                             "paginationPage": {"page": page, "pageSize": PAGE_SIZE},
-                            "sort": [{"name": "title", "direction": "ASC"}],
+                            # ``id`` breaks title ties so offset pages
+                            # keep a stable order.
+                            "sort": [
+                                {"name": "title", "direction": "ASC"},
+                                {"name": "id", "direction": "ASC"},
+                            ],
                         }
                     },
                 },
                 headers=_GRAPHQL_HEADERS,
             )
-            items, page_count, row_count = self._read_listing(body)
+            items, raw_len, page_count, row_count = self._read_listing(body)
             for item in items:
-                # Title order has ties, so a job can repeat across pages.
                 by_id.setdefault(str(item["id"]), item)
-            if not items or page >= page_count:
+            if page >= page_count:
                 break
+            if raw_len == 0:
+                # pageCount says more pages remain but this one is empty:
+                # stopping here would publish a partial board.
+                raise ScraperError(
+                    f"join.com publicJobs for {self.company_slug} returned an "
+                    f"empty page {page} of {page_count}"
+                )
+            # A page of only null entries (stale search index) is skipped,
+            # not treated as the end of the listing.
             page += 1
         if row_count and not by_id:
             raise ScraperError(
@@ -220,9 +233,12 @@ class JoinComScraper(BaseScraper):
             )
         return list(by_id.values())
 
-    def _read_listing(self, body: Any) -> tuple[list[dict[str, Any]], int, int]:
-        """Return ``(items, pageCount, rowCount)`` or raise if the response
-        does not have the expected shape."""
+    def _read_listing(
+        self, body: Any
+    ) -> tuple[list[dict[str, Any]], int, int, int]:
+        """Return ``(items, raw item count, pageCount, rowCount)`` or raise
+        if the response does not have the expected shape. ``items`` has
+        null entries removed; the raw count includes them."""
         errors = body.get("errors") if isinstance(body, dict) else None
         data = body.get("data") if isinstance(body, dict) else None
         listing = data.get("publicJobs") if isinstance(data, dict) else None
@@ -247,11 +263,11 @@ class JoinComScraper(BaseScraper):
             raise ScraperError(
                 f"join.com publicJobs for {self.company_slug} returned malformed items"
             )
-        return jobs, page_count, row_count
+        return jobs, len(items), page_count, row_count
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
         raw: dict[str, Any] = {}
-        for k in ("department", "category", "industry", "skills",
+        for k in ("category", "industry", "skills",
                   "language", "employmentType", "remoteWork", "workplaceType",
                   "remoteType"):
             v = item.get(k)
@@ -259,11 +275,10 @@ class JoinComScraper(BaseScraper):
                 raw[k] = v
 
         # join.com's API returns ``city`` as an object — pull a flat
-        # ``City, Country`` label out of it. ``employmentType`` and
-        # ``department`` are similarly structured; fall through to None
-        # when they aren't a plain string.
+        # ``City, Country`` label out of it. ``employmentType`` is
+        # similarly structured; fall through to None when it isn't a plain
+        # string. ``publicJobs`` has no department field.
         location = _flatten_location(item.get("location"), item.get("city"))
-        department = _name_or_none(item.get("department"))
         employment_type = _name_or_none(item.get("employmentType"))
 
         # The browser-visible URL uses the slug-style ``idParam``, not the
@@ -281,7 +296,6 @@ class JoinComScraper(BaseScraper):
             ats_type=ATSType.JOIN_COM,
             ats_id=str(item["id"]),
             location=location,
-            department=department,
             commitment=employment_type,
             posted_at=_parse_iso(item.get("publishedAt") or item.get("createdAt")),
             fetched_at=datetime.now(UTC),
