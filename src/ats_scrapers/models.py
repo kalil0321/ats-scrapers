@@ -48,6 +48,8 @@ class ATSType(StrEnum):
     HERP = "herp"
     HRMOS = "hrmos"
     ICIMS = "icims"
+    # iCIMS career sites (formerly Jibe) on the employer's own domain.
+    JIBE = "jibe"
     JOBVITE = "jobvite"
     JOIN_COM = "join_com"
     KEKA = "keka"

@@ -68,6 +68,7 @@ from ats_scrapers.scrapers import (
     JobBankCAScraper,
     JobsChScraper,
     JobsCzScraper,
+    JibeScraper,
     JobviteScraper,
     JoinComScraper,
     KekaScraper,
@@ -528,6 +529,24 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/bamboohr.csv",
         "output": "bamboohr/jobs.csv",
         "fail_closed_on_empty": True,
+    },
+    "jibe": {
+        # iCIMS career sites (formerly Jibe) on the employer's own domain.
+        # The URL column is the site origin, e.g. https://careers.costco.com.
+        "scraper": JibeScraper,
+        "slug": lambda r: (r.get("url") or "").strip() or _slug_col(r),
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip() or None},
+        "dedupe_by_ats_id": True,
+        "csv": "ats-companies/jibe.csv",
+        "output": "jibe/jobs.csv",
+        "max_concurrency": 4,
+        # A failed or missing employer must not vanish from the published
+        # file: keep the previous dataset unless (almost) every employer
+        # succeeded. A site that answers 404 counts like any other failure.
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        "fail_closed_tolerance": 0.02,
     },
     "talentbrew": {
         # Radancy TalentBrew career sites on the employer's own domain.

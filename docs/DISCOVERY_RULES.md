@@ -231,6 +231,20 @@ Validation:
 5. Reject login-only pages, internal career centers, expired tenant IDs, and
    duplicate URLs that differ only by ``jobId`` or tracking parameters.
 
+### Jibe (iCIMS career sites)
+
+Rows use the career-site origin on the employer's own domain
+(``https://careers.example.com``) as ``url`` and the host as ``slug``.
+
+Validation:
+
+1. Call ``https://{host}/api/jobs?page=1&limit=100&internal=false``.
+2. Require HTTP 200, a JSON object with a ``jobs`` list and a numeric
+   ``totalCount`` above zero.
+3. Require each posting to carry ``data.slug`` and ``data.title``.
+4. Reject hosts that answer the path with HTML, a 404 or a login page:
+   they run another career-site product.
+
 ### SuccessFactors
 
 Validation:
