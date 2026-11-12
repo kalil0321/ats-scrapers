@@ -61,6 +61,7 @@ from ats_scrapers._version import __version__
 from ats_scrapers.enrichment import infer_is_remote, parse_salary_range
 from ats_scrapers.exceptions import StorageError
 from ats_scrapers.models import ATSType
+from ats_scrapers.source_kind import HEADLINE_KINDS, source_kind
 
 # Pull the keyword list used by ``infer_is_remote`` so the lazy
 # enrichment path can express the rule as vectorized polars
@@ -266,11 +267,20 @@ class DatasetPublisher:
             )
             files_uploaded.extend(_collect_uploaded_keys(all_entry))
 
+            jobs_by_kind = _jobs_by_source_kind(survivors)
             manifest_key = self._patch_and_upload_manifest(
                 generated_at=started,
                 stats_factory=lambda existing: {
                     "total_jobs": n_kept,
                     "total_jobs_raw": n_raw,
+                    # Postings from employers' own hiring systems (ATS and
+                    # company career sites), after cross-source dedup. Public
+                    # employment services and job boards are excluded.
+                    "ats_jobs": sum(
+                        n for kind, n in jobs_by_kind.items()
+                        if kind in HEADLINE_KINDS
+                    ),
+                    "jobs_by_source_kind": jobs_by_kind,
                     "total_companies": _sum_by_ats_companies_rows(existing),
                     "ats_count": len(per_ats_entries),
                     "schema_version": "2.0",
@@ -1115,6 +1125,14 @@ def _collect_uploaded_keys(entry: dict[str, object]) -> list[str]:
         if isinstance(value, str):
             keys.append(value)
     return keys
+
+
+def _jobs_by_source_kind(survivors: dict[str, pl.DataFrame]) -> dict[str, int]:
+    """Count deduplicated jobs per source kind (see ``source_kind``)."""
+    counts = {"ats": 0, "company_site": 0, "gov_board": 0, "job_board": 0}
+    for ats_value, frame in survivors.items():
+        counts[source_kind(ats_value)] += frame.height
+    return counts
 
 
 def _sum_by_ats_companies_rows(manifest: dict[str, object]) -> int:
