@@ -54,6 +54,7 @@ class TeamtailorScraper(BaseScraper):
         company_slug: str,
         *,
         timeout: float = 30.0,
+        company_name: str | None = None,
         include_descriptions: bool = True,
         proxy: str | None = None,
     ) -> None:
@@ -65,6 +66,11 @@ class TeamtailorScraper(BaseScraper):
         )
         self.company_slug = require_host_label(
             company_slug, provider="TeamtailorScraper"
+        )
+        self.company_name = (
+            company_name.strip()
+            if company_name and company_name.strip()
+            else self.company_slug
         )
 
     async def afetch(self) -> list[Job]:
@@ -118,7 +124,7 @@ class TeamtailorScraper(BaseScraper):
         return Job(
             url=link,
             title=title,
-            company=self.company_slug,
+            company=self.company_name,
             ats_type=ATSType.TEAMTAILOR,
             ats_id=ats_id,
             location=_format_location(item),
