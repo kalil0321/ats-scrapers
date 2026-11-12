@@ -110,6 +110,8 @@ class ATSType(StrEnum):
     JAZZHR = "jazzhr"
     RECRUITEE = "recruitee"
     TALEO = "taleo"
+    # Radancy TalentBrew career sites on the employer's own domain.
+    TALENTBREW = "talentbrew"
     TEAMTAILOR = "teamtailor"
     CUSTOM = "custom"
 

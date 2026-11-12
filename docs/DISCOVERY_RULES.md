@@ -280,6 +280,25 @@ Validation must prove both URL validity and name quality:
 4. Reject rows where the final company name would be an unreadable slug unless
    a reliable name source is found.
 
+### Radancy TalentBrew
+
+Rows use the career-site origin on the employer's own domain
+(``https://jobs.example.com``) as ``url`` and the host as ``slug``.
+
+Validation:
+
+1. Call ``https://{host}/search-jobs/results`` with the site's full search
+   parameter set (see the scraper) and ``CurrentPage=1``.
+2. Require HTTP 200 and a JSON object whose ``results`` HTML carries a
+   numeric ``data-total-results`` above zero.
+3. Require at least one ``<a href="/job/.../{org}/{id}" data-job-id="{id}">``
+   row, and a schema.org ``JobPosting`` JSON-LD block on that posting's page.
+4. Reject hosts that are an alias of a site already listed (same total and
+   same first posting id).
+5. TalentBrew sits in front of the employer's ATS. Skip an employer whose
+   ATS board is already listed in another provider file: listing both
+   would publish the same postings twice.
+
 ### Avature
 
 Validation:

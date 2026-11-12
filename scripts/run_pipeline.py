@@ -92,6 +92,7 @@ from ats_scrapers.scrapers import (
     SmartRecruitersScraper,
     SoftgardenScraper,
     SuccessFactorsScraper,
+    TalentBrewScraper,
     TaleoScraper,
     TeamtailorScraper,
     TeslaScraper,
@@ -527,6 +528,28 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/bamboohr.csv",
         "output": "bamboohr/jobs.csv",
         "fail_closed_on_empty": True,
+    },
+    "talentbrew": {
+        # Radancy TalentBrew career sites on the employer's own domain.
+        # Listings come from the search endpoint; descriptions need one
+        # detail page per posting, so they go through the description cache.
+        "scraper": TalentBrewScraper,
+        "slug": lambda r: (r.get("url") or "").strip() or _slug_col(r),
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip() or None},
+        "defer_descriptions_to_cache": True,
+        "dedupe_by_ats_id": True,
+        "csv": "ats-companies/talentbrew.csv",
+        "output": "talentbrew/jobs.csv",
+        "max_concurrency": 4,
+        "description_concurrency": 4,
+        # A failed or missing employer must not vanish from the published
+        # file: keep the previous dataset unless (almost) every site
+        # answered. The catalogue is small, so the tolerance is one site
+        # in twenty rather than the usual 2%.
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        "fail_closed_tolerance": 0.05,
     },
     "dayforce": {
         "scraper": DayforceScraper,
