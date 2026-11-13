@@ -559,6 +559,7 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "varbi": 1,
     "teamtailor": 1, "ukg": 1,
     "workable": 1,
+    "wintalent": 1,
     "workday": 1,
     # Big-tech bespoke careers — also priority 1 (single-tenant, canonical)
     "amazon": 1, "apple": 1, "bytedance": 1, "google": 1, "meta": 1,
