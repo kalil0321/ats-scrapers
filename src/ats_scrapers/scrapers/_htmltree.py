@@ -73,21 +73,27 @@ class Node:
         """The text, one line per block, without blank lines."""
         pieces: list[str] = []
         # The children still to read of each open element, with what its
-        # end adds to the text.
-        open_children: list[tuple[Iterator[Node | str], str]] = [
-            (iter(self.children), "")
+        # end adds to the text and whether it is preformatted text.
+        open_children: list[tuple[Iterator[Node | str], str, bool]] = [
+            (iter(self.children), "", self.tag == "pre")
         ]
         while open_children:
-            children, ending = open_children[-1]
+            children, ending, preformatted = open_children[-1]
             for child in children:
                 if isinstance(child, str):
                     # A line break in the source is white space, not a new
-                    # line.
-                    pieces.append(child.replace("\n", " ").replace("\r", " "))
+                    # line, except in preformatted text.
+                    pieces.append(
+                        child
+                        if preformatted
+                        else child.replace("\n", " ").replace("\r", " ")
+                    )
                 elif child.tag not in _HIDDEN_TAGS:
                     block = "\n" if child.tag in _BLOCK_TAGS else ""
                     pieces.append(block)
-                    open_children.append((iter(child.children), block))
+                    open_children.append(
+                        (iter(child.children), block, preformatted or child.tag == "pre")
+                    )
                     break
             else:
                 open_children.pop()

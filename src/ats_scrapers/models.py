@@ -38,6 +38,8 @@ class ATSType(StrEnum):
     AVATURE = "avature"
     BEISEN = "beisen"
     BEISEN_LEGACY = "beisen_legacy"
+    # CATS careers portals ({tenant}.catsone.com).
+    CATSONE = "catsone"
     # ClearCompany hosted career sites (apply.clearcompany.com/{site}).
     CLEARCOMPANY = "clearcompany"
     CORNERSTONE = "cornerstone"

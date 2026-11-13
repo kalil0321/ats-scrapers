@@ -33,6 +33,12 @@ def test_text_is_one_line_per_block_without_blank_lines() -> None:
     assert root.text() == "First line second bold text One Two & three"
 
 
+def test_line_breaks_are_kept_in_preformatted_text() -> None:
+    root = parse_html("<p>One\ntwo</p><pre>Mon  08:00\nTue  <b>09:00</b>\n\nWed</pre><p>End</p>")
+
+    assert root.lines() == "One two\nMon 08:00\nTue 09:00\nWed\nEnd"
+
+
 def test_scripts_and_styles_are_not_text() -> None:
     root = parse_html(
         "<p>Shown</p><script>var a = '<p>not shown</p>';</script>"

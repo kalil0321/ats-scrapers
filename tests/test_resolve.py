@@ -80,6 +80,13 @@ RESOLVES = [
         ATSType.TALENTSOFT,
         "aerlingus-career",
     ),
+    ("https://emergitel.catsone.com/careers/", ATSType.CATSONE, "emergitel"),
+    (
+        "https://emergitel.catsone.com/careers/7701/jobs/16866544-Marketing-Coordinator",
+        ATSType.CATSONE,
+        "emergitel/7701",
+    ),
+    ("https://emergitel.catsone.com/careers/7701-General", ATSType.CATSONE, "emergitel/7701"),
     ("https://herp.careers/v1/herpinc", ATSType.HERP, "herpinc"),
     ("https://herp.careers/v1/herpinc/abc123", ATSType.HERP, "herpinc"),
     ("https://hrmos.co/pages/ykk/jobs", ATSType.HRMOS, "ykk"),
@@ -555,3 +562,50 @@ def test_talentsoft_hosts_that_are_not_a_career_site_are_not_resolved() -> None:
     assert resolve_careers_url("https://talent-soft.com/") is None
     assert resolve_careers_url("https://www.talent-soft.com/") is None
     assert resolve_careers_url("https://a.b.talent-soft.com/offre-de-emploi/") is None
+
+
+def test_get_scraper_for_url_builds_catsone_scraper() -> None:
+    from ats_scrapers.scrapers import CatsOneScraper
+
+    scraper = get_scraper_for_url("https://emergitel.catsone.com/careers/7701-General")
+
+    assert isinstance(scraper, CatsOneScraper)
+    assert (scraper.tenant, scraper.portal) == ("emergitel", "7701")
+    assert scraper.base_url == "https://emergitel.catsone.com"
+
+
+def test_catsone_hosts_that_are_not_a_tenant_are_not_resolved() -> None:
+    assert resolve_careers_url("https://catsone.com/careers/") is None
+    assert resolve_careers_url("https://www.catsone.com/pricing/") is None
+    assert resolve_careers_url("https://a.b.catsone.com/careers/") is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://emergitel.catsone.com",
+        "https://emergitel.catsone.com/",
+        "https://emergitel.catsone.com/careers",
+        "https://emergitel.catsone.com/careers/",
+    ],
+)
+def test_a_catsone_tenant_address_is_its_default_portal(url: str) -> None:
+    resolved = resolve_careers_url(url)
+
+    assert resolved is not None
+    assert (resolved.ats, resolved.slug) == (ATSType.CATSONE, "emergitel")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://emergitel.catsone.com/careers/index.php?m=portal&portalID=7701",
+        "https://emergitel.catsone.com/careers/General",
+        "https://emergitel.catsone.com/careers/x7701",
+        "https://emergitel.catsone.com/index.php?m=careers",
+    ],
+)
+def test_a_catsone_path_that_names_no_portal_number_is_not_the_default_portal(url: str) -> None:
+    """Such a URL names a page; resolving it to the default portal would read
+    another portal than the one meant."""
+    assert resolve_careers_url(url) is None

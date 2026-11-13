@@ -51,6 +51,7 @@ from ats_scrapers.scrapers import (
     BuiltInScraper,
     BundesagenturScraper,
     BytedanceScraper,
+    CatsOneScraper,
     ClearCompanyScraper,
     CornerstoneScraper,
     DarwinboxScraper,
@@ -396,6 +397,29 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "description_delay_seconds": 0.5,
         "fail_closed_on_any_error": True,
         "fail_closed_on_empty": True,
+    },
+    "catsone": {
+        "scraper": CatsOneScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        # A job has one number on every portal of CATS: a job listed on
+        # two portals of a customer is published once.
+        "dedupe_by_ats_id": True,
+        "csv": "ats-companies/catsone.csv",
+        "output": "catsone/jobs.csv",
+        # One vendor serves every portal, and a scrape reads up to four
+        # job pages of its portal at a time.
+        "max_concurrency": 6,
+        "fail_closed_on_any_error": True,
+        # A portal that is gone counts as a failed one, so many portals
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        # 5% of portals may fail or be gone; a portal that closes is a row
+        # to remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
     },
     "clearcompany": {
         "scraper": ClearCompanyScraper,
