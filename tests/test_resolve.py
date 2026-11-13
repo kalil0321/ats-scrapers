@@ -36,7 +36,21 @@ RESOLVES = [
     ("https://job-boards.greenhouse.io/anthropic/jobs/123", ATSType.GREENHOUSE, "anthropic"),
     ("https://boards.eu.greenhouse.io/acme", ATSType.GREENHOUSE, "acme"),
     ("https://jobs.lever.co/palantir", ATSType.LEVER, "palantir"),
-    ("https://jobs.eu.lever.co/acme", ATSType.LEVER, "acme"),
+    # Lever's EU region has its own API: the slug keeps the board URL.
+    ("https://jobs.eu.lever.co/acme", ATSType.LEVER, "https://jobs.eu.lever.co/acme"),
+    (
+        "https://jobs.eu.lever.co/acme/1b2c3d4e-0000/apply",
+        ATSType.LEVER,
+        "https://jobs.eu.lever.co/acme",
+    ),
+    # Lever board slugs also use "&"; the scraper escapes it.
+    ("https://jobs.lever.co/1840&Company", ATSType.LEVER, "1840&Company"),
+    ("https://jobs.lever.co/1840%26Company/abc", ATSType.LEVER, "1840&Company"),
+    (
+        "https://jobs.eu.lever.co/1840&Company",
+        ATSType.LEVER,
+        "https://jobs.eu.lever.co/1840%26Company",
+    ),
     ("https://apply.workable.com/0x/", ATSType.WORKABLE, "0x"),
     ("https://careers.smartrecruiters.com/10Pearls", ATSType.SMARTRECRUITERS, "10Pearls"),
     ("https://jobs.gem.com/accel", ATSType.GEM, "accel"),
@@ -440,6 +454,43 @@ def test_get_scraper_for_url_from_fresh_interpreter() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "AshbyScraper openai"
+
+
+def test_get_scraper_for_url_keeps_the_lever_region() -> None:
+    from ats_scrapers.scrapers import LeverScraper
+
+    eu = get_scraper_for_url("https://jobs.eu.lever.co/acme/1b2c3d4e-0000")
+    us = get_scraper_for_url("https://jobs.lever.co/acme/1b2c3d4e-0000")
+
+    assert isinstance(eu, LeverScraper)
+    assert (eu.tenant, eu.region) == ("acme", "eu")
+    assert isinstance(us, LeverScraper)
+    assert (us.tenant, us.region) == ("acme", "us")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://jobs.lever.co",
+        "https://jobs.eu.lever.co/",
+        "https://jobs.lever.co/%2e%2e/admin",
+        "https://jobs.eu.lever.co/a%2Fb",
+        "https://jobs.lever.co/a b",
+        "https://jobs.eu.lever.co/-acme",
+        # Decoded control characters are not part of a slug.
+        "https://jobs.lever.co/acme%0A",
+        "https://jobs.eu.lever.co/acme%0A",
+        "https://jobs.eu.lever.co/acme%0D%0A/abc",
+    ],
+)
+def test_lever_url_without_a_usable_slug_is_not_resolved(url: str) -> None:
+    assert resolve_careers_url(url) is None
+
+
+def test_get_scraper_for_url_escapes_an_unusual_lever_slug() -> None:
+    scraper = get_scraper_for_url("https://jobs.eu.lever.co/1840&Company/abc")
+
+    assert (scraper.tenant, scraper.region) == ("1840&Company", "eu")
 
 
 def test_get_scraper_for_url_builds_clearcompany_scraper() -> None:

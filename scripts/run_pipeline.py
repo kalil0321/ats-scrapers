@@ -235,16 +235,39 @@ def _workable_slug(row: dict[str, Any]) -> str | None:
     return name or None
 
 
-def _lever_slug(row: dict[str, Any]) -> str | None:
-    url = (row.get("url") or "").strip()
-    if url.startswith("http"):
-        m = re.match(r"https?://jobs\.lever\.co/([^/?#]+)", url, re.IGNORECASE)
+# A Lever board is on jobs.lever.co (US region) or jobs.eu.lever.co (EU
+# region); the two regions have separate APIs.
+_LEVER_BOARD_RE = re.compile(
+    r"https?://jobs\.(?P<eu>eu\.)?lever\.co/(?P<slug>[^/?#]+)", re.IGNORECASE
+)
+
+
+def _lever_board(row: dict[str, Any]) -> re.Match[str] | None:
+    """The row's board URL: its ``url``, else a board URL in ``slug`` (an
+    EU row carries its board URL there)."""
+    for column in ("url", "slug"):
+        m = _LEVER_BOARD_RE.match((row.get(column) or "").strip())
         if m:
-            return unquote(m.group(1))
+            return m
+    return None
+
+
+def _lever_slug(row: dict[str, Any]) -> str | None:
+    """The bare board slug, in either region, so the row's display name
+    applies (the scraper stores the bare slug as ``company``)."""
+    m = _lever_board(row)
+    if m:
+        return unquote(m.group("slug"))
     if (slug := _slug_col(row)):
         return slug
     name = (row.get("name") or "").strip()
     return name or None
+
+
+def _lever_kwargs(row: dict[str, Any]) -> dict[str, Any]:
+    """The region of the row's board."""
+    m = _lever_board(row)
+    return {"region": "eu"} if m and m.group("eu") else {}
 
 
 def _greenhouse_slug(row: dict[str, Any]) -> str | None:
@@ -720,6 +743,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "lever": {
         "scraper": LeverScraper,
         "slug": _lever_slug,
+        "kwargs": _lever_kwargs,
         "csv": "ats-companies/lever.csv",
         "output": "lever/jobs.csv",
     },
