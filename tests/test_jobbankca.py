@@ -90,11 +90,11 @@ def _article(
     )
 
 
-def _page(articles: list[str]) -> str:
+def _page(articles: list[str], *, total: str = "62,139") -> str:
     body = "\n".join(articles)
     return (
         '<!DOCTYPE html><html><body>'
-        '<span class="found" id="results-count">62,139</span>'
+        f'<span class="found" id="results-count">{total}</span>'
         f'{body}'
         '</body></html>'
     )
@@ -318,6 +318,99 @@ def test_fetch_deduplicates_repeated_ats_id(httpx_mock) -> None:
     )
     jobs = JobBankCAScraper("any").fetch()
     assert [j.ats_id for j in jobs] == ["9999"]
+
+
+def _mock_pages(httpx_mock, pages: dict[int, str]) -> None:
+    for number, html_text in pages.items():
+        httpx_mock.add_response(
+            url="https://www.jobbank.gc.ca/jobsearch/jobsearch",
+            match_params={"searchstring": "", "sort": "M", "page": str(number)},
+            html=html_text,
+        )
+
+
+def test_repeated_last_page_ends_the_walk(httpx_mock) -> None:
+    """Job Bank answers a page past the end with its last page again. The
+    site announces 26 results: page 2 is the last one, pages 3 and 4 repeat it."""
+    first = [_article(job_id=str(i)) for i in range(1, 26)]
+    last = [_article(job_id="26")]
+    _mock_pages(
+        httpx_mock,
+        {
+            1: _page(first, total="26"),
+            2: _page(last, total="26"),
+            3: _page(last, total="26"),
+            4: _page(last, total="26"),
+        },
+    )
+
+    jobs = JobBankCAScraper("any").fetch()
+
+    assert [job.ats_id for job in jobs] == [str(i) for i in range(1, 27)]
+
+
+def test_repeated_last_page_with_a_few_postings_closed_ends_the_walk(httpx_mock) -> None:
+    """28 results announced, 26 collected: postings closed during the walk."""
+    first = [_article(job_id=str(i)) for i in range(1, 26)]
+    last = [_article(job_id="26")]
+    _mock_pages(
+        httpx_mock,
+        {
+            1: _page(first, total="28"),
+            2: _page(last, total="28"),
+            3: _page(last, total="28"),
+            4: _page(last, total="28"),
+        },
+    )
+
+    assert len(JobBankCAScraper("any").fetch()) == 26
+
+
+def test_page_served_twice_before_the_end_fails(httpx_mock) -> None:
+    """A proxy or cache serving a known page again in the middle of the
+    results is not the end: the site announces 62,139 results."""
+    page = _page([_article(job_id="9999")])
+    _mock_pages(httpx_mock, {1: page, 2: page, 3: page})
+
+    with pytest.raises(
+        ScraperError,
+        match="pages 2 and 3 with 1 of the 62139 announced results collected",
+    ):
+        JobBankCAScraper("any").fetch()
+
+
+def test_repeat_after_the_last_page_with_most_results_missing_fails(httpx_mock) -> None:
+    """The repeat starts after the page where 20 results end, but only 1
+    was collected: most of what the site announces was never seen."""
+    page = _page([_article(job_id="100")], total="20")
+    _mock_pages(httpx_mock, {1: page, 2: page, 3: page})
+
+    with pytest.raises(ScraperError, match="1 of the 20 announced results"):
+        JobBankCAScraper("any").fetch()
+
+
+def test_repeat_without_an_announced_count_fails(httpx_mock) -> None:
+    page = _page([_article(job_id="100")]).replace('id="results-count"', 'id="other"')
+    _mock_pages(httpx_mock, {1: page, 2: page, 3: page})
+
+    with pytest.raises(ScraperError, match="None announced results"):
+        JobBankCAScraper("any").fetch()
+
+
+@pytest.mark.parametrize(
+    ("markup", "expected"),
+    [
+        ('<span class="found" id="results-count">68,763</span> results', 68763),
+        ('<span class="found" id="results-count"> 68\u00a0763 </span>', 68763),
+        ('<span id="results-count">0</span>', 0),
+        ('<span id="results-count"></span>', None),
+        ("<html></html>", None),
+    ],
+)
+def test_announced_total(markup: str, expected: int | None) -> None:
+    from ats_scrapers.scrapers.jobbankca import _announced_total
+
+    assert _announced_total(markup) == expected
 
 
 def test_fetch_respects_max_pages_cap(httpx_mock) -> None:

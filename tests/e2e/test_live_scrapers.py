@@ -21,11 +21,13 @@ import pytest
 
 from ats_scrapers.models import Job
 from ats_scrapers.scrapers import (
+    ApplicantProScraper,
     AshbyScraper,
     BambooHRScraper,
     BreezyScraper,
     GreenhouseScraper,
     HerpScraper,
+    HireologyScraper,
     HrmosScraper,
     LeverScraper,
     PaycomScraper,
@@ -34,6 +36,7 @@ from ats_scrapers.scrapers import (
     RemoteOKScraper,
     SmartRecruitersScraper,
     SoftgardenScraper,
+    TalentioScraper,
     TeamtailorScraper,
     TheHubScraper,
     UberScraper,
@@ -56,6 +59,19 @@ TIMEOUT = 150.0
 # (id, factory, expect_jobs) — expect_jobs=True only for boards that
 # are essentially never empty.
 CASES = [
+    (
+        "applicantpro-kirkhill",
+        lambda: ApplicantProScraper("kirkhill", include_descriptions=False),
+        True,
+    ),
+    (
+        "hireology-anderson",
+        lambda: HireologyScraper(
+            "andersonautogroup",
+            include_descriptions=False,
+        ),
+        True,
+    ),
     ("greenhouse-anthropic", lambda: GreenhouseScraper("anthropic"), True),
     ("herp-herpinc", lambda: HerpScraper("herpinc", include_descriptions=False), True),
     ("hrmos-ykk", lambda: HrmosScraper("ykk"), True),
@@ -73,6 +89,14 @@ CASES = [
     ("smartrecruiters-10pearls",
      lambda: SmartRecruitersScraper("10pearls", include_descriptions=False), False),
     ("softgarden-abeking", lambda: SoftgardenScraper("abeking"), True),
+    (
+        "talentio-viewn",
+        lambda: TalentioScraper(
+            "https://open.talentio.com/r/1/c/viewn/homes/2635",
+            include_descriptions=False,
+        ),
+        True,
+    ),
     ("workable-0x", lambda: WorkableScraper("0x", include_descriptions=False), False),
     ("recruitee-12build",
      lambda: RecruiteeScraper("12build", include_descriptions=False), False),
