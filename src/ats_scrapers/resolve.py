@@ -13,7 +13,8 @@ Each pattern below mirrors the slug contract documented in the
 corresponding scraper module — path-based tenants (Greenhouse, Lever,
 Ashby, …), subdomain tenants (Recruitee, Teamtailor, Breezy, …), and
 full-URL tenants (Workday, Taleo, and iCIMS variants) where the
-scraper itself wants the whole URL.
+scraper itself wants the whole URL. Taleo Enterprise is host plus career
+section (``valero.taleo.net/2``).
 
 Custom-domain career sites (careers.example.com fronting Phenom,
 Avature, or Eightfold) cannot be recognized from the URL alone —
@@ -89,6 +90,14 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
 # Full-URL tenants: the scraper's slug IS the careers URL.
 _WORKDAY_HOST_RE = re.compile(r"^[^.]+\.wd\d+\.myworkdayjobs\.com$")
 _TALEO_HOST_RE = re.compile(r"^[^.]+\.tbe\.taleo\.net$")
+# Taleo Enterprise: one label before taleo.net ({zone}.taleo.net), with the
+# career section as the second path segment.
+_TALEO_ENTERPRISE_HOST_RE = re.compile(
+    r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.taleo\.net$", re.IGNORECASE
+)
+_TALEO_ENTERPRISE_PATH_RE = re.compile(
+    r"^/careersection/(?P<section>[A-Za-z0-9][A-Za-z0-9_-]{0,79})(?:/|$)"
+)
 _ICIMS_HOST_RE = re.compile(r"^(?P<prefix>[a-z0-9-]+)\.icims\.com$", re.IGNORECASE)
 _JOBVITE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _JOBVITE_RESERVED_SEGMENTS = frozenset({"jobs", "search", "viewall"})
@@ -367,6 +376,18 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         # Taleo TBE wants the full search-results URL including query.
         query = f"?{parsed.query}" if parsed.query else ""
         return ResolvedCareersUrl(ATSType.TALEO, f"https://{host}{parsed.path}{query}")
+
+    if _TALEO_ENTERPRISE_HOST_RE.match(host):
+        # Taleo Enterprise: the slug is "{zone}.taleo.net/{section}". A zone
+        # URL without a career section cannot be scraped ("rest" is the
+        # API path, not a section).
+        section = _TALEO_ENTERPRISE_PATH_RE.match(parsed.path)
+        if section and section.group("section") != "rest":
+            return ResolvedCareersUrl(
+                ATSType.TALEO_ENTERPRISE,
+                f"{host.lower()}/{section.group('section')}",
+            )
+        return None
 
     icims = _ICIMS_HOST_RE.match(host)
     if icims:
