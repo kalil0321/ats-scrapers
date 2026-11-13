@@ -45,14 +45,21 @@ def _item(
     pubdate: str = "Fri, 20 Mar 2026 09:30:04 +0100",
     description: str = "<![CDATA[<p>Manage things.</p>]]>",
     gid: str | None = "86101",
+    expiration: str | None = None,
 ) -> str:
     g_id = f"<g:id>{gid}</g:id>" if gid else ""
+    g_expiration = (
+        f"<g:expiration_date>{expiration}</g:expiration_date>"
+        if expiration is not None
+        else ""
+    )
     return f"""<item>
 <title>{title}</title>
 <link>{link}</link>
 <pubDate>{pubdate}</pubDate>
 <description>{description}</description>
 {g_id}
+{g_expiration}
 </item>"""
 
 
@@ -194,6 +201,48 @@ def test_parses_basic_rss(httpx_mock) -> None:
     assert job.ats_type is ATSType.SUCCESSFACTORS
     assert str(job.url).startswith("https://job.acme.com")
     assert job.posted_at is not None and job.posted_at.year == 2026
+
+
+def test_expiration_date_present_date_only(httpx_mock) -> None:
+    """g:expiration_date shipped as YYYY-MM-DD maps to application_deadline."""
+    httpx_mock.add_response(url=FEED_URL, text=_rss([_item(expiration="2026-09-14")]))
+    job = SuccessFactorsScraper("job.acme.com").fetch()[0]
+    assert job.application_deadline is not None
+    assert job.application_deadline.isoformat() == "2026-09-14T00:00:00"
+
+
+def test_expiration_date_absent_is_none(httpx_mock) -> None:
+    """No g:expiration_date -> application_deadline is None (never fabricated)."""
+    httpx_mock.add_response(url=FEED_URL, text=_rss([_item()]))
+    job = SuccessFactorsScraper("job.acme.com").fetch()[0]
+    assert job.application_deadline is None
+
+
+def test_expiration_date_invalid_is_none(httpx_mock) -> None:
+    """Malformed g:expiration_date degrades gracefully to None."""
+    httpx_mock.add_response(url=FEED_URL, text=_rss([_item(expiration="not-a-date")]))
+    job = SuccessFactorsScraper("job.acme.com").fetch()[0]
+    assert job.application_deadline is None
+
+
+def test_expiration_date_iso_with_z(httpx_mock) -> None:
+    """Full ISO 8601 with trailing Z is parsed as UTC-aware."""
+    httpx_mock.add_response(
+        url=FEED_URL, text=_rss([_item(expiration="2026-09-14T23:59:59Z")]),
+    )
+    job = SuccessFactorsScraper("job.acme.com").fetch()[0]
+    assert job.application_deadline is not None
+    assert job.application_deadline.isoformat() == "2026-09-14T23:59:59+00:00"
+
+
+def test_posted_at_not_used_as_deadline(httpx_mock) -> None:
+    """A real pubDate populates posted_at but NOT application_deadline."""
+    httpx_mock.add_response(
+        url=FEED_URL, text=_rss([_item(expiration=None)]),
+    )
+    job = SuccessFactorsScraper("job.acme.com").fetch()[0]
+    assert job.posted_at is not None and job.posted_at.year == 2026
+    assert job.application_deadline is None
 
 
 def test_dedupes_by_ats_id(httpx_mock) -> None:

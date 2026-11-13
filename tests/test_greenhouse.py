@@ -77,3 +77,27 @@ def test_5xx_exhausts(monkeypatch, httpx_mock) -> None:
     httpx_mock.add_response(url=API, status_code=502, is_reusable=True)
     with pytest.raises(ScraperError):
         GreenhouseScraper("acme").fetch()
+
+
+BOARD = "https://boards-api.greenhouse.io/v1/boards/acme"
+
+
+def test_company_uses_board_display_name(httpx_mock) -> None:
+    httpx_mock.add_response(url=API, json={"jobs": [_job()]})
+    httpx_mock.add_response(url=BOARD, json={"name": "Acme Corp", "content": ""})
+    jobs = GreenhouseScraper("acme").fetch()
+    assert jobs[0].company == "Acme Corp"
+
+
+def test_company_name_kwarg_skips_board_request(httpx_mock) -> None:
+    httpx_mock.add_response(url=API, json={"jobs": [_job()]})
+    jobs = GreenhouseScraper("acme", company_name="Acme Inc").fetch()
+    assert jobs[0].company == "Acme Inc"
+    assert all(str(r.url) != BOARD for r in httpx_mock.get_requests())
+
+
+def test_board_name_failure_falls_back_to_slug(httpx_mock) -> None:
+    httpx_mock.add_response(url=API, json={"jobs": [_job()]})
+    httpx_mock.add_response(url=BOARD, status_code=500, is_reusable=True)
+    jobs = GreenhouseScraper("acme").fetch()
+    assert jobs[0].company == "acme"
