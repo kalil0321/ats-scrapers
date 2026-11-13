@@ -297,8 +297,19 @@ def _format_location(value: object) -> str | None:
 
 
 def _extract_is_remote(value: object) -> bool | None:
+    """``remote_details.value`` ("remote" / "hybrid") outranks the older
+    ``is_remote`` flag when set; the two can disagree. Hybrid
+    stays None — neither purely remote nor on-site."""
     if not isinstance(value, dict):
         return None
+    details = value.get("remote_details")
+    label = details.get("value") if isinstance(details, dict) else None
+    if isinstance(label, str):
+        label = label.strip().lower()
+        if label == "hybrid":
+            return None
+        if label == "remote":
+            return True
     flag = value.get("is_remote")
     if isinstance(flag, bool):
         return flag

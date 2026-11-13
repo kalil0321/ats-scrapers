@@ -167,3 +167,51 @@ def test_workday_runner_sets_tenant_timeout(monkeypatch: pytest.MonkeyPatch) -> 
         "max_fetch_seconds": 123.0,
         "company_name": "Advocate Health",
     }
+
+
+def test_workday_pipeline_keeps_one_row_per_posting_across_career_sites() -> None:
+    from ats_scrapers.models import ATSType, Job
+
+    config = runner.CONFIGS["workday"]
+    assert config["dedupe_by_ats_id"] is True
+
+    def job(company: str, site: str, path: str) -> Job:
+        return Job(
+            url=f"https://acme.wd1.myworkdayjobs.com/{site}{path}",
+            title="Engineer",
+            company=company,
+            ats_type=ATSType.WORKDAY,
+            ats_id="acme.wd1.myworkdayjobs.com/job/USA/Engineer_R-1",
+        )
+
+    # Two catalogue rows of one tenant, each with its own display name.
+    main_site = job("Acme", "External", "/job/USA/Engineer_R-1")
+    campus_site = job("Acme Campus", "Campus", "/job/USA/Engineer_R-1-1")
+
+    assert runner._job_dedupe_key(main_site, config) == runner._job_dedupe_key(
+        campus_site, config
+    )
+
+
+def test_workday_catalogue_lists_each_career_site_once() -> None:
+    import csv
+    from pathlib import Path
+
+    from ats_scrapers.scrapers.workday import URL_PATTERN
+
+    with Path("ats-companies/workday.csv").open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    sites = []
+    for row in rows:
+        match = URL_PATTERN.match(row["url"])
+        assert match is not None, row["url"]
+        assert row["name"].strip(), row["url"]
+        sites.append(
+            (
+                match["company"].casefold(),
+                match["instance"],
+                match["site"].casefold(),
+            )
+        )
+    assert len(set(sites)) == len(sites)

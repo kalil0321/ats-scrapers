@@ -201,6 +201,39 @@ def test_include_descriptions_false_skips_detail(httpx_mock) -> None:
     assert jobs[0].location == "Houston, TX, US"
 
 
+@pytest.mark.parametrize(
+    ("country", "location", "country_iso"),
+    [
+        ("DEU", "Springfield, DE", "DE"),
+        ("GBR", "Springfield, GB", "GB"),
+        ("FRA", "Springfield, FR", "FR"),
+        ("ZZZ", "Springfield", None),
+    ],
+)
+def test_listing_maps_alpha3_country_codes(
+    httpx_mock,
+    country: str,
+    location: str,
+    country_iso: str | None,
+) -> None:
+    row = _row(4363000)
+    row["JobLocation"] = {
+        "LocationId": 10,
+        "City": "Springfield",
+        "Country": country,
+    }
+    httpx_mock.add_response(url=LISTING_URL, text=_listing([row]))
+
+    jobs = PaylocityScraper(
+        BOARD_ID,
+        include_descriptions=False,
+        company_name="Acme",
+    ).fetch()
+
+    assert jobs[0].location == location
+    assert jobs[0].country_iso == country_iso
+
+
 def test_closed_job_between_listing_and_detail_is_dropped(httpx_mock) -> None:
     httpx_mock.add_response(url=LISTING_URL, text=_listing([
         _row(4363000),
