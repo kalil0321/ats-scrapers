@@ -55,6 +55,7 @@ def test_registry_and_url_resolution() -> None:
     assert result.slug == "acme"
     assert resolve_careers_url("https://www.varbi.com/") is None
     assert resolve_careers_url("https://nested.acme.varbi.com/") is None
+    assert resolve_careers_url("https://www.acme.varbi.com/") is None
 
 
 def test_fetches_complete_jobs_without_credentials(httpx_mock) -> None:
@@ -106,6 +107,42 @@ def test_removed_details_are_excluded(httpx_mock, status) -> None:
     httpx_mock.add_response(url=FEED, text=_feed())
     httpx_mock.add_response(url=DETAIL, status_code=status)
     assert VarbiScraper("acme").fetch() == []
+
+
+@pytest.mark.parametrize("notice", [
+    "This advert is not available!", "Denna annons är inte tillgänglig!",
+])
+def test_withdrawn_advert_served_with_200_is_excluded(httpx_mock, notice) -> None:
+    withdrawn = _detail().replace(
+        "<h1>Research Engineer</h1>",
+        '<div class="page-header clearfix"><h1 class="pull-left">Research Engineer</h1>'
+        f'<div class="pull-right"><p class="text-danger">{notice}</p></div></div>',
+    )
+    httpx_mock.add_response(url=FEED, text=_feed())
+    httpx_mock.add_response(url=DETAIL, text=withdrawn)
+    assert VarbiScraper("acme").fetch() == []
+
+
+def test_deadline_check_works_without_time_zone_data(httpx_mock, monkeypatch) -> None:
+    from zoneinfo import ZoneInfoNotFoundError
+
+    def missing(_name: str):
+        raise ZoneInfoNotFoundError("No time zone found with key Europe/Stockholm")
+
+    monkeypatch.setattr("ats_scrapers.scrapers.varbi.ZoneInfo", missing)
+    httpx_mock.add_response(url=FEED, text=_feed())
+    httpx_mock.add_response(url=DETAIL, text=_detail())
+    assert len(VarbiScraper("acme").fetch()) == 1
+
+
+def test_jobs_carry_the_time_they_were_fetched(httpx_mock) -> None:
+    from datetime import UTC, datetime
+
+    before = datetime.now(UTC)
+    httpx_mock.add_response(url=FEED, text=_feed())
+    job = VarbiScraper("acme", include_descriptions=False).fetch()[0]
+    assert job.fetched_at is not None
+    assert before <= job.fetched_at <= datetime.now(UTC)
 
 
 @pytest.mark.parametrize("deadline", [
@@ -208,6 +245,17 @@ def test_translated_detail_keeps_consistent_feed_title_and_description(httpx_moc
     job = VarbiScraper("acme").fetch()[0]
     assert job.title == "Research Engineer"
     assert job.description == DESCRIPTION
+
+
+def test_advert_without_a_heading_in_the_linked_language_is_kept(httpx_mock) -> None:
+    """An advert written in Dutch only: the English page the feed links to
+    has an empty heading, and the same details and apply link."""
+    httpx_mock.add_response(url=FEED, text=_feed())
+    httpx_mock.add_response(url=DETAIL, text=_detail(title=""))
+    job = VarbiScraper("acme").fetch()[0]
+    assert job.title == "Research Engineer"
+    assert job.location == "Stockholm, Stockholms län, Sweden"
+    assert job.requisition_id == "REF-123"
 
 
 @pytest.mark.parametrize("detail", [

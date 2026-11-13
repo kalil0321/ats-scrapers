@@ -16,7 +16,7 @@ from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlsplit
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import HttpUrl
 
@@ -162,6 +162,7 @@ class VarbiScraper(BaseScraper):
                 title=title, company=company, url=HttpUrl(url),
                 description=description[:25_000],
                 posted_at=_posted_at(item.findtext("pubDate", "")),
+                fetched_at=datetime.now(UTC),
                 raw={"source_feed": self.feed_url},
             )
         return list(jobs.values())
@@ -185,14 +186,21 @@ class VarbiScraper(BaseScraper):
         except ImportError as error:
             raise ScraperError("Varbi detail parsing requires ats-scrapers[scrapers]") from error
         soup = BeautifulSoup(html_text, "html.parser")
-        heading = soup.select_one("h1")
         identity = soup.select_one('meta[property="og:url"]')
+        # The page's own address and its details table identify the advert.
+        # The heading does not: an advert written in one language only has
+        # an empty heading on the page of another language, which is the
+        # page the feed links to.
         if (
-            heading is None or soup.select_one("table.quick-info") is None
-            or not heading.get_text(strip=True)
+            soup.select_one("table.quick-info") is None
             or identity is None or identity.get("content") != str(job.url)
         ):
             raise ScraperError(f"Varbi detail did not match the listed job: {job.url}")
+        # A withdrawn advert still answers 200 with its own address and its
+        # details; Varbi only adds a notice in red beside the heading
+        # ("This advert is not available!", in the page's language).
+        if soup.select_one(".page-header .text-danger") is not None:
+            return None
         metadata = {}
         for field in _METADATA_FIELDS:
             cell = soup.select_one(f".quick-info-{field} td")
@@ -202,7 +210,7 @@ class VarbiScraper(BaseScraper):
         deadline = _date(deadline_text)
         if deadline_text and deadline is None:
             raise ScraperError(f"Varbi returned an unrecognized deadline: {deadline_text}")
-        if deadline and deadline < datetime.now(ZoneInfo("Europe/Stockholm")).date():
+        if deadline and deadline < _today():
             return None
         job.location = ", ".join(
             dict.fromkeys(metadata[field] for field in ("town", "county", "country")
@@ -235,6 +243,19 @@ class VarbiScraper(BaseScraper):
                 job.apply_url = HttpUrl(url)
                 break
         return job
+
+
+def _today() -> date:
+    """Today's date where Varbi and most of its employers are.
+
+    Without time zone data on the machine the UTC date is used. It is never
+    ahead of Sweden's, so an advert is never dropped before its deadline
+    has passed; it can stay up to two hours after it.
+    """
+    try:
+        return datetime.now(ZoneInfo("Europe/Stockholm")).date()
+    except ZoneInfoNotFoundError:
+        return datetime.now(UTC).date()
 
 
 def _text(value: str) -> str:

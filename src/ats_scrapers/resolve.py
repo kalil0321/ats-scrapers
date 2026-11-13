@@ -196,7 +196,9 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         return None
 
     if host.endswith(".varbi.com"):
-        slug = host.removesuffix(".varbi.com")
+        # Read the tenant from the host as given: ``www.`` was removed
+        # above, and ``www.acme.varbi.com`` is not a tenant's board.
+        slug = (parsed.hostname or "").lower().removesuffix(".varbi.com")
         if _DNS_LABEL_RE.fullmatch(slug) and slug not in {"api", "support", "login"}:
             return ResolvedCareersUrl(ATSType.VARBI, slug)
         return None

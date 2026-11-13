@@ -576,9 +576,13 @@ Validation:
 
 - Use `name,slug,url` with a single employer tenant and
   `https://{slug}.varbi.com/`; never use the aggregate Varbi marketplace.
-- Validate both the public board and `/what:rssfeed/` with the actual scraper,
-  including detail enrichment. RSS titles can use a different language from
-  the linked detail page; verify the detail's `og:url` identity instead.
+- Validate `/what:rssfeed/` with the actual scraper, including detail
+  enrichment. The scraper never requests the board URL of the catalogue row:
+  open it separately and check that it shows the same employer. RSS titles can
+  use a different language from the linked detail page; verify the detail's
+  `og:url` identity instead.
+- A withdrawn advert still answers 200 with its details. It carries a notice
+  beside the heading (`.page-header .text-danger`) and is not a job.
 - Deduplicate translated items by the numeric job ID within the employer.
 - Reject scholarship-only advertisements, expressions of interest, obsolete
   feeds and aliases. A working RSS endpoint is not proof of an active employer.
