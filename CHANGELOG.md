@@ -5,6 +5,14 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Built In now follows advertised pagination, rejects interrupted/repeated/capped
+  runs, uses shared HTTP retry handling, and reads employer/location metadata.
+  Full descriptions come from public job details rather than listing summaries.
+  Card matching follows public URLs and handles aliases whose tracking IDs
+  differ from the URL ID without changing existing job identities.
+
 ## [0.3.0] — 2026-09-02
 
 ### Added
