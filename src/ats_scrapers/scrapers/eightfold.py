@@ -678,6 +678,6 @@ def _parse_ts(value: int | str | None) -> datetime | None:
     try:
         if isinstance(value, str):
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return datetime.fromtimestamp(value / 1000 if value > 1e10 else value)
+        return datetime.fromtimestamp(value / 1000 if value > 1e10 else value, tz=UTC)
     except (ValueError, OSError):
         return None

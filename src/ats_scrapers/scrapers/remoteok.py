@@ -152,7 +152,7 @@ def _epoch_to_dt(value: object) -> datetime | None:
         return None
     if sec <= 0:
         return None
-    return datetime.fromtimestamp(sec)
+    return datetime.fromtimestamp(sec, tz=UTC)
 
 
 def _iso_to_dt(value: object) -> datetime | None:

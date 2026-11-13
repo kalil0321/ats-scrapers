@@ -5,7 +5,7 @@ Field renames here are breaking changes — these tests pin the contract.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -17,12 +17,13 @@ from ats_scrapers.models import ATSType, Company, Job, Salary
 def test_ats_type_includes_every_supported_platform() -> None:
     expected = {
         # Multi-tenant ATS systems
-        "adp", "ashby", "avature", "beisen", "beisen_legacy", "cornerstone",
+        "adp", "ashby", "avature", "beisen", "beisen_legacy", "catsone", "clearcompany",
+        "cornerstone",
         "darwinbox", "dayforce", "eightfold", "gem", "greenhouse", "gupy", "herp", "hrmos",
-        "icims", "join_com", "jobvite", "keka", "lever", "mercor", "moka", "ninehire", "oracle", "pageup", "paycom", "paylocity",
-        "personio", "phenom",
+        "icims", "jibe", "join_com", "jobvite", "keka", "lever", "mercor", "moka", "oracle", "pageup", "paycom", "paylocity",
+        "peopleadmin", "personio", "phenom",
         "pinpoint", "recruiterbox", "rippling", "smartrecruiters", "softgarden",
-        "successfactors", "ukg", "workable", "workday",
+        "successfactors", "ukg", "workable", "workable_marketplace", "workday",
         # Big-tech custom careers systems
         "amazon", "apple", "bytedance", "google", "meta",
         "tesla", "tiktok", "uber", "usajobs",
@@ -34,8 +35,9 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "jobs_cz", "manfred", "thehub", "ycombinator", "wellfound",
         "infojobs_es", "jobbankca", "seek",
         # Additional multi-tenant ATSes
+        "ninehire",
         "bamboohr", "breezy", "jazzhr",
-        "recruitee", "taleo", "teamtailor",
+        "recruitee", "talentbrew", "talentsoft", "taleo", "taleo_enterprise", "teamtailor",
         # Catch-all
         "custom",
     }
@@ -168,6 +170,24 @@ def test_job_posted_at_accepts_datetime() -> None:
 def test_job_posted_at_accepts_iso_string() -> None:
     job = _minimal_job(posted_at="2026-01-15T12:00:00")
     assert job.posted_at == datetime(2026, 1, 15, 12, 0, 0)
+
+
+def test_job_application_deadline_defaults_to_none() -> None:
+    job = _minimal_job()
+    assert job.application_deadline is None
+
+
+def test_job_application_deadline_accepts_datetime() -> None:
+    when = datetime(2026, 9, 14, 23, 59, 59, tzinfo=UTC)
+    job = _minimal_job(application_deadline=when)
+    assert job.application_deadline == when
+
+
+def test_job_application_deadline_round_trips() -> None:
+    job = _minimal_job(application_deadline="2026-09-14T23:59:59Z")
+    payload = job.model_dump(mode="json")
+    restored = Job.model_validate(payload)
+    assert restored.application_deadline == job.application_deadline
 
 
 def test_job_accepts_ats_type_via_alias() -> None:

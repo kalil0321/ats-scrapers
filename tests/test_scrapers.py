@@ -159,8 +159,13 @@ def test_greenhouse_parses_jobs(httpx_mock) -> None:
         url="https://boards-api.greenhouse.io/v1/boards/acme/jobs?content=true",
         json=GH_SAMPLE,
     )
+    httpx_mock.add_response(
+        url="https://boards-api.greenhouse.io/v1/boards/acme",
+        json={"name": "Acme", "content": ""},
+    )
     jobs = GreenhouseScraper("acme").fetch()
     assert len(jobs) == 2
+    assert jobs[0].company == "Acme"
     assert jobs[0].title == "Software Engineer"
     assert jobs[0].location == "San Francisco"
     assert jobs[0].posted_at is not None
