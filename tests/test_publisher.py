@@ -23,10 +23,12 @@ import pandas as pd
 import pytest
 
 from ats_scrapers.exceptions import StorageError
+from ats_scrapers.manifest import Manifest
 from pipeline.publisher import (
     CACHE_CONTROL_LATEST,
     DEFAULT_PREFIX,
     DatasetPublisher,
+    _compact,
 )
 
 # --- Layout -----------------------------------------------------------------
@@ -106,6 +108,34 @@ def test_manifest_contains_expected_structure(ats_csv_dir, fake_r2) -> None:
     # `all` lives at the top level now and ships both formats.
     assert manifest["all"]["parquet"].endswith("/all.parquet")
     assert manifest["all"]["csv"].endswith("/all.csv")
+
+
+def test_manifest_reports_jobs_by_source_kind(ats_csv_dir, fake_r2) -> None:
+    eures = ats_csv_dir / "eures"
+    eures.mkdir()
+    (eures / "jobs.csv").write_text(
+        "url,title,location,company,ats_id\n"
+        "https://eures.example/job/1,Nurse,Berlin,Klinik A,e1\n"
+        "https://eures.example/job/2,Driver,Munich,Spedition B,e2\n"
+        # Same posting as greenhouse-co0 / Engineer 0 / Paris: the ATS row
+        # wins the cross-source dedup, so it must count once, as ``ats``.
+        "https://eures.example/job/3,Engineer 0,Paris,greenhouse-co0,e3\n"
+    )
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    stats = manifest["stats"]
+    assert stats["total_jobs_raw"] == 12
+    assert stats["total_jobs"] == 11
+    assert stats["jobs_by_source_kind"] == {
+        "ats": 9, "company_site": 0, "gov_board": 2, "job_board": 0,
+    }
+    assert stats["ats_jobs"] == 9
+    # The SDK model keeps the new fields.
+    parsed = Manifest.model_validate(manifest)
+    assert parsed.stats.ats_jobs == 9
+    assert parsed.stats.jobs_by_source_kind == stats["jobs_by_source_kind"]
 
 
 def test_manifest_includes_generator_string(ats_csv_dir, fake_r2) -> None:
@@ -318,6 +348,153 @@ def test_manifest_patch_handles_corrupt_existing_manifest(
     assert "did not parse as JSON" in caplog.text
     manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
     assert manifest["version"] == "2.0"
+
+
+# --- Retired sources ----------------------------------------------------------
+
+
+def test_jobs_file_of_a_retired_source_is_not_published(ats_csv_dir, fake_r2) -> None:
+    """SEEK left the scheduled run. A jobs file an earlier run wrote is
+    still on the operator's disk and must not be published again."""
+    seek_dir = ats_csv_dir / "seek"
+    seek_dir.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "url": "https://www.seek.com.au/job/1",
+                "title": "Stale job",
+                "company": "Old Co",
+                "location": "Sydney",
+                "ats_id": "1",
+            }
+        ]
+    ).to_csv(seek_dir / "jobs.csv", index=False)
+
+    result = DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    assert "seek" not in manifest["by_ats"]
+    assert not any("/seek/" in key for key in fake_r2.uploads)
+    assert result.total_jobs == 9
+    assert result.ats_count == 3
+
+
+@pytest.mark.parametrize("content", ["", "url,title,company,location,ats_id\n"])
+def test_empty_jobs_file_of_a_retired_source_does_not_block_the_publish(
+    ats_csv_dir, fake_r2, content: str
+) -> None:
+    """The manifest still records SEEK from an earlier run. An empty file
+    left on disk would look like a provider that lost its jobs, and no
+    scheduled run would ever refresh it."""
+    fake_r2.upload_bytes(
+        json.dumps(
+            {
+                "by_ats": {"seek": {"rows": 120}},
+                "by_ats_companies": {"seek": {"rows": 9}},
+            }
+        ).encode(),
+        "jobhive/v1/manifest.json",
+    )
+    seek_dir = ats_csv_dir / "seek"
+    seek_dir.mkdir()
+    (seek_dir / "jobs.csv").write_text(content, encoding="utf-8")
+
+    result = DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
+
+    assert result.total_jobs == 9
+    assert not any("/seek/jobs" in key for key in fake_r2.uploads)
+
+
+# --- README badges ----------------------------------------------------------
+
+
+def test_publish_writes_badge_values_from_manifest_stats(ats_csv_dir, fake_r2) -> None:
+    result = DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    upload = fake_r2.uploads["jobhive/v1/badges.json"]
+    assert json.loads(upload["data"]) == {
+        "jobs": _compact(manifest["stats"]["total_jobs"]),
+        "companies": _compact(manifest["stats"]["total_companies"]),
+        "sources": str(manifest["stats"]["ats_count"]),
+        "updated": manifest["generated_at"][:10],
+    }
+    assert upload["content_type"] == "application/json"
+    assert upload["cache_control"] == CACHE_CONTROL_LATEST
+    # The result lists what was uploaded, badges included.
+    assert "jobhive/v1/badges.json" in result.files
+
+
+def test_badge_values_are_compact(fake_r2) -> None:
+    """Counts of the size the dataset has: the file holds "4.9M" and
+    "80.4K", not the raw numbers the manifest carries."""
+    from datetime import UTC, datetime
+
+    key = DatasetPublisher(fake_r2)._upload_badges(
+        {"total_jobs": 4_886_484, "total_companies": 80_390, "ats_count": 64},
+        datetime(2026, 11, 10, 14, 30, 4, tzinfo=UTC),
+    )
+
+    assert key == "jobhive/v1/badges.json"
+    assert json.loads(fake_r2.uploads[key]["data"]) == {
+        "jobs": "4.9M",
+        "companies": "80.4K",
+        "sources": "64",
+        "updated": "2026-11-10",
+    }
+
+
+def test_badge_upload_failure_does_not_fail_publish(
+    ats_csv_dir, fake_r2, monkeypatch
+) -> None:
+    upload_bytes = fake_r2.upload_bytes
+
+    def failing_badges(data, key, **kwargs):
+        if key.endswith("/badges.json"):
+            raise StorageError("R2 upload failed")
+        return upload_bytes(data, key, **kwargs)
+
+    monkeypatch.setattr(fake_r2, "upload_bytes", failing_badges)
+    result = DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
+
+    assert result.total_jobs == 9
+    assert "jobhive/v1/manifest.json" in fake_r2.uploads
+    assert "jobhive/v1/badges.json" not in fake_r2.uploads
+    # A file that was not uploaded is not reported.
+    assert "jobhive/v1/badges.json" not in result.files
+    assert "jobhive/v1/manifest.json" in result.files
+
+
+@pytest.mark.parametrize(
+    ("n", "expected"),
+    [
+        (0, "0"),
+        (64, "64"),
+        (999, "999"),
+        (1_000, "1K"),
+        (1_049, "1K"),
+        # Ties round up, as on the site: 1,250 is "1.3K", not "1.2K".
+        (1_050, "1.1K"),
+        (1_250, "1.3K"),
+        (1_350, "1.4K"),
+        (80_390, "80.4K"),
+        (999_949, "999.9K"),
+        (999_950, "1M"),
+        (999_999, "1M"),
+        (4_886_484, "4.9M"),
+        (2_400_000_000, "2.4B"),
+    ],
+)
+def test_compact(n: int, expected: str) -> None:
+    assert _compact(n) == expected
 
 
 # --- Cache headers ----------------------------------------------------------
@@ -562,8 +739,9 @@ def test_result_reports_counts_and_duration(ats_csv_dir, fake_r2) -> None:
     assert result.ats_count == 3
     assert result.duration_seconds >= 0.0
     assert result.manifest_key == "jobhive/v1/manifest.json"
-    # 3 ATS slices × 2 formats + all.{csv,parquet} + manifest.json = 9 files
-    assert len(result.files) == 9
+    # 3 ATS slices × 2 formats + all.{csv,parquet} + badges.json +
+    # manifest.json = 10 files
+    assert len(result.files) == 10
 
 
 # --- Cross-ATS deduplication ------------------------------------------------
@@ -601,6 +779,100 @@ def test_cross_ats_dedup_keeps_higher_priority_ats(
     assert len(df) == 3
     assert (df["ats_type"] == "workday").all()
     assert df["url"].str.contains("workday.com").all()
+
+
+def test_cross_ats_dedup_uses_employer_requisition_id(tmp_path) -> None:
+    import pipeline.publisher as publisher_module
+
+    workday_path = tmp_path / "workday.csv"
+    eightfold_path = tmp_path / "eightfold.csv"
+    pd.DataFrame([
+        {
+            "url": "https://acme.wd1.myworkdayjobs.com/jobs/1",
+            "title": "Senior Software Engineer",
+            "company": "Acme",
+            "location": "New York, NY",
+            "ats_id": "acme.wd1.myworkdayjobs.com/jobs/1",
+            "requisition_id": "R-123",
+        },
+    ]).to_csv(workday_path, index=False)
+    pd.DataFrame([
+        {
+            "url": "https://acme.eightfold.ai/careers/job/1",
+            "title": "Software Engineer III",
+            "company": "Acme",
+            "location": "United States",
+            "ats_id": "R-123",
+            "requisition_id": "R-123",
+        },
+    ]).to_csv(eightfold_path, index=False)
+
+    survivors, raw_count, kept_count = (
+        publisher_module._dedup_from_per_ats_csvs(
+            {
+                "workday": workday_path,
+                "eightfold": eightfold_path,
+            }
+        )
+    )
+
+    assert raw_count == 2
+    assert kept_count == 1
+    assert survivors["workday"].height == 1
+    assert "eightfold" not in survivors
+
+
+def test_cross_ats_requisition_dedup_keeps_winning_ats_variants(tmp_path) -> None:
+    import pipeline.publisher as publisher_module
+
+    amazon_path = tmp_path / "amazon.csv"
+    eightfold_path = tmp_path / "eightfold.csv"
+    pd.DataFrame(
+        [
+            {
+                "url": "https://amazon.jobs/en/jobs/1/new-york",
+                "title": "Software Engineer - New York",
+                "company": "Amazon",
+                "location": "New York, NY",
+                "ats_id": "1:new-york",
+                "requisition_id": "1",
+            },
+            {
+                "url": "https://amazon.jobs/en/jobs/1/seattle",
+                "title": "Software Engineer - Seattle",
+                "company": "Amazon",
+                "location": "Seattle, WA",
+                "ats_id": "1:seattle",
+                "requisition_id": "1",
+            },
+        ]
+    ).to_csv(amazon_path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "url": "https://amazon.eightfold.ai/careers/job/1",
+                "title": "Software Engineer",
+                "company": "Amazon",
+                "location": "United States",
+                "ats_id": "1",
+                "requisition_id": "1",
+            },
+        ]
+    ).to_csv(eightfold_path, index=False)
+
+    survivors, raw_count, kept_count = (
+        publisher_module._dedup_from_per_ats_csvs(
+            {
+                "amazon": amazon_path,
+                "eightfold": eightfold_path,
+            }
+        )
+    )
+
+    assert raw_count == 3
+    assert kept_count == 2
+    assert survivors["amazon"].height == 2
+    assert "eightfold" not in survivors
 
 
 def test_cross_ats_dedup_prefers_structured_country_iso(tmp_path) -> None:
@@ -989,3 +1261,102 @@ def test_sha256_matches_uploaded_bytes(ats_csv_dir, fake_r2) -> None:
         hashlib.sha256(csv_bytes).hexdigest()
         == manifest["by_ats"]["greenhouse"]["sha256"]
     )
+
+
+# --- Per-tenant scrape status ----------------------------------------------
+
+
+def _write_status(path, rows: list[tuple[str, str, int]]) -> None:
+    lines = ["ats,slug,name,url,status,jobs,error,run_started_at,checked_at"]
+    for slug, status, jobs in rows:
+        lines.append(
+            f"{path.parent.name},{slug},{slug.title()},https://{slug}.example,"
+            f"{status},{jobs},,2026-11-11T00:00:00+00:00,2026-11-11T00:01:00+00:00"
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_publish_concatenates_tenant_status(ats_csv_dir, fake_r2) -> None:
+    _write_status(
+        ats_csv_dir / "greenhouse" / "tenant_status.csv",
+        [("acme", "ok", 3), ("gone", "not_found", 0)],
+    )
+    _write_status(ats_csv_dir / "lever" / "tenant_status.csv", [("beta", "empty", 0)])
+
+    DatasetPublisher(fake_r2).publish_from_directory(ats_csv_dir)
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    entry = manifest["tenant_status"]
+    assert entry["rows"] == 3
+    assert entry["parquet"] == "https://cdn.example.com/jobhive/v1/tenant_status.parquet"
+    df = pd.read_parquet(io.BytesIO(fake_r2.uploads["jobhive/v1/tenant_status.parquet"]["data"]))
+    assert sorted(zip(df["ats"], df["slug"], df["status"], strict=True)) == [
+        ("greenhouse", "acme", "ok"),
+        ("greenhouse", "gone", "not_found"),
+        ("lever", "beta", "empty"),
+    ]
+    assert df["jobs"].dtype.kind == "i"
+
+
+def test_publish_finds_tenant_status_behind_symlinked_jobs_csv(
+    ats_csv_dir, tmp_path_factory, fake_r2
+) -> None:
+    _write_status(ats_csv_dir / "ashby" / "tenant_status.csv", [("acme", "ok", 1)])
+    # A provider whose first run failed has a status file but no jobs.csv.
+    (ats_csv_dir / "workable").mkdir()
+    _write_status(ats_csv_dir / "workable" / "tenant_status.csv", [("x", "error", 0)])
+    selected = tmp_path_factory.mktemp("selected")
+    (selected / "ashby").mkdir()
+    (selected / "ashby" / "jobs.csv").symlink_to(ats_csv_dir / "ashby" / "jobs.csv")
+
+    DatasetPublisher(fake_r2).publish_from_directory(selected)
+
+    df = pd.read_parquet(io.BytesIO(fake_r2.uploads["jobhive/v1/tenant_status.parquet"]["data"]))
+    assert sorted(zip(df["ats"], df["slug"], strict=True)) == [
+        ("ashby", "acme"),
+        ("workable", "x"),
+    ]
+
+
+def test_publish_includes_status_of_provider_without_jobs_csv(
+    ats_csv_dir, fake_r2
+) -> None:
+    (ats_csv_dir / "workable").mkdir()
+    _write_status(ats_csv_dir / "workable" / "tenant_status.csv", [("x", "error", 0)])
+
+    DatasetPublisher(fake_r2).publish_from_directory(ats_csv_dir)
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    assert manifest["tenant_status"]["rows"] == 1
+
+
+def test_status_is_uploaded_when_no_provider_has_a_jobs_file(tmp_path, fake_r2) -> None:
+    """A first run where every provider failed: there is no dataset to
+    publish, but the per-company outcomes are uploaded before the error."""
+    (tmp_path / "workable").mkdir()
+    _write_status(
+        tmp_path / "workable" / "tenant_status.csv",
+        [("x", "error", 0), ("y", "not_found", 0)],
+    )
+
+    with pytest.raises(StorageError, match="No ATS CSVs found"):
+        DatasetPublisher(fake_r2).publish_from_directory(tmp_path)
+
+    df = pd.read_parquet(
+        io.BytesIO(fake_r2.uploads["jobhive/v1/tenant_status.parquet"]["data"])
+    )
+    assert sorted(df["slug"]) == ["x", "y"]
+    assert "jobhive/v1/manifest.json" not in fake_r2.uploads
+
+
+def test_publish_without_tenant_status_keeps_previous_entry(ats_csv_dir, fake_r2) -> None:
+    previous = {"parquet": "https://cdn.example.com/jobhive/v1/tenant_status.parquet", "rows": 7}
+    fake_r2.upload_bytes(
+        json.dumps({"tenant_status": previous}).encode(), "jobhive/v1/manifest.json"
+    )
+
+    DatasetPublisher(fake_r2).publish_from_directory(ats_csv_dir)
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    assert manifest["tenant_status"] == previous
+    assert "jobhive/v1/tenant_status.parquet" not in fake_r2.uploads

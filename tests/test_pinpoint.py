@@ -7,6 +7,7 @@ import pytest
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import PinpointScraper, ScraperRegistry
+from ats_scrapers.scrapers.pinpoint import MAX_DESCRIPTION_LEN
 
 URL = "https://acme.pinpointhq.com/postings.json"
 
@@ -140,6 +141,58 @@ def test_html_description_preserved(httpx_mock) -> None:
     job = PinpointScraper("acme").fetch()[0]
     assert "<b>world</b>" in job.description
     assert "&nbsp;" not in job.description  # entity decoded
+
+
+def test_description_assembles_all_sections(httpx_mock) -> None:
+    """``postings.json`` splits the advert into ``description`` plus
+    ``key_responsibilities``, ``skills_knowledge_expertise`` and
+    ``benefits``, each with its own ``<field>_header``."""
+    p = _posting()
+    p["key_responsibilities"] = "<ul><li>Own the pipelines</li></ul>"
+    p["key_responsibilities_header"] = "What you will do"
+    p["skills_knowledge_expertise"] = "<p>Python and SQL.</p>"
+    p["skills_knowledge_expertise_header"] = "What you bring"
+    p["benefits"] = "<p>Flexible hours.</p>"
+    p["benefits_header"] = ""
+    httpx_mock.add_response(url=URL, json={"data": [p]})
+    desc = PinpointScraper("acme").fetch()[0].description
+    assert desc is not None
+    pieces = [
+        "Build great <strong>things</strong>.",
+        "<h3>What you will do</h3>",
+        "<li>Own the pipelines</li>",
+        "<h3>What you bring</h3>",
+        "<p>Python and SQL.</p>",
+        "<p>Flexible hours.</p>",
+    ]
+    for piece in pieces:
+        assert piece in desc
+    positions = [desc.index(piece) for piece in pieces]
+    assert positions == sorted(positions)
+    assert "<h3></h3>" not in desc  # a section without a header keeps its body only
+
+
+def test_description_without_extra_sections_is_unchanged(httpx_mock) -> None:
+    p = _posting()
+    p["key_responsibilities"] = None
+    p["key_responsibilities_header"] = "What you will do"
+    p["skills_knowledge_expertise"] = ""
+    p["benefits"] = "   "
+    p["benefits_header"] = "Benefits"
+    httpx_mock.add_response(url=URL, json={"data": [p]})
+    job = PinpointScraper("acme").fetch()[0]
+    assert job.description == "<p>Build great <strong>things</strong>.</p>"
+
+
+def test_assembled_description_is_capped(httpx_mock) -> None:
+    p = _posting()
+    p["key_responsibilities"] = "<p>" + "x" * MAX_DESCRIPTION_LEN + "</p>"
+    p["key_responsibilities_header"] = "What you will do"
+    httpx_mock.add_response(url=URL, json={"data": [p]})
+    job = PinpointScraper("acme").fetch()[0]
+    assert job.description is not None
+    assert job.description.startswith("<p>Build great")
+    assert len(job.description) == MAX_DESCRIPTION_LEN
 
 
 def test_location_falls_back_to_city_when_name_missing(httpx_mock) -> None:
