@@ -554,7 +554,7 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "moka": 1, "oracle": 1, "pageup": 1, "paycom": 1, "paylocity": 1, "peopleadmin": 1, "personio": 1, "phenom": 1, "pinpoint": 1,
     "recruitee": 1,
     "recruiterbox": 1, "rippling": 1, "smartrecruiters": 1, "softgarden": 1,
-    "successfactors": 1, "talentbrew": 1, "taleo": 1, "taleo_enterprise": 1,
+    "successfactors": 1, "talentbrew": 1, "talentsoft": 1, "taleo": 1, "taleo_enterprise": 1,
     "teamtailor": 1, "ukg": 1,
     "workable": 1,
     "workday": 1,

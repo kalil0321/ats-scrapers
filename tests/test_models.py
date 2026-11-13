@@ -36,7 +36,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "infojobs_es", "jobbankca", "seek",
         # Additional multi-tenant ATSes
         "bamboohr", "breezy", "jazzhr",
-        "recruitee", "talentbrew", "taleo", "taleo_enterprise", "teamtailor",
+        "recruitee", "talentbrew", "talentsoft", "taleo", "taleo_enterprise", "teamtailor",
         # Catch-all
         "custom",
     }

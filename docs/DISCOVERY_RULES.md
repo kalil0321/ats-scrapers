@@ -434,6 +434,41 @@ Validation:
    list different postings (say so in the PR): listing both would publish
    the same postings twice.
 
+### Talentsoft (Cegid)
+
+Rows use the career site's host label as ``slug`` and
+``https://{slug}.talent-soft.com`` as ``url``. Career sites served on the
+customer's own domain are not covered.
+
+Validation:
+
+1. Fetch ``/offre-de-emploi/liste-toutes-offres.aspx?mode=list`` (the path
+   is the same on sites in every language). Require HTTP 200 and the offer
+   list. A site that sends visitors to its log-in page is an internal
+   mobility site: leave it out.
+2. Run the scraper's full walk and require at least one offer. The list
+   stops at 1,000 offers; the scraper refuses a site that announces more
+   than its list can show, so such a site cannot be a row until its list is
+   read another way.
+3. Leave out the copies a customer keeps beside its live site (labels with
+   ``test``, ``recette``, ``preprod`` and the like) and the sites for its
+   own staff (``-employee``, ``mobilite``): they list invented offers, or
+   offers that are not open to outside candidates.
+4. A customer can have several sites that list the same offers (an old and
+   a new host name, a group site and a brand site). Compare the offer
+   numbers and references, and leave out a site when 90% or more of its
+   offers are on a larger site.
+5. Require an offer dated within the 90 days before validation (the date
+   the list shows beside each offer, which is the date the offer was last
+   published or updated). A customer that left the product can leave its
+   site online with its last offers.
+6. Leave out job boards that list offers of many employers without naming
+   the employer of each offer in a field the scraper reads, and the State's
+   own job board (``place-ep-recrute``, "Choisir le Service Public"), which
+   is a government board.
+7. The row name is the employer's name as the site states it (the page
+   title of the offer list, before " - Résultat de votre recherche").
+
 ### Taleo Enterprise
 
 Taleo Enterprise Edition (``{zone}.taleo.net``) is a different product from
