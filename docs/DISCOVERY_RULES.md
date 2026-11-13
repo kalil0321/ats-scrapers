@@ -323,6 +323,38 @@ Validation:
    list different postings (say so in the PR): listing both would publish
    the same postings twice.
 
+### Taleo Enterprise
+
+Taleo Enterprise Edition (``{zone}.taleo.net``) is a different product from
+Taleo Business Edition (``*.tbe.taleo.net``, the ``taleo`` provider above).
+
+Rows use ``{zone}.taleo.net/{section}`` as ``slug`` and the section's search
+page (``https://{zone}.taleo.net/careersection/{section}/jobsearch.ftl``) as
+``url``. A zone can have several rows, one per career section.
+
+Validation:
+
+1. Fetch the search page. Require HTTP 200 and a portal number
+   (``portal=NNN``). Pages titled ``Career Section Unavailable``,
+   ``Privacy Agreement`` or ``Zone Maintenance`` have none: reject them.
+2. Run the scraper's full walk and require at least one posting. Do not
+   validate on the announced ``totalCount``: it is often larger than the
+   number of postings the pages hold, and a section can announce postings
+   and list none.
+3. Keep external sections only. Reject sections for employees (names such
+   as ``in``, ``int``, ``internal``) and sections whose search page asks to
+   sign in.
+4. A requisition listed in several sections of a zone is published once
+   (``ats_id`` is ``{zone}:{requisition number}``). Add a second section of
+   a zone only when it lists postings the first does not; a section that
+   repeats another adds requests and nothing else.
+5. Reject a zone that is an alias of one already listed (same postings
+   under two host names, for example ``tas-acme.taleo.net`` and
+   ``acme.taleo.net``): compare requisition numbers and titles.
+6. The search page title is usually just ``Job Search``. Take the employer
+   name from the detail page title or the postings themselves, and check it
+   by hand; never use the zone label (``aa123``) as the name.
+
 ### Avature
 
 Validation:
