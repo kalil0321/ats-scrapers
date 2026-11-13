@@ -17,25 +17,8 @@ LISTING_URL = (
 )
 
 
-def _portal(
-    *,
-    tenant: str = TENANT,
-    token: str = "header.payload.signature",
-) -> str:
-    return f"""
-    <html>
-      <head><title>Jobs for Anderson Auto Group</title></head>
-      <body>
-        <script>
-          var startingData = {{
-            "apiUrl": "https://api.hireology.com/v2",
-            "apiToken": "{token}",
-            "careersPath": "{tenant}"
-          }};
-        </script>
-      </body>
-    </html>
-    """
+def _portal(title: str = "Jobs for Anderson Auto Group") -> str:
+    return f"<html><head><title>{title}</title></head><body></body></html>"
 
 
 def _job(job_id: int = 2_827_500) -> dict[str, object]:
@@ -101,7 +84,6 @@ def _mock_listing(
     httpx_mock,
     jobs: list[dict[str, object]],
 ) -> None:
-    httpx_mock.add_response(url=CAREERS_URL, text=_portal())
     httpx_mock.add_response(url=LISTING_URL, json=_listing(jobs))
 
 
@@ -249,7 +231,6 @@ def test_paginates_and_reconciles_total(httpx_mock, monkeypatch) -> None:
     first = _job()
     second = _job(2_827_501)
     second["name"] = "Service Advisor"
-    httpx_mock.add_response(url=CAREERS_URL, text=_portal())
     httpx_mock.add_response(
         url=(
             f"https://api.hireology.com/v2/public/careers/{TENANT}"
@@ -348,36 +329,45 @@ def test_child_location_url_safely_reencodes_embedded_slash(httpx_mock) -> None:
     )
 
 
-def test_missing_public_configuration_maps_to_company_not_found(
-    httpx_mock,
-) -> None:
-    httpx_mock.add_response(
-        url=CAREERS_URL,
-        text="<html><title>Hireology</title></html>",
-    )
+def test_tenant_that_is_gone_maps_to_company_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(url=LISTING_URL, status_code=404)
 
     with pytest.raises(CompanyNotFoundError):
         HireologyScraper(TENANT).fetch()
 
 
-def test_configuration_tenant_mismatch_fails_closed(httpx_mock) -> None:
-    httpx_mock.add_response(
-        url=CAREERS_URL,
-        text=_portal(tenant="another-tenant"),
-    )
+def test_listing_is_read_without_a_token_or_the_career_page(httpx_mock) -> None:
+    _mock_listing(httpx_mock, [_job()])
 
-    with pytest.raises(ScraperError, match="identified"):
-        HireologyScraper(TENANT).fetch()
+    HireologyScraper(TENANT, company_name="Anderson Auto Group").fetch()
+
+    requests = httpx_mock.get_requests()
+    assert [str(request.url) for request in requests] == [LISTING_URL]
+    assert "Authorization" not in requests[0].headers
 
 
-def test_missing_anonymous_token_fails_closed(httpx_mock) -> None:
-    httpx_mock.add_response(
-        url=CAREERS_URL,
-        text=_portal(token="not-a-jwt"),
-    )
+def test_employer_name_falls_back_to_the_career_page_title(httpx_mock) -> None:
+    item = _job()
+    item["organization"] = {}
+    _mock_listing(httpx_mock, [item])
+    httpx_mock.add_response(url=CAREERS_URL, text=_portal())
 
-    with pytest.raises(ScraperError, match="anonymous API token"):
-        HireologyScraper(TENANT).fetch()
+    job = HireologyScraper(TENANT).fetch()[0]
+
+    assert job.company == "Anderson Auto Group"
+
+
+def test_employer_name_falls_back_to_the_tenant_when_the_page_fails(
+    httpx_mock,
+) -> None:
+    item = _job()
+    item["organization"] = {}
+    _mock_listing(httpx_mock, [item])
+    httpx_mock.add_response(url=CAREERS_URL, status_code=404)
+
+    job = HireologyScraper(TENANT).fetch()[0]
+
+    assert job.company == TENANT
 
 
 @pytest.mark.parametrize(

@@ -499,10 +499,18 @@ CONFIGS: dict[str, dict[str, Any]] = {
         },
         "csv": "ats-companies/hireology.csv",
         "output": "hireology/jobs.csv",
+        # A group's site lists the jobs of its member sites, which have
+        # their own catalogue rows: the job id is the same on both.
         "dedupe_by_ats_id": True,
         "max_concurrency": 8,
         "fail_closed_on_empty": True,
         "fail_closed_on_any_error": True,
+        # A tenant that answers 404 is a failed employer, not one to skip.
+        "fail_closed_on_not_found": True,
+        # Employers leave Hireology all the time: 180 of 4,494 between
+        # July and November 2026. 2% may fail before the dataset is held
+        # back, which leaves time to clean the catalogue.
+        "fail_closed_tolerance": 0.02,
     },
     "hrmos": {
         "scraper": HrmosScraper,

@@ -1,8 +1,14 @@
-"""Hireology public career-site scraper."""
+"""Hireology public career-site scraper.
+
+One request per employer: ``api.hireology.com/v2/public/careers/{tenant}``
+answers without a token and gives every open job with its description,
+places, pay and creation date. The career site itself (a page of ten job
+cards per request since its 2026 rebuild) is only read for the employer's
+name, when neither the catalogue nor the job gives one.
+"""
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar
@@ -10,14 +16,13 @@ from urllib.parse import quote, unquote, urlparse
 
 from bs4 import BeautifulSoup
 
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 CAREERS_URL = "https://careers.hireology.com/{tenant}/"
 LISTING_API_URL = "https://api.hireology.com/v2/public/careers/{tenant}"
 PAGE_SIZE = 1_000
-_STARTING_DATA_MARKER = "var startingData ="
 _UNSAFE_PATH_CHARS_RE = re.compile(r"[/\\?#\x00-\x1f\x7f]")
 _UNSAFE_REPORTED_SEGMENT_CHARS_RE = re.compile(r"[\\?#\x00-\x1f\x7f]")
 _US_REGIONS = {
@@ -145,21 +150,22 @@ class HireologyScraper(BaseScraper):
         self.company_name = _clean_text(company_name)
 
     async def afetch(self) -> list[Job]:
-        careers_url = CAREERS_URL.format(tenant=self._quoted_slug)
-        async with self.make_fetcher() as page_fetch:
-            page = await page_fetch.get_text(careers_url)
-        token, page_company = _portal_identity(page, self.company_slug)
-        api_headers = {
-            **self.default_headers,
-            "Authorization": f"Bearer {token}",
-        }
-        async with self.make_fetcher(headers=api_headers) as api_fetch:
-            items = await self._fetch_all(api_fetch)
-        company = self.company_name or page_company
+        async with self.make_fetcher() as fetch:
+            # A tenant that is gone answers 404, which the fetcher reports
+            # as ``CompanyNotFoundError``.
+            items = await self._fetch_all(fetch)
+            company = self.company_name
+            if company is None and any(
+                not _organization_name(item) for item in items
+            ):
+                company = await self._page_company(fetch)
         jobs: list[Job] = []
         seen: set[str] = set()
         for item in items:
-            job = self._parse_job(item, fallback_company=company)
+            job = self._parse_job(
+                item,
+                fallback_company=company or self.company_slug,
+            )
             if job.ats_id in seen:
                 raise ScraperError(
                     f"Hireology ({self.company_slug}) returned duplicate "
@@ -168,6 +174,18 @@ class HireologyScraper(BaseScraper):
             seen.add(str(job.ats_id))
             jobs.append(job)
         return jobs
+
+    async def _page_company(self, fetch: Any) -> str | None:
+        """The employer's name as the career site's title gives it."""
+        try:
+            page = await fetch.get_text(
+                CAREERS_URL.format(tenant=self._quoted_slug)
+            )
+        except ScraperError:
+            return None
+        soup = BeautifulSoup(page, "html.parser")
+        title = soup.title.get_text(" ", strip=True) if soup.title else ""
+        return _clean_text(title.removeprefix("Jobs for "))
 
     async def _fetch_all(self, fetch: Any) -> list[dict[str, Any]]:
         first = await fetch.get_json(
@@ -243,7 +261,7 @@ class HireologyScraper(BaseScraper):
         organization = item.get("organization")
         if not isinstance(organization, dict):
             organization = {}
-        company = _clean_text(organization.get("name")) or fallback_company
+        company = _organization_name(item) or fallback_company
         locations = item.get("locations")
         if not isinstance(locations, list):
             locations = []
@@ -317,39 +335,11 @@ class HireologyScraper(BaseScraper):
         )
 
 
-def _portal_identity(page: str, tenant: str) -> tuple[str, str]:
-    marker_index = page.find(_STARTING_DATA_MARKER)
-    if marker_index < 0:
-        raise CompanyNotFoundError(
-            f"Hireology tenant has no public careers site: {tenant}"
-        )
-    json_start = marker_index + len(_STARTING_DATA_MARKER)
-    remainder = page[json_start:].lstrip()
-    try:
-        data, _ = json.JSONDecoder().raw_decode(remainder)
-    except (json.JSONDecodeError, TypeError) as error:
-        raise ScraperError(
-            f"Hireology ({tenant}) returned malformed public configuration"
-        ) from error
-    if not isinstance(data, dict):
-        raise ScraperError(
-            f"Hireology ({tenant}) returned malformed public configuration"
-        )
-    careers_path = _clean_text(data.get("careersPath"))
-    if careers_path is None or careers_path.casefold() != tenant:
-        raise ScraperError(
-            f"Hireology ({tenant}) configuration identified "
-            f"{careers_path!r}"
-        )
-    token = _clean_text(data.get("apiToken"))
-    if token is None or token.count(".") != 2:
-        raise ScraperError(
-            f"Hireology ({tenant}) returned no anonymous API token"
-        )
-    soup = BeautifulSoup(page, "html.parser")
-    title = soup.title.get_text(" ", strip=True) if soup.title else ""
-    company = title.removeprefix("Jobs for ").strip() or tenant
-    return token, company
+def _organization_name(item: dict[str, Any]) -> str | None:
+    organization = item.get("organization")
+    if not isinstance(organization, dict):
+        return None
+    return _clean_text(organization.get("name"))
 
 
 def _require_path_segment(value: str, *, provider: str) -> str:

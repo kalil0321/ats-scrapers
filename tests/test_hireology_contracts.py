@@ -28,6 +28,8 @@ def test_hireology_pipeline_uses_validated_tenant_catalog() -> None:
     assert config["max_concurrency"] == 8
     assert config["fail_closed_on_empty"] is True
     assert config["fail_closed_on_any_error"] is True
+    assert config["fail_closed_on_not_found"] is True
+    assert config["fail_closed_tolerance"] == 0.02
     assert "defer_descriptions_to_cache" not in config
 
 
@@ -43,7 +45,7 @@ def test_hireology_catalog_contains_only_validated_canonical_portals() -> None:
     with Path("ats-companies/hireology.csv").open(newline="") as handle:
         rows = list(csv.DictReader(handle))
 
-    assert len(rows) == 4_494
+    assert len(rows) == 4_314
     assert len({row["slug"] for row in rows}) == len(rows)
     assert len({row["url"] for row in rows}) == len(rows)
     assert all(row["name"].strip() for row in rows)
