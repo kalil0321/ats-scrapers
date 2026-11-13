@@ -779,6 +779,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
         "csv": "ats-companies/ukg.csv",
         "output": "ukg/jobs.csv",
+        # A tenant can have several boards, one per brand, that list some
+        # of the same jobs under different names. The job id is unique
+        # across UKG, so a job is published once.
+        "dedupe_by_ats_id": True,
         "fail_closed_on_any_error": True,
         "fail_closed_tolerance": 0.02,
         "fail_closed_on_not_found": True,

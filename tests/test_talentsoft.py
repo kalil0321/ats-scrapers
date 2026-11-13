@@ -12,7 +12,12 @@ from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import ScraperRegistry, TalentsoftScraper
 from ats_scrapers.scrapers import talentsoft as module
-from ats_scrapers.scrapers.talentsoft import _parse_listing, _parse_offer, _parse_slug
+from ats_scrapers.scrapers.talentsoft import (
+    _choose_filter,
+    _parse_listing,
+    _parse_offer,
+    _parse_slug,
+)
 
 # Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture in
 # conftest.py.
@@ -119,6 +124,82 @@ def _serve(httpx_mock, items: list[str], *, total: int | None = None, **options:
         )
 
     httpx_mock.add_callback(reply, url=LIST_RE, is_reusable=True)
+
+
+def _filter_links(filters: dict[str, dict[str, list[int]]]) -> str:
+    """The filters as the links some sites show beside the list."""
+    return "".join(
+        '<li class="ts-ol-container-fs-list__item"><a class="ts-ol-container-fs-list__link" '
+        f'href="/offre-de-emploi/liste-toutes-offres.aspx?changefacet=1&amp;facet_{key}={value}" '
+        f'title="Affiner ma recherche sur le critère : Valeur {value} ({len(numbers)})">'
+        f"Valeur {value} ({len(numbers)})</a></li>"
+        for key, values in filters.items()
+        for value, numbers in values.items()
+    )
+
+
+def _filter_form(filters: dict[str, dict[str, list[int]]]) -> str:
+    """The same filters as the lists of the search form other sites show."""
+    return "".join(
+        f'<select id="ctl00_ctl00_moteurRapideOffre_ctl02_EngineCriteriaCollection_{key}">'
+        '<option value="0">Veuillez sélectionner une valeur</option>'
+        + "".join(
+            f'<option value="{value}">Valeur {value} ({len(numbers)})</option>'
+            for value, numbers in values.items()
+        )
+        + "</select>"
+        for key, values in filters.items()
+    )
+
+
+def _serve_with_filters(
+    httpx_mock,
+    numbers: list[int],
+    filters: dict[str, dict[str, list[int]]],
+    *,
+    as_form: bool = False,
+    announced_total: dict[str, int] | None = None,
+) -> None:
+    """A site whose list can be narrowed by a filter: the whole list without
+    one, the offers of a value with ``facet_{filter}={value}``."""
+    block = (_filter_form if as_form else _filter_links)(filters)
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        chosen = [
+            (key.removeprefix("facet_"), value)
+            for key, value in request.url.params.items()
+            if key.startswith("facet_")
+        ]
+        selected = numbers
+        for key, value in chosen:
+            selected = [n for n in selected if n in filters[key][value]]
+        count = len(selected)
+        if chosen and announced_total and chosen[0][1] in announced_total:
+            count = announced_total[chosen[0][1]]
+        last = min(max(1, -(-len(selected) // PAGE_SIZE)), PAGE_CAP)
+        page = int(request.url.params["page"])
+        if page > last:
+            page = 1
+        chunk = [_item(n) for n in selected[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]]
+        text = _list_page(chunk, total=count, page=page, last=last)
+        return httpx.Response(
+            200,
+            text=text.replace("<body>", f"<body>{block}", 1),
+            # Like the site: every answer opens or renews a session.
+            headers={"Set-Cookie": "ASP.NET_SessionId=abc; path=/; HttpOnly"},
+        )
+
+    httpx_mock.add_callback(
+        reply, url=re.compile(rf"^{re.escape(LIST)}\?"), is_reusable=True
+    )
+
+
+def _filtered_requests(httpx_mock) -> list[httpx.Request]:
+    return [
+        request
+        for request in httpx_mock.get_requests()
+        if "changefacet" in request.url.params
+    ]
 
 
 def _pages(httpx_mock) -> list[int]:
@@ -362,6 +443,152 @@ def test_a_cut_list_is_refused_even_one_offer_past_its_last_page(httpx_mock) -> 
     with pytest.raises(ScraperError, match=r"announces 1001 offers .* \(1000 offers\)"):
         _scraper().fetch()
     assert _pages(httpx_mock) == [1]
+
+
+def test_a_list_too_long_for_its_pager_is_read_through_a_filter(httpx_mock) -> None:
+    numbers = list(range(1, 1046))
+    _serve_with_filters(
+        httpx_mock,
+        numbers,
+        {"JobFamily": {"3225": numbers[:600], "3226": numbers[600:]}},
+    )
+
+    jobs = _scraper().fetch()
+
+    assert sorted(job.ats_id for job in jobs) == sorted(
+        f"acme-recrute:{n}" for n in numbers
+    )
+    # The whole list is asked for once, to learn that it is cut.
+    unfiltered = [
+        request
+        for request in httpx_mock.get_requests()
+        if "changefacet" not in request.url.params
+    ]
+    assert [request.url.params["page"] for request in unfiltered] == ["1"]
+    assert {
+        request.url.params["facet_JobFamily"]
+        for request in _filtered_requests(httpx_mock)
+    } == {"3225", "3226"}
+
+
+def test_the_filter_is_read_from_the_search_form_too(httpx_mock) -> None:
+    numbers = list(range(1, 1046))
+    _serve_with_filters(
+        httpx_mock,
+        numbers,
+        {"SalaryRange": {"33361": numbers[:345], "35962": numbers[345:]}},
+        as_form=True,
+    )
+
+    assert len(_scraper().fetch()) == 1045
+    assert {
+        request.url.params["facet_SalaryRange"]
+        for request in _filtered_requests(httpx_mock)
+    } == {"33361", "35962"}
+
+
+def test_filtered_lists_are_asked_for_without_the_session_cookie(httpx_mock) -> None:
+    """The site adds each value it is sent to the ones its session holds."""
+    numbers = list(range(1, 1046))
+    _serve_with_filters(
+        httpx_mock,
+        numbers,
+        {"JobFamily": {"3225": numbers[:600], "3226": numbers[600:]}},
+    )
+
+    _scraper().fetch()
+
+    filtered = _filtered_requests(httpx_mock)
+    assert len(filtered) == 60 + 45
+    assert all("cookie" not in request.headers for request in filtered)
+
+
+def test_the_filter_used_is_the_one_whose_values_fit_and_add_up(httpx_mock) -> None:
+    numbers = list(range(1, 1046))
+    _serve_with_filters(
+        httpx_mock,
+        numbers,
+        {
+            # One value is longer than the pager reaches.
+            "Contract": {"1": numbers[:1001], "2": numbers[1001:]},
+            # Not every offer has a value.
+            "Diploma": {"7": numbers[:500], "8": numbers[500:1040]},
+            "JobFamily": {"3225": numbers[:600], "3226": numbers[600:]},
+        },
+    )
+
+    assert len(_scraper().fetch()) == 1045
+    used = {
+        key
+        for request in _filtered_requests(httpx_mock)
+        for key in request.url.params
+        if key.startswith("facet_")
+    }
+    assert used == {"facet_JobFamily"}
+
+
+def test_a_cut_list_without_a_filter_that_fits_is_refused(httpx_mock) -> None:
+    numbers = list(range(1, 1046))
+    _serve_with_filters(
+        httpx_mock,
+        numbers,
+        {
+            "Contract": {"1": numbers[:1001], "2": numbers[1001:]},
+            "Diploma": {"7": numbers[:500], "8": numbers[500:1040]},
+        },
+    )
+
+    with pytest.raises(ScraperError, match="no search filter splits it"):
+        _scraper().fetch()
+    assert _filtered_requests(httpx_mock) == []
+
+
+def test_a_filtered_list_that_is_not_the_one_announced_is_an_error(httpx_mock) -> None:
+    numbers = list(range(1, 1046))
+    _serve_with_filters(
+        httpx_mock,
+        numbers,
+        {"JobFamily": {"3225": numbers[:600], "3226": numbers[600:]}},
+        # What a session that kept the first value would answer.
+        announced_total={"3226": 1045},
+    )
+
+    with pytest.raises(ScraperError, match="lists 1045 offers for a filter value that announced 445"):
+        _scraper().fetch()
+
+
+def test_filter_choice() -> None:
+    filters = {
+        "Many": [(str(n), 100) for n in range(10)],
+        "Few": [("1", 400), ("2", 600)],
+        "TooLong": [("1", 999), ("2", 1)],
+        "Short": [("1", 400), ("2", 500)],
+    }
+
+    # The values add up to the list and each fits: the fewest values win.
+    assert _choose_filter(filters, total=1000, capacity=900) == ("Few", filters["Few"])
+    assert _choose_filter({"TooLong": filters["TooLong"]}, total=1000, capacity=900) is None
+    assert _choose_filter({"Short": filters["Short"]}, total=1000, capacity=900) is None
+    assert _choose_filter({}, total=1000, capacity=900) is None
+
+
+def test_the_listing_reads_filters_from_links_and_from_the_search_form() -> None:
+    filters = {"JobFamily": {"3225": [1, 2, 3], "3226": [4]}}
+    page = _list_page([_item(1)], total=4).replace(
+        "<body>",
+        "<body>"
+        + _filter_links(filters)
+        + _filter_form({"Contract": {"34950": [1, 2], "34951": [3, 4]}})
+        # A link that drops a value, as a filtered page shows: not a value.
+        + '<a href="/offre-de-emploi/liste-toutes-offres.aspx?changefacet=1'
+        '&amp;facet_Profile=3307&amp;facet_JobFamily=-3226">Autre (2)</a>',
+        1,
+    )
+
+    assert _parse_listing(page).facets == {
+        "JobFamily": [("3225", 3), ("3226", 1)],
+        "Contract": [("34950", 2), ("34951", 2)],
+    }
 
 
 def test_a_list_of_exactly_a_hundred_pages_is_read(httpx_mock) -> None:
