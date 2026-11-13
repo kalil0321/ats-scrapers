@@ -23,6 +23,7 @@ import pandas as pd
 import pytest
 
 from ats_scrapers.exceptions import StorageError
+from ats_scrapers.manifest import Manifest
 from pipeline.publisher import (
     CACHE_CONTROL_LATEST,
     DEFAULT_PREFIX,
@@ -107,6 +108,34 @@ def test_manifest_contains_expected_structure(ats_csv_dir, fake_r2) -> None:
     # `all` lives at the top level now and ships both formats.
     assert manifest["all"]["parquet"].endswith("/all.parquet")
     assert manifest["all"]["csv"].endswith("/all.csv")
+
+
+def test_manifest_reports_jobs_by_source_kind(ats_csv_dir, fake_r2) -> None:
+    eures = ats_csv_dir / "eures"
+    eures.mkdir()
+    (eures / "jobs.csv").write_text(
+        "url,title,location,company,ats_id\n"
+        "https://eures.example/job/1,Nurse,Berlin,Klinik A,e1\n"
+        "https://eures.example/job/2,Driver,Munich,Spedition B,e2\n"
+        # Same posting as greenhouse-co0 / Engineer 0 / Paris: the ATS row
+        # wins the cross-source dedup, so it must count once, as ``ats``.
+        "https://eures.example/job/3,Engineer 0,Paris,greenhouse-co0,e3\n"
+    )
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    stats = manifest["stats"]
+    assert stats["total_jobs_raw"] == 12
+    assert stats["total_jobs"] == 11
+    assert stats["jobs_by_source_kind"] == {
+        "ats": 9, "company_site": 0, "gov_board": 2, "job_board": 0,
+    }
+    assert stats["ats_jobs"] == 9
+    # The SDK model keeps the new fields.
+    parsed = Manifest.model_validate(manifest)
+    assert parsed.stats.ats_jobs == 9
+    assert parsed.stats.jobs_by_source_kind == stats["jobs_by_source_kind"]
 
 
 def test_manifest_includes_generator_string(ats_csv_dir, fake_r2) -> None:
@@ -657,6 +686,100 @@ def test_cross_ats_dedup_keeps_higher_priority_ats(
     assert len(df) == 3
     assert (df["ats_type"] == "workday").all()
     assert df["url"].str.contains("workday.com").all()
+
+
+def test_cross_ats_dedup_uses_employer_requisition_id(tmp_path) -> None:
+    import pipeline.publisher as publisher_module
+
+    workday_path = tmp_path / "workday.csv"
+    eightfold_path = tmp_path / "eightfold.csv"
+    pd.DataFrame([
+        {
+            "url": "https://acme.wd1.myworkdayjobs.com/jobs/1",
+            "title": "Senior Software Engineer",
+            "company": "Acme",
+            "location": "New York, NY",
+            "ats_id": "acme.wd1.myworkdayjobs.com/jobs/1",
+            "requisition_id": "R-123",
+        },
+    ]).to_csv(workday_path, index=False)
+    pd.DataFrame([
+        {
+            "url": "https://acme.eightfold.ai/careers/job/1",
+            "title": "Software Engineer III",
+            "company": "Acme",
+            "location": "United States",
+            "ats_id": "R-123",
+            "requisition_id": "R-123",
+        },
+    ]).to_csv(eightfold_path, index=False)
+
+    survivors, raw_count, kept_count = (
+        publisher_module._dedup_from_per_ats_csvs(
+            {
+                "workday": workday_path,
+                "eightfold": eightfold_path,
+            }
+        )
+    )
+
+    assert raw_count == 2
+    assert kept_count == 1
+    assert survivors["workday"].height == 1
+    assert "eightfold" not in survivors
+
+
+def test_cross_ats_requisition_dedup_keeps_winning_ats_variants(tmp_path) -> None:
+    import pipeline.publisher as publisher_module
+
+    amazon_path = tmp_path / "amazon.csv"
+    eightfold_path = tmp_path / "eightfold.csv"
+    pd.DataFrame(
+        [
+            {
+                "url": "https://amazon.jobs/en/jobs/1/new-york",
+                "title": "Software Engineer - New York",
+                "company": "Amazon",
+                "location": "New York, NY",
+                "ats_id": "1:new-york",
+                "requisition_id": "1",
+            },
+            {
+                "url": "https://amazon.jobs/en/jobs/1/seattle",
+                "title": "Software Engineer - Seattle",
+                "company": "Amazon",
+                "location": "Seattle, WA",
+                "ats_id": "1:seattle",
+                "requisition_id": "1",
+            },
+        ]
+    ).to_csv(amazon_path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "url": "https://amazon.eightfold.ai/careers/job/1",
+                "title": "Software Engineer",
+                "company": "Amazon",
+                "location": "United States",
+                "ats_id": "1",
+                "requisition_id": "1",
+            },
+        ]
+    ).to_csv(eightfold_path, index=False)
+
+    survivors, raw_count, kept_count = (
+        publisher_module._dedup_from_per_ats_csvs(
+            {
+                "amazon": amazon_path,
+                "eightfold": eightfold_path,
+            }
+        )
+    )
+
+    assert raw_count == 3
+    assert kept_count == 2
+    assert survivors["amazon"].height == 2
+    assert "eightfold" not in survivors
 
 
 def test_cross_ats_dedup_prefers_structured_country_iso(tmp_path) -> None:
