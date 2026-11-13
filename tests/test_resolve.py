@@ -202,6 +202,7 @@ def test_taleo_slug_keeps_query() -> None:
         "https://valero.taleo.net/careersection/2/jobsearch.ftl?lang=en",
         "https://VALERO.taleo.net/careersection/2/jobdetail.ftl?job=26001GK&lang=en",
         "valero.taleo.net/careersection/2",
+        "https://valero.taleo.net/careersection/2/",
     ],
 )
 def test_taleo_enterprise_slug_is_zone_host_and_section(url: str) -> None:
@@ -227,7 +228,12 @@ def test_taleo_enterprise_section_keeps_its_case() -> None:
         "https://valero.taleo.net/careersection/",
         # The search endpoint is not a career section.
         "https://valero.taleo.net/careersection/rest/jobboard/searchjobs?lang=en&portal=1",
+        "https://valero.taleo.net/careersection/rest",
         "https://valero.taleo.net/other/2/jobsearch.ftl",
+        # The whole path is checked, not only its start.
+        "https://valero.taleo.net/careersection/2/../admin",
+        "https://valero.taleo.net/careersection/2/sub/jobsearch.ftl",
+        "https://valero.taleo.net/careersection/2/jobsearch.ftl/extra",
     ],
 )
 def test_taleo_enterprise_url_without_a_section_is_not_resolved(url: str) -> None:

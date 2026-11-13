@@ -33,10 +33,17 @@ than one page. The walk therefore reads every one of the
 keeps each requisition once, and does not compare the number of postings
 with the total.
 
+The total is not taken as an upper bound either. A page past the end
+answers the last page again, or no posting at all, and echoes the page
+number it was asked for, so the walk reads on after the announced pages
+and stops at the first page that brings no requisition it has not seen.
+Past the announced pages that is the only end signal there is.
+
 ``column`` follows the section's own layout, so only the positions the
 payload names are trusted: ``linkedColumn`` is the title and
-``locationsColumns`` are locations (each a JSON list of place names). A
-remaining column that reads as a date is taken as the posting date.
+``locationsColumns`` are locations (each a JSON list of place names). A row
+that does not name its title column is not read (no position is guessed).
+A remaining column that reads as a date is taken as the posting date.
 
 The description is on the detail page (``jobdetail.ftl?job={contestNo}``),
 inside the hidden ``initialHistory`` field: values separated by ``!|!``,
@@ -77,7 +84,10 @@ MAX_DESCRIPTION_CHARS = 25_000
 
 _HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.taleo\.net$")
 _SECTION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
-_SECTION_PATH_RE = re.compile(r"^/careersection/([^/]+)(?:/|$)")
+# The whole path: the section, then at most one page name ("jobsearch.ftl").
+_SECTION_PATH_RE = re.compile(
+    r"^/careersection/([^/]+)(?:/(?:[A-Za-z0-9_-]+\.[A-Za-z0-9]+)?)?$"
+)
 _PORTAL_RE = re.compile(r"\bportal=(\d{3,})")
 _TITLE_RE = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _HISTORY_INPUT_RE = re.compile(
@@ -209,33 +219,46 @@ class TaleoEnterpriseScraper(BaseScraper):
             "tzname": "UTC",
         }
         jobs: dict[str, Job] = {}
-        total = 0
         page_count = 1
         rows_seen = 0
         rows_read = 0
         page = 1
-        while page <= page_count:
+        while True:
             payload = await fetch.post_json(
                 url, json=_search_payload(page), headers=headers
             )
-            rows, page_total, page_size = self._check_payload(payload, page)
-            if page == 1:
-                total = page_total
-                page_count = max(1, math.ceil(total / page_size))
-                if page_count > MAX_PAGES:
-                    raise ScraperError(
-                        f"Taleo Enterprise ({self.company_slug}) announces "
-                        f"{total} postings on {page_count} pages (page guard "
-                        f"{MAX_PAGES}); refusing to return a partial list"
-                    )
+            rows, total, page_size = self._check_payload(payload, page)
+            page_count = max(page_count, math.ceil(total / page_size))
+            if page_count > MAX_PAGES:
+                raise ScraperError(
+                    f"Taleo Enterprise ({self.company_slug}) announces "
+                    f"{total} postings on {page_count} pages (page guard "
+                    f"{MAX_PAGES}); refusing to return a partial list"
+                )
+            added = 0
+            readable = 0
             for row in rows:
                 job = self._parse_row(row)
                 if job is not None and job.ats_id:
-                    rows_read += 1
-                    jobs.setdefault(job.ats_id, job)
+                    readable += 1
+                    if job.ats_id not in jobs:
+                        jobs[job.ats_id] = job
+                        added += 1
+            # Within the announced pages there is no early exit: a short
+            # or empty page can have postings after it. Past them, the
+            # walk goes on only while a page brings something new (see
+            # the module docstring); the page that ends it is the last
+            # page again, or an empty one, and is not counted.
+            if page > page_count and not added:
+                break
             rows_seen += len(rows)
-            # No early exit on a short or empty page: the pages after it
-            # can still hold postings (see the module docstring).
+            rows_read += readable
+            if page > MAX_PAGES:
+                raise ScraperError(
+                    f"Taleo Enterprise ({self.company_slug}) still lists new "
+                    f"postings at page {page} (page guard {MAX_PAGES}); "
+                    f"refusing to return a partial list"
+                )
             page += 1
         # A requisition can come back on more than one page, so the rows
         # are counted, not the distinct postings.
@@ -281,6 +304,16 @@ class TaleoEnterpriseScraper(BaseScraper):
                 f"Taleo Enterprise ({self.company_slug}) page {page}: "
                 f"a posting is not a JSON object"
             )
+        current = paging.get("currentPageNo")
+        if (
+            isinstance(current, int)
+            and not isinstance(current, bool)
+            and current != page
+        ):
+            raise ScraperError(
+                f"Taleo Enterprise ({self.company_slug}) answered page "
+                f"{current} when asked for page {page}"
+            )
         size = paging.get("pageSize")
         page_size = (
             size
@@ -295,21 +328,23 @@ class TaleoEnterpriseScraper(BaseScraper):
         columns = row.get("column")
         if not key or not isinstance(columns, list) or not columns:
             return None
-        linked = row.get("linkedColumn")
-        title_index = (
-            linked
-            if isinstance(linked, int)
-            and not isinstance(linked, bool)
-            and 0 <= linked < len(columns)
-            else 0
-        )
+        title_index = row.get("linkedColumn")
+        if (
+            not isinstance(title_index, int)
+            or isinstance(title_index, bool)
+            or not 0 <= title_index < len(columns)
+        ):
+            # No title position named: the row is not read, and counts
+            # against the coverage floor.
+            return None
         title = _text(columns[title_index])
         if not title:
             return None
 
+        named = row.get("locationsColumns")
         location_indexes = [
             index
-            for index in row.get("locationsColumns") or []
+            for index in (named if isinstance(named, list) else [])
             if isinstance(index, int)
             and not isinstance(index, bool)
             and 0 <= index < len(columns)

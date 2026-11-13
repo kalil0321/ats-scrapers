@@ -95,8 +95,10 @@ _TALEO_HOST_RE = re.compile(r"^[^.]+\.tbe\.taleo\.net$")
 _TALEO_ENTERPRISE_HOST_RE = re.compile(
     r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.taleo\.net$", re.IGNORECASE
 )
+# The whole path: the section, then at most one page name ("jobsearch.ftl").
 _TALEO_ENTERPRISE_PATH_RE = re.compile(
-    r"^/careersection/(?P<section>[A-Za-z0-9][A-Za-z0-9_-]{0,79})(?:/|$)"
+    r"^/careersection/(?P<section>[A-Za-z0-9][A-Za-z0-9_-]{0,79})"
+    r"(?:/(?:[A-Za-z0-9_-]+\.[A-Za-z0-9]+)?)?$"
 )
 _ICIMS_HOST_RE = re.compile(r"^(?P<prefix>[a-z0-9-]+)\.icims\.com$", re.IGNORECASE)
 _JOBVITE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")

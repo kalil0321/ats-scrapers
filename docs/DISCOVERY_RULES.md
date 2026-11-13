@@ -348,10 +348,22 @@ Validation:
    (``ats_id`` is ``{zone}:{requisition number}``). Add a second section of
    a zone only when it lists postings the first does not; a section that
    repeats another adds requests and nothing else.
-5. Reject a zone that is an alias of one already listed (same postings
+5. A zone belongs to one Taleo customer, and its sections can still list
+   different employers (``edmonton.taleo.net``: the city in one section, the
+   public library in another). Give a section its own employer name only
+   when it shares no requisition with the other sections of the zone.
+   Sections that share requisitions carry one name, the zone customer's
+   (``textron.taleo.net``: the ``kautex`` section lists 57 postings that the
+   ``textron`` section also lists, so both rows are named Textron). A shared
+   requisition is published once, under the name of whichever section is
+   read first, so two names for it would make the published employer depend
+   on the order of the run. A zone with more than one name is listed in
+   ``tests/test_taleo_enterprise_contracts.py``; add it there after
+   comparing the requisition numbers of its sections.
+6. Reject a zone that is an alias of one already listed (same postings
    under two host names, for example ``tas-acme.taleo.net`` and
    ``acme.taleo.net``): compare requisition numbers and titles.
-6. The search page title is usually just ``Job Search``. Take the employer
+7. The search page title is usually just ``Job Search``. Take the employer
    name from the detail page title or the postings themselves, and check it
    by hand; never use the zone label (``aa123``) as the name.
 

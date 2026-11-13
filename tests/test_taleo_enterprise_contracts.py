@@ -9,6 +9,9 @@ from pipeline.publisher import ATS_DEDUP_PRIORITY
 from scripts.run_pipeline import CONFIGS, _bounded_concurrency, _tolerated_shard_failures
 
 MIN_ROWS = 138
+# Zones whose sections list different employers. Their sections were
+# compared and share no requisition (see docs/DISCOVERY_RULES.md).
+MULTI_EMPLOYER_ZONES = {"edmonton.taleo.net"}
 _OPAQUE_ZONE = re.compile(r"^(?:[a-z]{2}\d{3}|tas-[a-z0-9-]+)$")
 
 
@@ -90,3 +93,17 @@ def test_taleo_enterprise_catalogue_is_one_row_per_career_section() -> None:
         # name, and ``s01...`` zones are staging copies.
         assert not _OPAQUE_ZONE.match(row["name"].casefold())
         assert not host.startswith("s01")
+
+
+def test_taleo_enterprise_sections_of_a_zone_share_one_employer_name() -> None:
+    """A requisition listed in two sections of a zone is published once,
+    under the name of whichever section is read first: two names for one
+    zone would make the published employer depend on the order of the run."""
+    names: dict[str, set[str]] = {}
+    for row in _rows():
+        host, _ = _parse_slug(row["slug"])
+        names.setdefault(host, set()).add(row["name"])
+
+    several = {host for host, found in names.items() if len(found) > 1}
+
+    assert several == MULTI_EMPLOYER_ZONES

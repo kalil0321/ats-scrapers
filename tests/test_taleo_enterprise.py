@@ -6,6 +6,7 @@ import json
 from datetime import UTC, datetime
 from urllib.parse import quote
 
+import httpx
 import pytest
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
@@ -17,7 +18,6 @@ from ats_scrapers.scrapers.taleo_enterprise import (
     _parse_date,
     _parse_slug,
     _places,
-    _search_payload,
 )
 
 # Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture in
@@ -62,6 +62,26 @@ def _payload(rows: list[dict[str, object]], total: int, page: int = 1) -> dict[s
     }
 
 
+def _serve(
+    httpx_mock,
+    *pages: list[dict[str, object]],
+    total: int | None = None,
+    page_size: int = 25,
+) -> None:
+    """Answer the search the way the live endpoint does: the page asked
+    for, and the last page again for any page past the end."""
+    count = sum(len(page) for page in pages) if total is None else total
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        number = json.loads(request.content)["pageNo"]
+        rows = pages[min(number, len(pages)) - 1] if pages else []
+        payload = _payload(rows, count, number)
+        payload["pagingData"]["pageSize"] = page_size
+        return httpx.Response(200, json=payload)
+
+    httpx_mock.add_callback(reply, url=API, method="POST", is_reusable=True)
+
+
 def _detail_page(*values: str) -> str:
     fields = ["1", "Submission for the position", *values, "Apply"]
     encoded = "!|!".join(quote(field, safe="") for field in fields)
@@ -95,6 +115,8 @@ def test_registry_resolves_taleo_enterprise() -> None:
         "https://acme.taleo.net/careersection/ex/jobsearch.ftl?lang=en",
         "https://acme.taleo.net/careersection/ex",
         "https://acme.taleo.net/careersection/ex/jobdetail.ftl?job=1",
+        "https://acme.taleo.net/careersection/ex/",
+        "https://acme.taleo.net/careersection/ex/moresearch.ftl",
     ],
 )
 def test_slug_forms(slug: str) -> None:
@@ -118,6 +140,11 @@ def test_slug_forms(slug: str) -> None:
         "https://acme.taleo.net:8443/careersection/ex/jobsearch.ftl",
         "https://acme.taleo.net/other/ex/jobsearch.ftl",
         "https://acme.taleo.net.evil.com/careersection/ex/jobsearch.ftl",
+        # The whole path is checked, not only its start.
+        "https://acme.taleo.net/careersection/ex/../admin",
+        "https://acme.taleo.net/careersection/ex/sub/jobsearch.ftl",
+        "https://acme.taleo.net/careersection/ex/jobsearch.ftl/extra",
+        "https://acme.taleo.net/careersection/ex//jobsearch.ftl",
     ],
 )
 def test_invalid_slugs_are_rejected(slug: str) -> None:
@@ -130,16 +157,12 @@ def test_invalid_slugs_are_rejected(slug: str) -> None:
 
 def test_parses_a_listing(httpx_mock) -> None:
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(
-        url=API,
-        method="POST",
-        json=_payload(
-            [
-                _row("26001GK", "Plant Manager", places=["US-SD-Aurora"]),
-                _row("26002", "Welder &amp; Fitter", places=["US-TX-Houston", "US-LA-Norco"]),
-            ],
-            total=2,
-        ),
+    _serve(
+        httpx_mock,
+        [
+            _row("26001GK", "Plant Manager", places=["US-SD-Aurora"]),
+            _row("26002", "Welder &amp; Fitter", places=["US-TX-Houston", "US-LA-Norco"]),
+        ],
     )
 
     jobs = TaleoEnterpriseScraper(
@@ -161,15 +184,42 @@ def test_parses_a_listing(httpx_mock) -> None:
 
 def test_search_request_matches_the_form(httpx_mock) -> None:
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload([_row("1", "A")], total=1))
+    _serve(httpx_mock, [_row("1", "A")])
 
     TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
 
     request = next(r for r in httpx_mock.get_requests() if r.method == "POST")
-    body = json.loads(request.content)
-    assert body == _search_payload(1)
-    assert body["pageNo"] == 1
-    assert body["fieldData"]["fields"] == {"KEYWORD": "", "LOCATION": ""}
+
+    def unselected(*names: str) -> dict[str, object]:
+        return {
+            "searchFilterSelections": [
+                {"id": name, "selectedValues": []} for name in names
+            ]
+        }
+
+    # The body the section's own search form posts with nothing selected,
+    # written out here and not taken from the scraper.
+    assert json.loads(request.content) == {
+        "multilineEnabled": False,
+        "sortingSelection": {
+            "sortBySelectionParam": "3",
+            "ascendingSortingOrder": "false",
+        },
+        "fieldData": {"fields": {"KEYWORD": "", "LOCATION": ""}, "valid": True},
+        "filterSelectionParam": unselected("POSTING_DATE", "LOCATION", "JOB_FIELD"),
+        "advancedSearchFiltersSelectionParam": unselected(
+            "ORGANIZATION",
+            "LOCATION",
+            "JOB_FIELD",
+            "JOB_NUMBER",
+            "URGENT_JOB",
+            "EMPLOYEE_STATUS",
+            "STUDY_LEVEL",
+            "WILL_TRAVEL",
+            "JOB_SHIFT",
+        ),
+        "pageNo": 1,
+    }
     assert request.headers["X-Requested-With"] == "XMLHttpRequest"
     assert request.headers["tz"] == "GMT+00:00"
     assert request.headers["Referer"] == SEARCH_PAGE
@@ -178,7 +228,7 @@ def test_search_request_matches_the_form(httpx_mock) -> None:
 
 def test_company_falls_back_to_the_zone(httpx_mock) -> None:
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload([_row("1", "A")], total=1))
+    _serve(httpx_mock, [_row("1", "A")])
 
     jobs = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
 
@@ -187,7 +237,7 @@ def test_company_falls_back_to_the_zone(httpx_mock) -> None:
 
 def test_empty_section_returns_no_jobs(httpx_mock) -> None:
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload([], total=0))
+    _serve(httpx_mock, [])
 
     assert TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch() == []
 
@@ -208,7 +258,7 @@ def test_title_and_location_positions_come_from_the_payload(httpx_mock) -> None:
         "locationsColumns": [3],
     }
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload([row], total=1))
+    _serve(httpx_mock, [row])
 
     job = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()[0]
 
@@ -222,7 +272,7 @@ def test_title_and_location_positions_come_from_the_payload(httpx_mock) -> None:
 def test_row_without_location_or_date_columns(httpx_mock) -> None:
     row = {"jobId": "5", "contestNo": "R5", "column": ["Analyst"], "linkedColumn": 0}
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload([row], total=1))
+    _serve(httpx_mock, [row])
 
     job = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()[0]
 
@@ -234,7 +284,7 @@ def test_row_without_location_or_date_columns(httpx_mock) -> None:
 def test_job_id_is_used_when_there_is_no_requisition_number(httpx_mock) -> None:
     row = {"jobId": 4711, "column": ["Analyst"], "linkedColumn": 0}
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload([row], total=1))
+    _serve(httpx_mock, [row])
 
     job = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()[0]
 
@@ -245,9 +295,7 @@ def test_job_id_is_used_when_there_is_no_requisition_number(httpx_mock) -> None:
 
 def test_requisition_number_is_escaped_in_the_url(httpx_mock) -> None:
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(
-        url=API, method="POST", json=_payload([_row("A/B 1&x", "Analyst")], total=1)
-    )
+    _serve(httpx_mock, [_row("A/B 1&x", "Analyst")])
 
     job = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()[0]
 
@@ -263,33 +311,72 @@ def test_reads_every_page(httpx_mock) -> None:
     second = [_row(str(n), f"Job {n}") for n in range(25, 50)]
     third = [_row(str(n), f"Job {n}") for n in range(50, 53)]
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload(first, total=53))
-    httpx_mock.add_response(url=API, method="POST", json=_payload(second, total=53, page=2))
-    httpx_mock.add_response(url=API, method="POST", json=_payload(third, total=53, page=3))
+    _serve(httpx_mock, first, second, third)
 
     jobs = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
 
     assert [job.requisition_id for job in jobs] == [str(n) for n in range(53)]
-    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2, 3]
+    # The three announced pages, then the page that shows the list is over.
+    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2, 3, 4]
 
 
-def test_single_page_makes_one_search_request(httpx_mock) -> None:
+def test_single_page_is_followed_by_one_page_past_the_end(httpx_mock) -> None:
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(
-        url=API, method="POST", json=_payload([_row("1", "A"), _row("2", "B")], total=2)
-    )
+    _serve(httpx_mock, [_row("1", "A"), _row("2", "B")])
 
-    TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
+    jobs = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
 
-    assert len(_posts(httpx_mock)) == 1
+    assert [job.requisition_id for job in jobs] == ["1", "2"]
+    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2]
+
+
+def test_announced_total_is_not_an_upper_bound(httpx_mock) -> None:
+    """One page announced, postings on the two after it: the walk reads on
+    while a page brings a requisition it has not seen."""
+    first = [_row(str(n), f"Job {n}") for n in range(25)]
+    second = [_row(str(n), f"Job {n}") for n in range(25, 50)]
+    third = [_row("49", "Job 49"), _row("50", "Job 50")]
+    httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
+    _serve(httpx_mock, first, second, third, total=25)
+
+    jobs = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
+
+    assert [job.requisition_id for job in jobs] == [str(n) for n in range(51)]
+    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2, 3, 4]
+
+
+def test_empty_page_past_the_end_ends_the_walk(httpx_mock) -> None:
+    """Some sections answer no posting at all past the end."""
+    first = [_row(str(n), f"Job {n}") for n in range(25)]
+    httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
+    _serve(httpx_mock, first, [], total=25)
+
+    jobs = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
+
+    assert len(jobs) == 25
+    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2]
+
+
+def test_total_that_grows_during_the_walk_extends_it(httpx_mock) -> None:
+    first = [_row(str(n), f"Job {n}") for n in range(25)]
+    second = [_row(str(n), f"Job {n}") for n in range(25, 50)]
+    httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
+    httpx_mock.add_response(url=API, method="POST", json=_payload(first, total=25))
+    httpx_mock.add_response(url=API, method="POST", json=_payload(second, total=75, page=2))
+    httpx_mock.add_response(url=API, method="POST", json=_payload([], total=75, page=3))
+    httpx_mock.add_response(url=API, method="POST", json=_payload([], total=75, page=4))
+
+    jobs = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
+
+    assert len(jobs) == 50
+    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2, 3, 4]
 
 
 def test_posting_repeated_across_pages_is_kept_once(httpx_mock) -> None:
     first = [_row(str(n), f"Job {n}") for n in range(25)]
     second = [_row("24", "Job 24"), _row("25", "Job 25")]
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload(first, total=27))
-    httpx_mock.add_response(url=API, method="POST", json=_payload(second, total=27, page=2))
+    _serve(httpx_mock, first, second, total=27)
 
     jobs = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
 
@@ -303,13 +390,14 @@ def test_pages_that_mostly_repeat_earlier_postings_are_not_a_failure(httpx_mock)
     first = [_row(str(n), f"Job {n}") for n in range(25)]
     repeat = [_row(str(n), f"Job {n}") for n in range(5, 25)]
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload(first, total=75))
-    httpx_mock.add_response(url=API, method="POST", json=_payload(repeat, total=75, page=2))
-    httpx_mock.add_response(url=API, method="POST", json=_payload(repeat, total=75, page=3))
+    _serve(httpx_mock, first, repeat, repeat, total=75)
 
     jobs = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
 
     assert [job.requisition_id for job in jobs] == [str(n) for n in range(25)]
+    # Pages 2 and 3 bring nothing new and are still read: only a page past
+    # the announced ones can end the walk.
+    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2, 3, 4]
 
 
 def test_empty_page_in_the_middle_does_not_end_the_walk(httpx_mock) -> None:
@@ -318,49 +406,41 @@ def test_empty_page_in_the_middle_does_not_end_the_walk(httpx_mock) -> None:
     first = [_row(str(n), f"Job {n}") for n in range(25)]
     fourth = [_row(str(n), f"Job {n}") for n in range(25, 33)]
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload(first, total=100))
-    httpx_mock.add_response(url=API, method="POST", json=_payload([], total=100, page=2))
-    httpx_mock.add_response(
-        url=API, method="POST", json=_payload([_row("24", "Job 24")], total=100, page=3)
-    )
-    httpx_mock.add_response(url=API, method="POST", json=_payload(fourth, total=100, page=4))
+    _serve(httpx_mock, first, [], [_row("24", "Job 24")], fourth, total=100)
 
     jobs = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
 
     assert [job.requisition_id for job in jobs] == [str(n) for n in range(33)]
-    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2, 3, 4]
+    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2, 3, 4, 5]
 
 
 def test_page_count_uses_the_announced_page_size(httpx_mock) -> None:
-    payload = _payload([_row(str(n), f"Job {n}") for n in range(10)], total=20)
-    payload["pagingData"]["pageSize"] = 10
-    second = _payload([_row(str(n), f"Job {n}") for n in range(10, 20)], total=20, page=2)
-    second["pagingData"]["pageSize"] = 10
+    first = [_row(str(n), f"Job {n}") for n in range(10)]
+    second = [_row(str(n), f"Job {n}") for n in range(10, 20)]
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=payload)
-    httpx_mock.add_response(url=API, method="POST", json=second)
+    _serve(httpx_mock, first, second, [], total=20, page_size=10)
 
     jobs = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
 
     assert len(jobs) == 20
-    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2]
+    # Two announced pages of ten, not one of twenty-five.
+    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2, 3]
 
 
 def test_announced_postings_but_none_listed_is_an_empty_section(httpx_mock) -> None:
     """Some sections announce a few postings and list none, on the site
     as well: that is an empty section, not a failed walk."""
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload([], total=30))
-    httpx_mock.add_response(url=API, method="POST", json=_payload([], total=30, page=2))
+    _serve(httpx_mock, [], total=30)
 
     assert TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch() == []
-    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2]
+    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2, 3]
 
 
 def test_rows_that_do_not_parse_count_against_coverage(httpx_mock) -> None:
     rows = [{"jobId": str(n), "contestNo": str(n), "column": [""]} for n in range(10)]
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload(rows, total=10))
+    _serve(httpx_mock, rows)
 
     with pytest.raises(ScraperError, match="could read only 0 of the 10 postings listed"):
         TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
@@ -371,7 +451,7 @@ def test_coverage_floor_is_rounded_up(httpx_mock) -> None:
     rows = [_row(str(n), f"Job {n}") for n in range(9)]
     rows += [{"jobId": "x", "contestNo": "x", "column": [""]}] * 2
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload(rows, total=11))
+    _serve(httpx_mock, rows)
 
     with pytest.raises(ScraperError, match="could read only 9 of the 11 postings listed"):
         TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
@@ -392,6 +472,88 @@ def test_page_guard_raises_instead_of_returning_a_partial_list(
         TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
     # The guard trips on the first response, before walking further.
     assert len(_posts(httpx_mock)) == 1
+
+
+def test_page_guard_also_bounds_the_walk_past_the_announced_pages(
+    monkeypatch, httpx_mock
+) -> None:
+    """One page announced, and every page after it brings new postings."""
+    monkeypatch.setattr(module, "MAX_PAGES", 2)
+    pages = [[_row(f"{page}-{n}", "Job") for n in range(25)] for page in range(4)]
+    httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
+    _serve(httpx_mock, *pages, total=25)
+
+    with pytest.raises(ScraperError, match="still lists new postings at page 3"):
+        TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
+    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2, 3]
+
+
+def test_answer_for_another_page_raises(httpx_mock) -> None:
+    """A page answered in place of the one asked for would repeat some
+    postings and hide others."""
+    first = [_row(str(n), f"Job {n}") for n in range(25)]
+    httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
+    httpx_mock.add_response(url=API, method="POST", json=_payload(first, total=50))
+    httpx_mock.add_response(url=API, method="POST", json=_payload(first, total=50, page=1))
+
+    with pytest.raises(ScraperError, match="answered page 1 when asked for page 2"):
+        TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
+
+
+def test_response_without_a_page_number_is_read(httpx_mock) -> None:
+    def reply(request: httpx.Request) -> httpx.Response:
+        payload = _payload([_row("1", "A")], 1)
+        del payload["pagingData"]["currentPageNo"]
+        return httpx.Response(200, json=payload)
+
+    httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
+    httpx_mock.add_callback(reply, url=API, method="POST", is_reusable=True)
+
+    jobs = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
+
+    assert [job.title for job in jobs] == ["A"]
+
+
+@pytest.mark.parametrize("linked", [None, "0", True, -1, 3, 1.0])
+def test_row_that_does_not_name_its_title_column_is_not_read(httpx_mock, linked) -> None:
+    """No column is guessed to be the title: column 0 can be a date or a
+    location."""
+    rows = [_row(str(n), f"Job {n}") for n in range(10)]
+    odd = _row("odd", "Nov 12, 2026")
+    if linked is None:
+        del odd["linkedColumn"]
+    else:
+        odd["linkedColumn"] = linked
+    httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
+    _serve(httpx_mock, [*rows, odd])
+
+    jobs = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
+
+    assert [job.requisition_id for job in jobs] == [str(n) for n in range(10)]
+
+
+def test_rows_without_a_title_column_count_against_coverage(httpx_mock) -> None:
+    rows = [_row(str(n), f"Job {n}") for n in range(4)]
+    for row in rows:
+        del row["linkedColumn"]
+    httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
+    _serve(httpx_mock, rows)
+
+    with pytest.raises(ScraperError, match="could read only 0 of the 4 postings listed"):
+        TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
+
+
+@pytest.mark.parametrize("named", [1, "1", {"a": 1}, True, None, [None, "1", 9, True]])
+def test_location_positions_of_an_unexpected_type_are_ignored(httpx_mock, named) -> None:
+    row = _row("1", "Analyst")
+    row["locationsColumns"] = named
+    httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
+    _serve(httpx_mock, [row])
+
+    job = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()[0]
+
+    assert job.title == "Analyst"
+    assert job.location is None
 
 
 def test_failed_page_fails_the_whole_walk(monkeypatch, httpx_mock) -> None:
@@ -485,7 +647,7 @@ def test_description_is_read_from_the_detail_page(httpx_mock) -> None:
         "Tell us about a friend",
     )
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload([_row("7", "Smith")], total=1))
+    _serve(httpx_mock, [_row("7", "Smith")])
     httpx_mock.add_response(url=f"{SECTION}/jobdetail.ftl?job=7&lang=en", text=detail)
 
     job = TaleoEnterpriseScraper(SLUG).fetch()[0]
@@ -495,7 +657,7 @@ def test_description_is_read_from_the_detail_page(httpx_mock) -> None:
 
 def test_get_description_fetches_the_detail_page(httpx_mock) -> None:
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload([_row("7", "Smith")], total=1))
+    _serve(httpx_mock, [_row("7", "Smith")])
     httpx_mock.add_response(
         url=f"{SECTION}/jobdetail.ftl?job=7&lang=en",
         text=_detail_page("!*!<p>Forge things.</p>"),
@@ -513,7 +675,7 @@ def test_failed_detail_page_keeps_the_posting(monkeypatch, httpx_mock) -> None:
 
     monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 1)
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
-    httpx_mock.add_response(url=API, method="POST", json=_payload([_row("7", "Smith")], total=1))
+    _serve(httpx_mock, [_row("7", "Smith")])
     httpx_mock.add_response(url=f"{SECTION}/jobdetail.ftl?job=7&lang=en", status_code=500)
 
     jobs = TaleoEnterpriseScraper(SLUG).fetch()
