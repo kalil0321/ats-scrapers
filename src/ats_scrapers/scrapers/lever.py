@@ -275,5 +275,6 @@ def _country_iso(value: object) -> str | None:
     """Lever's posting ``country`` is an ISO 3166-1 alpha-2 code or null."""
     if not isinstance(value, str):
         return None
-    code = value.strip().upper()
-    return code if len(code) == 2 and code.isalpha() else None
+    code = value.strip()
+    # ASCII letters only, checked before uppercasing: "ß".upper() is "SS".
+    return code.upper() if len(code) == 2 and code.isascii() and code.isalpha() else None

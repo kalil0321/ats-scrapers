@@ -72,10 +72,21 @@ def test_posted_at_is_utc(httpx_mock) -> None:
 
 @pytest.mark.parametrize(
     ("country", "expected"),
-    [("DE", "DE"), ("gb", "GB"), (" de ", "DE"), (None, None), ("", None), ("USA", None)],
+    [
+        ("DE", "DE"),
+        ("gb", "GB"),
+        (" de ", "DE"),
+        (None, None),
+        ("", None),
+        ("USA", None),
+        ("ß", None),  # one letter that uppercases to two
+        ("ÉÉ", None),  # letters, but not ASCII
+        ("1A", None),
+        (49, None),
+    ],
 )
 def test_country_iso_from_posting_country(
-    httpx_mock, country: str | None, expected: str | None,
+    httpx_mock, country: object, expected: str | None,
 ) -> None:
     """Lever documents the posting-level ``country`` as an ISO 3166-1
     alpha-2 code (or null); it should land in ``country_iso``."""
