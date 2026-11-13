@@ -34,10 +34,16 @@ class ATSType(StrEnum):
     """
 
     ADP = "adp"
+    APPLICANTPRO = "applicantpro"
+    APPLITRACK = "applitrack"
     ASHBY = "ashby"
     AVATURE = "avature"
     BEISEN = "beisen"
     BEISEN_LEGACY = "beisen_legacy"
+    # CATS careers portals ({tenant}.catsone.com).
+    CATSONE = "catsone"
+    # ClearCompany hosted career sites (apply.clearcompany.com/{site}).
+    CLEARCOMPANY = "clearcompany"
     CORNERSTONE = "cornerstone"
     DARWINBOX = "darwinbox"
     DAYFORCE = "dayforce"
@@ -46,18 +52,24 @@ class ATSType(StrEnum):
     GREENHOUSE = "greenhouse"
     GUPY = "gupy"
     HERP = "herp"
+    HIREOLOGY = "hireology"
     HRMOS = "hrmos"
     ICIMS = "icims"
+    # iCIMS career sites (formerly Jibe) on the employer's own domain.
+    JIBE = "jibe"
     JOBVITE = "jobvite"
     JOIN_COM = "join_com"
     KEKA = "keka"
     LEVER = "lever"
     MERCOR = "mercor"
     MOKA = "moka"
+    NINEHIRE = "ninehire"
     ORACLE = "oracle"
     PAGEUP = "pageup"
     PAYCOM = "paycom"
     PAYLOCITY = "paylocity"
+    # PeopleAdmin applicant portals ({tenant}.peopleadmin.com).
+    PEOPLEADMIN = "peopleadmin"
     PERSONIO = "personio"
     PHENOM = "phenom"
     PINPOINT = "pinpoint"
@@ -66,8 +78,14 @@ class ATSType(StrEnum):
     SMARTRECRUITERS = "smartrecruiters"
     SOFTGARDEN = "softgarden"
     SUCCESSFACTORS = "successfactors"
+    TALENTIO = "talentio"
     UKG = "ukg"
+    VARBI = "varbi"
+    WINTALENT = "wintalent"
     WORKABLE = "workable"
+    # Workable's public job marketplace: every customer's live postings
+    # in one paginated feed (single-source scraper).
+    WORKABLE_MARKETPLACE = "workable_marketplace"
     WORKDAY = "workday"
     # Big-tech custom careers systems (single-tenant, bespoke APIs)
     AMAZON = "amazon"
@@ -107,6 +125,13 @@ class ATSType(StrEnum):
     JAZZHR = "jazzhr"
     RECRUITEE = "recruitee"
     TALEO = "taleo"
+    # Oracle Taleo Enterprise Edition career sections ({zone}.taleo.net);
+    # "taleo" is the Business Edition (*.tbe.taleo.net).
+    TALEO_ENTERPRISE = "taleo_enterprise"
+    # Cegid Talentsoft career sites ({site}.talent-soft.com).
+    TALENTSOFT = "talentsoft"
+    # Radancy TalentBrew career sites on the employer's own domain.
+    TALENTBREW = "talentbrew"
     TEAMTAILOR = "teamtailor"
     CUSTOM = "custom"
 
@@ -187,8 +212,11 @@ class Job(BaseModel):
        them, ``None`` otherwise.
 
     5. **Content & timing** (``description``, ``posted_at``,
-       ``fetched_at``, ``language``). ``language`` is the listing's
-       locale code (ISO 639-1, e.g. ``en`` / ``fr``).
+       ``fetched_at``, ``application_deadline``, ``language``).
+       ``application_deadline`` is an explicit deadline the ATS exposes
+       (``None`` when unavailable, never inferred from other timestamps).
+       ``language`` is the listing's locale code (ISO 639-1, e.g.
+       ``en`` / ``fr``).
 
     6. **Provider-specific overflow** (``raw``): a JSON dict captured
        at scrape-time so we don't lose ATS-specific fields the
@@ -215,7 +243,8 @@ class Job(BaseModel):
         description=(
             "Globally unique identifier for the posting, formatted as "
             "``{ats_type}:{ats_id}`` when both are set (e.g. "
-            "``ashby:engineer-2026`` or ``workday:R0136150``). The "
+            "``ashby:engineer-2026`` or "
+            "``workday:acme.wd1.myworkdayjobs.com/job/USA/Engineer_R-1``). The "
             "separator is a colon — parsers should split on the FIRST "
             "colon since ``ats_id`` may itself contain colons. When "
             "``ats_id`` is missing, malformed, or contains control "
@@ -261,7 +290,7 @@ class Job(BaseModel):
         default=None,
         description=(
             "Per-ATS identifier for the posting — Greenhouse numeric "
-            "id, Workday requisition slug, Lever UUID, etc. Unique "
+            "id, Workday tenant host and posting path, Lever UUID, etc. Unique "
             "within ``ats_type`` but not globally (use ``global_id`` "
             "for that). Optional defensively: when null/empty/malformed, "
             "``global_id`` falls back to UUID4 instead of crashing the "
@@ -421,7 +450,8 @@ class Job(BaseModel):
         default=None,
         description=(
             "Employer-internal requisition identifier (Greenhouse "
-            "``requisition_id``, Workday ``bulletFields[0]``, Lever's "
+            "``requisition_id``, a Workday bullet field embedded in the "
+            "posting path, Lever's "
             "private id, Bundesagentur ``hashId``). Distinct from "
             "``ats_id`` which is platform-side. Same role mirrored on "
             "two different ATSes shares the same ``requisition_id`` "
@@ -472,6 +502,18 @@ class Job(BaseModel):
     fetched_at: datetime | None = Field(
         default=None,
         description="When ats-scrapers last saw this posting (UTC).",
+    )
+    application_deadline: datetime | None = Field(
+        default=None,
+        description=(
+            "Source-provided date after which the posting should no longer be "
+            "treated as open (e.g. "
+            "SuccessFactors ``g:expiration_date`` in the Google Merchant "
+            "namespace, schema.org JobPosting ``validThrough``). This may be "
+            "an employer-stated application deadline or a platform-generated "
+            "validity horizon. ``None`` when unavailable — never inferred "
+            "locally from ``posted_at`` or ``fetched_at``."
+        ),
     )
     language: str | None = Field(
         default=None,
