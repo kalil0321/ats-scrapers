@@ -384,6 +384,26 @@ Validation:
    does not: a job has the same number on every portal and is published
    once.
 
+### Hireology
+
+Rows use the path segment of the career site as ``slug`` and
+``https://careers.hireology.com/{slug}/`` as ``url``.
+
+Validation:
+
+1. Call ``https://api.hireology.com/v2/public/careers/{slug}``. It answers
+   without a token. A tenant that is gone answers 404: remove the row. The
+   career site itself does not say so (it can redirect to the employer's
+   own site), and since its 2026 rebuild it carries no data block or token.
+2. Run the scraper. A tenant with no open job answers ``count: 0`` and
+   stays.
+3. A group's site lists the jobs of its member sites, each of which can
+   have its own row: ``career_site_url`` of a job then points at the member.
+   The job id is the same on both, and the pipeline publishes the job once.
+   Count distinct job ids, not listed jobs, when sizing a catalogue change.
+4. ``created_at`` is when the job was created, not when it was last
+   published: a job that has been open for years keeps its first date.
+
 ### ClearCompany
 
 Rows use the career site name as ``slug`` and
@@ -598,6 +618,25 @@ Validation:
 2. Validate against the actual Avature listing endpoint or public jobs page
    consumed by the scraper.
 3. Reject case-normalized URLs that redirect or fetch a different tenant.
+
+### Varbi
+
+- Use `name,slug,url` with a single employer tenant and
+  `https://{slug}.varbi.com/`; never use the aggregate Varbi marketplace.
+- Validate `/what:rssfeed/` with the actual scraper, including detail
+  enrichment. The scraper never requests the board URL of the catalogue row:
+  open it separately and check that it shows the same employer. RSS titles can
+  use a different language from the linked detail page; verify the detail's
+  `og:url` identity instead.
+- A withdrawn advert still answers 200 with its details. It carries a notice
+  beside the heading (`.page-header .text-danger`) and is not a job.
+- Deduplicate translated items by the numeric job ID within the employer.
+- Reject scholarship-only advertisements, expressions of interest, obsolete
+  feeds and aliases. A working RSS endpoint is not proof of an active employer.
+- Preserve unknown metadata as unknown. Date-only application deadlines belong
+  in `raw.application_deadline_date`, not a fabricated midnight timestamp.
+- Review cross-source overlap with public employment services before claiming
+  that the direct-source vacancies are net-new jobs.
 
 ## Automation Hints
 

@@ -27,6 +27,7 @@ from ats_scrapers.scrapers import (
     BreezyScraper,
     GreenhouseScraper,
     HerpScraper,
+    HireologyScraper,
     HrmosScraper,
     LeverScraper,
     PaycomScraper,
@@ -61,6 +62,14 @@ CASES = [
     (
         "applicantpro-kirkhill",
         lambda: ApplicantProScraper("kirkhill", include_descriptions=False),
+        True,
+    ),
+    (
+        "hireology-anderson",
+        lambda: HireologyScraper(
+            "andersonautogroup",
+            include_descriptions=False,
+        ),
         True,
     ),
     ("greenhouse-anthropic", lambda: GreenhouseScraper("anthropic"), True),

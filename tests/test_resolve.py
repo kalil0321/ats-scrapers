@@ -21,6 +21,7 @@ from ats_scrapers.scrapers import (
     JobviteScraper,
     KekaScraper,
     MokaScraper,
+    NinehireScraper,
     PageUpScraper,
     PaycomScraper,
     PaylocityScraper,
@@ -235,9 +236,31 @@ RESOLVES = [
         ATSType.APPLICANTPRO,
         "kirkhill",
     ),
+    (
+        "https://careers.hireology.com/andersonautogroup/2827500/description",
+        ATSType.HIREOLOGY,
+        "andersonautogroup",
+    ),
+    (
+        "https://careers.hireology.com/thelodgenursing%26rehabcenter/",
+        ATSType.HIREOLOGY,
+        "thelodgenursing&rehabcenter",
+    ),
+    (
+        # A child location: the slash inside the tenant name is encoded.
+        "https://careers.hireology.com/"
+        "brandthamptoninn%26suitesprovidence%2Fsmithfield/2827500/description",
+        ATSType.HIREOLOGY,
+        "brandthamptoninn&suitesprovidence/smithfield",
+    ),
     ("https://bloomberg.avature.net/careers", ATSType.AVATURE, "bloomberg"),
     ("https://nvidia.eightfold.ai/careers", ATSType.EIGHTFOLD, "nvidia"),
     ("https://petz.gupy.io/jobs/123", ATSType.GUPY, "petz"),
+    (
+        "https://day1company.ninehire.site/job_posting/7a0UlD8L",
+        ATSType.NINEHIRE,
+        "day1company",
+    ),
     # Scheme-less input is tolerated
     ("jobs.ashbyhq.com/openai", ATSType.ASHBY, "openai"),
     ("www.jobs.lever.co/acme", ATSType.LEVER, "acme"),
@@ -486,6 +509,12 @@ def test_get_scraper_for_url_builds_scraper() -> None:
     )
     assert isinstance(
         get_scraper_for_url(
+            "https://day1company.ninehire.site/job_posting/7a0UlD8L"
+        ),
+        NinehireScraper,
+    )
+    assert isinstance(
+        get_scraper_for_url(
             "https://dfmc.hotjob.cn/SU61d501d92f9d24431f65f608"
         ),
         WinTalentScraper,
@@ -666,6 +695,25 @@ def test_a_catsone_tenant_address_is_its_default_portal(url: str) -> None:
 def test_a_catsone_path_that_names_no_portal_number_is_not_the_default_portal(url: str) -> None:
     """Such a URL names a page; resolving it to the default portal would read
     another portal than the one meant."""
+    assert resolve_careers_url(url) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://careers.hireology.com/",
+        "https://careers.hireology.com/%2Ftenant/",
+        "https://careers.hireology.com/tenant%2F/",
+        "https://careers.hireology.com/tenant%2F%2Fother/",
+        "https://careers.hireology.com/%2E%2E%2Fother/",
+        "https://careers.hireology.com/tenant%2F..%2Fother/",
+        "https://careers.hireology.com/tenant%5Cother/",
+        "https://careers.hireology.com/tenant%3Fother/",
+        "https://careers.hireology.com/tenant%23other/",
+        "https://careers.hireology.com/tenant%0Aother/",
+    ],
+)
+def test_hireology_url_without_a_usable_tenant_is_not_resolved(url: str) -> None:
     assert resolve_careers_url(url) is None
 
 

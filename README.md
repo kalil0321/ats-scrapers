@@ -122,10 +122,13 @@ Scraper adapters include:
 - Career-site platforms on the employer's own domain: Radancy TalentBrew.
 - Oracle Taleo, both editions: Business Edition and Enterprise Edition.
 - ClearCompany hosted career sites.
+- Ninehire career sites.
 - PeopleAdmin applicant portals.
 - Talentio recruitment homes (Japan).
+- Varbi employer boards.
 - Cegid Talentsoft career sites.
 - CATS careers portals.
+- Hireology career sites.
 - WinTalent (Hotjob) career portals.
 
 Run `python -c "from ats_scrapers import list_ats; print(*list_ats())"` for the

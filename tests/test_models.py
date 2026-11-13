@@ -20,6 +20,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "adp", "applitrack", "ashby", "avature", "beisen", "beisen_legacy", "catsone",
         "clearcompany", "cornerstone",
         "darwinbox", "dayforce", "eightfold", "gem", "greenhouse", "gupy", "herp", "hrmos",
+        "hireology",
         "icims", "jibe", "join_com", "jobvite", "keka", "lever", "mercor", "moka", "oracle", "pageup", "paycom", "paylocity",
         "peopleadmin", "personio", "phenom",
         "applicantpro",
@@ -37,8 +38,10 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "jobs_cz", "manfred", "thehub", "ycombinator", "wellfound",
         "infojobs_es", "jobbankca", "seek",
         # Additional multi-tenant ATSes
+        "ninehire",
         "bamboohr", "breezy", "jazzhr",
         "recruitee", "talentbrew", "talentsoft", "taleo", "taleo_enterprise", "teamtailor",
+        "varbi",
         # Catch-all
         "custom",
     }

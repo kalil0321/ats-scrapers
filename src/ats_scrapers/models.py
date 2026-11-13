@@ -52,6 +52,7 @@ class ATSType(StrEnum):
     GREENHOUSE = "greenhouse"
     GUPY = "gupy"
     HERP = "herp"
+    HIREOLOGY = "hireology"
     HRMOS = "hrmos"
     ICIMS = "icims"
     # iCIMS career sites (formerly Jibe) on the employer's own domain.
@@ -62,6 +63,7 @@ class ATSType(StrEnum):
     LEVER = "lever"
     MERCOR = "mercor"
     MOKA = "moka"
+    NINEHIRE = "ninehire"
     ORACLE = "oracle"
     PAGEUP = "pageup"
     PAYCOM = "paycom"
@@ -78,6 +80,7 @@ class ATSType(StrEnum):
     SUCCESSFACTORS = "successfactors"
     TALENTIO = "talentio"
     UKG = "ukg"
+    VARBI = "varbi"
     WINTALENT = "wintalent"
     WORKABLE = "workable"
     # Workable's public job marketplace: every customer's live postings

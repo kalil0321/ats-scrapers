@@ -37,6 +37,7 @@ from ats_scrapers.scrapers.google import GoogleScraper
 from ats_scrapers.scrapers.greenhouse import GreenhouseScraper
 from ats_scrapers.scrapers.gupy import GupyScraper
 from ats_scrapers.scrapers.herp import HerpScraper
+from ats_scrapers.scrapers.hireology import HireologyScraper
 from ats_scrapers.scrapers.hrmos import HrmosScraper
 from ats_scrapers.scrapers.icims import iCIMSScraper
 from ats_scrapers.scrapers.infojobs_es import InfoJobsSpainScraper
@@ -53,6 +54,7 @@ from ats_scrapers.scrapers.manfred import ManfredScraper
 from ats_scrapers.scrapers.mercor import MercorScraper
 from ats_scrapers.scrapers.meta import MetaScraper
 from ats_scrapers.scrapers.moka import MokaScraper
+from ats_scrapers.scrapers.ninehire import NinehireScraper
 from ats_scrapers.scrapers.oracle import OracleScraper
 from ats_scrapers.scrapers.pageup import PageUpScraper
 from ats_scrapers.scrapers.paycom import PaycomScraper
@@ -82,6 +84,7 @@ from ats_scrapers.scrapers.tiktok import TikTokScraper
 from ats_scrapers.scrapers.uber import UberScraper
 from ats_scrapers.scrapers.ukg import UKGProScraper
 from ats_scrapers.scrapers.usajobs import USAJobsScraper
+from ats_scrapers.scrapers.varbi import VarbiScraper
 from ats_scrapers.scrapers.wanted import WantedScraper
 from ats_scrapers.scrapers.welcometothejungle import WTTJScraper
 from ats_scrapers.scrapers.wellfound import WellfoundScraper
@@ -122,6 +125,7 @@ __all__ = [
     "GreenhouseScraper",
     "GupyScraper",
     "HerpScraper",
+    "HireologyScraper",
     "HrmosScraper",
     "InfoJobsSpainScraper",
     "JazzHRScraper",
@@ -137,6 +141,7 @@ __all__ = [
     "MercorScraper",
     "MetaScraper",
     "MokaScraper",
+    "NinehireScraper",
     "OracleScraper",
     "PageUpScraper",
     "PaycomScraper",
@@ -167,6 +172,7 @@ __all__ = [
     "UKGProScraper",
     "USAJobsScraper",
     "UberScraper",
+    "VarbiScraper",
     "WTTJScraper",
     "WantedScraper",
     "WeWorkRemotelyScraper",

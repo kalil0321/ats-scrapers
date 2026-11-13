@@ -62,6 +62,22 @@ class ResolvedCareersUrl(NamedTuple):
     slug: str
 
 
+_HIREOLOGY_UNSAFE_RE = re.compile(r"[\\?#\x00-\x1f\x7f]")
+
+
+def _is_hireology_tenant(value: str) -> bool:
+    """Same rule as ``hireology.is_tenant_name``, kept here so that resolving
+    a URL does not import the scraper. A test holds the two together."""
+    return (
+        0 < len(value) <= 200
+        and not _HIREOLOGY_UNSAFE_RE.search(value)
+        and all(
+            part.strip() and part.strip() not in {".", ".."}
+            for part in value.split("/")
+        )
+    )
+
+
 def _first_path_segment(parsed: ParseResult) -> str | None:
     segments = [s for s in parsed.path.split("/") if s]
     return segments[0] if segments else None
@@ -92,6 +108,7 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
     ".breezy.hr": ATSType.BREEZY,
     ".bamboohr.com": ATSType.BAMBOOHR,
     ".gupy.io": ATSType.GUPY,
+    ".ninehire.site": ATSType.NINEHIRE,
     ".jobs.personio.com": ATSType.PERSONIO,
     ".jobs.personio.de": ATSType.PERSONIO,
     ".pinpointhq.com": ATSType.PINPOINT,
@@ -191,6 +208,16 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             )
         return ResolvedCareersUrl(ATSType.LEVER, slug)
 
+    if host == "careers.hireology.com":
+        # The tenant is the first path segment, percent-decoded. It can hold
+        # an encoded slash (a child location); the scraper sends the name
+        # back as one encoded segment.
+        raw_slug = _first_path_segment(parsed)
+        slug = unquote(raw_slug).strip() if raw_slug else None
+        if slug and _is_hireology_tenant(slug):
+            return ResolvedCareersUrl(ATSType.HIREOLOGY, slug)
+        return None
+
     if host in _PATH_HOSTS:
         slug = _first_path_segment(parsed)
         if slug and _SLUG_RE.match(slug):
@@ -201,6 +228,14 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         segments = [segment for segment in parsed.path.split("/") if segment]
         if len(segments) >= 2 and segments[0] == "v1" and _DNS_LABEL_RE.fullmatch(segments[1]):
             return ResolvedCareersUrl(ATSType.HERP, segments[1])
+        return None
+
+    if host.endswith(".varbi.com"):
+        # Read the tenant from the host as given: ``www.`` was removed
+        # above, and ``www.acme.varbi.com`` is not a tenant's board.
+        slug = (parsed.hostname or "").lower().removesuffix(".varbi.com")
+        if _DNS_LABEL_RE.fullmatch(slug) and slug not in {"api", "support", "login"}:
+            return ResolvedCareersUrl(ATSType.VARBI, slug)
         return None
 
     if host == "hrmos.co":

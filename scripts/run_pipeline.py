@@ -66,6 +66,7 @@ from ats_scrapers.scrapers import (
     GreenhouseScraper,
     GupyScraper,
     HerpScraper,
+    HireologyScraper,
     HrmosScraper,
     InfoJobsSpainScraper,
     JazzHRScraper,
@@ -81,6 +82,7 @@ from ats_scrapers.scrapers import (
     MercorScraper,
     MetaScraper,
     MokaScraper,
+    NinehireScraper,
     OracleScraper,
     PageUpScraper,
     PaycomScraper,
@@ -109,6 +111,7 @@ from ats_scrapers.scrapers import (
     TikTokScraper,
     UberScraper,
     UKGProScraper,
+    VarbiScraper,
     WantedScraper,
     WellfoundScraper,
     WeWorkRemotelyScraper,
@@ -405,6 +408,18 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # to remove, not a reason to hold back the others.
         "fail_closed_tolerance": 0.05,
     },
+    "varbi": {
+        "scraper": VarbiScraper,
+        "slug": _slug_col,
+        "kwargs": lambda row: {"company_name": (row.get("name") or "").strip() or None},
+        "csv": "ats-companies/varbi.csv",
+        "output": "varbi/jobs.csv",
+        "max_concurrency": 2,
+        "dedupe_by_ats_id": True,
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+    },
     "adp": {
         "scraper": ADPWorkforceNowScraper,
         "slug": lambda r: (r.get("url") or "").strip() or None,
@@ -533,6 +548,27 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "output": "herp/jobs.csv",
         "max_concurrency": 4,
         "fail_closed_on_empty": True,
+    },
+    "hireology": {
+        "scraper": HireologyScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/hireology.csv",
+        "output": "hireology/jobs.csv",
+        # A group's site lists the jobs of its member sites, which have
+        # their own catalogue rows: the job id is the same on both.
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 8,
+        "fail_closed_on_empty": True,
+        "fail_closed_on_any_error": True,
+        # A tenant that answers 404 is a failed employer, not one to skip.
+        "fail_closed_on_not_found": True,
+        # Employers leave Hireology all the time: 180 of 4,494 between
+        # July and November 2026. 2% may fail before the dataset is held
+        # back, which leaves time to clean the catalogue.
+        "fail_closed_tolerance": 0.02,
     },
     "hrmos": {
         "scraper": HrmosScraper,
@@ -908,6 +944,23 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": _moka_slug,
         "csv": "ats-companies/moka.csv",
         "output": "moka/jobs.csv",
+    },
+    "ninehire": {
+        "scraper": NinehireScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/ninehire.csv",
+        "output": "ninehire/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 6,
+        "fail_closed_on_empty": True,
+        "fail_closed_on_any_error": True,
+        # A homepage that answers 404 is a failed employer, not one to skip.
+        "fail_closed_on_not_found": True,
+        # One employer in 29 may fail before the dataset is held back.
+        "fail_closed_tolerance": 0.05,
     },
     "darwinbox": {
         "scraper": DarwinboxScraper,
