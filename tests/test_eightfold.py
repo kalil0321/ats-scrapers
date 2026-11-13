@@ -579,7 +579,7 @@ def test_format_location_prefers_standardized_over_locations() -> None:
     ) == "Standardized City"
 
 
-def test_format_location_string_list_returns_first_stripped() -> None:
+def test_format_location_string_list_strips_entries() -> None:
     assert _format_location({"locations": ["  Berlin  "]}) == "Berlin"
 
 
@@ -621,6 +621,45 @@ def test_format_location_empty_list_falls_through() -> None:
     assert _format_location(
         {"standardizedLocations": [], "locations": ["Berlin"]}
     ) == "Berlin"
+
+
+def test_format_location_keeps_every_listed_location() -> None:
+    """Multi-location postings list each office; entries already carry
+    commas, so they are joined with "; "."""
+    assert _format_location(
+        {"locations": ["Toronto, ON, Canada", "Berlin, Germany", "Toronto, ON, Canada"]}
+    ) == "Toronto, ON, Canada; Berlin, Germany"
+
+
+def test_format_location_dict_list_keeps_every_location() -> None:
+    assert _format_location(
+        {"locations": [{"city": "Paris", "country": "FR"}, {"city": "Lyon"}, {}]}
+    ) == "Paris; Lyon"
+
+
+def test_format_location_skips_blank_entries_in_list() -> None:
+    assert _format_location(
+        {"standardizedLocations": ["  ", "Austin, TX, US"], "locations": ["Austin"]}
+    ) == "Austin, TX, US"
+
+
+def test_multi_location_posting_keeps_all_locations(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page(
+            [
+                {
+                    "displayJobId": "M1",
+                    "name": "Engineer",
+                    "positionUrl": "/careers/job/M1",
+                    "locations": ["Berlin, Germany", "Munich, Germany"],
+                }
+            ],
+            count=1,
+        ),
+    )
+    jobs = EightfoldScraper("dolby", include_descriptions=False).fetch()
+    assert jobs[0].location == "Berlin, Germany; Munich, Germany"
 
 
 # --- _parse_ts: timestamp helper ---------------------------------------------
