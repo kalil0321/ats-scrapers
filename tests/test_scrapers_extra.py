@@ -11,7 +11,6 @@ import pytest
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.scrapers import (
     GemScraper,
-    JoinComScraper,
     OracleScraper,
     PersonioScraper,
     RipplingScraper,
@@ -21,7 +20,7 @@ from ats_scrapers.scrapers import (
 )
 
 # Several scrapers now fan out per-job detail fetches after the listing
-# pass (Gem batched GraphQL, join.com JSON-LD, etc.). Tests below mock
+# pass (Gem batched GraphQL, etc.). Tests below mock
 # only the listing call and rely on this module-level relax-mark to
 # tolerate the unmatched detail requests.
 pytestmark = pytest.mark.httpx_mock(
@@ -199,6 +198,52 @@ def test_rippling_handles_bare_list(httpx_mock) -> None:
     assert len(jobs) == 1
 
 
+def test_rippling_detail_pay_ranges_kept_in_raw(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://api.rippling.com/platform/api/ats/v1/board/acme/jobs",
+        json=[
+            {
+                "id": "xyz",
+                "name": "Engineer",
+                "url": "https://ats.rippling.com/acme/jobs/xyz",
+                "workLocation": {"displayName": "Remote"},
+                "department": {"id": "eng", "label": "Engineering"},
+            },
+            {
+                "id": "abc",
+                "name": "Designer",
+                "url": "https://ats.rippling.com/acme/jobs/abc",
+            },
+        ],
+    )
+    # Row shape is illustrative; the scraper keeps the list as-is.
+    pay = [
+        {
+            "location": "Springfield",
+            "currency": "USD",
+            "rangeStart": 1000,
+            "rangeEnd": 2000,
+            "frequency": "YEAR",
+        }
+    ]
+    httpx_mock.add_response(
+        url="https://api.rippling.com/platform/api/ats/v1/board/acme/jobs/xyz",
+        json={"description": {"role": "<p>Build things.</p>"}, "payRangeDetails": pay},
+    )
+    httpx_mock.add_response(
+        url="https://api.rippling.com/platform/api/ats/v1/board/acme/jobs/abc",
+        json={"description": {"role": "<p>Draw things.</p>"}, "payRangeDetails": []},
+    )
+    jobs = {j.ats_id: j for j in RipplingScraper("acme").fetch()}
+    assert jobs["xyz"].description == "Build things."
+    assert jobs["xyz"].raw == {
+        "department": {"id": "eng", "label": "Engineering"},
+        "workLocation": {"displayName": "Remote"},
+        "payRangeDetails": pay,
+    }
+    assert jobs["abc"].raw is None
+
+
 def test_rippling_404(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://api.rippling.com/platform/api/ats/v1/board/missing/jobs",
@@ -297,34 +342,6 @@ def test_gem_empty_response(httpx_mock) -> None:
         json=[{"data": {"oatsExternalJobPostings": {"jobPostings": []}}}],
     )
     assert GemScraper("empty").fetch() == []
-
-
-# --- Join.com ----------------------------------------------------------------
-
-def test_join_com_resolves_id_and_lists_jobs(httpx_mock) -> None:
-    httpx_mock.add_response(
-        url="https://join.com/companies/acme",
-        text='<html><script>{"company":{"id":"42","slug":"acme"}}</script></html>',
-    )
-    httpx_mock.add_response(
-        url=(
-            "https://join.com/api/public/companies/42/jobs"
-            "?locale=en-us&page=1&pageSize=100&withAggregations=true&sort=%2Btitle"
-        ),
-        json={
-            "items": [{"id": 100, "title": "Designer", "location": "Berlin"}],
-            "pagination": {"totalPages": 1},
-        },
-    )
-    jobs = JoinComScraper("acme").fetch()
-    assert jobs[0].title == "Designer"
-    assert jobs[0].ats_id == "100"
-
-
-def test_join_com_404(httpx_mock) -> None:
-    httpx_mock.add_response(url="https://join.com/companies/missing", status_code=404)
-    with pytest.raises(CompanyNotFoundError):
-        JoinComScraper("missing").fetch()
 
 
 # --- Workday -----------------------------------------------------------------

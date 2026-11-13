@@ -38,6 +38,10 @@ class ATSType(StrEnum):
     AVATURE = "avature"
     BEISEN = "beisen"
     BEISEN_LEGACY = "beisen_legacy"
+    # CATS careers portals ({tenant}.catsone.com).
+    CATSONE = "catsone"
+    # ClearCompany hosted career sites (apply.clearcompany.com/{site}).
+    CLEARCOMPANY = "clearcompany"
     CORNERSTONE = "cornerstone"
     DARWINBOX = "darwinbox"
     DAYFORCE = "dayforce"
@@ -48,6 +52,8 @@ class ATSType(StrEnum):
     HERP = "herp"
     HRMOS = "hrmos"
     ICIMS = "icims"
+    # iCIMS career sites (formerly Jibe) on the employer's own domain.
+    JIBE = "jibe"
     JOBVITE = "jobvite"
     JOIN_COM = "join_com"
     KEKA = "keka"
@@ -58,6 +64,8 @@ class ATSType(StrEnum):
     PAGEUP = "pageup"
     PAYCOM = "paycom"
     PAYLOCITY = "paylocity"
+    # PeopleAdmin applicant portals ({tenant}.peopleadmin.com).
+    PEOPLEADMIN = "peopleadmin"
     PERSONIO = "personio"
     PHENOM = "phenom"
     PINPOINT = "pinpoint"
@@ -69,6 +77,9 @@ class ATSType(StrEnum):
     UKG = "ukg"
     VARBI = "varbi"
     WORKABLE = "workable"
+    # Workable's public job marketplace: every customer's live postings
+    # in one paginated feed (single-source scraper).
+    WORKABLE_MARKETPLACE = "workable_marketplace"
     WORKDAY = "workday"
     # Big-tech custom careers systems (single-tenant, bespoke APIs)
     AMAZON = "amazon"
@@ -108,6 +119,13 @@ class ATSType(StrEnum):
     JAZZHR = "jazzhr"
     RECRUITEE = "recruitee"
     TALEO = "taleo"
+    # Oracle Taleo Enterprise Edition career sections ({zone}.taleo.net);
+    # "taleo" is the Business Edition (*.tbe.taleo.net).
+    TALEO_ENTERPRISE = "taleo_enterprise"
+    # Cegid Talentsoft career sites ({site}.talent-soft.com).
+    TALENTSOFT = "talentsoft"
+    # Radancy TalentBrew career sites on the employer's own domain.
+    TALENTBREW = "talentbrew"
     TEAMTAILOR = "teamtailor"
     CUSTOM = "custom"
 

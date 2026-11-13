@@ -1,0 +1,47 @@
+name: archive snapshot
+
+# Copies each published snapshot into a private R2 bucket so the dataset
+# keeps its history (the public snapshot is overwritten on every publish).
+# Runs hourly; work already done is skipped, so most runs take seconds.
+#
+# Uses the same R2 secrets as publish-ats-companies, plus:
+#   ARCHIVE_BUCKET   private bucket name (no public domain attached)
+#                    defaults to "stapply-archive" when the secret is unset
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: archive-snapshot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # R2 secrets only on the default branch: a manual dispatch from another
+    # ref must not run unreviewed code with write access to the buckets.
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install boto3
+
+      - name: Archive current snapshot
+        env:
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          ARCHIVE_BUCKET: ${{ secrets.ARCHIVE_BUCKET || 'stapply-archive' }}
+        run: python .github/scripts/archive_snapshot.py

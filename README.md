@@ -112,11 +112,19 @@ on a worker thread.
 Scraper adapters include:
 
 - Major ATS platforms: ADP Workforce Now, Greenhouse, Lever, Ashby, Workday, SmartRecruiters,
-  SuccessFactors, Oracle, iCIMS, HERP Hire, HRMOS, Keka, Paycom, Softgarden, Varbi, Workable, Personio,
+  SuccessFactors, Oracle, iCIMS (and its Jibe career sites), HERP Hire, HRMOS, Keka, Paycom,
+  Softgarden, Workable, Personio,
   and more.
 - First-party company APIs: Amazon, Apple, Google, TikTok, and Uber.
 - Public and regional sources: EURES, Bundesagentur, Arbetsformedlingen,
   Welcome to the Jungle, and others.
+- Career-site platforms on the employer's own domain: Radancy TalentBrew.
+- Oracle Taleo, both editions: Business Edition and Enterprise Edition.
+- ClearCompany hosted career sites.
+- PeopleAdmin applicant portals.
+- Varbi employer boards.
+- Cegid Talentsoft career sites.
+- CATS careers portals.
 
 Run `python -c "from ats_scrapers import list_ats; print(*list_ats())"` for the
 sources currently present in the hosted dataset. The dataset can list a source

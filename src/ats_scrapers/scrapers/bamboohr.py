@@ -23,6 +23,16 @@ Widget structure (one block per department, one `<li>` per job):
 
 Tenants without open jobs return a 200 with an empty widget (~270 bytes).
 
+Since October 2026 BambooHR has also been rolling out a JSON form of the
+same URL (history repeating the 2024 `/careers/list` deprecation): the
+body arrives as a plain JSON object whose `departments[].positions[]`
+carries the listing instead of the HTML widget. Detection is
+content-based and Accept-header-agnostic — a body that starts with `{`
+is decoded as JSON, anything else (including a failed decode) goes
+through the HTML widget parser unchanged. Both paths emit identical
+`Job` rows. Inside the JSON, `labels.blankStateTitle` is template text:
+an empty `departments` list is a genuine zero-jobs tenant, not an error.
+
 For descriptions and the rest of the per-job fields the careers detail
 page itself is JS-rendered, but the SPA hydrates from a clean public
 JSON XHR at `/careers/{id}/detail`. We hit that directly to enrich each
@@ -35,9 +45,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import html
+import json
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
+from urllib.parse import urlsplit
+
+from pydantic import HttpUrl
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -162,6 +176,22 @@ class BambooHRScraper(BaseScraper):
             widget_html = await fetch.get_text(
                 WIDGET_TEMPLATE.format(slug=self.company_slug)
             )
+            # Some tenants now serve this URL as pure JSON instead of the
+            # HTML widget. Detection is content-based: a body starting
+            # with `{` is decoded as JSON; a decode failure falls through
+            # to the HTML parser, so HTML tenants behave exactly as before.
+            # Only the ``json.loads`` decode is guarded — a malformed
+            # payload must raise loudly, not silently hide the board.
+            if widget_html.lstrip().startswith("{"):
+                try:
+                    payload = json.loads(widget_html)
+                except ValueError:
+                    payload = None
+                if payload is not None:
+                    jobs = self._parse_widget_json(payload)
+                    if self.include_descriptions and jobs:
+                        await self._enrich_from_detail_api(fetch, jobs)
+                    return jobs
             jobs = self._parse_widget(widget_html)
             if re.search(r"bhrPositionID_", widget_html, re.IGNORECASE) and not jobs:
                 raise ScraperError(
@@ -209,6 +239,102 @@ class BambooHRScraper(BaseScraper):
                 continue
             seen.add(job.ats_id)
             jobs.append(job)
+        return jobs
+
+    def _parse_widget_json(self, payload: Any) -> list[Job]:
+        """Parse the JSON form of `/jobs/embed2.php` (Oct 2026 rollout).
+
+        Emits the same ``Job`` rows as the HTML widget path: one job per
+        ``departments[].positions[]`` entry, inheriting the department
+        label. The share URL is taken from the payload when absolute and
+        derived from the position id otherwise. ``labels.blankStateTitle``
+        is template text — an empty ``departments`` list means a genuine
+        zero-jobs tenant, not an error.
+        """
+        if not isinstance(payload, dict):
+            raise ScraperError(
+                f"BambooHR widget for {self.company_slug} returned JSON that "
+                "is not an object"
+            )
+        # An explicit application-level failure must not masquerade as an
+        # empty board — the silent-empty class this parser guards against.
+        if payload.get("success") is False:
+            raise ScraperError(
+                f"BambooHR widget for {self.company_slug} reported failure "
+                "(success=false)"
+            )
+        # Empty boards send ``"departments": []``; a missing or mistyped key
+        # is an unknown shape, not an empty board.
+        departments = payload.get("departments")
+        if not isinstance(departments, list):
+            raise ScraperError(
+                f"BambooHR widget for {self.company_slug} returned JSON "
+                "without a departments list"
+            )
+        jobs: list[Job] = []
+        seen: set[str] = set()
+        positions_seen = 0
+        for department in departments:
+            if not isinstance(department, dict):
+                continue
+            label = department.get("label")
+            dept_name = _collapse_ws(label) if isinstance(label, str) else None
+            positions = department.get("positions")
+            if not isinstance(positions, list):
+                continue
+            for position in positions:
+                positions_seen += 1
+                if not isinstance(position, dict):
+                    continue
+                raw_id = position.get("id")
+                name = position.get("name")
+                if raw_id is None or not isinstance(name, str):
+                    continue
+                ats_id = str(raw_id).strip()
+                if not ats_id:
+                    continue
+                if ats_id in seen:
+                    continue
+                title = _collapse_ws(name)
+                if not title:
+                    continue
+                seen.add(ats_id)
+                raw_url = position.get("url")
+                if (
+                    isinstance(raw_url, str)
+                    and raw_url.startswith(("http://", "https://"))
+                    and urlsplit(raw_url).netloc
+                ):
+                    url = raw_url
+                else:
+                    url = SHARE_URL_TEMPLATE.format(
+                        slug=self.company_slug, id=ats_id
+                    )
+                location = position.get("location")
+                jobs.append(
+                    Job(
+                        url=HttpUrl(url),
+                        title=title,
+                        company=self.company_slug,
+                        ats_type=ATSType.BAMBOOHR,
+                        ats_id=ats_id,
+                        location=(
+                            location.strip()
+                            if isinstance(location, str) and location.strip()
+                            else None
+                        ),
+                        department=dept_name,
+                        posted_at=None,
+                        fetched_at=datetime.now(UTC),
+                    )
+                )
+        if positions_seen and not jobs:
+            # Mirrors the HTML guard: the payload lists positions but none
+            # were usable — raise instead of silently returning [].
+            raise ScraperError(
+                f"BambooHR widget for {self.company_slug} contains jobs "
+                "but none matched the parser"
+            )
         return jobs
 
     def _parse_position(
@@ -325,11 +451,12 @@ def _apply_opening_to_job(job: Job, opening: dict) -> None:
             # Listing only has "City, ST" — replace with full canonical.
             job.location = canonical
 
-    # ``locationType`` "1" / "remote" indicates a remote role; "0" =
-    # on-site/hybrid (BambooHR doesn't distinguish hybrid).
+    # ``locationType``: "0" = on-site, "1" = remote, "2" = hybrid (the
+    # office stays in ``location``). Hybrid stays None — neither purely
+    # remote nor on-site.
     loc_type = opening.get("locationType")
     if loc_type is not None and job.is_remote is None:
-        if str(loc_type).strip() in ("1", "2", "true") or (
+        if str(loc_type).strip() in ("1", "true") or (
             isinstance(loc_type, str) and "remote" in loc_type.lower()
         ):
             job.is_remote = True
@@ -343,4 +470,11 @@ def _strip_tags(text: str) -> str:
     whitespace."""
     text = _TAG_RE.sub(" ", text)
     text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _collapse_ws(text: str) -> str:
+    """JSON counterpart of ``_strip_tags`` for plain-text fields (position
+    names, department labels): collapse whitespace only. No entity
+    decoding — JSON text is already literal."""
     return re.sub(r"\s+", " ", text).strip()

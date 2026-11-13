@@ -148,3 +148,241 @@ def test_5xx_exhausts_retries(monkeypatch, httpx_mock) -> None:
     httpx_mock.add_response(url=URL, status_code=502, is_reusable=True)
     with pytest.raises(ScraperError, match="502"):
         TaleoScraper(URL).fetch()
+
+
+# --- Paging -----------------------------------------------------------------
+#
+# The listing shows ten postings at a time. While more remain, the page
+# carries the link its infinite scroll follows; the last page has none.
+
+
+def _next_link(row: int, *, amp: str = "&") -> str:
+    return (
+        f'<a href="/phe01/ats/careers/v2/searchResults?next{amp}rowFrom={row}'
+        f'{amp}act=null{amp}sortColumn=null{amp}sortOrder=null'
+        f'{amp}currentTime=1794514824131">Next</a>'
+    )
+
+
+def _listing_requests(httpx_mock) -> list[str]:
+    return [
+        str(request.url)
+        for request in httpx_mock.get_requests()
+        if "searchResults" in str(request.url)
+    ]
+
+
+def test_follows_the_next_link_to_the_last_page(httpx_mock) -> None:
+    first = [_job_link(str(rid), f"Job {rid}") for rid in range(100, 110)]
+    second = [_job_link(str(rid), f"Job {rid}") for rid in range(110, 120)]
+    third = [_job_link(str(rid), f"Job {rid}") for rid in range(120, 123)]
+    httpx_mock.add_response(url=URL, text=_page([*first, _next_link(10)]))
+    httpx_mock.add_response(
+        url=f"{URL}&rowFrom=10", text=_page([*second, _next_link(20)])
+    )
+    httpx_mock.add_response(url=f"{URL}&rowFrom=20", text=_page(third))
+
+    jobs = TaleoScraper(URL, include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == [str(rid) for rid in range(100, 123)]
+    assert _listing_requests(httpx_mock) == [
+        URL,
+        f"{URL}&rowFrom=10",
+        f"{URL}&rowFrom=20",
+    ]
+
+
+def test_single_page_listing_makes_one_request(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL, text=_page([_job_link("1", "Only job")]))
+
+    jobs = TaleoScraper(URL, include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["1"]
+    assert _listing_requests(httpx_mock) == [URL]
+
+
+def test_offset_is_read_from_the_link_not_assumed(httpx_mock) -> None:
+    """A tenant showing a different page size still pages correctly."""
+    httpx_mock.add_response(
+        url=URL,
+        text=_page([_job_link("1", "A"), _job_link("2", "B"), _next_link(25)]),
+    )
+    httpx_mock.add_response(
+        url=f"{URL}&rowFrom=25", text=_page([_job_link("3", "C")])
+    )
+
+    jobs = TaleoScraper(URL, include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["1", "2", "3"]
+
+
+def test_next_link_with_encoded_ampersands(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=URL,
+        text=_page([_job_link("1", "A"), _next_link(10, amp="&amp;")]),
+    )
+    httpx_mock.add_response(
+        url=f"{URL}&rowFrom=10", text=_page([_job_link("2", "B")])
+    )
+
+    jobs = TaleoScraper(URL, include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["1", "2"]
+
+
+def test_posting_repeated_on_the_next_page_is_kept_once(httpx_mock) -> None:
+    """A posting can slide onto the next page while the walk is running."""
+    httpx_mock.add_response(
+        url=URL,
+        text=_page([_job_link("1", "A"), _job_link("2", "B"), _next_link(10)]),
+    )
+    httpx_mock.add_response(
+        url=f"{URL}&rowFrom=10",
+        text=_page([_job_link("2", "B"), _job_link("3", "C")]),
+    )
+
+    jobs = TaleoScraper(URL, include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["1", "2", "3"]
+
+
+def test_last_page_of_known_postings_ends_the_walk(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=URL,
+        text=_page([_job_link("1", "A"), _job_link("2", "B"), _next_link(10)]),
+    )
+    httpx_mock.add_response(
+        url=f"{URL}&rowFrom=10", text=_page([_job_link("2", "B")])
+    )
+
+    jobs = TaleoScraper(URL, include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["1", "2"]
+
+
+def test_page_that_repeats_postings_and_announces_more_raises(httpx_mock) -> None:
+    page = _page([_job_link("1", "A"), _job_link("2", "B"), _next_link(10)])
+    httpx_mock.add_response(url=URL, text=page)
+    httpx_mock.add_response(
+        url=f"{URL}&rowFrom=10",
+        text=_page([_job_link("1", "A"), _job_link("2", "B"), _next_link(20)]),
+    )
+
+    with pytest.raises(ScraperError, match="paging stalled at row 10"):
+        TaleoScraper(URL, include_descriptions=False).fetch()
+
+
+def test_next_link_that_does_not_move_forward_raises(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=URL, text=_page([_job_link("1", "A"), _next_link(10)])
+    )
+    httpx_mock.add_response(
+        url=f"{URL}&rowFrom=10",
+        text=_page([_job_link("2", "B"), _next_link(10)]),
+    )
+
+    with pytest.raises(ScraperError, match="paging stalled at row 10"):
+        TaleoScraper(URL, include_descriptions=False).fetch()
+
+
+def test_announced_page_without_postings_raises(httpx_mock) -> None:
+    """Taleo serves its error page with a 200: an announced page that
+    lists nothing must not pass for the end of the list."""
+    httpx_mock.add_response(
+        url=URL, text=_page([_job_link("1", "A"), _next_link(10)])
+    )
+    httpx_mock.add_response(
+        url=f"{URL}&rowFrom=10",
+        text="<html><body>The page you requested was not found.</body></html>",
+    )
+
+    with pytest.raises(ScraperError, match="returned no postings at row 10"):
+        TaleoScraper(URL, include_descriptions=False).fetch()
+
+
+def test_page_guard_raises_instead_of_returning_a_partial_list(
+    monkeypatch, httpx_mock
+) -> None:
+    from ats_scrapers.scrapers import taleo
+
+    monkeypatch.setattr(taleo, "MAX_PAGES", 2)
+    httpx_mock.add_response(
+        url=URL, text=_page([_job_link("1", "A"), _next_link(10)])
+    )
+    httpx_mock.add_response(
+        url=f"{URL}&rowFrom=10",
+        text=_page([_job_link("2", "B"), _next_link(20)]),
+    )
+
+    with pytest.raises(ScraperError, match="page guard 2"):
+        TaleoScraper(URL, include_descriptions=False).fetch()
+
+
+def test_failed_page_fails_the_whole_walk(monkeypatch, httpx_mock) -> None:
+    import ats_scrapers.fetch
+
+    monkeypatch.setattr(ats_scrapers.fetch, "DEFAULT_RETRIES", 2)
+    httpx_mock.add_response(
+        url=URL, text=_page([_job_link("1", "A"), _next_link(10)])
+    )
+    httpx_mock.add_response(
+        url=f"{URL}&rowFrom=10", status_code=502, is_reusable=True
+    )
+
+    with pytest.raises(ScraperError, match="502"):
+        TaleoScraper(URL, include_descriptions=False).fetch()
+
+
+def test_page_url_for_a_listing_without_a_query() -> None:
+    from ats_scrapers.scrapers.taleo import _page_url
+
+    base = "https://phe.tbe.taleo.net/phe01/ats/careers/v2/searchResults"
+    assert _page_url(base, 0) == base
+    assert _page_url(base, 10) == f"{base}?rowFrom=10"
+    assert _page_url(URL, 30) == f"{URL}&rowFrom=30"
+
+
+def test_fragment_in_the_listing_url_does_not_swallow_the_offset(httpx_mock) -> None:
+    """A fragment is not sent to the server: an offset appended after it
+    would be lost and the first page served again."""
+    httpx_mock.add_response(
+        url=URL, text=_page([_job_link("1", "A"), _next_link(10)])
+    )
+    httpx_mock.add_response(
+        url=f"{URL}&rowFrom=10", text=_page([_job_link("2", "B")])
+    )
+
+    jobs = TaleoScraper(f"{URL}#jobs", include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["1", "2"]
+    assert jobs[0].company == "ACME"
+    assert _listing_requests(httpx_mock) == [URL, f"{URL}&rowFrom=10"]
+
+
+def test_offset_already_in_the_listing_url_is_dropped(httpx_mock) -> None:
+    """The walk starts at the top of the list, whatever page the URL was
+    copied from."""
+    httpx_mock.add_response(
+        url=URL, text=_page([_job_link("1", "A"), _next_link(10)])
+    )
+    httpx_mock.add_response(
+        url=f"{URL}&rowFrom=10", text=_page([_job_link("2", "B")])
+    )
+
+    jobs = TaleoScraper(f"{URL}&rowFrom=10", include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["1", "2"]
+    assert _listing_requests(httpx_mock) == [URL, f"{URL}&rowFrom=10"]
+
+
+def test_listing_url_normalisation() -> None:
+    from ats_scrapers.scrapers.taleo import _listing_url
+
+    base = "https://phe.tbe.taleo.net/phe01/ats/careers/v2/searchResults"
+    assert _listing_url(URL) == URL
+    assert _listing_url(f"{URL}#jobs") == URL
+    assert _listing_url(f"{base}?rowFrom=20&org=ACME&cws=41") == URL
+    assert _listing_url(f"{base}?org=ACME&rowFrom=20&cws=41") == URL
+    assert _listing_url(f"{base}?org=ACME&cws=41&rowFrom=") == URL
+    assert _listing_url(f"{base}?rowFrom=20") == base
+    assert _listing_url(f"{base}?rowFrom=20#top") == base
