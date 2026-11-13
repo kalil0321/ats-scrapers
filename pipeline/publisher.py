@@ -546,6 +546,7 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     # Direct employer ATSes
     "adp": 1, "applitrack": 1, "ashby": 1, "avature": 1, "bamboohr": 1, "beisen": 1,
     "beisen_legacy": 1,
+    "applicantpro": 1,
     "breezy": 1, "catsone": 1, "clearcompany": 1, "cornerstone": 1,
     "darwinbox": 1, "dayforce": 1,
     "greenhouse": 1, "gupy": 1, "herp": 1, "hrmos": 1, "icims": 1, "jazzhr": 1,

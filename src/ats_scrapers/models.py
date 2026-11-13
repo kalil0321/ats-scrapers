@@ -34,6 +34,7 @@ class ATSType(StrEnum):
     """
 
     ADP = "adp"
+    APPLICANTPRO = "applicantpro"
     APPLITRACK = "applitrack"
     ASHBY = "ashby"
     AVATURE = "avature"

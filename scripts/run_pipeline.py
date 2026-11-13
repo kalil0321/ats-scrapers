@@ -41,6 +41,7 @@ from ats_scrapers.scrapers import (
     ADPWorkforceNowScraper,
     AmazonScraper,
     AppleScraper,
+    ApplicantProScraper,
     AppliTrackScraper,
     ArbetsformedlingenScraper,
     AshbyScraper,
@@ -462,6 +463,25 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "fail_closed_on_empty": True,
         # 5% of sites may fail or be gone; a site that closes is a
         # row to remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
+    },
+    "applicantpro": {
+        "scraper": ApplicantProScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/applicantpro.csv",
+        "output": "applicantpro/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 4,
+        "fail_closed_on_any_error": True,
+        # A portal that is gone counts as a failed one, so many portals
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        # 5% of portals may fail or be gone; a portal that closes is a row
+        # to remove, not a reason to hold back the others.
         "fail_closed_tolerance": 0.05,
     },
     "cornerstone": {
