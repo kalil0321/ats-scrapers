@@ -16,6 +16,19 @@ on hire.trakstar.com), ``location`` (structured city/state/country/zipcode),
 A 400 with ``{"client_name": "Invalid client name"}`` means the slug isn't a
 Recruiterbox tenant. A 200 with ``meta.total == 0`` means a valid tenant with
 zero open positions.
+
+The feed is not enough to tell that an account is open. It goes on listing
+the openings of an account after the employer has left Trakstar Hire, while
+the job pages themselves (``hosted_url``) answer 404 with the notice "This
+employer is no longer using Trakstar Hire to collect applications". So when
+the feed lists openings, one job page is read, and that notice makes the
+tenant a ``CompanyNotFoundError``. A 404 without the notice is one removed
+posting on an open account and is not a closed account.
+
+An account can also be reached under an earlier name: the feed answers the
+same openings, with the account's current name in ``client_name`` and in the
+host of ``hosted_url``. ``company`` is taken from ``client_name``, so both
+names give the same postings under the same ``(company, ats_id)``.
 """
 
 from __future__ import annotations
@@ -23,6 +36,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
+from urllib.parse import urlparse
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -38,6 +52,12 @@ PAGE_LIMIT = 100
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 WHITESPACE_RE = re.compile(r"\s+")
 MAX_DESCRIPTION_LEN = 25_000
+
+# On the job pages of an account that has been closed.
+CLOSED_ACCOUNT_NOTICE = "no longer using Trakstar Hire"
+_JOB_PAGE_HOST_RE = re.compile(
+    r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.hire\.trakstar\.com$", re.IGNORECASE
+)
 
 _TYPE_MAP = {
     "full_time": "FULL_TIME",
@@ -100,7 +120,41 @@ class RecruiterboxScraper(BaseScraper):
                     # 99 instead of 100 on a non-final page; if we have
                     # `total` we trust it.
                     break
+            if await self._account_is_closed(fetch, jobs):
+                raise CompanyNotFoundError(
+                    f"Recruiterbox account {self.company_slug} is closed: "
+                    f"its job pages say the employer no longer uses "
+                    f"Trakstar Hire"
+                )
         return jobs
+
+    async def _account_is_closed(self, fetch: Fetcher, jobs: list[Job]) -> bool:
+        """True when a job page carries the closed-account notice.
+
+        One page is enough: on a closed account every job page carries it.
+        """
+        url = next(
+            (
+                str(job.url)
+                for job in jobs
+                if _JOB_PAGE_HOST_RE.match(urlparse(str(job.url)).hostname or "")
+            ),
+            None,
+        )
+        if url is None:
+            return False
+        try:
+            response = await fetch.request(
+                "GET",
+                url,
+                headers={"Accept": "text/html,application/xhtml+xml"},
+                handled=frozenset({404}),
+            )
+        except ScraperError:
+            # The feed answered. A job page that cannot be read is not
+            # evidence that the account is closed.
+            return False
+        return CLOSED_ACCOUNT_NOTICE in response.text
 
     async def _fetch_page(self, fetch: Fetcher, offset: int) -> dict[str, Any]:
         params = {
