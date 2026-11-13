@@ -354,18 +354,41 @@ def test_manifest_patch_handles_corrupt_existing_manifest(
 
 
 def test_publish_writes_badge_values_from_manifest_stats(ats_csv_dir, fake_r2) -> None:
-    DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(ats_csv_dir)
+    result = DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
 
     manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
     upload = fake_r2.uploads["jobhive/v1/badges.json"]
     assert json.loads(upload["data"]) == {
-        "jobs": str(manifest["stats"]["total_jobs"]),
-        "companies": str(manifest["stats"]["total_companies"]),
+        "jobs": _compact(manifest["stats"]["total_jobs"]),
+        "companies": _compact(manifest["stats"]["total_companies"]),
         "sources": str(manifest["stats"]["ats_count"]),
         "updated": manifest["generated_at"][:10],
     }
     assert upload["content_type"] == "application/json"
     assert upload["cache_control"] == CACHE_CONTROL_LATEST
+    # The result lists what was uploaded, badges included.
+    assert "jobhive/v1/badges.json" in result.files
+
+
+def test_badge_values_are_compact(fake_r2) -> None:
+    """Counts of the size the dataset has: the file holds "4.9M" and
+    "80.4K", not the raw numbers the manifest carries."""
+    from datetime import UTC, datetime
+
+    key = DatasetPublisher(fake_r2)._upload_badges(
+        {"total_jobs": 4_886_484, "total_companies": 80_390, "ats_count": 64},
+        datetime(2026, 11, 10, 14, 30, 4, tzinfo=UTC),
+    )
+
+    assert key == "jobhive/v1/badges.json"
+    assert json.loads(fake_r2.uploads[key]["data"]) == {
+        "jobs": "4.9M",
+        "companies": "80.4K",
+        "sources": "64",
+        "updated": "2026-11-10",
+    }
 
 
 def test_badge_upload_failure_does_not_fail_publish(
@@ -386,6 +409,9 @@ def test_badge_upload_failure_does_not_fail_publish(
     assert result.total_jobs == 9
     assert "jobhive/v1/manifest.json" in fake_r2.uploads
     assert "jobhive/v1/badges.json" not in fake_r2.uploads
+    # A file that was not uploaded is not reported.
+    assert "jobhive/v1/badges.json" not in result.files
+    assert "jobhive/v1/manifest.json" in result.files
 
 
 @pytest.mark.parametrize(
@@ -395,7 +421,14 @@ def test_badge_upload_failure_does_not_fail_publish(
         (64, "64"),
         (999, "999"),
         (1_000, "1K"),
+        (1_049, "1K"),
+        # Ties round up, as on the site: 1,250 is "1.3K", not "1.2K".
+        (1_050, "1.1K"),
+        (1_250, "1.3K"),
+        (1_350, "1.4K"),
         (80_390, "80.4K"),
+        (999_949, "999.9K"),
+        (999_950, "1M"),
         (999_999, "1M"),
         (4_886_484, "4.9M"),
         (2_400_000_000, "2.4B"),
@@ -647,8 +680,9 @@ def test_result_reports_counts_and_duration(ats_csv_dir, fake_r2) -> None:
     assert result.ats_count == 3
     assert result.duration_seconds >= 0.0
     assert result.manifest_key == "jobhive/v1/manifest.json"
-    # 3 ATS slices × 2 formats + all.{csv,parquet} + manifest.json = 9 files
-    assert len(result.files) == 9
+    # 3 ATS slices × 2 formats + all.{csv,parquet} + badges.json +
+    # manifest.json = 10 files
+    assert len(result.files) == 10
 
 
 # --- Cross-ATS deduplication ------------------------------------------------

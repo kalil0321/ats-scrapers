@@ -53,6 +53,7 @@ import tempfile
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -269,7 +270,7 @@ class DatasetPublisher:
             files_uploaded.extend(_collect_uploaded_keys(all_entry))
 
             jobs_by_kind = _jobs_by_source_kind(survivors)
-            manifest_key = self._patch_and_upload_manifest(
+            manifest_key, badges_key = self._patch_and_upload_manifest(
                 generated_at=started,
                 stats_factory=lambda existing: {
                     "total_jobs": n_kept,
@@ -291,6 +292,8 @@ class DatasetPublisher:
                 by_ats=per_ats_entries,
                 existing_manifest=existing_manifest,
             )
+            if badges_key is not None:
+                files_uploaded.append(badges_key)
             files_uploaded.append(manifest_key)
 
             deleted = self.prune_legacy_paths()
@@ -492,9 +495,12 @@ class DatasetPublisher:
         all_entry: dict[str, object],
         by_ats: dict[ATSType, dict[str, object]],
         existing_manifest: dict[str, object] | None = None,
-    ) -> str:
+    ) -> tuple[str, str | None]:
         """Read existing manifest, replace jobs-related fields, preserve
-        the companies block written by the CI."""
+        the companies block written by the CI.
+
+        Returns the manifest key and the badges key, or ``None`` for the
+        badges when their upload failed."""
         key = f"{self._prefix}/manifest.json"
         existing = (
             existing_manifest
@@ -524,7 +530,7 @@ class DatasetPublisher:
         for legacy in ("by_date", "companies_by_ats"):
             manifest.pop(legacy, None)
 
-        self._upload_badges(stats, generated_at)
+        badges_key = self._upload_badges(stats, generated_at)
         body = json.dumps(manifest, indent=2, sort_keys=True, default=str).encode(
             "utf-8"
         )
@@ -534,14 +540,20 @@ class DatasetPublisher:
             content_type="application/json",
             cache_control=CACHE_CONTROL_LATEST,
         )
-        return key
+        return key, badges_key
 
-    def _upload_badges(self, stats: dict[str, Any], generated_at: datetime) -> None:
-        """Shields' dynamic JSON badge can't format numbers, so the README
-        reads pre-formatted values from this file.
+    def _upload_badges(
+        self, stats: dict[str, Any], generated_at: datetime
+    ) -> str | None:
+        """Upload the dataset's headline values already formatted.
 
-        A failed upload is logged, not raised: badges are cosmetic and must
-        not block the manifest.
+        Shields' dynamic JSON badge can't format numbers. This file holds
+        the values ready to display, so that the README badges can read
+        them from here instead of the raw manifest.
+
+        Returns the uploaded key. A failed upload is logged, not raised,
+        and returns ``None``: badges are cosmetic and must not block the
+        manifest.
         """
         badges = {
             "jobs": _compact(stats["total_jobs"]),
@@ -549,15 +561,18 @@ class DatasetPublisher:
             "sources": str(stats["ats_count"]),
             "updated": generated_at.strftime("%Y-%m-%d"),
         }
+        key = f"{self._prefix}/badges.json"
         try:
             self._r2.upload_bytes(
                 json.dumps(badges).encode("utf-8"),
-                f"{self._prefix}/badges.json",
+                key,
                 content_type="application/json",
                 cache_control=CACHE_CONTROL_LATEST,
             )
         except StorageError as exc:
             logger.warning("Badge upload failed: %s", exc)
+            return None
+        return key
 
     def _public_or_key(self, key: str) -> str:
         return self._r2.public_url(key) or key
@@ -1287,13 +1302,19 @@ def _guard_suspicious_empty_job_slices(
 def _compact(n: int) -> str:
     """Same output as stapply.ai's ``Intl.NumberFormat`` compact notation,
     e.g. 4886484 -> "4.9M"."""
-    value, suffix = float(n), ""
+    # Decimal, rounded half up: a float's ``:.1f`` rounds ties to even and
+    # turns 1,250 into "1.2K" where the site shows "1.3K".
+    value, suffix = Decimal(n), ""
     for next_suffix in ("K", "M", "B"):
-        if round(value, 1) < 1000:
+        if _one_decimal(value) < 1000:
             break
         value /= 1000
         suffix = next_suffix
-    return f"{value:.1f}".removesuffix(".0") + suffix
+    return f"{_one_decimal(value):f}".removesuffix(".0") + suffix
+
+
+def _one_decimal(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
 
 
 def _entry_rows(entry: object) -> int:
