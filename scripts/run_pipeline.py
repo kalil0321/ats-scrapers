@@ -82,6 +82,7 @@ from ats_scrapers.scrapers import (
     MercorScraper,
     MetaScraper,
     MokaScraper,
+    NinehireScraper,
     OracleScraper,
     PageUpScraper,
     PaycomScraper,
@@ -909,6 +910,23 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": _moka_slug,
         "csv": "ats-companies/moka.csv",
         "output": "moka/jobs.csv",
+    },
+    "ninehire": {
+        "scraper": NinehireScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/ninehire.csv",
+        "output": "ninehire/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 6,
+        "fail_closed_on_empty": True,
+        "fail_closed_on_any_error": True,
+        # A homepage that answers 404 is a failed employer, not one to skip.
+        "fail_closed_on_not_found": True,
+        # One employer in 29 may fail before the dataset is held back.
+        "fail_closed_tolerance": 0.05,
     },
     "darwinbox": {
         "scraper": DarwinboxScraper,

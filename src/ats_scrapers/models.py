@@ -63,6 +63,7 @@ class ATSType(StrEnum):
     LEVER = "lever"
     MERCOR = "mercor"
     MOKA = "moka"
+    NINEHIRE = "ninehire"
     ORACLE = "oracle"
     PAGEUP = "pageup"
     PAYCOM = "paycom"

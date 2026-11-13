@@ -38,6 +38,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "jobs_cz", "manfred", "thehub", "ycombinator", "wellfound",
         "infojobs_es", "jobbankca", "seek",
         # Additional multi-tenant ATSes
+        "ninehire",
         "bamboohr", "breezy", "jazzhr",
         "recruitee", "talentbrew", "talentsoft", "taleo", "taleo_enterprise", "teamtailor",
         # Catch-all
