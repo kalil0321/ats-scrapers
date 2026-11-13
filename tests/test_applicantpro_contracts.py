@@ -24,7 +24,9 @@ def test_applicantpro_pipeline_uses_validated_tenant_catalog() -> None:
     assert config["dedupe_by_ats_id"] is True
     assert config["max_concurrency"] == 4
     assert config["fail_closed_on_any_error"] is True
+    assert config["fail_closed_on_not_found"] is True
     assert config["fail_closed_on_empty"] is True
+    assert config["fail_closed_tolerance"] == 0.05
     assert "defer_descriptions_to_cache" not in config
 
 
@@ -40,7 +42,7 @@ def test_applicantpro_catalog_contains_only_validated_canonical_portals() -> Non
     with Path("ats-companies/applicantpro.csv").open(newline="") as handle:
         rows = list(csv.DictReader(handle))
 
-    assert len(rows) == 1_956
+    assert len(rows) == 1_904
     assert len({row["slug"] for row in rows}) == len(rows)
     assert len({row["url"] for row in rows}) == len(rows)
     assert all(row["name"].strip() for row in rows)
