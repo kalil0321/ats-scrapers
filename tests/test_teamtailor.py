@@ -60,7 +60,7 @@ def _item(
           <tt:city>{loc_city}</tt:city>
           <tt:country>{loc_country}</tt:country>
         </tt:location>"""
-        for loc_city, loc_country in (locations or [(city, country)])
+        for loc_city, loc_country in ([(city, country)] if locations is None else locations)
     )
     return f"""
     <item>
@@ -270,6 +270,14 @@ def test_location_dedupes_repeated_locations(httpx_mock) -> None:
     ]))
     jobs = TeamtailorScraper("acme").fetch()
     assert jobs[0].location == "Berlin, Germany"
+
+
+def test_location_none_when_locations_is_empty(httpx_mock) -> None:
+    """An empty `<tt:locations>` is not the same as a missing one in the
+    helper: no office listed means no location, not the default office."""
+    httpx_mock.add_response(url=RSS_URL, text=_rss([_item(locations=[])]))
+    jobs = TeamtailorScraper("acme").fetch()
+    assert jobs[0].location is None
 
 
 def test_location_none_when_missing(httpx_mock) -> None:
