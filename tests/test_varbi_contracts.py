@@ -25,8 +25,10 @@ def test_varbi_pipeline_contract() -> None:
 def test_varbi_catalog_uses_unique_public_employer_boards() -> None:
     with Path("ats-companies/varbi.csv").open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
-    assert len(rows) == 14
+    assert len(rows) == 151
     assert len({row["slug"] for row in rows}) == len(rows)
+    names = [row["name"].casefold() for row in rows]
+    assert names == sorted(names)
     assert all(row["name"].strip() for row in rows)
     assert all(row["url"] == f"https://{row['slug']}.varbi.com/" for row in rows)
     assert all(row["slug"] not in {"www", "demo", "test"} for row in rows)
