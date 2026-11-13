@@ -205,9 +205,12 @@ class OracleScraper(BaseScraper):
         job: Job,
     ) -> None:
         # Best-effort: detail failures keep the listing-derived row
-        # (CompanyNotFoundError subclasses ScraperError).
+        # (CompanyNotFoundError subclasses ScraperError). A listing
+        # ``ShortDescriptionStr`` is only a summary, so it does not skip
+        # the request; it stays as the fallback when the detail has no
+        # external sections.
         source_id = _oracle_source_id(job)
-        if not source_id or job.description:
+        if not source_id:
             return
         async with sem:
             try:
