@@ -107,6 +107,92 @@ def test_ba_angebotsart_sent_on_every_request(httpx_mock) -> None:
         assert p.get("angebotsart") == ["34"]
 
 
+def _shrink_pagination(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two results per query at most, so a query of three is oversize."""
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 2)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
+
+
+def test_ba_angebotsart_kept_through_the_facet_partition(httpx_mock, monkeypatch) -> None:
+    """An oversize query is split on a facet. The filter must ride along
+    on the probe, on both halves and on their pages, and must not be
+    picked as the facet to split on."""
+    _shrink_pagination(monkeypatch)
+    seen_params: list[dict[str, list[str]]] = []
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        params = parse_qs(urlparse(str(request.url)).query)
+        seen_params.append(params)
+        size = int(params.get("size", ["1"])[0])
+        half = params.get("befristung", [None])[0]
+        if half == "1":
+            items, total, facets = [_ba_job("A", "A"), _ba_job("B", "B")], 2, {}
+        elif half == "2":
+            items, total, facets = [_ba_job("C", "C")], 1, {}
+        else:
+            items, total = [_ba_job("A", "A"), _ba_job("B", "B")], 3
+            facets = {
+                # Already applied by the caller: not a way to split further.
+                "angebotsart": {"counts": {"34": 3}},
+                "befristung": {"counts": {"1": 2, "2": 1}},
+            }
+        return httpx.Response(
+            200,
+            json={"ergebnisliste": items[:size], "maxErgebnisse": total, "facetten": facets},
+        )
+
+    httpx_mock.add_callback(serve, url=_BA_API, is_reusable=True)
+
+    jobs = BundesagenturScraper("any", angebotsart="34").fetch()
+
+    assert {job.ats_id for job in jobs} == {"A", "B", "C"}
+    assert {p.get("befristung", [None])[0] for p in seen_params} == {None, "1", "2"}
+    assert seen_params
+    for p in seen_params:
+        assert p.get("angebotsart") == ["34"]
+
+
+def test_ba_angebotsart_kept_through_the_verified_cover(httpx_mock, monkeypatch) -> None:
+    """With no facet to split on, the oversize query is covered by
+    overlapping slices. Every slice request must carry the filter."""
+    _shrink_pagination(monkeypatch)
+    seen_params: list[dict[str, list[str]]] = []
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        params = parse_qs(urlparse(str(request.url)).query)
+        seen_params.append(params)
+        size = int(params.get("size", ["1"])[0])
+        if size == 1:
+            items = [_ba_job("A", "A")]
+        elif params.get("weitereberufe", [None])[0] == "missing-tail":
+            items = [_ba_job("C", "C")]
+        else:
+            items = [_ba_job("A", "A"), _ba_job("B", "B")]
+        return httpx.Response(
+            200,
+            json={
+                "ergebnisliste": items,
+                "maxErgebnisse": 3,
+                "facetten": {
+                    "arbeitsort": {"counts": {"common": 2, "missing-tail": 1}},
+                    "weitereberufe": {"counts": {"common": 2, "missing-tail": 1}},
+                },
+            },
+        )
+
+    httpx_mock.add_callback(serve, url=_BA_API, is_reusable=True)
+
+    jobs = BundesagenturScraper("any", angebotsart="34").fetch()
+
+    assert {job.ats_id for job in jobs} == {"A", "B", "C"}
+    assert any("weitereberufe" in p for p in seen_params)
+    for p in seen_params:
+        assert p.get("angebotsart") == ["34"]
+
+
 def test_ba_angebotsart_none_is_default(httpx_mock) -> None:
     httpx_mock.add_response(url=_BA_API, json=_ba_response(1), is_reusable=True)
     default = BundesagenturScraper("any")
@@ -130,6 +216,7 @@ def test_eures_default_sends_empty_keywords(httpx_mock) -> None:
     httpx_mock.add_callback(method="POST", url=_EURES_API, callback=handler, is_reusable=True)
     jobs = EuresScraper("eures").fetch()
     assert jobs == []
+    assert bodies  # not vacuous: at least one search was sent
     assert all(b.get("keywords") == [] for b in bodies)
 
 
@@ -146,6 +233,7 @@ def test_eures_keywords_use_object_shape(httpx_mock) -> None:
     assert scraper.keywords == ["Praktikum"]
     jobs = scraper.fetch()
     assert len(jobs) == 2
+    assert bodies
     for b in bodies:
         assert b["keywords"] == [
             {"keyword": "Praktikum", "specificSearchCode": "EVERYWHERE"}
@@ -162,6 +250,7 @@ def test_eures_multiple_keywords_map_to_entries(httpx_mock) -> None:
 
     httpx_mock.add_callback(method="POST", url=_EURES_API, callback=handler, is_reusable=True)
     EuresScraper("eures", keywords=["Praktikum", "internship"]).fetch()
+    assert bodies
     for b in bodies:
         assert b["keywords"] == [
             {"keyword": "Praktikum", "specificSearchCode": "EVERYWHERE"},
