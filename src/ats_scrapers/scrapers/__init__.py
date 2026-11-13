@@ -12,6 +12,7 @@ from ats_scrapers.scrapers.adp import ADPWorkforceNowScraper
 from ats_scrapers.scrapers.amazon import AmazonScraper
 from ats_scrapers.scrapers.apple import AppleScraper
 from ats_scrapers.scrapers.applicantpro import ApplicantProScraper
+from ats_scrapers.scrapers.applitrack import AppliTrackScraper
 from ats_scrapers.scrapers.arbetsformedlingen import ArbetsformedlingenScraper
 from ats_scrapers.scrapers.ashby import AshbyScraper
 from ats_scrapers.scrapers.avature import AvatureScraper
@@ -94,6 +95,7 @@ __all__ = [
     "AmazonScraper",
     "AppleScraper",
     "ApplicantProScraper",
+    "AppliTrackScraper",
     "ArbetsformedlingenScraper",
     "AshbyScraper",
     "AvatureScraper",
