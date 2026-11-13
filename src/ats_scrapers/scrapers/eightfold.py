@@ -508,7 +508,7 @@ class EightfoldScraper(BaseScraper):
 
         # Eightfold typically wraps a Workday or other underlying ATS — its
         # ``atsJobId`` / ``displayJobId`` is the upstream requisition id and
-        # collides with the underlying ATS's bulletFields[0]. That's the
+        # matches the underlying ATS's employer requisition id. That's the
         # signal the cross-ATS dedup pass uses (Pass 3).
         requisition_id = (
             item.get("atsJobId")
@@ -540,7 +540,7 @@ class EightfoldScraper(BaseScraper):
             location=_format_location(item),
             is_remote=_extract_remote(item),
             department=item.get("department"),
-            requisition_id=str(requisition_id) if requisition_id and str(requisition_id) != ats_id else None,
+            requisition_id=str(requisition_id) if requisition_id else None,
             description=_strip_html(item.get("job_description") or "") or None,
             posted_at=_parse_ts(
                 item.get("postedTs")
@@ -678,6 +678,6 @@ def _parse_ts(value: int | str | None) -> datetime | None:
     try:
         if isinstance(value, str):
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return datetime.fromtimestamp(value / 1000 if value > 1e10 else value)
+        return datetime.fromtimestamp(value / 1000 if value > 1e10 else value, tz=UTC)
     except (ValueError, OSError):
         return None

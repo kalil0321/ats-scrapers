@@ -329,6 +329,18 @@ def test_fetch_returns_empty_when_first_page_empty(httpx_mock) -> None:
     assert EightfoldScraper("dolby").fetch() == []
 
 
+def test_preserves_requisition_id_equal_to_ats_id(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page([_position(job_id="R-123")]),
+    )
+
+    job = EightfoldScraper("dolby", include_descriptions=False).fetch()[0]
+
+    assert job.ats_id == "R-123"
+    assert job.requisition_id == "R-123"
+
+
 def test_fetch_dedupes_jobs_with_same_ats_id(httpx_mock) -> None:
     """If concurrent pages return the same `displayJobId` (the listing can
     shift between requests), the final list must contain each id once."""
@@ -640,6 +652,17 @@ def test_parse_ts_unix_milliseconds() -> None:
     result = _parse_ts(1767225600000)
     assert result is not None
     assert result.year == 2026
+
+
+@pytest.mark.parametrize("value", [1767225600, 1767225600000])
+def test_parse_ts_epoch_is_utc_aware(value: int) -> None:
+    """Epoch values are UTC instants; the result must not depend on the
+    host's local timezone, and must compare with the ISO-string path."""
+    result = _parse_ts(value)
+    assert result is not None
+    assert result.tzinfo is UTC
+    assert result == datetime(2026, 1, 1, tzinfo=UTC)
+    assert result == _parse_ts("2026-01-01T00:00:00Z")
 
 
 def test_parse_ts_none_returns_none() -> None:

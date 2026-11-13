@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import math
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -64,6 +65,14 @@ DEFAULT_TIMEOUT = 60.0
 # round-trip cleanly into the canonical Job schema.
 
 _ARTICLE_OPEN_RE = re.compile(r'<article\s+id="article-(\d+)"', re.IGNORECASE)
+# ``<span class="found" id="results-count">68,763</span>``; the French site
+# groups the digits with spaces.
+_RESULTS_COUNT_RE = re.compile(
+    r'id="results-count"[^>]*>\s*(\d[\d,.\s\u00a0\u202f]*)<', re.IGNORECASE
+)
+# Postings close while the pages are read, so the walk can end a little short
+# of the count the site announces.
+MIN_TAIL_COVERAGE = 0.9
 _RESULT_HREF_RE = re.compile(
     r'<a\b(?=[^>]*\bclass=["\'][^"\']*\bresultJobItem\b[^"\']*["\'])'
     r'[^>]*\bhref=["\']([^"\']+)["\']',
@@ -219,9 +228,27 @@ class JobBankCAScraper(BaseScraper):
                 )
                 repeated_pages = repeated_pages + 1 if added == 0 else 0
                 if repeated_pages >= 2:
-                    raise ScraperError(
-                        "Job Bank repeated only known jobs on consecutive pages"
+                    # Job Bank answers a page past the end with its last
+                    # page again. Two pages of known jobs are that tail only
+                    # where the count the site announces says the results
+                    # end; anywhere else a page was served twice and the
+                    # walk is not complete.
+                    announced = _announced_total(html_text)
+                    if not _repeat_is_the_tail(
+                        announced, first_repeat=page - 1, collected=len(jobs)
+                    ):
+                        raise ScraperError(
+                            "Job Bank repeated only known jobs on pages "
+                            f"{page - 1} and {page} with {len(jobs)} of the "
+                            f"{announced} announced results collected"
+                        )
+                    logger.info(
+                        "Job Bank repeated its last page from page %d on; "
+                        "%d of %d announced results collected",
+                        page - 1, len(jobs), announced,
                     )
+                    exhausted = True
+                    break
                 page += 1
         if self._full_catalogue and not jobs:
             raise ScraperError(
@@ -380,6 +407,32 @@ class JobBankCAScraper(BaseScraper):
             language=language,
             raw=raw or None,
         )
+
+
+def _announced_total(html_text: str) -> int | None:
+    """The number of results the page announces."""
+    match = _RESULTS_COUNT_RE.search(html_text)
+    if match is None:
+        return None
+    digits = re.sub(r"\D", "", match.group(1))
+    return int(digits) if digits else None
+
+
+def _repeat_is_the_tail(
+    announced: int | None, *, first_repeat: int, collected: int
+) -> bool:
+    """Whether pages of known jobs starting at ``first_repeat`` are the end.
+
+    They are when they start after the last page the announced count fills
+    and nearly all announced results were collected on the way.
+    """
+    if announced is None:
+        return False
+    last_page = math.ceil(announced / PAGE_SIZE)
+    return (
+        first_repeat > last_page
+        and collected >= math.ceil(announced * MIN_TAIL_COVERAGE)
+    )
 
 
 def _posting_url(chunk: str, ats_id: str) -> str:
