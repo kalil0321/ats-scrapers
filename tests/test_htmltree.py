@@ -75,12 +75,19 @@ def test_table_end_tags_close_through_unclosed_markup_in_a_cell() -> None:
     assert [row.text() for row in rows] == ["Onebold", "Two"]
 
 
-def test_nesting_stops_at_a_fixed_depth() -> None:
-    root = parse_html("<span>" * 5000 + "Deep" + "</span>" * 5000 + "<p>After</p>")
+def test_markup_nested_thousands_of_levels_deep_is_read_like_any_other() -> None:
+    depth = 5000
+    root = parse_html(
+        "<span>" * depth + 'Deep <p id="field">Value</p> tail' + "</span>" * depth + "<p>After</p>"
+    )
 
-    assert root.text() == "Deep After"
-    # Reading the tree does not recurse once per element of the page.
-    assert sum(1 for _ in root.walk()) == 5001
+    spans = [node for node in root.walk() if node.tag == "span"]
+    assert len(spans) == depth
+    # Each element holds what it holds in the page, however deep it is.
+    assert spans[-1].lines() == "Deep\nValue\ntail"
+    field = next(node for node in root.walk() if node.attrs.get("id") == "field")
+    assert field.text() == "Value"
+    assert root.lines() == "Deep\nValue\ntail\nAfter"
 
 
 def test_an_unknown_end_tag_is_ignored() -> None:

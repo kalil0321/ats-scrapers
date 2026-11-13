@@ -309,19 +309,28 @@ def test_an_empty_site_returns_no_job(httpx_mock) -> None:
 
 
 def test_a_page_past_the_end_answers_the_first_page_and_ends_the_walk(httpx_mock) -> None:
-    """The count is one ahead of the list (an offer closed during the walk):
-    the page asked for next comes back as page 1."""
-    _serve(httpx_mock, [_item(n) for n in range(1, 21)], total=21)
+    """An offer closes during the walk: the third page announced on page 1 no
+    longer exists, and asking for it answers page 1."""
+    items = [_item(n) for n in range(1, 21)]
+    first = _list_page(items[:10], total=21, page=1, last=3)
+    second = _list_page(items[10:], total=20, page=2, last=2)
+    again = _list_page(items[:10], total=20, page=1, last=2)
+    httpx_mock.add_response(url=f"{LIST}?mode=list&page=1", text=first)
+    httpx_mock.add_response(url=f"{LIST}?mode=list&page=2", text=second)
+    httpx_mock.add_response(url=f"{LIST}?mode=list&page=3", text=again)
 
     assert len(_scraper().fetch()) == 20
     assert _pages(httpx_mock) == [1, 2, 3]
 
 
-def test_a_count_far_larger_than_the_list_is_an_error(httpx_mock) -> None:
-    _serve(httpx_mock, [_item(n) for n in range(1, 8)], total=40)
+def test_a_list_that_gives_far_fewer_offers_than_announced_is_an_error(httpx_mock) -> None:
+    """Four pages announced, and every page after the first answers page 1."""
+    first = _list_page([_item(n) for n in range(1, 11)], total=40, page=1, last=4)
+    httpx_mock.add_response(url=LIST_RE, text=first, is_reusable=True)
 
-    with pytest.raises(ScraperError, match="only 7 of the 40 offers"):
+    with pytest.raises(ScraperError, match="only 10 of the 40 offers"):
         _scraper().fetch()
+    assert _pages(httpx_mock) == [1, 2]
 
 
 def test_an_offer_listed_on_two_pages_is_kept_once(httpx_mock) -> None:
@@ -343,6 +352,14 @@ def test_a_list_capped_at_a_hundred_pages_is_refused_on_its_first_page(httpx_moc
     _serve(httpx_mock, [_item(n) for n in range(1, 1046)])
 
     with pytest.raises(ScraperError, match=r"announces 1045 offers .* page 100 \(1000 offers\)"):
+        _scraper().fetch()
+    assert _pages(httpx_mock) == [1]
+
+
+def test_a_cut_list_is_refused_even_one_offer_past_its_last_page(httpx_mock) -> None:
+    _serve(httpx_mock, [_item(n) for n in range(1, 1002)])
+
+    with pytest.raises(ScraperError, match=r"announces 1001 offers .* \(1000 offers\)"):
         _scraper().fetch()
     assert _pages(httpx_mock) == [1]
 

@@ -380,17 +380,18 @@ def _column_headers(container: _Node) -> list[str]:
     read from the row's heading.
     """
     headers: list[str] = []
-
-    def visit(node: _Node) -> None:
-        for child in node.children:
+    open_children = [iter(container.children)]
+    while open_children:
+        for child in open_children[-1]:
             if not isinstance(child, _Node) or "job-title" in child.classes:
                 continue
             if child.tag == "a" and "sort=" in child.attrs.get("href", ""):
                 headers.append(child.text())
             else:
-                visit(child)
-
-    visit(container)
+                open_children.append(iter(child.children))
+                break
+        else:
+            open_children.pop()
     return headers
 
 
@@ -444,9 +445,12 @@ def _parse_row(item: _Node, headers: list[str]) -> _Row | None:
 def _posting_fields(page: str) -> list[tuple[str, str]]:
     """The ``(label, value)`` rows of a posting page, in the page's order."""
     fields: list[tuple[str, str]] = []
-
-    def visit(node: _Node, in_cell: bool) -> None:
-        for child in node.children:
+    # The children still to read of each open element, and whether that
+    # element is inside a table cell.
+    open_children = [(iter(_parse_html(page).children), False)]
+    while open_children:
+        children, in_cell = open_children[-1]
+        for child in children:
             if not isinstance(child, _Node):
                 continue
             if child.tag == "tr" and not in_cell:
@@ -466,9 +470,12 @@ def _posting_fields(page: str) -> list[tuple[str, str]]:
                     # A table pasted into a field is part of that field's
                     # text, not a set of fields of its own.
                     continue
-            visit(child, in_cell or child.tag in ("td", "th"))
-
-    visit(_parse_html(page), False)
+            open_children.append(
+                (iter(child.children), in_cell or child.tag in ("td", "th"))
+            )
+            break
+        else:
+            open_children.pop()
     return fields
 
 

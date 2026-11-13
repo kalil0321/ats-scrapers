@@ -175,11 +175,11 @@ class TalentsoftScraper(BaseScraper):
             language = language or listing.language
             if listing.total is not None:
                 total = max(total, listing.total)
-            # More than a page short: the list is cut, not merely a count
-            # that moved while the page was being built.
-            per_page = len(listing.identities)
-            reachable = listing.last_page * per_page
-            if page == 1 and listing.has_next and total - reachable > per_page:
+            # The count and the pager of a page are built together: the
+            # pages the pager names hold every offer announced unless the
+            # list is cut.
+            reachable = listing.last_page * len(listing.identities)
+            if page == 1 and reachable < total:
                 raise ScraperError(
                     f"Talentsoft ({self.company_slug}) announces {total} "
                     f"offers but its list stops at page {listing.last_page} "

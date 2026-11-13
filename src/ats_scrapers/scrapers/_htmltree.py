@@ -4,9 +4,11 @@ Built on the standard-library parser, so a scraper that reads pages needs
 no extra dependency. It keeps what such scrapers use: elements with their
 attributes, in document order, and their text with one line per block.
 
-Two rules make it safe on pages that carry rich text typed or pasted by
-people: the end tag of anything but a table part closes nothing outside the
-table cell it is in, and nesting stops at a fixed depth.
+Two things make it safe on pages that carry rich text typed or pasted by
+people. The end tag of anything but a table part closes nothing outside the
+table cell it is in. And nothing here recurses on the page: the tree is
+built and read with explicit stacks, so markup nested thousands of levels
+deep is read like any other.
 """
 
 from __future__ import annotations
@@ -36,9 +38,6 @@ _HIDDEN_TAGS = frozenset({"script", "style", "template", "noscript"})
 # cell it is in.
 _CELL_TAGS = frozenset({"td", "th"})
 _TABLE_TAGS = frozenset({"table", "thead", "tbody", "tfoot", "tr", "td", "th"})
-# Elements nested deeper than this are kept as leaves of the last level, so
-# that markup pasted into a field cannot make the tree arbitrarily deep.
-_MAX_DEPTH = 200
 
 
 class Node:
@@ -57,31 +56,42 @@ class Node:
 
     def walk(self) -> Iterator[Node]:
         """Every element below this one, in document order."""
-        for child in self.children:
-            if isinstance(child, Node):
-                yield child
-                yield from child.walk()
+        open_children = [iter(self.children)]
+        while open_children:
+            for child in open_children[-1]:
+                if isinstance(child, Node):
+                    yield child
+                    open_children.append(iter(child.children))
+                    break
+            else:
+                open_children.pop()
 
     def find(self, tag: str) -> Node | None:
         return next((node for node in self.walk() if node.tag == tag), None)
 
-    def _pieces(self, out: list[str]) -> None:
-        for child in self.children:
-            if isinstance(child, str):
-                # A line break in the source is white space, not a new line.
-                out.append(child.replace("\n", " ").replace("\r", " "))
-            elif child.tag not in _HIDDEN_TAGS:
-                block = child.tag in _BLOCK_TAGS
-                if block:
-                    out.append("\n")
-                child._pieces(out)
-                if block:
-                    out.append("\n")
-
     def lines(self) -> str:
         """The text, one line per block, without blank lines."""
         pieces: list[str] = []
-        self._pieces(pieces)
+        # The children still to read of each open element, with what its
+        # end adds to the text.
+        open_children: list[tuple[Iterator[Node | str], str]] = [
+            (iter(self.children), "")
+        ]
+        while open_children:
+            children, ending = open_children[-1]
+            for child in children:
+                if isinstance(child, str):
+                    # A line break in the source is white space, not a new
+                    # line.
+                    pieces.append(child.replace("\n", " ").replace("\r", " "))
+                elif child.tag not in _HIDDEN_TAGS:
+                    block = "\n" if child.tag in _BLOCK_TAGS else ""
+                    pieces.append(block)
+                    open_children.append((iter(child.children), block))
+                    break
+            else:
+                open_children.pop()
+                pieces.append(ending)
         lines = (collapse(line) for line in "".join(pieces).split("\n"))
         return "\n".join(line for line in lines if line)
 
@@ -101,7 +111,7 @@ class _TreeBuilder(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         node = Node(tag, {name: value or "" for name, value in attrs})
         self._open[-1].children.append(node)
-        if tag not in _VOID_TAGS and len(self._open) < _MAX_DEPTH:
+        if tag not in _VOID_TAGS:
             self._open.append(node)
 
     def handle_startendtag(

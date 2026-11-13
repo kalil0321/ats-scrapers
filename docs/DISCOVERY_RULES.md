@@ -466,8 +466,11 @@ Validation:
    the employer of each offer in a field the scraper reads, and the State's
    own job board (``place-ep-recrute``, "Choisir le Service Public"), which
    is a government board.
-7. The row name is the employer's name as the site states it (the page
-   title of the offer list, before " - Résultat de votre recherche").
+7. The row name is the employer's name as the site states it: the page
+   title of the offer list, before " - Résultat de votre recherche". When
+   that title is empty or is a label of the site rather than the employer
+   ("CANDIDAT ...", "Website ..."), take the name from the site's home page
+   or from an offer page, as it is written there.
 
 ### Taleo Enterprise
 
