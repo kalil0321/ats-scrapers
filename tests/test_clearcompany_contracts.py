@@ -7,7 +7,7 @@ from ats_scrapers.scrapers.clearcompany import ClearCompanyScraper, _parse_slug
 from pipeline.publisher import ATS_DEDUP_PRIORITY
 from scripts.run_pipeline import CONFIGS, _bounded_concurrency, _tolerated_shard_failures
 
-MIN_ROWS = 385
+MIN_ROWS = 514
 
 
 def _rows() -> list[dict[str, str]]:
