@@ -213,6 +213,12 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
                 if isinstance(label, str):
                     job.location = label.strip() or None
 
+    pay = detail.get("payRangeDetails")
+    if isinstance(pay, list) and pay:
+        raw = dict(job.raw or {})
+        raw["payRangeDetails"] = pay
+        job.raw = raw
+
 
 def _extract_location(item: dict[str, Any]) -> str | None:
     loc = item.get("workLocation") or item.get("location") or {}
