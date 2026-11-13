@@ -38,6 +38,10 @@ class ATSType(StrEnum):
     AVATURE = "avature"
     BEISEN = "beisen"
     BEISEN_LEGACY = "beisen_legacy"
+    # CATS careers portals ({tenant}.catsone.com).
+    CATSONE = "catsone"
+    # ClearCompany hosted career sites (apply.clearcompany.com/{site}).
+    CLEARCOMPANY = "clearcompany"
     CORNERSTONE = "cornerstone"
     DARWINBOX = "darwinbox"
     DAYFORCE = "dayforce"
@@ -48,6 +52,8 @@ class ATSType(StrEnum):
     HERP = "herp"
     HRMOS = "hrmos"
     ICIMS = "icims"
+    # iCIMS career sites (formerly Jibe) on the employer's own domain.
+    JIBE = "jibe"
     JOBVITE = "jobvite"
     JOIN_COM = "join_com"
     KEKA = "keka"
@@ -58,6 +64,8 @@ class ATSType(StrEnum):
     PAGEUP = "pageup"
     PAYCOM = "paycom"
     PAYLOCITY = "paylocity"
+    # PeopleAdmin applicant portals ({tenant}.peopleadmin.com).
+    PEOPLEADMIN = "peopleadmin"
     PERSONIO = "personio"
     PHENOM = "phenom"
     PINPOINT = "pinpoint"
@@ -68,6 +76,9 @@ class ATSType(StrEnum):
     SUCCESSFACTORS = "successfactors"
     UKG = "ukg"
     WORKABLE = "workable"
+    # Workable's public job marketplace: every customer's live postings
+    # in one paginated feed (single-source scraper).
+    WORKABLE_MARKETPLACE = "workable_marketplace"
     WORKDAY = "workday"
     # Big-tech custom careers systems (single-tenant, bespoke APIs)
     AMAZON = "amazon"
@@ -107,6 +118,13 @@ class ATSType(StrEnum):
     JAZZHR = "jazzhr"
     RECRUITEE = "recruitee"
     TALEO = "taleo"
+    # Oracle Taleo Enterprise Edition career sections ({zone}.taleo.net);
+    # "taleo" is the Business Edition (*.tbe.taleo.net).
+    TALEO_ENTERPRISE = "taleo_enterprise"
+    # Cegid Talentsoft career sites ({site}.talent-soft.com).
+    TALENTSOFT = "talentsoft"
+    # Radancy TalentBrew career sites on the employer's own domain.
+    TALENTBREW = "talentbrew"
     TEAMTAILOR = "teamtailor"
     CUSTOM = "custom"
 
@@ -187,8 +205,11 @@ class Job(BaseModel):
        them, ``None`` otherwise.
 
     5. **Content & timing** (``description``, ``posted_at``,
-       ``fetched_at``, ``language``). ``language`` is the listing's
-       locale code (ISO 639-1, e.g. ``en`` / ``fr``).
+       ``fetched_at``, ``application_deadline``, ``language``).
+       ``application_deadline`` is an explicit deadline the ATS exposes
+       (``None`` when unavailable, never inferred from other timestamps).
+       ``language`` is the listing's locale code (ISO 639-1, e.g.
+       ``en`` / ``fr``).
 
     6. **Provider-specific overflow** (``raw``): a JSON dict captured
        at scrape-time so we don't lose ATS-specific fields the
@@ -474,6 +495,18 @@ class Job(BaseModel):
     fetched_at: datetime | None = Field(
         default=None,
         description="When ats-scrapers last saw this posting (UTC).",
+    )
+    application_deadline: datetime | None = Field(
+        default=None,
+        description=(
+            "Source-provided date after which the posting should no longer be "
+            "treated as open (e.g. "
+            "SuccessFactors ``g:expiration_date`` in the Google Merchant "
+            "namespace, schema.org JobPosting ``validThrough``). This may be "
+            "an employer-stated application deadline or a platform-generated "
+            "validity horizon. ``None`` when unavailable — never inferred "
+            "locally from ``posted_at`` or ``fetched_at``."
+        ),
     )
     language: str | None = Field(
         default=None,

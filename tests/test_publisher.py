@@ -23,6 +23,7 @@ import pandas as pd
 import pytest
 
 from ats_scrapers.exceptions import StorageError
+from ats_scrapers.manifest import Manifest
 from pipeline.publisher import (
     CACHE_CONTROL_LATEST,
     DEFAULT_PREFIX,
@@ -106,6 +107,34 @@ def test_manifest_contains_expected_structure(ats_csv_dir, fake_r2) -> None:
     # `all` lives at the top level now and ships both formats.
     assert manifest["all"]["parquet"].endswith("/all.parquet")
     assert manifest["all"]["csv"].endswith("/all.csv")
+
+
+def test_manifest_reports_jobs_by_source_kind(ats_csv_dir, fake_r2) -> None:
+    eures = ats_csv_dir / "eures"
+    eures.mkdir()
+    (eures / "jobs.csv").write_text(
+        "url,title,location,company,ats_id\n"
+        "https://eures.example/job/1,Nurse,Berlin,Klinik A,e1\n"
+        "https://eures.example/job/2,Driver,Munich,Spedition B,e2\n"
+        # Same posting as greenhouse-co0 / Engineer 0 / Paris: the ATS row
+        # wins the cross-source dedup, so it must count once, as ``ats``.
+        "https://eures.example/job/3,Engineer 0,Paris,greenhouse-co0,e3\n"
+    )
+    publisher = DatasetPublisher(fake_r2, write_parquet=True)
+    publisher.publish_from_directory(ats_csv_dir)
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    stats = manifest["stats"]
+    assert stats["total_jobs_raw"] == 12
+    assert stats["total_jobs"] == 11
+    assert stats["jobs_by_source_kind"] == {
+        "ats": 9, "company_site": 0, "gov_board": 2, "job_board": 0,
+    }
+    assert stats["ats_jobs"] == 9
+    # The SDK model keeps the new fields.
+    parsed = Manifest.model_validate(manifest)
+    assert parsed.stats.ats_jobs == 9
+    assert parsed.stats.jobs_by_source_kind == stats["jobs_by_source_kind"]
 
 
 def test_manifest_includes_generator_string(ats_csv_dir, fake_r2) -> None:

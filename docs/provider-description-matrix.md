@@ -1,6 +1,6 @@
 # Provider Description Matrix
 
-This table covers the 52 providers listed below.
+This table covers the 59 providers listed below.
 `API/feed` means the data comes from a machine-readable endpoint such as JSON,
 XML, RSS, GraphQL, or a markdown endpoint. `HTML` means the scraper parses a
 page/rendered page rather than a structured job payload.
@@ -16,6 +16,8 @@ page/rendered page rather than a structured job payload.
 | `breezy` | Yes | Yes | API | HTML |
 | `builtin` | Yes | No | HTML | HTML |
 | `bundesagentur` | Yes | Yes | API | API |
+| `catsone` | Yes | Yes | HTML (embedded data) | HTML (embedded data) |
+| `clearcompany` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `cornerstone` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `eightfold` | Yes | Yes | API | API |
 | `eures` | Yes | Yes | API/feed | API/feed + detail API fallback |
@@ -26,6 +28,7 @@ page/rendered page rather than a structured job payload.
 | `herp` | Yes | Yes | HTML | HTML (JSON-LD) |
 | `hrmos` | Yes | No | HTML | HTML |
 | `icims` | Yes | Yes | HTML | HTML |
+| `jibe` | Yes | No | API | API |
 | `jazzhr` | Yes | Yes | HTML | HTML |
 | `jobsch` | Yes | Yes | API | HTML |
 | `join_com` | Yes | Yes | HTML | HTML |
@@ -36,6 +39,7 @@ page/rendered page rather than a structured job payload.
 | `meta` | Yes | Yes | HTML / browser | HTML |
 | `oracle` | Yes | Yes | API/feed | API/feed |
 | `paycom` | Yes | Yes | HTML bootstrap + API | API |
+| `peopleadmin` | Yes | Yes | HTML | HTML |
 | `personio` | Yes | Yes | API | HTML |
 | `phenom` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `pinpoint` | Yes | No | API/feed | API/feed |
@@ -47,7 +51,10 @@ page/rendered page rather than a structured job payload.
 | `smartrecruiters` | Yes | Yes | API/feed | API/feed |
 | `softgarden` | Yes | No | API/feed | API/feed |
 | `successfactors` | Yes | No | API/feed (RSS/XML) | API/feed (RSS/XML) |
+| `talentbrew` | Yes | Yes | API (HTML fragment) | HTML (JSON-LD) |
+| `talentsoft` | Yes | Yes | HTML | HTML |
 | `taleo` | Yes | Yes | HTML | HTML |
+| `taleo_enterprise` | Yes | Yes | API/feed | HTML |
 | `teamtailor` | Yes | No | API/feed (RSS/XML) | API/feed (RSS/XML) |
 | `tesla` | Yes | Yes | API/feed / browser | API/feed |
 | `thehub` | Yes | No | API/feed | API/feed |

@@ -13,7 +13,8 @@ Each pattern below mirrors the slug contract documented in the
 corresponding scraper module — path-based tenants (Greenhouse, Lever,
 Ashby, …), subdomain tenants (Recruitee, Teamtailor, Breezy, …), and
 full-URL tenants (Workday, Taleo, and iCIMS variants) where the
-scraper itself wants the whole URL.
+scraper itself wants the whole URL. Taleo Enterprise is host plus career
+section (``valero.taleo.net/2``).
 
 Custom-domain career sites (careers.example.com fronting Phenom,
 Avature, or Eightfold) cannot be recognized from the URL alone —
@@ -25,7 +26,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, NamedTuple
-from urllib.parse import ParseResult, urlparse
+from urllib.parse import ParseResult, quote, unquote, urlparse
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
@@ -38,7 +39,13 @@ if TYPE_CHECKING:
 # escape the intended host when a scraper interpolates the slug into
 # an f-string URL.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._\-]*$", re.IGNORECASE)
+# Lever board slugs also use "&" (``1840&Company``). The Lever scraper
+# escapes the slug in the API URL, so the wider set is safe there.
+_LEVER_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9._&\-]*", re.IGNORECASE)
+_LEVER_REGIONS = {"jobs.lever.co": "us", "jobs.eu.lever.co": "eu"}
 _DNS_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
+# A CATS portal page: /careers/{portal number}, then "-Name" or "/jobs/...".
+_CATSONE_PORTAL_PATH_RE = re.compile(r"^/careers/(\d{1,12})(?:[-/]|$)")
 _DAYFORCE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
@@ -68,6 +75,7 @@ _PATH_HOSTS: dict[str, ATSType] = {
     "jobs.smartrecruiters.com": ATSType.SMARTRECRUITERS,
     "jobs.gem.com": ATSType.GEM,
     "ats.rippling.com": ATSType.RIPPLING,
+    "apply.clearcompany.com": ATSType.CLEARCOMPANY,
 }
 
 # Subdomain tenants: https://{slug}.{suffix}/...
@@ -84,11 +92,26 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
     ".avature.net": ATSType.AVATURE,
     ".eightfold.ai": ATSType.EIGHTFOLD,
     ".career.softgarden.de": ATSType.SOFTGARDEN,
+    # ClearCompany's earlier address; {site}.hrmdirect.com redirects to
+    # apply.clearcompany.com/{site}.
+    ".hrmdirect.com": ATSType.CLEARCOMPANY,
+    ".peopleadmin.com": ATSType.PEOPLEADMIN,
+    ".talent-soft.com": ATSType.TALENTSOFT,
 }
 
 # Full-URL tenants: the scraper's slug IS the careers URL.
 _WORKDAY_HOST_RE = re.compile(r"^[^.]+\.wd\d+\.myworkdayjobs\.com$")
 _TALEO_HOST_RE = re.compile(r"^[^.]+\.tbe\.taleo\.net$")
+# Taleo Enterprise: one label before taleo.net ({zone}.taleo.net), with the
+# career section as the second path segment.
+_TALEO_ENTERPRISE_HOST_RE = re.compile(
+    r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.taleo\.net$", re.IGNORECASE
+)
+# The whole path: the section, then at most one page name ("jobsearch.ftl").
+_TALEO_ENTERPRISE_PATH_RE = re.compile(
+    r"^/careersection/(?P<section>[A-Za-z0-9][A-Za-z0-9_-]{0,79})"
+    r"(?:/(?:[A-Za-z0-9_-]+\.[A-Za-z0-9]+)?)?$"
+)
 _ICIMS_HOST_RE = re.compile(r"^(?P<prefix>[a-z0-9-]+)\.icims\.com$", re.IGNORECASE)
 _JOBVITE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _JOBVITE_RESERVED_SEGMENTS = frozenset({"jobs", "search", "viewall"})
@@ -122,6 +145,20 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         return None
     if host.startswith("www."):
         host = host.removeprefix("www.")
+
+    if host in _LEVER_REGIONS:
+        segment = _first_path_segment(parsed)
+        slug = unquote(segment) if segment else ""
+        # fullmatch: "$" would also accept a decoded trailing newline.
+        if not _LEVER_SLUG_RE.fullmatch(slug):
+            return None
+        if _LEVER_REGIONS[host] == "eu":
+            # Lever's EU region has its own API, and a bare slug is read
+            # as a US board: the slug is the board URL.
+            return ResolvedCareersUrl(
+                ATSType.LEVER, f"https://jobs.eu.lever.co/{quote(slug, safe='')}"
+            )
+        return ResolvedCareersUrl(ATSType.LEVER, slug)
 
     if host in _PATH_HOSTS:
         slug = _first_path_segment(parsed)
@@ -351,6 +388,22 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             return ResolvedCareersUrl(ats, tenant)
         return None
 
+    if host.endswith(".catsone.com"):
+        # A tenant can have several portals: keep the number of the one
+        # the URL names, so that the scraper reads that portal.
+        tenant = host.removesuffix(".catsone.com")
+        if not _DNS_LABEL_RE.fullmatch(tenant):
+            return None
+        portal = _CATSONE_PORTAL_PATH_RE.match(parsed.path)
+        if portal:
+            return ResolvedCareersUrl(ATSType.CATSONE, f"{tenant}/{portal.group(1)}")
+        # The tenant's own address, which leads to its default portal. Any
+        # other path names a page this does not know how to read as a
+        # portal, and is not taken for the default one.
+        if parsed.path.rstrip("/") in ("", "/careers"):
+            return ResolvedCareersUrl(ATSType.CATSONE, tenant)
+        return None
+
     for suffix, ats in _SUBDOMAIN_SUFFIXES.items():
         if host.endswith(suffix):
             slug = host.removesuffix(suffix)
@@ -367,6 +420,18 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         # Taleo TBE wants the full search-results URL including query.
         query = f"?{parsed.query}" if parsed.query else ""
         return ResolvedCareersUrl(ATSType.TALEO, f"https://{host}{parsed.path}{query}")
+
+    if _TALEO_ENTERPRISE_HOST_RE.match(host):
+        # Taleo Enterprise: the slug is "{zone}.taleo.net/{section}". A zone
+        # URL without a career section cannot be scraped ("rest" is the
+        # API path, not a section).
+        section = _TALEO_ENTERPRISE_PATH_RE.match(parsed.path)
+        if section and section.group("section") != "rest":
+            return ResolvedCareersUrl(
+                ATSType.TALEO_ENTERPRISE,
+                f"{host.lower()}/{section.group('section')}",
+            )
+        return None
 
     icims = _ICIMS_HOST_RE.match(host)
     if icims:
