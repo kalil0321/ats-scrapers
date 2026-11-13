@@ -974,6 +974,144 @@ def test_oracle_enriches_single_page_job_with_raw_source_id(httpx_mock) -> None:
     assert job.description == "Maintain databases.\n\nShip backups."
 
 
+def test_oracle_detail_replaces_listing_short_description(httpx_mock) -> None:
+    """``ShortDescriptionStr`` is a teaser; the detail record carries
+    the advert and must replace it when enrichment is on."""
+    base = "https://acme.fa.us2.oraclecloud.com"
+    listing_api = (
+        f"{base}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
+    )
+    detail_api = (
+        f"{base}/hcmRestApi/resources/latest/"
+        "recruitingCEJobRequisitionDetails"
+    )
+    httpx_mock.add_response(
+        url=(
+            f"{listing_api}?onlyData=true"
+            f"&finder=findReqs%3BsiteNumber%3DCX_1%2Climit%3D200%2Coffset%3D0"
+            f"&expand=requisitionList"
+        ),
+        json={
+            "items": [{
+                "TotalJobsCount": 2,
+                "requisitionList": [
+                    {
+                        "Id": "001",
+                        "Title": "DBA",
+                        "ShortDescriptionStr": "<p>One-line summary.</p>",
+                    },
+                    {
+                        "Id": "002",
+                        "Title": "Analyst",
+                        "ShortDescriptionStr": "<p>Another summary.</p>",
+                    },
+                ],
+            }]
+        },
+    )
+    httpx_mock.add_response(
+        url=f"{detail_api}?finder=ById%3BId%3D001&onlyData=true",
+        json={
+            "items": [{
+                "ShortDescriptionStr": "<p>One-line summary.</p>",
+                "ExternalDescriptionStr": "<p>Maintain databases.</p>",
+                "ExternalResponsibilitiesStr": "<p>Ship backups.</p>",
+            }]
+        },
+    )
+    # A detail record with no external sections keeps the listing text.
+    httpx_mock.add_response(
+        url=f"{detail_api}?finder=ById%3BId%3D002&onlyData=true",
+        json={"items": [{"ShortDescriptionStr": "<p>Another summary.</p>"}]},
+    )
+
+    jobs = OracleScraper(base).fetch()
+
+    assert [job.description for job in jobs] == [
+        "Maintain databases.\n\nShip backups.",
+        "Another summary.",
+    ]
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        {"status_code": 404},
+        {"text": "<html>not json</html>"},
+        {"json": {"items": []}},
+        {"json": {"items": [{
+            "ExternalDescriptionStr": "<p></p>",
+            "ExternalResponsibilitiesStr": " &nbsp; ",
+            "ExternalQualificationsStr": None,
+        }]}},
+    ],
+    ids=["detail-404", "detail-not-json", "detail-no-item", "detail-empty-html"],
+)
+def test_oracle_listing_summary_survives_an_unusable_detail(
+    httpx_mock, detail: dict
+) -> None:
+    """The listing ``ShortDescriptionStr`` stays when the detail request
+    fails or holds no text, including markup that strips to nothing."""
+    base = "https://acme.fa.us2.oraclecloud.com"
+    listing_api = (
+        f"{base}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
+    )
+    detail_api = (
+        f"{base}/hcmRestApi/resources/latest/"
+        "recruitingCEJobRequisitionDetails"
+    )
+    httpx_mock.add_response(
+        url=(
+            f"{listing_api}?onlyData=true"
+            f"&finder=findReqs%3BsiteNumber%3DCX_1%2Climit%3D200%2Coffset%3D0"
+            f"&expand=requisitionList"
+        ),
+        json={
+            "items": [{
+                "TotalJobsCount": 1,
+                "requisitionList": [{
+                    "Id": "001",
+                    "Title": "DBA",
+                    "ShortDescriptionStr": "<p>One-line summary.</p>",
+                }],
+            }]
+        },
+    )
+    httpx_mock.add_response(
+        url=f"{detail_api}?finder=ById%3BId%3D001&onlyData=true", **detail
+    )
+
+    [job] = OracleScraper(base).fetch()
+
+    assert job.description == "One-line summary."
+
+
+def test_oracle_keeps_short_description_without_enrichment(httpx_mock) -> None:
+    base = "https://acme.fa.us2.oraclecloud.com"
+    api = f"{base}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
+    httpx_mock.add_response(
+        url=(
+            f"{api}?onlyData=true"
+            f"&finder=findReqs%3BsiteNumber%3DCX_1%2Climit%3D200%2Coffset%3D0"
+            f"&expand=requisitionList"
+        ),
+        json={
+            "items": [{
+                "TotalJobsCount": 1,
+                "requisitionList": [{
+                    "Id": "001",
+                    "Title": "DBA",
+                    "ShortDescriptionStr": "<p>One-line summary.</p>",
+                }],
+            }]
+        },
+    )
+
+    [job] = OracleScraper(base, include_descriptions=False).fetch()
+
+    assert job.description == "One-line summary."
+
+
 def test_oracle_extracts_site_number_from_query(httpx_mock) -> None:
     base = "https://eeho.fa.us2.oraclecloud.com"
     api = f"{base}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
