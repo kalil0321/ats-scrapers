@@ -1276,7 +1276,9 @@ def _guard_suspicious_empty_job_slices(
 
     suspicious: list[str] = []
     for ats in ATSType:
-        if ats is ATSType.CUSTOM:
+        # A retired source's file is not published, so an empty one cannot
+        # replace anything, and no later run would refresh it.
+        if ats is ATSType.CUSTOM or ats.value in RETIRED_SOURCES:
             continue
         source_path = source_dir / ats_csv_pattern.format(ats=ats.value)
         if not source_path.exists():
