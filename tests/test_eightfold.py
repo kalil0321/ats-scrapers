@@ -642,6 +642,17 @@ def test_parse_ts_unix_milliseconds() -> None:
     assert result.year == 2026
 
 
+@pytest.mark.parametrize("value", [1767225600, 1767225600000])
+def test_parse_ts_epoch_is_utc_aware(value: int) -> None:
+    """Epoch values are UTC instants; the result must not depend on the
+    host's local timezone, and must compare with the ISO-string path."""
+    result = _parse_ts(value)
+    assert result is not None
+    assert result.tzinfo is UTC
+    assert result == datetime(2026, 1, 1, tzinfo=UTC)
+    assert result == _parse_ts("2026-01-01T00:00:00Z")
+
+
 def test_parse_ts_none_returns_none() -> None:
     assert _parse_ts(None) is None
 
