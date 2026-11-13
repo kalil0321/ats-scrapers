@@ -553,7 +553,7 @@ class EightfoldScraper(BaseScraper):
 
         # Eightfold typically wraps a Workday or other underlying ATS — its
         # ``atsJobId`` / ``displayJobId`` is the upstream requisition id and
-        # collides with the underlying ATS's bulletFields[0]. That's the
+        # matches the underlying ATS's employer requisition id. That's the
         # signal the cross-ATS dedup pass uses (Pass 3).
         requisition_id = (
             item.get("atsJobId")
@@ -585,7 +585,7 @@ class EightfoldScraper(BaseScraper):
             location=_format_location(item),
             is_remote=_extract_remote(item),
             department=item.get("department"),
-            requisition_id=str(requisition_id) if requisition_id and str(requisition_id) != ats_id else None,
+            requisition_id=str(requisition_id) if requisition_id else None,
             description=_strip_html(item.get("job_description") or "") or None,
             posted_at=_parse_ts(
                 item.get("postedTs")
@@ -697,21 +697,39 @@ def _strip_html(text: str) -> str:
 
 def _format_location(item: dict[str, Any]) -> str | None:
     """Eightfold returns `locations` / `standardizedLocations` as string lists
-    (e.g. ``"United States, Washington, Redmond"``). Older tenants use dicts."""
+    (e.g. ``"United States, Washington, Redmond"``). Older tenants use dicts.
+    A multi-location posting lists every office; entries already contain
+    commas, so they are joined with ``; `` (as paycom's and jobvite's are,
+    see ``location`` in docs/JOB_SCHEMA.md)."""
     for key in ("standardizedLocations", "locations"):
         locs = item.get(key) or []
-        if isinstance(locs, list) and locs:
-            first = locs[0]
-            if isinstance(first, str) and first.strip():
-                return first.strip()
-            if isinstance(first, dict):
-                return first.get("city") or first.get("country") or first.get("name")
+        if not isinstance(locs, list):
+            continue
+        names: list[str] = []
+        for loc in locs:
+            if isinstance(loc, dict):
+                loc = _dict_location_label(loc)
+            if isinstance(loc, str) and loc.strip():
+                names.append(loc.strip())
+        if names:
+            return "; ".join(dict.fromkeys(names))
     primary = item.get("primaryLocation") or item.get("primary_location")
     if isinstance(primary, dict):
         return primary.get("city") or primary.get("country")
     if isinstance(primary, str):
         return primary
     return None
+
+
+def _dict_location_label(loc: dict[str, Any]) -> str | None:
+    """``City, Country`` from a dict entry, else whichever of the two is
+    filled, else its ``name``. The country is kept so that two offices in
+    cities of the same name stay two entries; blank fields are skipped."""
+    def text(key: str) -> str:
+        value = loc.get(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    return ", ".join(part for part in (text("city"), text("country")) if part) or text("name") or None
 
 
 def _extract_remote(item: dict[str, Any]) -> bool | None:
@@ -743,6 +761,6 @@ def _parse_ts(value: int | str | None) -> datetime | None:
     try:
         if isinstance(value, str):
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return datetime.fromtimestamp(value / 1000 if value > 1e10 else value)
+        return datetime.fromtimestamp(value / 1000 if value > 1e10 else value, tz=UTC)
     except (ValueError, OSError):
         return None

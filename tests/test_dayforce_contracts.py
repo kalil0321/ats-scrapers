@@ -26,7 +26,7 @@ def test_dayforce_seed_has_unique_validated_feeds() -> None:
     with path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
 
-    assert len(rows) >= 300
+    assert len(rows) >= 1_541
     assert len({row["slug"].casefold() for row in rows}) == len(rows)
     assert all("/" in row["slug"] for row in rows)
     assert all(

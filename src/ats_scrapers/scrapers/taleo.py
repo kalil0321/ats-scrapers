@@ -20,6 +20,16 @@ Job links look like:
       </a>
     </h4>
 
+The listing shows ten postings at a time. While more remain, the page
+carries the link its own infinite scroll follows:
+
+    <a href="/{ph{c}NN}/ats/careers/v2/searchResults?next&rowFrom=10&...">
+
+That link needs the visitor's session, but the same rows are served
+without one at ``searchResults?org={ORG}&cws={N}&rowFrom=10``, so the
+scraper reads the offset from the link and asks for that page directly.
+The last page has no such link.
+
 The scraper accepts either a full search-results URL (most reliable) or
 the bare components.
 """
@@ -42,6 +52,18 @@ if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
 
 DETAIL_CONCURRENCY = 8
+# Ten postings a page, so 2,000 pages is 20,000 postings: past this the
+# walk raises instead of going on.
+MAX_PAGES = 2_000
+
+# A page offset inside a listing URL: ``?rowFrom=10&`` or ``&rowFrom=10``.
+_ROW_PARAM_RE = re.compile(r"([?&])rowFrom=[^&#]*&?")
+
+# The infinite-scroll link, present while more postings remain.
+_NEXT_ROW_RE = re.compile(
+    r'<a[^>]+href="[^"]*searchResults\?next\b[^"]*?\browFrom=(\d+)',
+    re.IGNORECASE,
+)
 
 # Each job is rendered as `<a class="viewJobLink" href="...rid=NN">Title</a>`.
 _JOB_LINK_RE = re.compile(
@@ -109,10 +131,43 @@ class TaleoScraper(BaseScraper):
         return self._run_sync(run())
 
     async def afetch(self) -> list[Job]:
-        url = self._validate_url(self.company_slug)
+        url = _listing_url(self._validate_url(self.company_slug))
+        jobs: list[Job] = []
+        seen: set[str] = set()
         async with self.make_fetcher() as fetch:
-            html_text = await fetch.get_text(url)
-            jobs = self._parse_listing(html_text, base_url=url)
+            row = 0
+            for _ in range(MAX_PAGES):
+                html_text = await fetch.get_text(_page_url(url, row))
+                rows, added = self._absorb(
+                    html_text, base_url=url, jobs=jobs, seen=seen
+                )
+                # A later page is only requested because the one before it
+                # announced more postings. If it comes back with none (an
+                # error page served with a 200, say), the list is cut short:
+                # fail rather than return part of it.
+                if row and rows == 0:
+                    raise ScraperError(
+                        f"Taleo ({url}) returned no postings at row {row} "
+                        f"after announcing more ({len(jobs)} read so far)"
+                    )
+                next_row = _next_row(html_text)
+                if next_row is None:
+                    break
+                # More postings remain. A page that adds nothing, or a link
+                # that does not move forward, means the walk is going round
+                # in circles.
+                if added == 0 or next_row <= row:
+                    raise ScraperError(
+                        f"Taleo ({url}) paging stalled at row {row} "
+                        f"after {len(jobs)} postings"
+                    )
+                row = next_row
+            else:
+                raise ScraperError(
+                    f"Taleo ({url}) still had more pages after {len(jobs)} "
+                    f"postings (page guard {MAX_PAGES}); refusing to return "
+                    f"a partial list"
+                )
             if self.include_descriptions and jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
                 await asyncio.gather(*(
@@ -148,21 +203,35 @@ class TaleoScraper(BaseScraper):
             )
         return slug.rstrip("/")
 
-    def _parse_listing(self, html_text: str, *, base_url: str) -> list[Job]:
+    def _absorb(
+        self,
+        html_text: str,
+        *,
+        base_url: str,
+        jobs: list[Job],
+        seen: set[str],
+    ) -> tuple[int, int]:
+        """Add one listing page's postings to ``jobs``.
+
+        Returns ``(rows, added)``: the postings the page lists, and how
+        many of them were not already read from an earlier page.
+        """
         company = _company_from_url(base_url)
-        seen: set[str] = set()
-        jobs: list[Job] = []
+        page_rids: set[str] = set()
+        added = 0
         for match in _JOB_LINK_RE.finditer(html_text):
             rid = match.group("rid")
+            page_rids.add(rid)
             if rid in seen:
                 # Each job typically renders the title link plus a redundant
                 # "View" button — both have viewJobLink class. Dedup by rid.
                 continue
-            seen.add(rid)
             href = html.unescape(match.group("href"))
             title = _strip(match.group("title"))
             if not title:
                 continue
+            seen.add(rid)
+            added += 1
             jobs.append(
                 Job(
                     url=href,
@@ -175,7 +244,33 @@ class TaleoScraper(BaseScraper):
                     fetched_at=datetime.now(UTC),
                 )
             )
-        return jobs
+        return len(page_rids), added
+
+
+def _listing_url(url: str) -> str:
+    """The listing URL without a fragment or a page offset of its own.
+
+    A fragment is never sent to the server, so an offset appended after
+    it would be lost; an offset already in the URL would start the walk
+    in the middle of the list.
+    """
+    base = url.partition("#")[0]
+    base = _ROW_PARAM_RE.sub(lambda match: match.group(1), base)
+    return base.rstrip("?&")
+
+
+def _page_url(url: str, row: int) -> str:
+    """The listing URL for the page that starts at posting ``row``."""
+    if not row:
+        return url
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}rowFrom={row}"
+
+
+def _next_row(html_text: str) -> int | None:
+    """The offset of the next page, or ``None`` on the last page."""
+    match = _NEXT_ROW_RE.search(html_text)
+    return int(match.group(1)) if match else None
 
 
 def _apply_jsonld_to_job(job: Job, html_text: str) -> None:
