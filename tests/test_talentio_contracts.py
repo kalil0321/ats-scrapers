@@ -24,7 +24,9 @@ def test_talentio_pipeline_uses_validated_tenant_catalog() -> None:
     assert config["max_concurrency"] == 2
     assert config["tenant_delay_seconds"] == 0.25
     assert config["fail_closed_on_any_error"] is True
+    assert config["fail_closed_on_not_found"] is True
     assert config["fail_closed_on_empty"] is True
+    assert config["fail_closed_tolerance"] == 0.02
 
 
 def test_talentio_concurrency_cap_is_enforced() -> None:
@@ -35,20 +37,16 @@ def test_talentio_is_a_direct_employer_ats_for_deduplication() -> None:
     assert ATS_DEDUP_PRIORITY["talentio"] == ATS_DEDUP_PRIORITY["workday"]
 
 
-def test_talentio_catalog_contains_only_validated_nonempty_portals() -> None:
+def test_talentio_catalog_holds_the_validated_homes() -> None:
     with Path("ats-companies/talentio.csv").open(newline="") as handle:
         rows = list(csv.DictReader(handle))
 
-    assert rows
+    # 633 homes minus the 17 that answered 404 twice on 13 November 2026.
+    # A catalogue cut short by accident fails here.
+    assert len(rows) == 616
     assert len({row["url"] for row in rows}) == len(rows)
     assert all(row["name"].strip() for row in rows)
-    assert all(
-        row["url"].startswith(
-            (
-                "https://open.talentio.com/r/1/c/",
-                "https://recruit.talentio.co.jp/r/1/c/",
-            )
-        )
-        and "/homes/" in row["url"]
-        for row in rows
-    )
+    # Every row passes the scraper's own URL check and is stored in the form
+    # the scraper requests, so no row can reach the pipeline and be refused.
+    for row in rows:
+        assert TalentioScraper(row["url"]).portal_url == row["url"]

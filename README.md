@@ -123,6 +123,7 @@ Scraper adapters include:
 - Oracle Taleo, both editions: Business Edition and Enterprise Edition.
 - ClearCompany hosted career sites.
 - PeopleAdmin applicant portals.
+- Talentio recruitment homes (Japan).
 - Cegid Talentsoft career sites.
 - CATS careers portals.
 
