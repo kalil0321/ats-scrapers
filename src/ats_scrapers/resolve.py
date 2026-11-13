@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._\-]*$", re.IGNORECASE)
 # Lever board slugs also use "&" (``1840&Company``). The Lever scraper
 # escapes the slug in the API URL, so the wider set is safe there.
-_LEVER_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._&\-]*$", re.IGNORECASE)
+_LEVER_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9._&\-]*", re.IGNORECASE)
 _LEVER_REGIONS = {"jobs.lever.co": "us", "jobs.eu.lever.co": "eu"}
 _DNS_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
 _DAYFORCE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -130,7 +130,8 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
     if host in _LEVER_REGIONS:
         segment = _first_path_segment(parsed)
         slug = unquote(segment) if segment else ""
-        if not _LEVER_SLUG_RE.match(slug):
+        # fullmatch: "$" would also accept a decoded trailing newline.
+        if not _LEVER_SLUG_RE.fullmatch(slug):
             return None
         if _LEVER_REGIONS[host] == "eu":
             # Lever's EU region has its own API, and a bare slug is read

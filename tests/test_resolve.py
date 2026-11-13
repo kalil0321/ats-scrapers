@@ -400,6 +400,10 @@ def test_get_scraper_for_url_keeps_the_lever_region() -> None:
         "https://jobs.eu.lever.co/a%2Fb",
         "https://jobs.lever.co/a b",
         "https://jobs.eu.lever.co/-acme",
+        # Decoded control characters are not part of a slug.
+        "https://jobs.lever.co/acme%0A",
+        "https://jobs.eu.lever.co/acme%0A",
+        "https://jobs.eu.lever.co/acme%0D%0A/abc",
     ],
 )
 def test_lever_url_without_a_usable_slug_is_not_resolved(url: str) -> None:
