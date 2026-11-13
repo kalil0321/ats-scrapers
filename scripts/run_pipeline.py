@@ -51,6 +51,7 @@ from ats_scrapers.scrapers import (
     BuiltInScraper,
     BundesagenturScraper,
     BytedanceScraper,
+    ClearCompanyScraper,
     CornerstoneScraper,
     DarwinboxScraper,
     DayforceScraper,
@@ -370,6 +371,24 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "description_delay_seconds": 0.5,
         "fail_closed_on_any_error": True,
         "fail_closed_on_empty": True,
+    },
+    "clearcompany": {
+        "scraper": ClearCompanyScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        # A posting can be listed on several career sites of one customer
+        # (a group site and a brand site); its id is the same on each.
+        "dedupe_by_ats_id": True,
+        "csv": "ats-companies/clearcompany.csv",
+        "output": "clearcompany/jobs.csv",
+        "max_concurrency": 8,
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_empty": True,
+        # 5% of sites may fail or be gone; a site that closes is a
+        # row to remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
     },
     "cornerstone": {
         "scraper": CornerstoneScraper,

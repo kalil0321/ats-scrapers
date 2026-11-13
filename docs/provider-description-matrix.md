@@ -1,6 +1,6 @@
 # Provider Description Matrix
 
-This table covers the 55 providers listed below.
+This table covers the 56 providers listed below.
 `API/feed` means the data comes from a machine-readable endpoint such as JSON,
 XML, RSS, GraphQL, or a markdown endpoint. `HTML` means the scraper parses a
 page/rendered page rather than a structured job payload.
@@ -16,6 +16,7 @@ page/rendered page rather than a structured job payload.
 | `breezy` | Yes | Yes | API | HTML |
 | `builtin` | Yes | No | HTML | HTML |
 | `bundesagentur` | Yes | Yes | API | API |
+| `clearcompany` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `cornerstone` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `eightfold` | Yes | Yes | API | API |
 | `eures` | Yes | Yes | API/feed | API/feed + detail API fallback |

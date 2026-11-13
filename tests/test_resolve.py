@@ -41,6 +41,19 @@ RESOLVES = [
     ("https://careers.smartrecruiters.com/10Pearls", ATSType.SMARTRECRUITERS, "10Pearls"),
     ("https://jobs.gem.com/accel", ATSType.GEM, "accel"),
     ("https://ats.rippling.com/acme/jobs", ATSType.RIPPLING, "acme"),
+    ("https://apply.clearcompany.com/avifoodsystems", ATSType.CLEARCOMPANY, "avifoodsystems"),
+    (
+        "https://apply.clearcompany.com/peopleinc-fr?jobId=dc63d201-4976-93f9-e3a0-27b849fc30d3",
+        ATSType.CLEARCOMPANY,
+        "peopleinc-fr",
+    ),
+    # ClearCompany's earlier address redirects to the career site of the
+    # same name.
+    (
+        "https://avifoodsystems.hrmdirect.com/employment/job-openings.php",
+        ATSType.CLEARCOMPANY,
+        "avifoodsystems",
+    ),
     ("https://herp.careers/v1/herpinc", ATSType.HERP, "herpinc"),
     ("https://herp.careers/v1/herpinc/abc123", ATSType.HERP, "herpinc"),
     ("https://hrmos.co/pages/ykk/jobs", ATSType.HRMOS, "ykk"),
@@ -427,3 +440,19 @@ def test_get_scraper_for_url_from_fresh_interpreter() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "AshbyScraper openai"
+
+
+def test_get_scraper_for_url_builds_clearcompany_scraper() -> None:
+    from ats_scrapers.scrapers import ClearCompanyScraper
+
+    scraper = get_scraper_for_url("https://apply.clearcompany.com/avifoodsystems?jobId=1")
+
+    assert isinstance(scraper, ClearCompanyScraper)
+    assert scraper.site == "avifoodsystems"
+
+
+def test_clearcompany_tenant_host_is_not_resolved() -> None:
+    """``{tenant}.clearcompany.com`` is the application portal; it does not
+    name the career site."""
+    assert resolve_careers_url("https://acme.clearcompany.com/careers/jobs/1/apply") is None
+    assert resolve_careers_url("https://apply.clearcompany.com/") is None

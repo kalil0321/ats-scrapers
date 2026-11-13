@@ -120,6 +120,7 @@ Scraper adapters include:
   Welcome to the Jungle, and others.
 - Career-site platforms on the employer's own domain: Radancy TalentBrew.
 - Oracle Taleo, both editions: Business Edition and Enterprise Edition.
+- ClearCompany hosted career sites.
 
 Run `python -c "from ats_scrapers import list_ats; print(*list_ats())"` for the
 sources currently present in the hosted dataset. The dataset can list a source

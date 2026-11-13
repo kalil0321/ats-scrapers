@@ -283,6 +283,28 @@ Validation:
 3. Require HTTP 200 and non-empty postings.
 4. Reject generic Pinpoint pages and inactive boards.
 
+### ClearCompany
+
+Rows use the career site name as ``slug`` and
+``https://apply.clearcompany.com/{slug}`` as ``url``. The earlier
+``{slug}.hrmdirect.com`` addresses redirect there.
+
+Validation:
+
+1. Fetch the career site. Require HTTP 200 and a site id
+   (``data-site-id``). A site that is gone answers 404 ("This careers page
+   isn't available right now").
+2. Run the scraper's full walk and require at least one posting.
+3. A customer can have several career sites that list the same postings (a
+   group site and its brand sites). A posting has the same id on each and is
+   published once. Add a second site of a customer only when it lists
+   postings the first does not.
+4. The row name is the career site's own name (its page title without the
+   `` – Careers`` suffix). Each posting names its employer (``brandName``),
+   which is what is published; the row name is the fallback.
+5. ``{tenant}.clearcompany.com`` is the application portal. Its host label
+   is not always the career site name, so do not derive a row from it.
+
 ### Cornerstone
 
 Validation must prove both URL validity and name quality:
