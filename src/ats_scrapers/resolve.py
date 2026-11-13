@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, NamedTuple
-from urllib.parse import ParseResult, urlparse
+from urllib.parse import ParseResult, quote, unquote, urlparse
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
@@ -39,6 +39,10 @@ if TYPE_CHECKING:
 # escape the intended host when a scraper interpolates the slug into
 # an f-string URL.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._\-]*$", re.IGNORECASE)
+# Lever board slugs also use "&" (``1840&Company``). The Lever scraper
+# escapes the slug in the API URL, so the wider set is safe there.
+_LEVER_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9._&\-]*", re.IGNORECASE)
+_LEVER_REGIONS = {"jobs.lever.co": "us", "jobs.eu.lever.co": "eu"}
 _DNS_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
 _DAYFORCE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
@@ -133,6 +137,20 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         return None
     if host.startswith("www."):
         host = host.removeprefix("www.")
+
+    if host in _LEVER_REGIONS:
+        segment = _first_path_segment(parsed)
+        slug = unquote(segment) if segment else ""
+        # fullmatch: "$" would also accept a decoded trailing newline.
+        if not _LEVER_SLUG_RE.fullmatch(slug):
+            return None
+        if _LEVER_REGIONS[host] == "eu":
+            # Lever's EU region has its own API, and a bare slug is read
+            # as a US board: the slug is the board URL.
+            return ResolvedCareersUrl(
+                ATSType.LEVER, f"https://jobs.eu.lever.co/{quote(slug, safe='')}"
+            )
+        return ResolvedCareersUrl(ATSType.LEVER, slug)
 
     if host in _PATH_HOSTS:
         slug = _first_path_segment(parsed)
