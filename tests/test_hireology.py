@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from ats_scrapers import get_scraper_for_url
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import HireologyScraper
@@ -327,6 +328,10 @@ def test_child_location_url_safely_reencodes_embedded_slash(httpx_mock) -> None:
         "brandthamptoninn%26suitesprovidence%2Fsmithfield/"
         "2827500/description"
     )
+    # The URL a job carries leads back to a scraper for that tenant.
+    scraper = get_scraper_for_url(str(job.url))
+    assert isinstance(scraper, HireologyScraper)
+    assert scraper.company_slug == "brandthamptoninn&suitesprovidence/smithfield"
 
 
 def test_tenant_that_is_gone_maps_to_company_not_found(httpx_mock) -> None:
@@ -370,16 +375,68 @@ def test_employer_name_falls_back_to_the_tenant_when_the_page_fails(
     assert job.company == TENANT
 
 
-@pytest.mark.parametrize(
-    "slug",
-    [
-        "../other",
-        "tenant/other",
-        "tenant?other",
-        "tenant#other",
-        "tenant\nother",
-    ],
-)
+_UNSAFE_TENANT_NAMES = [
+    "",
+    "   ",
+    "../other",
+    "tenant/../other",
+    "./tenant",
+    "/tenant",
+    "tenant/",
+    "tenant//other",
+    "tenant/ /other",
+    "tenant?other",
+    "tenant#other",
+    "tenant\\other",
+    "tenant\nother",
+    "t" * 201,
+]
+_TENANT_NAMES = [
+    "andersonautogroup",
+    "thelodgenursing&rehabcenter",
+    # A child location, written with a slash inside the name.
+    "brandthamptoninn&suitesprovidence/smithfield",
+    "a/b/c",
+    "t" * 200,
+]
+
+
+@pytest.mark.parametrize("slug", _UNSAFE_TENANT_NAMES)
 def test_rejects_unsafe_path_slugs(slug: str) -> None:
     with pytest.raises(ScraperError, match="one public URL path segment"):
         HireologyScraper(slug)
+
+
+@pytest.mark.parametrize("slug", _TENANT_NAMES)
+def test_accepts_tenant_names(slug: str) -> None:
+    assert HireologyScraper(slug).company_slug == slug
+
+
+@pytest.mark.parametrize("name", _UNSAFE_TENANT_NAMES + _TENANT_NAMES)
+def test_resolver_and_scraper_agree_on_tenant_names(name: str) -> None:
+    from ats_scrapers.resolve import _is_hireology_tenant
+    from ats_scrapers.scrapers.hireology import is_tenant_name
+
+    assert _is_hireology_tenant(name) is is_tenant_name(name)
+    assert is_tenant_name(name) is (name in _TENANT_NAMES)
+
+
+def test_tenant_name_with_a_slash_is_requested_as_one_path_segment(httpx_mock) -> None:
+    """Checked live: the listing answers for the encoded name and 404 for the
+    part before the slash."""
+    httpx_mock.add_response(
+        url=(
+            "https://api.hireology.com/v2/public/careers/"
+            "brandthamptoninn%26suitesprovidence%2Fsmithfield"
+            "?page=1&page_size=1000"
+        ),
+        json=_listing([_job()]),
+    )
+
+    jobs = HireologyScraper("brandthamptoninn&suitesprovidence/smithfield").fetch()
+
+    assert len(jobs) == 1
+    request = httpx_mock.get_requests()[0]
+    assert request.url.raw_path.startswith(
+        b"/v2/public/careers/brandthamptoninn%26suitesprovidence%2Fsmithfield?"
+    )

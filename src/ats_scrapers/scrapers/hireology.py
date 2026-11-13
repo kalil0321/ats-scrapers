@@ -23,8 +23,10 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 CAREERS_URL = "https://careers.hireology.com/{tenant}/"
 LISTING_API_URL = "https://api.hireology.com/v2/public/careers/{tenant}"
 PAGE_SIZE = 1_000
-_UNSAFE_PATH_CHARS_RE = re.compile(r"[/\\?#\x00-\x1f\x7f]")
-_UNSAFE_REPORTED_SEGMENT_CHARS_RE = re.compile(r"[\\?#\x00-\x1f\x7f]")
+# A tenant name is one path segment of the careers URL. Hireology writes a
+# child location into it with a slash, percent-encoded in the URL
+# (``brandthamptoninn%26suitesprovidence%2Fsmithfield``).
+_UNSAFE_TENANT_CHARS_RE = re.compile(r"[\\?#\x00-\x1f\x7f]")
 _US_REGIONS = {
     "AK",
     "AL",
@@ -344,16 +346,28 @@ def _organization_name(item: dict[str, Any]) -> str | None:
 
 def _require_path_segment(value: str, *, provider: str) -> str:
     cleaned = value.strip()
-    if (
-        not cleaned
-        or len(cleaned) > 200
-        or _UNSAFE_PATH_CHARS_RE.search(cleaned)
-    ):
+    if not is_tenant_name(cleaned):
         raise ScraperError(
             f"{provider}: invalid tenant slug {value!r} — expected one "
             "public URL path segment"
         )
     return cleaned
+
+
+def is_tenant_name(value: str) -> bool:
+    """True for a name that can be sent as one percent-encoded path segment.
+
+    A slash may sit inside the name, between two parts that are not empty
+    and are not ``.`` or ``..``.
+    """
+    return (
+        0 < len(value) <= 200
+        and not _UNSAFE_TENANT_CHARS_RE.search(value)
+        and all(
+            part.strip() and part.strip() not in {".", ".."}
+            for part in value.split("/")
+        )
+    )
 
 
 def _canonical_reported_url(
@@ -373,7 +387,7 @@ def _canonical_reported_url(
         and len(segments) == 3
         and segments[1] == job_id
         and segments[2].casefold() == "description"
-        and not _UNSAFE_REPORTED_SEGMENT_CHARS_RE.search(segments[0])
+        and is_tenant_name(segments[0])
     ):
         return None
     return (
