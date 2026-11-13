@@ -68,6 +68,8 @@ RESOLVES = [
         ATSType.CLEARCOMPANY,
         "avifoodsystems",
     ),
+    ("https://utah.peopleadmin.com/postings/search", ATSType.PEOPLEADMIN, "utah"),
+    ("https://jobs-shepherd.peopleadmin.com/postings/9286", ATSType.PEOPLEADMIN, "jobs-shepherd"),
     ("https://herp.careers/v1/herpinc", ATSType.HERP, "herpinc"),
     ("https://herp.careers/v1/herpinc/abc123", ATSType.HERP, "herpinc"),
     ("https://hrmos.co/pages/ykk/jobs", ATSType.HRMOS, "ykk"),
@@ -507,3 +509,21 @@ def test_clearcompany_tenant_host_is_not_resolved() -> None:
     name the career site."""
     assert resolve_careers_url("https://acme.clearcompany.com/careers/jobs/1/apply") is None
     assert resolve_careers_url("https://apply.clearcompany.com/") is None
+
+
+def test_get_scraper_for_url_builds_peopleadmin_scraper() -> None:
+    from ats_scrapers.scrapers import PeopleAdminScraper
+
+    scraper = get_scraper_for_url("https://utah.peopleadmin.com/postings/211962")
+
+    assert isinstance(scraper, PeopleAdminScraper)
+    assert scraper.tenant == "utah"
+    assert scraper.base_url == "https://utah.peopleadmin.com"
+
+
+def test_peopleadmin_hosts_that_are_not_a_portal_are_not_resolved() -> None:
+    """The vendor's own site, and the hosts under ``ted.peopleadmin.com``
+    (school-district sites that moved to another product)."""
+    assert resolve_careers_url("https://peopleadmin.com/products/") is None
+    assert resolve_careers_url("https://www.peopleadmin.com/products/") is None
+    assert resolve_careers_url("https://district.ted.peopleadmin.com/hire/index.aspx") is None

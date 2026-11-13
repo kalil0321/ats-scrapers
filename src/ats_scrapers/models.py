@@ -62,6 +62,8 @@ class ATSType(StrEnum):
     PAGEUP = "pageup"
     PAYCOM = "paycom"
     PAYLOCITY = "paylocity"
+    # PeopleAdmin applicant portals ({tenant}.peopleadmin.com).
+    PEOPLEADMIN = "peopleadmin"
     PERSONIO = "personio"
     PHENOM = "phenom"
     PINPOINT = "pinpoint"

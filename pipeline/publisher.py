@@ -551,7 +551,7 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "greenhouse": 1, "gupy": 1, "herp": 1, "hrmos": 1, "icims": 1, "jazzhr": 1,
     "jibe": 1, "join_com": 1, "jobvite": 1, "keka": 1,
     "lever": 1,
-    "moka": 1, "oracle": 1, "pageup": 1, "paycom": 1, "paylocity": 1, "personio": 1, "phenom": 1, "pinpoint": 1,
+    "moka": 1, "oracle": 1, "pageup": 1, "paycom": 1, "paylocity": 1, "peopleadmin": 1, "personio": 1, "phenom": 1, "pinpoint": 1,
     "recruitee": 1,
     "recruiterbox": 1, "rippling": 1, "smartrecruiters": 1, "softgarden": 1,
     "successfactors": 1, "talentbrew": 1, "taleo": 1, "taleo_enterprise": 1,
