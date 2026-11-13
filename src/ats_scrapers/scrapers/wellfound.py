@@ -1,38 +1,33 @@
-"""Wellfound (formerly AngelList Talent) — US startup-direct jobs.
+"""Wellfound public role listings via a locally executed browser.
 
-Wellfound is the largest direct-posting startup-jobs platform in the
-US (~30-50k active postings). Companies pay to list, not aggregator
-content.
+The default backend reads structured data embedded in public role pages,
+including descriptions, employer references and advertised pagination.
+ATS imports and automated posts are excluded. Coverage is limited to the
+configured roles, not a claim to cover every Wellfound job. Blocked browser
+sessions and incomplete catalogues raise rather than silently truncating.
 
-The site sits behind Akamai and 403s every direct or proxied HTTP
-GET. Scraping requires a rendering backend that runs a real browser
-and bypasses the JS challenge. We use **Firecrawl** (already wired
-into the library for Built In's opt-in enrichment) for the same
-reason: cheap per-page, returns rendered markdown.
-
-Library default: **no Firecrawl key, scraper raises ScraperError
-with a clear configuration hint.** Pass ``firecrawl_api_key=…`` to
-the constructor or set ``FIRECRAWL_API_KEY`` env to enable.
-
-Pagination strategy: Wellfound's ``/jobs`` URL returns ~50 jobs and
-isn't paginated (``?page=2`` returns the same set). To get full
-coverage we walk a fixed list of role-specific URLs
-(``/role/{role}``); each yields a different ~40-job slice. Dedup on
-the per-job URL collapses overlap to ~1,000-2,000 unique jobs.
-
-Single-source scraper: ``company_slug`` is informational and ignored.
+Firecrawl remains a legacy opt-in: pass an explicit constructor API key or
+``backend="firecrawl"``. An environment key alone never selects paid requests.
+The legacy markdown backend cannot distinguish ATS imports or prove complete
+pagination and is not the recommended production path.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 from datetime import UTC, datetime, timedelta
+from importlib import import_module
 from typing import TYPE_CHECKING
 
+from bs4 import BeautifulSoup
+from pydantic import HttpUrl
+
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, EmploymentType, Job
+from ats_scrapers.scrapers import _cloakbrowser as cb
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -41,6 +36,10 @@ if TYPE_CHECKING:
 WELLFOUND_BASE = "https://wellfound.com"
 FIRECRAWL_BASE = "https://api.firecrawl.dev"
 MAX_CONCURRENCY = 4
+_EMPLOYMENT_TYPES: dict[str, EmploymentType] = {
+    "full-time": "FULL_TIME", "part-time": "PART_TIME",
+    "contract": "CONTRACT", "internship": "INTERN",
+}
 
 # Wellfound role slugs we want to enumerate. The platform exposes
 # ``/role/{slug}`` for each. The list is intentionally biased toward
@@ -69,7 +68,6 @@ DEFAULT_ROLE_SLUGS: tuple[str, ...] = (
     "customer-success-manager",
     "operations-manager",
     "finance-manager",
-    "founders-associate",
 )
 
 # Markdown shape of a Wellfound job card (one per posting):
@@ -111,11 +109,9 @@ class WellfoundScraper(BaseScraper):
 
     Single-source: ``company_slug`` is ignored.
 
-    **Firecrawl is required.** The site 403s every direct fetch
-    (Akamai). Pass ``firecrawl_api_key=…`` (or set
-    ``FIRECRAWL_API_KEY`` env) to enable; otherwise the scraper
-    raises a clear ScraperError. Firecrawl is paid; expect roughly
-    1 request per role (default ~23 roles → ~$0.02 per full run).
+    The default requires the local ``cloakbrowser`` dependency, not an API
+    key. Network-level challenges can still block datacenter hosts; browser
+    rendering is not a guarantee of access. No paid fallback runs implicitly.
 
     Knobs:
     - ``role_slugs`` — override the role list. Default is a curated
@@ -128,11 +124,14 @@ class WellfoundScraper(BaseScraper):
         self,
         company_slug: str,
         *,
-        timeout: float = 120.0,  # Firecrawl can take ~30-60s per page.
+        timeout: float = 120.0,
         include_descriptions: bool = True,
         proxy: str | None = None,
         firecrawl_api_key: str | None = None,
         role_slugs: tuple[str, ...] | list[str] = DEFAULT_ROLE_SLUGS,
+        backend: str | None = None,
+        max_pages: int = 500,
+        request_delay: float = 2.0,
     ) -> None:
         super().__init__(
             company_slug,
@@ -144,11 +143,20 @@ class WellfoundScraper(BaseScraper):
             firecrawl_api_key or os.environ.get("FIRECRAWL_API_KEY") or None
         )
         self.role_slugs = tuple(role_slugs)
+        self.backend = backend or ("firecrawl" if firecrawl_api_key else "browser")
+        if self.backend not in {"browser", "firecrawl"}:
+            raise ValueError("Wellfound backend must be browser or firecrawl")
+        if max_pages < 1 or request_delay < 0:
+            raise ValueError("Wellfound requires positive max_pages and nonnegative request_delay")
+        if any(not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", role) for role in self.role_slugs):
+            raise ValueError("Wellfound role slugs must be lowercase URL slugs")
+        self.max_pages = max_pages
+        self.request_delay = request_delay
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
-        if not self.firecrawl_api_key:
+        if self.backend != "firecrawl" or not self.firecrawl_api_key:
             return None
         copy = job.model_copy()
 
@@ -161,10 +169,11 @@ class WellfoundScraper(BaseScraper):
         return self._run_sync(run())
 
     async def afetch(self) -> list[Job]:
+        if self.backend == "browser":
+            return await self._fetch_browser()
         if not self.firecrawl_api_key:
             raise ScraperError(
-                "Wellfound requires a Firecrawl API key — the site is gated "
-                "behind Akamai and won't respond to direct httpx requests. "
+                "The legacy Wellfound Firecrawl backend requires an API key. "
                 "Pass firecrawl_api_key=… to the scraper or set the "
                 "FIRECRAWL_API_KEY env variable."
             )
@@ -201,6 +210,126 @@ class WellfoundScraper(BaseScraper):
                     self._enrich_description(fetch, sem, job) for job in jobs
                 ))
         return jobs
+
+    async def _fetch_browser(self) -> list[Job]:
+        if not self.role_slugs:
+            return []
+        cb.require_cloakbrowser()
+        launch_async = import_module("cloakbrowser").launch_async
+
+        jobs: dict[str, Job] = {}
+        browser = await launch_async(headless=True, humanize=False, proxy=self.proxy)
+        try:
+            page = await browser.new_page()
+            for role in self.role_slugs:
+                seen: set[str] = set()
+                total = None
+                page_count = None
+                for number in range(1, self.max_pages + 1):
+                    await asyncio.sleep(self.request_delay)
+                    url = f"{WELLFOUND_BASE}/role/{role}?page={number}"
+                    try:
+                        response = await page.goto(
+                            url, wait_until="domcontentloaded", timeout=int(self.timeout * 1000),
+                        )
+                        if response is None or response.status != 200:
+                            status = response.status if response else "no response"
+                            raise ScraperError(f"Wellfound public page returned {status}: {url}")
+                        await page.wait_for_selector("script#__NEXT_DATA__", state="attached", timeout=10000)
+                        text = await page.content()
+                    except Exception as error:
+                        raise ScraperError(f"Wellfound browser fetch failed: {url}: {error}") from error
+                    parsed, raw_ids, pages, advertised = self._parse_browser_page(text, role, number)
+                    if total is not None and (total != advertised or page_count != pages):
+                        raise ScraperError(f"Wellfound catalogue changed while paging {role}")
+                    total, page_count = advertised, pages
+                    if raw_ids and not raw_ids - seen:
+                        raise ScraperError(f"Wellfound repeated a page for {role}")
+                    seen.update(raw_ids)
+                    jobs.update((job.ats_id or "", job) for job in parsed)
+                    if number == pages:
+                        if len(seen) != advertised:
+                            raise ScraperError(
+                                f"Wellfound {role} advertised {advertised} jobs but exposed "
+                                f"{len(seen)} unique listings; refusing incomplete coverage"
+                            )
+                        break
+                else:
+                    raise ScraperError(f"Wellfound {role} exceeds max_pages={self.max_pages}")
+        finally:
+            await browser.close()
+        return list(jobs.values())
+
+    def _parse_browser_page(
+        self, text: str, role: str, page: int,
+    ) -> tuple[list[Job], set[str], int, int]:
+        try:
+            script = BeautifulSoup(text, "html.parser").select_one("script#__NEXT_DATA__")
+            if script is None:
+                raise ValueError("missing public Next.js payload")
+            data = json.loads(script.get_text())["props"]["pageProps"]["apolloState"]["data"]
+            talent = data["ROOT_QUERY"]["talent"]
+            prefix = "seoLandingPageJobSearchResults("
+            entries = [value for key, value in talent.items() if key.startswith(prefix)
+                       and json.loads(key[len(prefix):-1]) == {"role": role, "page": page}]
+            if len(entries) != 1:
+                raise ValueError("requested role/page not present in payload")
+            result = entries[0]
+            page_count, total = result["pageCount"], result["totalJobCount"]
+            if type(page_count) is not int or page_count < 1 or page > page_count:
+                raise ValueError("invalid pageCount")
+            if type(total) is not int or total < 0:
+                raise ValueError("invalid totalJobCount")
+            if not isinstance(result["startups"], list):
+                raise ValueError("invalid startup list")
+            jobs: list[Job] = []
+            seen: set[str] = set()
+            for reference in result["startups"]:
+                startup = data[reference["__ref"]]
+                company = startup["name"].strip()
+                if not company or not isinstance(startup["highlightedJobListings"], list):
+                    raise ValueError("invalid employer metadata")
+                for job_ref in startup["highlightedJobListings"]:
+                    item = data[job_ref["__ref"]]
+                    job_id = str(item["id"])
+                    if not job_id.isdigit() or not item["title"].strip():
+                        raise ValueError("invalid job identity")
+                    seen.add(job_id)
+                    if item.get("autoPosted") is not False or "atsSource" not in item or item["atsSource"]:
+                        continue
+                    description = item.get("description")
+                    if self.include_descriptions and not (isinstance(description, str) and description.strip()):
+                        raise ValueError(f"missing description for {job_id}")
+                    posted = item.get("liveStartAt")
+                    locations = item.get("locationNames") or []
+                    if not isinstance(locations, list) or any(not isinstance(value, str) for value in locations):
+                        raise ValueError("invalid locations")
+                    slug = item["slug"]
+                    if not isinstance(slug, str) or not re.fullmatch(r"[a-z0-9-]+", slug):
+                        raise ValueError("invalid job slug")
+                    salary = _parse_salary(item.get("compensation") or "")
+                    jobs.append(Job(
+                        url=HttpUrl(f"{WELLFOUND_BASE}/jobs/{job_id}-{slug}"), title=item["title"],
+                        company=company, ats_type=ATSType.WELLFOUND, ats_id=job_id,
+                        description=description[:25000] if self.include_descriptions else None,
+                        location=", ".join(locations) or None,
+                        is_remote=item.get("remote") if isinstance(item.get("remote"), bool) else None,
+                        posted_at=datetime.fromtimestamp(posted, UTC) if type(posted) is int and posted > 0 else None,
+                        salary_summary=item.get("compensation") or None,
+                        salary_min=salary[0] if salary else None,
+                        salary_max=salary[1] if salary else None,
+                        employment_type=_EMPLOYMENT_TYPES.get(item.get("jobType")),
+                        fetched_at=datetime.now(UTC),
+                        raw={"company_slug": startup.get("slug"), "job_type": item.get("jobType"),
+                             "auto_posted": False, "ats_source": None,
+                             "compensation": item.get("compensation"),
+                             "accepted_remote_locations": item.get("acceptedRemoteLocationNames")},
+                    ))
+            if total > 0 and not seen:
+                raise ValueError("nonempty catalogue returned an empty page")
+            return jobs, seen, page_count, total
+        except (KeyError, TypeError, ValueError, AttributeError, OverflowError) as error:
+            raise ScraperError(f"Wellfound returned an invalid public listing: {error}") from error
 
     async def _enrich_description(
         self,
@@ -244,28 +373,20 @@ class WellfoundScraper(BaseScraper):
         sem: asyncio.Semaphore,
         url: str,
     ) -> str:
-        """Single Firecrawl ``/v1/scrape`` call returning rendered
-        markdown. Soft-fails (returns ``""``) on transient errors so a
-        single bad role doesn't sink the whole run; auth/quota statuses
-        (401/402/403/404) raise so the user notices a bad key."""
+        """Legacy opt-in rendered markdown; transport/schema errors are fatal."""
         body = {"url": url, "formats": ["markdown"]}
         headers = {
             "Authorization": f"Bearer {self.firecrawl_api_key}",
             "Content-Type": "application/json",
         }
         async with sem:
-            try:
-                response = await fetch.request(
-                    "POST",
-                    f"{FIRECRAWL_BASE}/v1/scrape",
-                    json=body,
-                    headers=headers,
-                    handled={401, 402, 403, 404},
-                )
-            except ScraperError:
-                # Transient failures (429/5xx/network) exhausted the
-                # Fetcher's retries — soft-fail for this URL.
-                return ""
+            response = await fetch.request(
+                "POST",
+                f"{FIRECRAWL_BASE}/v1/scrape",
+                json=body,
+                headers=headers,
+                handled={401, 402, 403, 404},
+            )
         if response.status_code != 200:
             # Permanent failure (bad key, quota exhausted). Surface as
             # a hard error so the user knows, rather than silently
@@ -276,9 +397,14 @@ class WellfoundScraper(BaseScraper):
             )
         try:
             payload = response.json()
-        except ValueError:
-            return ""
-        return (payload.get("data") or {}).get("markdown") or ""
+        except ValueError as error:
+            raise ScraperError("Firecrawl returned invalid JSON") from error
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+            raise ScraperError("Firecrawl returned an invalid response shape")
+        markdown = payload["data"].get("markdown")
+        if not isinstance(markdown, str) or not markdown.strip():
+            raise ScraperError("Firecrawl returned no rendered content")
+        return markdown
 
 
 # --- markdown parser --------------------------------------------------------

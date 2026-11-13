@@ -5,6 +5,16 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Wellfound defaults to a local browser instead of requiring Firecrawl,
+  follows public role pagination, parses embedded descriptions and employer
+  names, and filters explicit ATS imports. Blocked/incomplete runs fail closed.
+  Explicit Firecrawl credentials retain the legacy opt-in backend; setting an
+  environment key alone no longer enables paid requests.
+  The browser backend remains experimental: VPS HTTP 403 and mismatched
+  advertised/exposed totals currently block production validation.
+
 ## [0.3.0] — 2026-09-02
 
 ### Added
