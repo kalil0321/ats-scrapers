@@ -73,6 +73,7 @@ _PATH_HOSTS: dict[str, ATSType] = {
     "jobs.smartrecruiters.com": ATSType.SMARTRECRUITERS,
     "jobs.gem.com": ATSType.GEM,
     "ats.rippling.com": ATSType.RIPPLING,
+    "apply.clearcompany.com": ATSType.CLEARCOMPANY,
 }
 
 # Subdomain tenants: https://{slug}.{suffix}/...
@@ -89,6 +90,9 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
     ".avature.net": ATSType.AVATURE,
     ".eightfold.ai": ATSType.EIGHTFOLD,
     ".career.softgarden.de": ATSType.SOFTGARDEN,
+    # ClearCompany's earlier address; {site}.hrmdirect.com redirects to
+    # apply.clearcompany.com/{site}.
+    ".hrmdirect.com": ATSType.CLEARCOMPANY,
 }
 
 # Full-URL tenants: the scraper's slug IS the careers URL.
