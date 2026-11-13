@@ -176,6 +176,25 @@ def test_invalid_slug_or_region_is_rejected(slug, region) -> None:
         LeverScraper(slug, region=region)
 
 
+def test_catalogue_slug_of_an_eu_row_selects_the_eu_region(httpx_mock) -> None:
+    """``find_company()`` hands out the ``slug`` column for
+    ``get_scraper("lever", slug)``: for a board in the EU region that is
+    the board URL, never a bare slug (which is read from the US API)."""
+    import csv
+    from pathlib import Path
+
+    from ats_scrapers.scrapers import get_scraper
+
+    with Path("ats-companies/lever.csv").open(newline="") as handle:
+        eu_rows = [row for row in csv.DictReader(handle) if "jobs.eu.lever.co" in row["url"]]
+
+    assert eu_rows
+    for row in eu_rows:
+        scraper = get_scraper("lever", row["slug"])
+        assert scraper.region == "eu"
+        assert row["url"] == f"https://jobs.eu.lever.co/{scraper.tenant}"
+
+
 def test_us_404_points_at_the_eu_region_and_does_not_try_it(httpx_mock) -> None:
     """The same slug can be another company in the other region, so a
     missing US board is not looked up there."""

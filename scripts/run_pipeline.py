@@ -240,12 +240,22 @@ _LEVER_BOARD_RE = re.compile(
 )
 
 
-def _lever_slug(row: dict[str, Any]) -> str | None:
-    url = (row.get("url") or "").strip()
-    if url.startswith("http"):
-        m = _LEVER_BOARD_RE.match(url)
+def _lever_board(row: dict[str, Any]) -> re.Match[str] | None:
+    """The row's board URL: its ``url``, else a board URL in ``slug`` (an
+    EU row carries its board URL there)."""
+    for column in ("url", "slug"):
+        m = _LEVER_BOARD_RE.match((row.get(column) or "").strip())
         if m:
-            return unquote(m.group("slug"))
+            return m
+    return None
+
+
+def _lever_slug(row: dict[str, Any]) -> str | None:
+    """The bare board slug, in either region, so the row's display name
+    applies (the scraper stores the bare slug as ``company``)."""
+    m = _lever_board(row)
+    if m:
+        return unquote(m.group("slug"))
     if (slug := _slug_col(row)):
         return slug
     name = (row.get("name") or "").strip()
@@ -253,9 +263,8 @@ def _lever_slug(row: dict[str, Any]) -> str | None:
 
 
 def _lever_kwargs(row: dict[str, Any]) -> dict[str, Any]:
-    """The region of the row's board; the slug stays the bare board slug
-    so the row's display name applies."""
-    m = _LEVER_BOARD_RE.match((row.get("url") or "").strip())
+    """The region of the row's board."""
+    m = _lever_board(row)
     return {"region": "eu"} if m and m.group("eu") else {}
 
 

@@ -174,13 +174,18 @@ Lever hosts its customers in two regions with separate APIs. A board on
 ``jobs.eu.lever.co`` is read from ``api.eu.lever.co`` and answers 404 on the
 other one.
 
-- ``slug`` is the board slug in the case the board URL uses; ``url`` is the
-  board URL. The host of ``url`` gives the region: an EU row must have a
-  ``https://jobs.eu.lever.co/{slug}`` URL.
+- ``url`` is the board URL, and its host gives the region.
+- ``slug`` is what ``get_scraper("lever", slug)`` is given. For a US board it
+  is the board slug, in the case the board URL uses. For an EU board it is
+  the board URL (``https://jobs.eu.lever.co/{slug}``), because a bare slug
+  is read from the US API.
 - Validate against the API of the row's region, and require the board page
   itself to answer 200.
-- A slug must stay unique in the file. The same slug can be two different
-  companies in the two regions; list the one that was validated.
+- List a board slug once, in one region. The two regions are separate
+  namespaces, so the same slug can be another company in the other region,
+  but the pipeline keys a row's display name by its bare board slug: two
+  rows with one slug would share a name. If both boards are live, keep the
+  one that was validated and leave the other out.
 - The employer name is the board page title without its `` jobs`` suffix.
 
 ### Eightfold

@@ -43,6 +43,14 @@ RESOLVES = [
         ATSType.LEVER,
         "https://jobs.eu.lever.co/acme",
     ),
+    # Lever board slugs also use "&"; the scraper escapes it.
+    ("https://jobs.lever.co/1840&Company", ATSType.LEVER, "1840&Company"),
+    ("https://jobs.lever.co/1840%26Company/abc", ATSType.LEVER, "1840&Company"),
+    (
+        "https://jobs.eu.lever.co/1840&Company",
+        ATSType.LEVER,
+        "https://jobs.eu.lever.co/1840%26Company",
+    ),
     ("https://apply.workable.com/0x/", ATSType.WORKABLE, "0x"),
     ("https://careers.smartrecruiters.com/10Pearls", ATSType.SMARTRECRUITERS, "10Pearls"),
     ("https://jobs.gem.com/accel", ATSType.GEM, "accel"),
@@ -381,3 +389,24 @@ def test_get_scraper_for_url_keeps_the_lever_region() -> None:
     assert (eu.tenant, eu.region) == ("acme", "eu")
     assert isinstance(us, LeverScraper)
     assert (us.tenant, us.region) == ("acme", "us")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://jobs.lever.co",
+        "https://jobs.eu.lever.co/",
+        "https://jobs.lever.co/%2e%2e/admin",
+        "https://jobs.eu.lever.co/a%2Fb",
+        "https://jobs.lever.co/a b",
+        "https://jobs.eu.lever.co/-acme",
+    ],
+)
+def test_lever_url_without_a_usable_slug_is_not_resolved(url: str) -> None:
+    assert resolve_careers_url(url) is None
+
+
+def test_get_scraper_for_url_escapes_an_unusual_lever_slug() -> None:
+    scraper = get_scraper_for_url("https://jobs.eu.lever.co/1840&Company/abc")
+
+    assert (scraper.tenant, scraper.region) == ("1840&Company", "eu")

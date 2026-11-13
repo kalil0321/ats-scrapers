@@ -242,11 +242,17 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
     # scraper argument.
     lever_eu_row = {
         "name": "Acme",
-        "slug": "Acme",
+        "slug": "https://jobs.eu.lever.co/Acme",
         "url": "https://jobs.eu.lever.co/Acme",
     }
     assert runner._lever_slug(lever_eu_row) == "Acme"
     assert runner.CONFIGS["lever"]["kwargs"](lever_eu_row) == {"region": "eu"}
+    # The region survives a row without a ``url``.
+    lever_eu_slug_only_row = {**lever_eu_row, "url": ""}
+    assert runner._lever_slug(lever_eu_slug_only_row) == "Acme"
+    assert runner.CONFIGS["lever"]["kwargs"](lever_eu_slug_only_row) == {
+        "region": "eu"
+    }
     assert runner.CONFIGS["oracle"]["kwargs"](oracle_row) == {
         "company_name": "ABM US"
     }
@@ -257,12 +263,26 @@ def test_lever_catalog_slugs_preserve_canonical_url_case() -> None:
         rows = list(csv.DictReader(handle))
 
     mismatches = []
+    boards = []
     for row in rows:
-        canonical = unquote(urlparse(row["url"]).path.strip("/").split("/", 1)[0])
-        if row["slug"] != canonical:
-            mismatches.append((row["slug"], canonical, row["url"]))
+        parsed = urlparse(row["url"])
+        canonical = unquote(parsed.path.strip("/").split("/", 1)[0])
+        boards.append(canonical.casefold())
+        # ``slug`` is what ``get_scraper("lever", slug)`` is given. A bare
+        # slug is read from the US API, so a board in the EU region
+        # carries its board URL.
+        expected = (
+            f"https://jobs.eu.lever.co/{canonical}"
+            if parsed.hostname == "jobs.eu.lever.co"
+            else canonical
+        )
+        if row["slug"] != expected:
+            mismatches.append((row["slug"], expected, row["url"]))
 
     assert mismatches == []
+    # The pipeline keys a row's display name by its bare board slug, so a
+    # slug is listed once, in one region.
+    assert len(set(boards)) == len(boards)
     assert runner.CONFIGS["oracle"]["dedupe_by_ats_id"] is True
 
     cornerstone_row = {
