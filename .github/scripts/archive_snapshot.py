@@ -7,6 +7,7 @@ current snapshot into a separate, private archive bucket:
     s3://<ARCHIVE_BUCKET>/snapshots/<generated_at>/manifest.json
     s3://<ARCHIVE_BUCKET>/snapshots/<generated_at>/all.parquet
     s3://<ARCHIVE_BUCKET>/snapshots/<generated_at>/companies.parquet
+    s3://<ARCHIVE_BUCKET>/snapshots/<generated_at>/tenant_status.parquet
     s3://<ARCHIVE_BUCKET>/companies/<last_modified>-<etag>.parquet   # every companies version
     s3://<ARCHIVE_BUCKET>/index.jsonl                         # one line per snapshot
 
@@ -190,6 +191,10 @@ def main() -> None:
         "all.parquet": key_from_entry((manifest.get("all") or {}).get("parquet"), prefix),
         "companies.parquet": key_from_entry(
             (manifest.get("companies") or {}).get("parquet"), prefix
+        ),
+        # Per-company scrape outcomes; the archive is their history.
+        "tenant_status.parquet": key_from_entry(
+            (manifest.get("tenant_status") or {}).get("parquet"), prefix
         ),
     }
     if not sources["all.parquet"]:

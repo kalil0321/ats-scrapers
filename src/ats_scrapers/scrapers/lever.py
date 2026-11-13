@@ -13,20 +13,33 @@ Single fetch returns every posting with rich fields:
 * ``workplaceType`` — "remote" / "hybrid" / "onsite" → ``is_remote``.
 
 No per-job fetch needed.
+
+Lever hosts its customers in two regions that do not share data. A board
+on ``jobs.lever.co`` is served by ``api.lever.co``; a board on
+``jobs.eu.lever.co`` is served by ``api.eu.lever.co`` and answers 404 on
+the other API. A slug says nothing about its region, so the region is given
+with the slug: ``LeverScraper("acme", region="eu")``, or the board URL as
+the slug (``https://jobs.eu.lever.co/acme``). A bare slug is the US region.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from urllib.parse import quote, unquote, urlparse
 
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
 
-API_TEMPLATE = "https://api.lever.co/v0/postings/{slug}?mode=json"
+API_TEMPLATE = "https://{host}/v0/postings/{slug}?mode=json"
+DEFAULT_REGION = "us"
+# The two regions, each with its API host and its board host.
+API_HOSTS = {"us": "api.lever.co", "eu": "api.eu.lever.co"}
+BOARD_HOSTS = {"jobs.lever.co": "us", "jobs.eu.lever.co": "eu"}
 
 _LEVER_INTERVAL_MAP = {
     "1-YEAR": "YEAR",
@@ -70,12 +83,48 @@ _COMMITMENT_TO_EMPLOYMENT_TYPE = {
 
 @ScraperRegistry.register(ATSType.LEVER)
 class LeverScraper(BaseScraper):
+    """``company_slug`` is the board slug (``acme``) or the board URL
+    (``https://jobs.eu.lever.co/acme``). ``region`` is ``"us"`` or ``"eu"``;
+    left out, it is read from a board URL, else it is the US region."""
+
     ats = ATSType.LEVER
 
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        region: str | None = None,
+        timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
+    ) -> None:
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
+        try:
+            self.tenant, self.region = _parse_slug(company_slug, region)
+        except ValueError as exc:
+            raise ScraperError(str(exc)) from exc
+
     async def afetch(self) -> list[Job]:
-        url = API_TEMPLATE.format(slug=self.company_slug)
+        url = API_TEMPLATE.format(
+            host=API_HOSTS[self.region], slug=quote(self.tenant, safe="")
+        )
         async with self.make_fetcher() as fetch:
-            payload = await fetch.get_json(url)
+            try:
+                payload = await fetch.get_json(url)
+            except CompanyNotFoundError as exc:
+                if self.region != DEFAULT_REGION:
+                    raise
+                # The other region is not tried: the same slug can be
+                # another company there.
+                raise CompanyNotFoundError(
+                    f"{exc} (no such board in Lever's US region; a board on "
+                    f"jobs.eu.lever.co needs region='eu')"
+                ) from exc
         return [self._parse_job(item) for item in payload]
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
@@ -156,7 +205,7 @@ class LeverScraper(BaseScraper):
         return Job(
             url=item["hostedUrl"],
             title=item["text"],
-            company=self.company_slug,
+            company=self.tenant,
             ats_type=ATSType.LEVER,
             ats_id=item["id"],
             location=categories.get("location"),
@@ -176,6 +225,41 @@ class LeverScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _parse_slug(value: str, region: str | None) -> tuple[str, str]:
+    """``(tenant, region)`` from a board slug or a board URL."""
+    raw = (value or "").strip()
+    wanted = (region or "").strip().lower() or None
+    if wanted is not None and wanted not in API_HOSTS:
+        raise ValueError(
+            f"Lever region must be one of {sorted(API_HOSTS)}, got {region!r}"
+        )
+    if "://" not in raw:
+        if not raw:
+            raise ValueError("Lever needs a board slug or a board URL")
+        return raw, wanted or DEFAULT_REGION
+    parsed = urlparse(raw)
+    found = BOARD_HOSTS.get((parsed.hostname or "").lower())
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if (
+        parsed.scheme != "https"
+        or parsed.username
+        or parsed.password
+        or parsed.port
+        or found is None
+        or not segments
+    ):
+        raise ValueError(
+            f"Lever board URL must be https://jobs.lever.co/{{slug}} or "
+            f"https://jobs.eu.lever.co/{{slug}}, got {value!r}"
+        )
+    if wanted is not None and wanted != found:
+        raise ValueError(
+            f"Lever board URL {value!r} is in region {found!r}, "
+            f"not {wanted!r}"
+        )
+    return unquote(segments[0]), found
 
 
 def _parse_ms(value: int | None) -> datetime | None:
