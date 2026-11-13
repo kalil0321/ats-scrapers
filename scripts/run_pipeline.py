@@ -94,6 +94,7 @@ from ats_scrapers.scrapers import (
     SoftgardenScraper,
     SuccessFactorsScraper,
     TalentBrewScraper,
+    TaleoEnterpriseScraper,
     TaleoScraper,
     TeamtailorScraper,
     TeslaScraper,
@@ -463,6 +464,32 @@ CONFIGS: dict[str, dict[str, Any]] = {
         ),
         "csv": "ats-companies/taleo.csv",
         "output": "taleo/jobs.csv",
+    },
+    "taleo_enterprise": {
+        # Oracle Taleo Enterprise Edition career sections
+        # ({zone}.taleo.net/careersection/{section}). The slug is
+        # "{zone}.taleo.net/{section}". A requisition listed in several
+        # sections of a zone has the same ats_id ("{zone}:{number}"), so it
+        # is published once.
+        "scraper": TaleoEnterpriseScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip() or None},
+        "dedupe_by_ats_id": True,
+        # The listing has title, location and date; the description is on
+        # the detail page and is read once per posting, then cached.
+        "defer_descriptions_to_cache": True,
+        "csv": "ats-companies/taleo_enterprise.csv",
+        "output": "taleo_enterprise/jobs.csv",
+        "max_concurrency": 4,
+        # Publish the new file only when at most one section in twenty
+        # failed or went missing; above that, or when the run returns no
+        # job at all, the previous dataset is kept. A tolerated failure
+        # leaves that section out of the new file until its next
+        # successful run.
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        "fail_closed_tolerance": 0.05,
     },
     "oracle": {
         "scraper": OracleScraper,

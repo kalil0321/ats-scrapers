@@ -112,6 +112,9 @@ class ATSType(StrEnum):
     JAZZHR = "jazzhr"
     RECRUITEE = "recruitee"
     TALEO = "taleo"
+    # Oracle Taleo Enterprise Edition career sections ({zone}.taleo.net);
+    # "taleo" is the Business Edition (*.tbe.taleo.net).
+    TALEO_ENTERPRISE = "taleo_enterprise"
     # Radancy TalentBrew career sites on the employer's own domain.
     TALENTBREW = "talentbrew"
     TEAMTAILOR = "teamtailor"
