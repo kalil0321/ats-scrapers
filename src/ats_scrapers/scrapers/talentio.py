@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 _ALLOWED_HOSTS = frozenset({"open.talentio.com", "recruit.talentio.co.jp"})
 _HOME_PATH_RE = re.compile(r"^/r/1/c/([A-Za-z0-9._-]+)/homes/([1-9]\d*)$")
 _PAGE_PATH_RE = re.compile(r"^/r/1/c/([A-Za-z0-9._-]+)/pages/([1-9]\d*)$")
+_PUBLISHED_PATH_RE = re.compile(r"^/r/1/c/([A-Za-z0-9._-]+)/(?:homes|pages)/[1-9]\d*/?$")
 _DETAIL_CONCURRENCY = 3
 _DETAIL_HANDLED = frozenset({404, 410})
 _EMPLOYMENT_TYPE_MAP = {
@@ -91,7 +92,7 @@ _COUNTRY_NAME_TO_ISO = {
     "uae": "AE",
     "アラブ首長国連邦": "AE",
 }
-_REMOTE_RE = re.compile(r"(?:full[ -]?remote|remote|フルリモート|完全在宅)", re.I)
+_TELECOMMUTE = "TELECOMMUTE"
 
 
 @ScraperRegistry.register(ATSType.TALENTIO)
@@ -148,9 +149,8 @@ class TalentioScraper(BaseScraper):
 
     def _parse_listing(self, html: str) -> list[Job]:
         payload = _react_payload(html, "RecruitmentOpenPageHomeView")
-        company = _required_dict(payload, "openAtsCompany", "home")
         home = _required_dict(payload, "recruitmentOpenPageHome", "home")
-        if company.get("openAtsNamespace") != self.namespace:
+        if _bootstrap_namespace(payload, home.get("publishedUrl")) != self.namespace:
             raise ScraperError(
                 f"Talentio ({self.namespace}/{self.home_id}) returned a namespace mismatch"
             )
@@ -233,9 +233,9 @@ class TalentioScraper(BaseScraper):
                     ats_type=ATSType.TALENTIO,
                     ats_id=ats_id,
                     department=department,
-                        requisition_id=str(requisition_id) if requisition_id else None,
-                        apply_url=apply_url,
-                        language=language,
+                    requisition_id=str(requisition_id) if requisition_id else None,
+                    apply_url=apply_url,
+                    language=language,
                     fetched_at=fetched_at,
                     raw={
                         "namespace": self.namespace,
@@ -274,15 +274,7 @@ class TalentioScraper(BaseScraper):
 
 def _parse_home_url(value: str) -> tuple[str, str, int]:
     parsed = urlparse(value)
-    if (
-        parsed.scheme != "https"
-        or (parsed.hostname or "").lower() not in _ALLOWED_HOSTS
-        or parsed.username
-        or parsed.password
-        or parsed.port is not None
-        or parsed.query
-        or parsed.fragment
-    ):
+    if not _valid_official_url(parsed):
         raise ScraperError(
             "TalentioScraper requires an HTTPS Talentio /r/1/c/{namespace}/homes/{id} URL"
         )
@@ -350,15 +342,43 @@ def _validate_page_url(
 
 
 def _valid_official_url(parsed: ParseResult) -> bool:
+    try:
+        # ``port`` raises on a port that is not a number in range.
+        has_port = parsed.port is not None
+    except ValueError:
+        return False
     return (
         parsed.scheme == "https"
         and (parsed.hostname or "").lower() in _ALLOWED_HOSTS
-        and parsed.username is None
-        and parsed.password is None
-        and parsed.port is None
+        and not parsed.username
+        and not parsed.password
+        and not has_port
         and not parsed.query
         and not parsed.fragment
     )
+
+
+def _bootstrap_namespace(payload: dict[str, Any], published_url: object) -> str | None:
+    """The tenant namespace a bootstrap answers for.
+
+    Pages name it in ``openAtsCompany`` or, since that object left the
+    bootstrap, only in the page's own ``publishedUrl``. When both are there
+    they must agree.
+    """
+    namespaces: set[str] = set()
+    company = payload.get("openAtsCompany")
+    if isinstance(company, dict):
+        namespace = _optional_text(company.get("openAtsNamespace"))
+        if namespace is None:
+            return None
+        namespaces.add(namespace)
+    if isinstance(published_url, str):
+        parsed = urlparse(published_url.strip())
+        match = _PUBLISHED_PATH_RE.match(parsed.path)
+        if not _valid_official_url(parsed) or match is None:
+            return None
+        namespaces.add(match.group(1))
+    return namespaces.pop() if len(namespaces) == 1 else None
 
 
 def _job_posting_json_ld(html: str, job_id: str | None = None) -> dict[str, Any] | None:
@@ -383,24 +403,39 @@ def _job_posting_json_ld(html: str, job_id: str | None = None) -> dict[str, Any]
         else:
             candidates = [payload]
         for candidate in candidates:
-            if not (isinstance(candidate, dict) and candidate.get("@type") == "JobPosting"):
+            if not (isinstance(candidate, dict) and _is_job_posting(candidate.get("@type"))):
                 continue
             if job_id is None:
                 return candidate
-            identifier = candidate.get("identifier")
-            if isinstance(identifier, dict) and str(identifier.get("value") or "") == job_id:
+            if _identifier_value(candidate.get("identifier")) == job_id:
                 return candidate
             if first is None:
                 first = candidate
     return first
 
 
+def _is_job_posting(value: object) -> bool:
+    """``@type`` is one type name or a list of them."""
+    types = value if isinstance(value, list) else [value]
+    return "JobPosting" in types
+
+
+def _identifier_value(value: object) -> str | None:
+    """A JSON-LD ``identifier``: a ``PropertyValue`` object, a text or a number."""
+    if isinstance(value, dict):
+        value = value.get("value")
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    return str(value).strip() or None
+
+
+def _is_telecommute(value: object) -> bool:
+    values = value if isinstance(value, list) else [value]
+    return any(isinstance(item, str) and item.strip().upper() == _TELECOMMUTE for item in values)
+
+
 def _apply_detail(job: Job, detail: dict[str, Any], *, namespace: str) -> None:
-    identifier = detail.get("identifier")
-    if (
-        not isinstance(identifier, dict)
-        or str(identifier.get("value") or "") != job.ats_id
-    ):
+    if _identifier_value(detail.get("identifier")) != job.ats_id:
         raise ScraperError(f"Talentio detail {job.ats_id} returned an ID mismatch")
     _validate_page_url(
         detail.get("url"),
@@ -425,8 +460,10 @@ def _apply_detail(job: Job, detail: dict[str, Any], *, namespace: str) -> None:
     location, country_iso = _location(detail.get("jobLocation"))
     if location:
         job.location = location
-        if _REMOTE_RE.search(location):
-            job.is_remote = True
+    # Remote work is taken from the structured flag only. A location text
+    # that mentions it can just as well rule it out ("フルリモート不可").
+    if _is_telecommute(detail.get("jobLocationType")):
+        job.is_remote = True
     if country_iso:
         job.country_iso = country_iso
         job.region = _REGION_BY_COUNTRY.get(country_iso)
@@ -456,9 +493,8 @@ def _apply_detail(job: Job, detail: dict[str, Any], *, namespace: str) -> None:
 
 def _apply_react_detail(job: Job, html: str, *, namespace: str) -> bool:
     payload = _react_payload(html, "RecruitmentOpenPageView")
-    company = _required_dict(payload, "openAtsCompany", "detail")
     page = _required_dict(payload, "recruitmentOpenPage", "detail")
-    if company.get("openAtsNamespace") != namespace:
+    if _bootstrap_namespace(payload, page.get("publishedUrl")) != namespace:
         raise ScraperError(f"Talentio detail {job.ats_id} returned a namespace mismatch")
     page_id = _positive_int(page.get("id"))
     if page_id is None or str(page_id) != job.ats_id:
@@ -481,10 +517,13 @@ def _apply_react_detail(job: Job, html: str, *, namespace: str) -> bool:
     if str(job.apply_url) != apply_url:
         raise ScraperError(f"Talentio detail {job.ats_id} returned an apply URL mismatch")
     requisition_id = _positive_int(page.get("requisitionId"))
-    if requisition_id is not None and job.requisition_id != str(requisition_id):
-        raise ScraperError(
-            f"Talentio detail {job.ats_id} returned a requisition ID mismatch"
-        )
+    if requisition_id is not None:
+        if job.requisition_id is None:
+            job.requisition_id = str(requisition_id)
+        elif job.requisition_id != str(requisition_id):
+            raise ScraperError(
+                f"Talentio detail {job.ats_id} returned a requisition ID mismatch"
+            )
 
     description = _react_description(page)
     if description is None:
@@ -503,8 +542,6 @@ def _apply_react_detail(job: Job, html: str, *, namespace: str) -> bool:
     location = _react_location(page)
     if location:
         job.location = location
-        if _REMOTE_RE.search(location):
-            job.is_remote = True
     return True
 
 
@@ -589,23 +626,30 @@ def _react_location(page: dict[str, Any]) -> str | None:
 
 
 def _apply_salary(job: Job, value: object) -> None:
+    """Read a schema.org ``MonetaryAmount``.
+
+    Its ``value`` is a ``QuantitativeValue`` (a range or one amount) or a
+    bare number. The period is set only when the posting names the unit.
+    """
     if not isinstance(value, dict):
         return
     currency = _optional_text(value.get("currency"))
+    if currency is None or len(currency) != 3:
+        return
     amount = value.get("value")
-    if not isinstance(amount, dict) or currency is None or len(currency) != 3:
-        return
-    minimum = _number(amount.get("minValue"))
-    maximum = _number(amount.get("maxValue"))
+    unit: object = value.get("unitText")
+    if isinstance(amount, dict):
+        minimum = _number(amount.get("minValue"))
+        maximum = _number(amount.get("maxValue"))
+        if minimum is None and maximum is None:
+            minimum = maximum = _number(amount.get("value"))
+        unit = amount.get("unitText") or unit
+    else:
+        minimum = maximum = _number(amount)
     if minimum is None and maximum is None:
-        scalar = _number(amount.get("value"))
-        minimum = scalar
-        maximum = scalar
-    if minimum is None and maximum is None:
         return
-    period = _SALARY_PERIOD_MAP.get(str(amount.get("unitText") or "").upper(), "YEAR")
     job.salary_currency = currency.upper()
-    job.salary_period = period
+    job.salary_period = _SALARY_PERIOD_MAP.get(str(unit or "").strip().upper())
     job.salary_min = minimum
     job.salary_max = maximum
 

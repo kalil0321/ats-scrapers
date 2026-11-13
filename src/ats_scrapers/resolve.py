@@ -208,12 +208,19 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
 
     if host in {"open.talentio.com", "recruit.talentio.co.jp"}:
         # Same origin checks as TalentioScraper: anything it would reject
-        # is not a usable resolution.
+        # is not a usable resolution. That includes the ``www.`` alias, which
+        # ``host`` has lost, and a port that is not a number in range, which
+        # raises when read.
+        try:
+            has_port = parsed.port is not None
+        except ValueError:
+            return None
         if (
             parsed.scheme != "https"
+            or (parsed.hostname or "").lower() != host
             or parsed.username
             or parsed.password
-            or parsed.port is not None
+            or has_port
             or parsed.query
             or parsed.fragment
         ):

@@ -28,7 +28,16 @@ def _page(group: str = "WEBサービス開発") -> dict[str, object]:
     }
 
 
-def _home_html(*, duplicate: bool = False, page_url: str = JOB_URL) -> str:
+def _home_html(
+    *,
+    duplicate: bool = False,
+    page_url: str = JOB_URL,
+    home_url: object = PORTAL_URL,
+    company: dict[str, object] | None = None,
+) -> str:
+    """The home page as Talentio serves it today: the tenant is named only by
+    the home's own ``publishedUrl``. ``company`` adds the ``openAtsCompany``
+    object older pages carried."""
     first = _page()
     first["publishedUrl"] = page_url
     groups: list[dict[str, object]] = [
@@ -47,15 +56,19 @@ def _home_html(*, duplicate: bool = False, page_url: str = JOB_URL) -> str:
                 "recruitmentOpenPages": [second],
             }
         )
-    payload = {
-        "openAtsCompany": {"id": 1668, "openAtsNamespace": "viewn"},
+    payload: dict[str, object] = {
+        "designSetting": {"copyright": "Copyright © Viewn"},
         "recruitmentOpenPageHome": {
             "id": 2635,
             "name": "募集ポジション",
+            "publishedUrl": home_url,
             "language": "ja",
             "recruitmentPageGroups": groups,
         },
+        "previewMode": False,
     }
+    if company is not None:
+        payload["openAtsCompany"] = company
     props = html.escape(json.dumps(payload, ensure_ascii=False), quote=True)
     return (
         "<html><head><title>募集ポジション / 株式会社ビューン</title></head>"
@@ -64,8 +77,12 @@ def _home_html(*, duplicate: bool = False, page_url: str = JOB_URL) -> str:
     )
 
 
-def _detail_html(*, identifier: str = "21394") -> str:
-    payload = {
+def _detail_html(
+    *,
+    identifier: object = "21394",
+    overrides: dict[str, object] | None = None,
+) -> str:
+    payload: dict[str, object] = {
         "@context": "https://schema.org/",
         "@type": "JobPosting",
         "title": "サーバーサイドエンジニア",
@@ -76,11 +93,15 @@ def _detail_html(*, identifier: str = "21394") -> str:
             "@type": "Organization",
             "name": "株式会社ビューン",
         },
-        "identifier": {
-            "@type": "PropertyValue",
-            "name": "株式会社ビューン",
-            "value": identifier,
-        },
+        "identifier": (
+            {
+                "@type": "PropertyValue",
+                "name": "株式会社ビューン",
+                "value": identifier,
+            }
+            if isinstance(identifier, str)
+            else identifier
+        ),
         "jobLocation": {
             "@type": "Place",
             "address": {
@@ -103,6 +124,7 @@ def _detail_html(*, identifier: str = "21394") -> str:
             },
         },
     }
+    payload.update(overrides or {})
     return (
         '<html><body><script type="application/ld+json">'
         f"{json.dumps(payload, ensure_ascii=False)}"
@@ -110,9 +132,14 @@ def _detail_html(*, identifier: str = "21394") -> str:
     )
 
 
-def _react_detail_html(*, include_description: bool = True) -> str:
-    payload = {
-        "openAtsCompany": {"id": 1668, "openAtsNamespace": "viewn"},
+def _react_detail_html(
+    *,
+    include_description: bool = True,
+    company: dict[str, object] | None = None,
+    location: list[str] | None = None,
+) -> str:
+    payload: dict[str, object] = {
+        "companyId": 1668,
         "recruitmentOpenPage": {
             "id": 21394,
             "name": "サーバーサイドエンジニア",
@@ -134,7 +161,7 @@ def _react_detail_html(*, include_description: bool = True) -> str:
                         "id": 2,
                         "type": "optional_field",
                         "name": "勤務地",
-                        "value": ["東京都千代田区", "フルリモート可"],
+                        "value": location or ["東京都千代田区", "フルリモート可"],
                         "selected": True,
                     },
                 ]
@@ -147,6 +174,8 @@ def _react_detail_html(*, include_description: bool = True) -> str:
         },
         "language": "ja",
     }
+    if company is not None:
+        payload["openAtsCompany"] = company
     props = html.escape(json.dumps(payload, ensure_ascii=False), quote=True)
     return (
         "<html><head><title>サーバーサイドエンジニア / 株式会社ビューン"
@@ -232,7 +261,8 @@ def test_react_detail_fallback_preserves_legacy_jobs(httpx_mock) -> None:
     assert job.company == "株式会社ビューン"
     assert job.language == "ja"
     assert job.location == "東京都千代田区; フルリモート可"
-    assert job.is_remote is True
+    # The location text is kept as written; it is not read for remote work.
+    assert job.is_remote is None
     assert job.description == (
         "<h2>職務内容</h2><p>サービスを開発します。<br>APIも設計します。</p>"
         "<h2>勤務地</h2><p>東京都千代田区<br>フルリモート可</p>"
@@ -376,3 +406,213 @@ def test_json_ld_picks_the_block_for_the_requested_job() -> None:
     assert picked is not None and picked["title"] == "Wanted"
     fallback = _job_posting_json_ld(html, "999")
     assert fallback is not None and fallback["title"] == "Other"
+
+
+# --- Tenant identity of the bootstrap ----------------------------------------
+
+
+def test_home_names_its_tenant_by_its_published_url(httpx_mock) -> None:
+    """Talentio's home page no longer carries ``openAtsCompany``."""
+    httpx_mock.add_response(url=PORTAL_URL, text=_home_html())
+
+    jobs = TalentioScraper(PORTAL_URL, include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["21394"]
+
+
+def test_home_with_the_older_company_object_is_still_read(httpx_mock) -> None:
+    company = {"id": 1668, "openAtsNamespace": "viewn"}
+    httpx_mock.add_response(url=PORTAL_URL, text=_home_html(company=company))
+
+    jobs = TalentioScraper(PORTAL_URL, include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["21394"]
+
+
+@pytest.mark.parametrize(
+    ("home_url", "company"),
+    [
+        # Another tenant's home.
+        ("https://open.talentio.com/r/1/c/other/homes/2635", None),
+        # The two sources disagree.
+        (PORTAL_URL, {"id": 1, "openAtsNamespace": "other"}),
+        ("https://open.talentio.com/r/1/c/other/homes/2635", {"openAtsNamespace": "viewn"}),
+        # No usable source.
+        (None, None),
+        (PORTAL_URL, {"id": 1}),
+        ("https://evil.example/r/1/c/viewn/homes/2635", None),
+        ("https://open.talentio.com:99999/r/1/c/viewn/homes/2635", None),
+        ("https://open.talentio.com/r/1/c/viewn/settings", None),
+    ],
+)
+def test_home_of_another_tenant_fails_closed(
+    httpx_mock, home_url: object, company: dict[str, object] | None
+) -> None:
+    httpx_mock.add_response(
+        url=PORTAL_URL, text=_home_html(home_url=home_url, company=company)
+    )
+
+    with pytest.raises(ScraperError, match="namespace mismatch"):
+        TalentioScraper(PORTAL_URL, include_descriptions=False).fetch()
+
+
+def test_react_detail_of_another_tenant_fails_closed(httpx_mock) -> None:
+    httpx_mock.add_response(url=PORTAL_URL, text=_home_html())
+    httpx_mock.add_response(
+        url=JOB_URL,
+        text=_react_detail_html(company={"id": 2, "openAtsNamespace": "other"}),
+    )
+
+    with pytest.raises(ScraperError, match="namespace mismatch"):
+        TalentioScraper(PORTAL_URL).fetch()
+
+
+def test_react_detail_fills_a_requisition_id_the_listing_lacked(httpx_mock) -> None:
+    home = _home_html().replace("&quot;requisitionId&quot;: 21991, ", "")
+    assert "requisitionId" not in home
+    httpx_mock.add_response(url=PORTAL_URL, text=home)
+    httpx_mock.add_response(url=JOB_URL, text=_react_detail_html())
+
+    job = TalentioScraper(PORTAL_URL).fetch()[0]
+
+    assert job.requisition_id == "21991"
+
+
+# --- Remote work ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        ["東京都（フルリモート不可）"],
+        ["Tokyo office (no remote work)"],
+        ["フルリモート"],
+        ["Remote"],
+    ],
+)
+def test_location_text_never_decides_remote_work(httpx_mock, location: list[str]) -> None:
+    httpx_mock.add_response(url=PORTAL_URL, text=_home_html())
+    httpx_mock.add_response(url=JOB_URL, text=_react_detail_html(location=location))
+
+    job = TalentioScraper(PORTAL_URL).fetch()[0]
+
+    assert job.location == location[0]
+    assert job.is_remote is None
+
+
+@pytest.mark.parametrize(
+    ("location_type", "expected"),
+    [
+        ("TELECOMMUTE", True),
+        (["TELECOMMUTE"], True),
+        ("telecommute", True),
+        (None, None),
+        ("ONSITE", None),
+        ({"@type": "Text"}, None),
+    ],
+)
+def test_remote_work_comes_from_the_structured_flag(
+    httpx_mock, location_type: object, expected: bool | None
+) -> None:
+    address = {"@type": "PostalAddress", "streetAddress": "フルリモート", "addressCountry": "JP"}
+    overrides = {
+        "jobLocationType": location_type,
+        "jobLocation": {"@type": "Place", "address": address},
+    }
+    httpx_mock.add_response(url=PORTAL_URL, text=_home_html())
+    httpx_mock.add_response(url=JOB_URL, text=_detail_html(overrides=overrides))
+
+    job = TalentioScraper(PORTAL_URL).fetch()[0]
+
+    assert job.is_remote is expected
+
+
+# --- JSON-LD shapes --------------------------------------------------------------
+
+
+@pytest.mark.parametrize("type_value", [["JobPosting"], ["Thing", "JobPosting"]])
+def test_json_ld_type_given_as_a_list_is_a_job_posting(httpx_mock, type_value: object) -> None:
+    httpx_mock.add_response(url=PORTAL_URL, text=_home_html())
+    httpx_mock.add_response(
+        url=JOB_URL, text=_detail_html(overrides={"@type": type_value})
+    )
+
+    job = TalentioScraper(PORTAL_URL).fetch()[0]
+
+    assert job.description == "<h1>職務内容</h1><p>サービスを開発します。</p>"
+
+
+@pytest.mark.parametrize("identifier", [21394, {"value": 21394}, {"value": " 21394 "}])
+def test_json_ld_identifier_given_as_a_scalar_is_read(httpx_mock, identifier: object) -> None:
+    httpx_mock.add_response(url=PORTAL_URL, text=_home_html())
+    httpx_mock.add_response(url=JOB_URL, text=_detail_html(identifier=identifier))
+
+    job = TalentioScraper(PORTAL_URL).fetch()[0]
+
+    assert job.posted_at is not None
+
+
+@pytest.mark.parametrize("identifier", [999, True, None, {"value": None}, ["21394"]])
+def test_json_ld_identifier_of_another_job_fails_closed(httpx_mock, identifier: object) -> None:
+    httpx_mock.add_response(url=PORTAL_URL, text=_home_html())
+    httpx_mock.add_response(url=JOB_URL, text=_detail_html(identifier=identifier))
+
+    with pytest.raises(ScraperError, match="ID mismatch"):
+        TalentioScraper(PORTAL_URL).fetch()
+
+
+@pytest.mark.parametrize(
+    ("base_salary", "expected"),
+    [
+        # A bare number, with the unit on the amount itself.
+        (
+            {"currency": "JPY", "value": 5000000, "unitText": "YEAR"},
+            ("JPY", "YEAR", 5000000, 5000000),
+        ),
+        # A bare number and no unit: the period stays unknown.
+        ({"currency": "JPY", "value": 300000}, ("JPY", None, 300000, 300000)),
+        # A range without unit: the period stays unknown.
+        (
+            {"currency": "jpy", "value": {"minValue": 250000, "maxValue": 400000}},
+            ("JPY", None, 250000, 400000),
+        ),
+        (
+            {"currency": "JPY", "value": {"value": 1500, "unitText": "hour"}},
+            ("JPY", "HOUR", 1500, 1500),
+        ),
+        # Nothing usable.
+        ({"currency": "JPY", "value": "negotiable"}, (None, None, None, None)),
+        ({"currency": "JPY", "value": True}, (None, None, None, None)),
+        ({"value": 5000000}, (None, None, None, None)),
+    ],
+)
+def test_salary_shapes(
+    httpx_mock, base_salary: dict[str, object], expected: tuple[object, ...]
+) -> None:
+    httpx_mock.add_response(url=PORTAL_URL, text=_home_html())
+    httpx_mock.add_response(
+        url=JOB_URL, text=_detail_html(overrides={"baseSalary": base_salary})
+    )
+
+    job = TalentioScraper(PORTAL_URL).fetch()[0]
+
+    assert (
+        job.salary_currency,
+        job.salary_period,
+        job.salary_min,
+        job.salary_max,
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://open.talentio.com:port/r/1/c/viewn/homes/2635",
+        "https://open.talentio.com:99999/r/1/c/viewn/homes/2635",
+        "https://open.talentio.com:443/r/1/c/viewn/homes/2635",
+        "https://www.open.talentio.com/r/1/c/viewn/homes/2635",
+    ],
+)
+def test_portal_url_with_a_port_or_another_host_is_a_scraper_error(url: str) -> None:
+    with pytest.raises(ScraperError, match="TalentioScraper"):
+        TalentioScraper(url)
