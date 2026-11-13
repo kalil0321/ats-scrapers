@@ -111,8 +111,9 @@ on a worker thread.
 
 Scraper adapters include:
 
-- Major ATS platforms: ADP Workforce Now, Greenhouse, Lever, Ashby, Workday, SmartRecruiters,
-  SuccessFactors, Oracle, iCIMS (and its Jibe career sites), HERP Hire, HRMOS, Keka, Paycom,
+- Major ATS platforms: ADP Workforce Now, Frontline AppliTrack, Greenhouse, Lever, Ashby,
+  Workday, SmartRecruiters, SuccessFactors, Oracle, iCIMS (and its Jibe career sites),
+  HERP Hire, HRMOS, Keka, Paycom,
   Softgarden, Workable, Personio,
   and more.
 - First-party company APIs: Amazon, Apple, Google, TikTok, and Uber.
