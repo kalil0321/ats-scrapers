@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 API_URL = "https://jobs.bytedance.com/api/v1/public/supplier/search/job/posts"
 PAGE_SIZE = 100
 MAX_RETRIES = 4
+MAX_CATALOGUE_ATTEMPTS = 2
 
 HEADERS = {
     "accept": "*/*",
@@ -59,6 +60,10 @@ HEADERS = {
 }
 
 
+class _CatalogueChangedError(ScraperError):
+    """The upstream catalogue changed while offset pagination was in progress."""
+
+
 @ScraperRegistry.register(ATSType.BYTEDANCE)
 class BytedanceScraper(BaseScraper):
     """ByteDance scraper — `company_slug` is informational; jobs are global."""
@@ -67,6 +72,15 @@ class BytedanceScraper(BaseScraper):
     default_headers: ClassVar[dict[str, str]] = HEADERS
 
     async def afetch(self) -> list[Job]:
+        for attempt in range(1, MAX_CATALOGUE_ATTEMPTS + 1):
+            try:
+                return await self._fetch_catalogue()
+            except _CatalogueChangedError:
+                if attempt == MAX_CATALOGUE_ATTEMPTS:
+                    raise
+        raise AssertionError("unreachable")
+
+    async def _fetch_catalogue(self) -> list[Job]:
         all_jobs: list[Job] = []
         seen_ids: set[str] = set()
         reported_total: int | None = None
@@ -101,7 +115,7 @@ class BytedanceScraper(BaseScraper):
                 if reported_total is None:
                     reported_total = total
                 elif total != reported_total:
-                    raise ScraperError(
+                    raise _CatalogueChangedError(
                         "ByteDance response changed count during pagination "
                         f"({reported_total} to {total})"
                     )
@@ -144,7 +158,7 @@ class BytedanceScraper(BaseScraper):
                         f"was reached ({offset}/{total})"
                     )
         if reported_total is None or len(seen_ids) != reported_total:
-            raise ScraperError(
+            raise _CatalogueChangedError(
                 "ByteDance catalogue ended before the reported count "
                 f"({len(seen_ids)}/{reported_total} unique jobs)"
             )
