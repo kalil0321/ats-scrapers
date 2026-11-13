@@ -5,6 +5,12 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Meta recognizes the current GraphQL v2 listing, validates captured job totals,
+  and raises on browser/navigation failures instead of returning a false empty
+  result. The pipeline preserves previous output on failed or empty Meta runs.
+
 ## [0.3.0] — 2026-09-02
 
 ### Added
