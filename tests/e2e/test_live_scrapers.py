@@ -21,6 +21,7 @@ import pytest
 
 from ats_scrapers.models import Job
 from ats_scrapers.scrapers import (
+    ApplicantProScraper,
     AshbyScraper,
     BambooHRScraper,
     BreezyScraper,
@@ -57,6 +58,11 @@ TIMEOUT = 150.0
 # (id, factory, expect_jobs) — expect_jobs=True only for boards that
 # are essentially never empty.
 CASES = [
+    (
+        "applicantpro-kirkhill",
+        lambda: ApplicantProScraper("kirkhill", include_descriptions=False),
+        True,
+    ),
     (
         "hireology-anderson",
         lambda: HireologyScraper(

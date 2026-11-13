@@ -41,6 +41,8 @@ from ats_scrapers.scrapers import (
     ADPWorkforceNowScraper,
     AmazonScraper,
     AppleScraper,
+    ApplicantProScraper,
+    AppliTrackScraper,
     ArbetsformedlingenScraper,
     AshbyScraper,
     AvatureScraper,
@@ -381,6 +383,27 @@ def _icims_slug(row: dict[str, Any]) -> str | None:
 #   is ``ats-companies/{ats}.csv`` with columns ``name,url``)
 # - output: jobs CSV output path (per-ATS jobs dataset under ``{ats}/``)
 CONFIGS: dict[str, dict[str, Any]] = {
+    "applitrack": {
+        "scraper": AppliTrackScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip(),
+            "country_iso": (r.get("country_iso") or "").strip() or None,
+        },
+        "csv": "ats-companies/applitrack.csv",
+        "output": "applitrack/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 4,
+        "min_timeout": 120.0,
+        "fail_closed_on_any_error": True,
+        # A board that is gone counts as a failed one, so many boards
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        # 5% of boards may fail or be gone; a board that closes is a row
+        # to remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
+    },
     "adp": {
         "scraper": ADPWorkforceNowScraper,
         "slug": lambda r: (r.get("url") or "").strip() or None,
@@ -441,6 +464,25 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "fail_closed_on_empty": True,
         # 5% of sites may fail or be gone; a site that closes is a
         # row to remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
+    },
+    "applicantpro": {
+        "scraper": ApplicantProScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/applicantpro.csv",
+        "output": "applicantpro/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 4,
+        "fail_closed_on_any_error": True,
+        # A portal that is gone counts as a failed one, so many portals
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        # 5% of portals may fail or be gone; a portal that closes is a row
+        # to remove, not a reason to hold back the others.
         "fail_closed_tolerance": 0.05,
     },
     "cornerstone": {
@@ -650,6 +692,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
         },
         "csv": "ats-companies/workday.csv",
         "output": "workday/jobs.csv",
+        # A tenant often lists one posting on several of its career sites.
+        # The id is the tenant host and the posting path, so the copies
+        # share it whatever name each catalogue row carries.
+        "dedupe_by_ats_id": True,
         # Workday descriptions require per-job detail calls. Defer to the
         # disk-backed description cache so the scraper's internal enrichment
         # stays off (it would re-fetch every row, bypassing the cache).
@@ -1679,6 +1725,15 @@ def _bounded_concurrency(cfg: dict[str, Any], requested: int) -> int:
     return requested
 
 
+def _bounded_timeout(cfg: dict[str, Any], requested: float) -> float:
+    if requested <= 0:
+        raise ValueError("timeout must be greater than zero")
+    configured = cfg.get("min_timeout")
+    if isinstance(configured, (int, float)) and configured > 0:
+        return max(requested, float(configured))
+    return requested
+
+
 async def _run_scraper(
     scraper_cls,
     slug,
@@ -1707,6 +1762,7 @@ async def _run_scraper(
 async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: float) -> int:
     cfg = CONFIGS[ats]
     concurrency = _bounded_concurrency(cfg, concurrency)
+    timeout = _bounded_timeout(cfg, timeout)
     configured_max_concurrency = cfg.get("max_concurrency")
     if isinstance(configured_max_concurrency, int):
         concurrency = min(concurrency, max(1, configured_max_concurrency))
@@ -1791,8 +1847,7 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             f"[{ats}] Loaded {description_cache.count:,} cached description keys "
             f"({location} cache at {description_cache.path})"
         )
-    seen_keys: set[tuple[str, str]] = set()  # (company, ats_id) for cross-tenant dedup
-
+    seen_keys: set[tuple[str, str]] = set()
     t0 = time.time()
     try:
         with tmp_output_path.open("w", newline="") as f:

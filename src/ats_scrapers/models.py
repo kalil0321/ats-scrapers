@@ -34,6 +34,8 @@ class ATSType(StrEnum):
     """
 
     ADP = "adp"
+    APPLICANTPRO = "applicantpro"
+    APPLITRACK = "applitrack"
     ASHBY = "ashby"
     AVATURE = "avature"
     BEISEN = "beisen"
@@ -237,7 +239,8 @@ class Job(BaseModel):
         description=(
             "Globally unique identifier for the posting, formatted as "
             "``{ats_type}:{ats_id}`` when both are set (e.g. "
-            "``ashby:engineer-2026`` or ``workday:R0136150``). The "
+            "``ashby:engineer-2026`` or "
+            "``workday:acme.wd1.myworkdayjobs.com/job/USA/Engineer_R-1``). The "
             "separator is a colon — parsers should split on the FIRST "
             "colon since ``ats_id`` may itself contain colons. When "
             "``ats_id`` is missing, malformed, or contains control "
@@ -283,7 +286,7 @@ class Job(BaseModel):
         default=None,
         description=(
             "Per-ATS identifier for the posting — Greenhouse numeric "
-            "id, Workday requisition slug, Lever UUID, etc. Unique "
+            "id, Workday tenant host and posting path, Lever UUID, etc. Unique "
             "within ``ats_type`` but not globally (use ``global_id`` "
             "for that). Optional defensively: when null/empty/malformed, "
             "``global_id`` falls back to UUID4 instead of crashing the "
@@ -443,7 +446,8 @@ class Job(BaseModel):
         default=None,
         description=(
             "Employer-internal requisition identifier (Greenhouse "
-            "``requisition_id``, Workday ``bulletFields[0]``, Lever's "
+            "``requisition_id``, a Workday bullet field embedded in the "
+            "posting path, Lever's "
             "private id, Bundesagentur ``hashId``). Distinct from "
             "``ats_id`` which is platform-side. Same role mirrored on "
             "two different ATSes shares the same ``requisition_id`` "
