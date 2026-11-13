@@ -143,10 +143,7 @@ def test_fetches_structured_public_jobs(httpx_mock) -> None:
     assert job.department == "Engineering"
     assert job.team == "Product"
     assert job.requisition_id == "4124648"
-    assert job.description == (
-        "<h2>Summary</h2><p>Lead <strong>aircraft</strong> "
-        "product development.</p>"
-    )
+    assert job.description == "Summary\nLead aircraft product development."
     assert job.posted_at == datetime(2026, 6, 22, tzinfo=UTC)
     assert job.language is None
     assert job.raw == {
@@ -263,6 +260,7 @@ def test_valid_additional_iso3_code_is_preserved_and_mapped(
         ("MLI", "ML", "Africa", "XOF"),
         ("MNP", "MP", "Oceania", "USD"),
         ("MWI", "MW", "Africa", "MWK"),
+        ("PAK", "PK", "Asia", "PKR"),
         ("PRI", "PR", "North America", "USD"),
         ("SLE", "SL", "Africa", "SLE"),
         ("SLV", "SV", "North America", "USD"),
@@ -318,6 +316,67 @@ def test_no_compensation_emits_no_currency_or_period_only_summary(
     assert job.salary is None
 
 
+def test_salary_in_a_country_added_to_the_currency_table_is_kept(
+    httpx_mock,
+) -> None:
+    item = _job()
+    item.update(
+        iso3="GHA",
+        jobLocation="Accra, GHA",
+        minSalary="60,000",
+        maxSalary="80,000",
+        payTypeFrame="per year",
+        payDetails=None,
+    )
+    _mock_listing(httpx_mock, [item])
+
+    job = ApplicantProScraper(TENANT, include_descriptions=False).fetch()[0]
+
+    assert job.country_iso == "GH"
+    assert job.salary_currency == "GHS"
+    assert job.salary_period == "YEAR"
+    assert job.salary_min == 60_000
+    assert job.salary_max == 80_000
+    assert job.salary_summary == "60,000 - 80,000 per year"
+    assert job.salary is not None
+
+
+def test_salary_where_the_currency_cannot_be_told_keeps_the_summary_only(
+    httpx_mock,
+) -> None:
+    # Panama has two currencies in tender, so it is not in the table.
+    item = _job()
+    item.update(
+        iso3="PAN",
+        jobLocation="Panama City, PAN",
+        minSalary="60,000",
+        maxSalary="80,000",
+        payTypeFrame="per year",
+        payDetails=None,
+    )
+    _mock_listing(httpx_mock, [item])
+
+    job = ApplicantProScraper(TENANT, include_descriptions=False).fetch()[0]
+
+    assert job.country_iso == "PA"
+    assert job.salary_currency is None
+    assert job.salary_period is None
+    assert job.salary_min is None
+    assert job.salary_max is None
+    assert job.salary_summary == "60,000 - 80,000 per year"
+    assert job.salary is None
+
+
+def test_boolean_job_count_fails_closed(httpx_mock) -> None:
+    httpx_mock.add_response(url=CAREERS_URL, text=_portal())
+    payload = _listing([_job()])
+    payload["data"]["jobCount"] = True
+    httpx_mock.add_response(url=LISTING_URL, json=payload)
+
+    with pytest.raises(ScraperError, match="expected True jobs"):
+        ApplicantProScraper(TENANT, include_descriptions=False).fetch()
+
+
 def test_empty_active_listing_returns_empty(httpx_mock) -> None:
     _mock_listing(httpx_mock, [])
 
@@ -368,15 +427,18 @@ def test_unsuccessful_detail_payload_fails_closed(httpx_mock) -> None:
         ApplicantProScraper(TENANT).fetch()
 
 
-def test_malformed_detail_json_fails_closed(httpx_mock) -> None:
+def test_non_json_detail_answer_retains_listing_data(httpx_mock) -> None:
     _mock_listing(httpx_mock, [_job()])
     httpx_mock.add_response(
         url=DETAIL_URL,
         text="<html>maintenance</html>",
     )
 
-    with pytest.raises(ScraperError, match="not valid JSON"):
-        ApplicantProScraper(TENANT).fetch()
+    job = ApplicantProScraper(TENANT).fetch()[0]
+
+    assert job.ats_id == "kirkhill:4124648"
+    assert job.title == "Project Engineer"
+    assert job.description is None
 
 
 def test_detail_id_mismatch_fails_closed(httpx_mock) -> None:

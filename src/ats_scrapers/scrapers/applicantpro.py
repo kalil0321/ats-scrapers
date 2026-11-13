@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from bs4 import BeautifulSoup
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
-from ats_scrapers.fetch import MalformedJSONError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
+from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers._slug import require_host_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -127,8 +127,8 @@ _ASIA_CODES = {
     "LB",
     "MY",
     "NP",
-    "PAK",
     "PH",
+    "PK",
     "SA",
     "SG",
     "TH",
@@ -137,79 +137,60 @@ _ASIA_CODES = {
     "VN",
 }
 _SOUTH_AMERICA_CODES = {"AR", "BO", "BR", "CL", "CO", "EC"}
+# The currency in use in each country, from Unicode CLDR (territory
+# currencies in tender on 2026-11-13). Countries with several currencies in
+# tender (Bhutan, Haiti, Lesotho, Namibia, Panama, Palestine, Zimbabwe) and
+# Antarctica are left out: the currency of an amount cannot be told there.
 _CURRENCY_BY_COUNTRY = {
-    "AE": "AED",
-    "AR": "ARS",
-    "AU": "AUD",
-    "AT": "EUR",
-    "BE": "EUR",
-    "BF": "XOF",
-    "BM": "BMD",
-    "BO": "BOB",
-    "BR": "BRL",
-    "CA": "CAD",
-    "CH": "CHF",
-    "CL": "CLP",
-    "CN": "CNY",
-    "CO": "COP",
-    "CD": "CDF",
-    "CR": "CRC",
-    "CU": "CUP",
-    "CZ": "CZK",
-    "DE": "EUR",
-    "DK": "DKK",
-    "EC": "USD",
-    "EG": "EGP",
-    "ES": "EUR",
-    "FI": "EUR",
-    "FR": "EUR",
-    "GB": "GBP",
-    "GR": "EUR",
-    "GU": "USD",
-    "HK": "HKD",
-    "HU": "HUF",
-    "ID": "IDR",
-    "IE": "EUR",
-    "IL": "ILS",
-    "IN": "INR",
-    "IS": "ISK",
-    "IT": "EUR",
-    "JP": "JPY",
-    "JO": "JOD",
-    "KR": "KRW",
-    "KY": "KYD",
-    "LB": "LBP",
-    "MA": "MAD",
-    "MX": "MXN",
-    "ML": "XOF",
-    "MP": "USD",
-    "MW": "MWK",
-    "MY": "MYR",
-    "NG": "NGN",
-    "NL": "EUR",
-    "NO": "NOK",
-    "NZ": "NZD",
-    "NP": "NPR",
-    "PH": "PHP",
-    "PK": "PKR",
-    "PL": "PLN",
-    "PT": "EUR",
-    "PR": "USD",
-    "RO": "RON",
-    "SA": "SAR",
-    "SE": "SEK",
-    "SG": "SGD",
-    "SL": "SLE",
-    "SV": "USD",
-    "TC": "USD",
-    "TH": "THB",
-    "TR": "TRY",
-    "TW": "TWD",
-    "TZ": "TZS",
-    "UA": "UAH",
-    "US": "USD",
-    "VN": "VND",
-    "ZA": "ZAR",
+    "AD": "EUR", "AE": "AED", "AF": "AFN", "AG": "XCD", "AI": "XCD",
+    "AL": "ALL", "AM": "AMD", "AO": "AOA", "AR": "ARS", "AS": "USD",
+    "AT": "EUR", "AU": "AUD", "AW": "AWG", "AX": "EUR", "AZ": "AZN",
+    "BA": "BAM", "BB": "BBD", "BD": "BDT", "BE": "EUR", "BF": "XOF",
+    "BG": "BGN", "BH": "BHD", "BI": "BIF", "BJ": "XOF", "BL": "EUR",
+    "BM": "BMD", "BN": "BND", "BO": "BOB", "BQ": "USD", "BR": "BRL",
+    "BS": "BSD", "BV": "NOK", "BW": "BWP", "BY": "BYN", "BZ": "BZD",
+    "CA": "CAD", "CC": "AUD", "CD": "CDF", "CF": "XAF", "CG": "XAF",
+    "CH": "CHF", "CI": "XOF", "CK": "NZD", "CL": "CLP", "CM": "XAF",
+    "CN": "CNY", "CO": "COP", "CR": "CRC", "CU": "CUP", "CV": "CVE",
+    "CW": "XCG", "CX": "AUD", "CY": "EUR", "CZ": "CZK", "DE": "EUR",
+    "DJ": "DJF", "DK": "DKK", "DM": "XCD", "DO": "DOP", "DZ": "DZD",
+    "EC": "USD", "EE": "EUR", "EG": "EGP", "EH": "MAD", "ER": "ERN",
+    "ES": "EUR", "ET": "ETB", "FI": "EUR", "FJ": "FJD", "FK": "FKP",
+    "FM": "USD", "FO": "DKK", "FR": "EUR", "GA": "XAF", "GB": "GBP",
+    "GD": "XCD", "GE": "GEL", "GF": "EUR", "GG": "GBP", "GH": "GHS",
+    "GI": "GIP", "GL": "DKK", "GM": "GMD", "GN": "GNF", "GP": "EUR",
+    "GQ": "XAF", "GR": "EUR", "GS": "GBP", "GT": "GTQ", "GU": "USD",
+    "GW": "XOF", "GY": "GYD", "HK": "HKD", "HM": "AUD", "HN": "HNL",
+    "HR": "EUR", "HU": "HUF", "ID": "IDR", "IE": "EUR", "IL": "ILS",
+    "IM": "GBP", "IN": "INR", "IO": "USD", "IQ": "IQD", "IR": "IRR",
+    "IS": "ISK", "IT": "EUR", "JE": "GBP", "JM": "JMD", "JO": "JOD",
+    "JP": "JPY", "KE": "KES", "KG": "KGS", "KH": "KHR", "KI": "AUD",
+    "KM": "KMF", "KN": "XCD", "KP": "KPW", "KR": "KRW", "KW": "KWD",
+    "KY": "KYD", "KZ": "KZT", "LA": "LAK", "LB": "LBP", "LC": "XCD",
+    "LI": "CHF", "LK": "LKR", "LR": "LRD", "LT": "EUR", "LU": "EUR",
+    "LV": "EUR", "LY": "LYD", "MA": "MAD", "MC": "EUR", "MD": "MDL",
+    "ME": "EUR", "MF": "EUR", "MG": "MGA", "MH": "USD", "MK": "MKD",
+    "ML": "XOF", "MM": "MMK", "MN": "MNT", "MO": "MOP", "MP": "USD",
+    "MQ": "EUR", "MR": "MRU", "MS": "XCD", "MT": "EUR", "MU": "MUR",
+    "MV": "MVR", "MW": "MWK", "MX": "MXN", "MY": "MYR", "MZ": "MZN",
+    "NC": "XPF", "NE": "XOF", "NF": "AUD", "NG": "NGN", "NI": "NIO",
+    "NL": "EUR", "NO": "NOK", "NP": "NPR", "NR": "AUD", "NU": "NZD",
+    "NZ": "NZD", "OM": "OMR", "PE": "PEN", "PF": "XPF", "PG": "PGK",
+    "PH": "PHP", "PK": "PKR", "PL": "PLN", "PM": "EUR", "PN": "NZD",
+    "PR": "USD", "PT": "EUR", "PW": "USD", "PY": "PYG", "QA": "QAR",
+    "RE": "EUR", "RO": "RON", "RS": "RSD", "RU": "RUB", "RW": "RWF",
+    "SA": "SAR", "SB": "SBD", "SC": "SCR", "SD": "SDG", "SE": "SEK",
+    "SG": "SGD", "SH": "SHP", "SI": "EUR", "SJ": "NOK", "SK": "EUR",
+    "SL": "SLE", "SM": "EUR", "SN": "XOF", "SO": "SOS", "SR": "SRD",
+    "SS": "SSP", "ST": "STN", "SV": "USD", "SX": "XCG", "SY": "SYP",
+    "SZ": "SZL", "TC": "USD", "TD": "XAF", "TF": "EUR", "TG": "XOF",
+    "TH": "THB", "TJ": "TJS", "TK": "NZD", "TL": "USD", "TM": "TMT",
+    "TN": "TND", "TO": "TOP", "TR": "TRY", "TT": "TTD", "TV": "AUD",
+    "TW": "TWD", "TZ": "TZS", "UA": "UAH", "UG": "UGX", "UM": "USD",
+    "US": "USD", "UY": "UYU", "UZ": "UZS", "VA": "EUR", "VC": "XCD",
+    "VE": "VES", "VG": "USD", "VI": "USD", "VN": "VND", "VU": "VUV",
+    "WF": "XPF", "WS": "WST", "YE": "YER", "YT": "EUR", "ZA": "ZAR",
+    "ZM": "ZMW",
 }
 
 
@@ -318,7 +299,8 @@ class ApplicantProScraper(BaseScraper):
                 f"ApplicantPro ({self.company_slug}) returned no jobs list"
             )
         expected = data.get("jobCount")
-        if not isinstance(expected, int) or expected != len(items):
+        # ``type(...) is int``: ``True`` is an ``int`` too, and is not a count.
+        if type(expected) is not int or expected != len(items):
             raise ScraperError(
                 f"ApplicantPro ({self.company_slug}) expected {expected!r} jobs, "
                 f"received {len(items)}"
@@ -429,9 +411,10 @@ class ApplicantProScraper(BaseScraper):
                 payload = await fetch.get_json(url)
             except CompanyNotFoundError:
                 return False
-            except MalformedJSONError:
-                raise
             except ScraperError:
+                # The job page is extra detail. A failed request, or an
+                # answer that is not JSON (a block page), keeps the job as
+                # the list gave it, without a description.
                 return True
         if not isinstance(payload, dict) or payload.get("success") is not True:
             raise ScraperError(
@@ -495,9 +478,10 @@ def _clean_text(value: object) -> str | None:
 
 
 def _html_description(value: object) -> str | None:
+    """The description as plain text, one line per block of the HTML."""
     if value is None:
         return None
-    cleaned = str(value).strip()
+    cleaned = parse_html(str(value)).lines().strip()
     return cleaned or None
 
 
