@@ -575,12 +575,20 @@ def test_json_ld_identifier_of_another_job_fails_closed(httpx_mock, identifier: 
             {"currency": "JPY", "value": 5000000, "unitText": "YEAR"},
             ("JPY", "YEAR", 5000000, 5000000),
         ),
-        # A bare number and no unit: the period stays unknown.
-        ({"currency": "JPY", "value": 300000}, ("JPY", None, 300000, 300000)),
-        # A range without unit: the period stays unknown.
+        # No unit, or one the model has no period for: nothing is recorded,
+        # because ``Job.salary`` would present the amount as a yearly one.
+        ({"currency": "JPY", "value": 300000}, (None, None, None, None)),
         (
             {"currency": "jpy", "value": {"minValue": 250000, "maxValue": 400000}},
-            ("JPY", None, 250000, 400000),
+            (None, None, None, None),
+        ),
+        (
+            {"currency": "JPY", "value": {"value": 9000, "unitText": "SHIFT"}},
+            (None, None, None, None),
+        ),
+        (
+            {"currency": "jpy", "value": {"minValue": 250000, "maxValue": 400000, "unitText": "MONTH"}},
+            ("JPY", "MONTH", 250000, 400000),
         ),
         (
             {"currency": "JPY", "value": {"value": 1500, "unitText": "hour"}},
@@ -608,6 +616,13 @@ def test_salary_shapes(
         job.salary_min,
         job.salary_max,
     ) == expected
+    # The public helper never states a period the posting did not name.
+    if expected[0] is None:
+        assert job.salary is None
+    else:
+        assert job.salary is not None
+        assert (job.salary.currency, job.salary.period) == expected[:2]
+        assert (job.salary.min_amount, job.salary.max_amount) == expected[2:]
 
 
 @pytest.mark.parametrize(

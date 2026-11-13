@@ -629,7 +629,9 @@ def _apply_salary(job: Job, value: object) -> None:
     """Read a schema.org ``MonetaryAmount``.
 
     Its ``value`` is a ``QuantitativeValue`` (a range or one amount) or a
-    bare number. The period is set only when the posting names the unit.
+    bare number. The salary is recorded only when the posting names the
+    unit: an amount without a period says little, and ``Job.salary`` would
+    present it as a yearly one.
     """
     if not isinstance(value, dict):
         return
@@ -646,10 +648,11 @@ def _apply_salary(job: Job, value: object) -> None:
         unit = amount.get("unitText") or unit
     else:
         minimum = maximum = _number(amount)
-    if minimum is None and maximum is None:
+    period = _SALARY_PERIOD_MAP.get(str(unit or "").strip().upper())
+    if period is None or (minimum is None and maximum is None):
         return
     job.salary_currency = currency.upper()
-    job.salary_period = _SALARY_PERIOD_MAP.get(str(unit or "").strip().upper())
+    job.salary_period = period
     job.salary_min = minimum
     job.salary_max = maximum
 
