@@ -118,6 +118,28 @@ def test_remote_flag_propagates(httpx_mock) -> None:
     assert jobs[0].is_remote is True
 
 
+@pytest.mark.parametrize(
+    ("label", "flag", "expected"),
+    [
+        ("hybrid", True, None),
+        ("remote", False, True),
+        ("Remote", False, True),
+        (None, True, True),
+        (None, False, False),
+        ("something_else", True, True),
+    ],
+)
+def test_remote_details_label_outranks_flag(httpx_mock, label, flag, expected) -> None:
+    """``location.remote_details.value`` says remote vs hybrid; the older
+    ``is_remote`` flag can disagree with it."""
+    p = _position(is_remote=flag)
+    if label is not None:
+        p["location"]["remote_details"] = {"value": label, "label": label.title()}
+    httpx_mock.add_response(url=URL, json=[p])
+    jobs = BreezyScraper("acme").fetch()
+    assert jobs[0].is_remote is expected
+
+
 def test_location_falls_back_to_city_country_when_name_missing(httpx_mock) -> None:
     """Some tenants don't pre-build the ``location.name`` — compose from
     structured city/country fields."""
