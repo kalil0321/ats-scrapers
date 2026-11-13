@@ -394,7 +394,13 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "max_concurrency": 4,
         "min_timeout": 120.0,
         "fail_closed_on_any_error": True,
+        # A board that is gone counts as a failed one, so many boards
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
+        # 5% of boards may fail or be gone; a board that closes is a row
+        # to remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
     },
     "adp": {
         "scraper": ADPWorkforceNowScraper,

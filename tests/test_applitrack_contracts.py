@@ -34,7 +34,9 @@ def test_applitrack_pipeline_uses_validated_tenant_catalog() -> None:
     assert config["max_concurrency"] == 4
     assert config["min_timeout"] == 120.0
     assert config["fail_closed_on_any_error"] is True
+    assert config["fail_closed_on_not_found"] is True
     assert config["fail_closed_on_empty"] is True
+    assert config["fail_closed_tolerance"] == 0.05
     assert "defer_descriptions_to_cache" not in config
 
 
@@ -50,11 +52,11 @@ def test_applitrack_is_a_direct_employer_ats_for_deduplication() -> None:
     )
 
 
-def test_applitrack_catalog_contains_only_live_nonempty_tenants() -> None:
+def test_applitrack_catalog_rows_are_distinct_board_urls() -> None:
     with Path("ats-companies/applitrack.csv").open(newline="") as handle:
         rows = list(csv.DictReader(handle))
 
-    assert len(rows) == 2_149
+    assert len(rows) == 2_116
     assert len({row["slug"] for row in rows}) == len(rows)
     assert len({row["url"] for row in rows}) == len(rows)
     assert all(row["name"].strip() for row in rows)
