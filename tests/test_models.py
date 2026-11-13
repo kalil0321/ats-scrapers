@@ -26,6 +26,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "applicantpro",
         "pinpoint", "recruiterbox", "rippling", "smartrecruiters", "softgarden",
         "successfactors", "ukg", "workable", "workable_marketplace", "workday",
+        "wintalent",
         # Big-tech custom careers systems
         "amazon", "apple", "bytedance", "google", "meta",
         "tesla", "tiktok", "uber", "usajobs",

@@ -112,6 +112,7 @@ from ats_scrapers.scrapers import (
     WantedScraper,
     WellfoundScraper,
     WeWorkRemotelyScraper,
+    WinTalentScraper,
     WorkableMarketplaceScraper,
     WorkableScraper,
     WorkdayScraper,
@@ -936,6 +937,24 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "defer_descriptions_to_cache": True,
         "description_cache_path": "beisen_legacy/descriptions.sqlite3",
         "description_cache_compress": True,
+    },
+    "wintalent": {
+        "scraper": WinTalentScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/wintalent.csv",
+        "output": "wintalent/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 6,
+        "fail_closed_on_empty": True,
+        "fail_closed_on_any_error": True,
+        # A portal that is gone counts as a failed one.
+        "fail_closed_on_not_found": True,
+        # The catalogue is small: 5% lets one portal fail without holding
+        # back the others.
+        "fail_closed_tolerance": 0.05,
     },
     "workable": {
         "scraper": WorkableScraper,
