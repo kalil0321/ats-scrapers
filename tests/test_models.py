@@ -41,6 +41,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "ninehire",
         "bamboohr", "breezy", "jazzhr",
         "recruitee", "talentbrew", "talentsoft", "taleo", "taleo_enterprise", "teamtailor",
+        "varbi",
         # Catch-all
         "custom",
     }

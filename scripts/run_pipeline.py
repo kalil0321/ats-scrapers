@@ -110,6 +110,7 @@ from ats_scrapers.scrapers import (
     TikTokScraper,
     UberScraper,
     UKGProScraper,
+    VarbiScraper,
     WantedScraper,
     WellfoundScraper,
     WeWorkRemotelyScraper,
@@ -405,6 +406,18 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # 5% of boards may fail or be gone; a board that closes is a row
         # to remove, not a reason to hold back the others.
         "fail_closed_tolerance": 0.05,
+    },
+    "varbi": {
+        "scraper": VarbiScraper,
+        "slug": _slug_col,
+        "kwargs": lambda row: {"company_name": (row.get("name") or "").strip() or None},
+        "csv": "ats-companies/varbi.csv",
+        "output": "varbi/jobs.csv",
+        "max_concurrency": 2,
+        "dedupe_by_ats_id": True,
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
     },
     "adp": {
         "scraper": ADPWorkforceNowScraper,

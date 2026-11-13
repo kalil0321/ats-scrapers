@@ -79,6 +79,7 @@ class ATSType(StrEnum):
     SOFTGARDEN = "softgarden"
     SUCCESSFACTORS = "successfactors"
     UKG = "ukg"
+    VARBI = "varbi"
     WINTALENT = "wintalent"
     WORKABLE = "workable"
     # Workable's public job marketplace: every customer's live postings
