@@ -634,7 +634,8 @@ def _format_location(item: dict[str, Any]) -> str | None:
     """Eightfold returns `locations` / `standardizedLocations` as string lists
     (e.g. ``"United States, Washington, Redmond"``). Older tenants use dicts.
     A multi-location posting lists every office; entries already contain
-    commas, so they are joined with ``; `` (as paycom's and jobvite's are)."""
+    commas, so they are joined with ``; `` (as paycom's and jobvite's are,
+    see ``location`` in docs/JOB_SCHEMA.md)."""
     for key in ("standardizedLocations", "locations"):
         locs = item.get(key) or []
         if not isinstance(locs, list):
@@ -642,7 +643,7 @@ def _format_location(item: dict[str, Any]) -> str | None:
         names: list[str] = []
         for loc in locs:
             if isinstance(loc, dict):
-                loc = loc.get("city") or loc.get("country") or loc.get("name")
+                loc = _dict_location_label(loc)
             if isinstance(loc, str) and loc.strip():
                 names.append(loc.strip())
         if names:
@@ -653,6 +654,17 @@ def _format_location(item: dict[str, Any]) -> str | None:
     if isinstance(primary, str):
         return primary
     return None
+
+
+def _dict_location_label(loc: dict[str, Any]) -> str | None:
+    """``City, Country`` from a dict entry, else whichever of the two is
+    filled, else its ``name``. The country is kept so that two offices in
+    cities of the same name stay two entries; blank fields are skipped."""
+    def text(key: str) -> str:
+        value = loc.get(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    return ", ".join(part for part in (text("city"), text("country")) if part) or text("name") or None
 
 
 def _extract_remote(item: dict[str, Any]) -> bool | None:

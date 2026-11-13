@@ -583,8 +583,9 @@ def test_format_location_string_list_strips_entries() -> None:
     assert _format_location({"locations": ["  Berlin  "]}) == "Berlin"
 
 
-def test_format_location_dict_list_uses_city() -> None:
-    assert _format_location({"locations": [{"city": "Paris", "country": "FR"}]}) == "Paris"
+def test_format_location_dict_list_uses_city_and_country() -> None:
+    assert _format_location({"locations": [{"city": "Paris", "country": "FR"}]}) == "Paris, FR"
+    assert _format_location({"locations": [{"city": "Paris"}]}) == "Paris"
 
 
 def test_format_location_dict_list_falls_back_to_country() -> None:
@@ -634,7 +635,28 @@ def test_format_location_keeps_every_listed_location() -> None:
 def test_format_location_dict_list_keeps_every_location() -> None:
     assert _format_location(
         {"locations": [{"city": "Paris", "country": "FR"}, {"city": "Lyon"}, {}]}
-    ) == "Paris; Lyon"
+    ) == "Paris, FR; Lyon"
+
+
+def test_format_location_dict_list_keeps_same_named_cities_apart() -> None:
+    """Deduping on the city alone would drop one of two offices."""
+    assert _format_location(
+        {"locations": [
+            {"city": "London", "country": "CA"},
+            {"city": "London", "country": "GB"},
+            {"city": "London", "country": "GB"},
+        ]}
+    ) == "London, CA; London, GB"
+
+
+def test_format_location_dict_blank_fields_do_not_block_the_fallback() -> None:
+    assert _format_location({"locations": [{"city": " ", "country": "FR"}]}) == "FR"
+    assert _format_location(
+        {"locations": [{"city": "", "country": None, "name": " EMEA "}]}
+    ) == "EMEA"
+    assert _format_location(
+        {"locations": [{"city": 7, "country": ["FR"]}], "primaryLocation": "Lyon"}
+    ) == "Lyon"
 
 
 def test_format_location_skips_blank_entries_in_list() -> None:
