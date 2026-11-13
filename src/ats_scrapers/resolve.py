@@ -44,6 +44,8 @@ _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._\-]*$", re.IGNORECASE)
 _LEVER_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9._&\-]*", re.IGNORECASE)
 _LEVER_REGIONS = {"jobs.lever.co": "us", "jobs.eu.lever.co": "eu"}
 _DNS_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
+# A CATS portal page: /careers/{portal number}, then "-Name" or "/jobs/...".
+_CATSONE_PORTAL_PATH_RE = re.compile(r"^/careers/(\d{1,12})(?:[-/]|$)")
 _DAYFORCE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
@@ -385,6 +387,16 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             ats = ATSType.BEISEN_LEGACY if is_legacy else ATSType.BEISEN
             return ResolvedCareersUrl(ats, tenant)
         return None
+
+    if host.endswith(".catsone.com"):
+        # A tenant can have several portals: keep the number of the one
+        # the URL names, so that the scraper reads that portal.
+        tenant = host.removesuffix(".catsone.com")
+        if not _DNS_LABEL_RE.fullmatch(tenant):
+            return None
+        portal = _CATSONE_PORTAL_PATH_RE.match(parsed.path)
+        slug = f"{tenant}/{portal.group(1)}" if portal else tenant
+        return ResolvedCareersUrl(ATSType.CATSONE, slug)
 
     for suffix, ats in _SUBDOMAIN_SUFFIXES.items():
         if host.endswith(suffix):

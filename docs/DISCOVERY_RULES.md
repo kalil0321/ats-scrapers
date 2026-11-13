@@ -337,6 +337,29 @@ Validation:
 3. Require HTTP 200 and non-empty postings.
 4. Reject generic Pinpoint pages and inactive boards.
 
+### CATS
+
+Rows use the tenant's host label as ``slug`` and
+``https://{slug}.catsone.com/careers/`` as ``url``. Most customers are
+staffing and recruiting firms; the row is the firm, which is the one that
+posts the job.
+
+Validation:
+
+1. Fetch the portal. Require HTTP 200 and the portal's data in the page,
+   with a portal that does not say it is inactive.
+2. Run the scraper and require at least one job.
+3. Require a job posted in the 90 days before validation (``datePosted``,
+   which every job carries). Many firms leave a portal online with the jobs
+   it had when they stopped using it.
+4. The row name is the portal's own name (``portal.name`` in the page's
+   data).
+5. A tenant can have several portals (``/careers/{number}``). The row is
+   the default one, where ``/careers/`` leads. Add another portal of a
+   tenant, as ``{slug}/{number}``, only when it lists jobs the default one
+   does not: a job has the same number on every portal and is published
+   once.
+
 ### ClearCompany
 
 Rows use the career site name as ``slug`` and
