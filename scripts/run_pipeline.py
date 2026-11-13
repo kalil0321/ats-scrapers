@@ -628,6 +628,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
         },
         "csv": "ats-companies/workday.csv",
         "output": "workday/jobs.csv",
+        # A tenant often lists one posting on several of its career sites.
+        # The id is the tenant host and the posting path, so the copies
+        # share it whatever name each catalogue row carries.
+        "dedupe_by_ats_id": True,
         # Workday descriptions require per-job detail calls. Defer to the
         # disk-backed description cache so the scraper's internal enrichment
         # stays off (it would re-fetch every row, bypassing the cache).

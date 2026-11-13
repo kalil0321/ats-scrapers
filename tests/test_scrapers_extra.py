@@ -384,7 +384,7 @@ def test_workday_parses_url_and_paginates(httpx_mock) -> None:
     titles = {j.title for j in jobs}
     assert "Last One" in titles
     assert jobs[0].ats_id == (
-        "accenture.wd103.myworkdayjobs.com/accenturecareers/job/0"
+        "accenture.wd103.myworkdayjobs.com/job/0"
     )
 
 
@@ -448,9 +448,7 @@ def test_workday_uses_configured_company_name(httpx_mock) -> None:
     ).fetch()
 
     assert jobs[0].company == "Acme Health"
-    assert jobs[0].ats_id == (
-        "acme.wd1.myworkdayjobs.com/External/job/1"
-    )
+    assert jobs[0].ats_id == "acme.wd1.myworkdayjobs.com/job/1"
 
 
 def test_workday_uses_external_path_when_bullet_fields_start_with_location(
@@ -499,11 +497,11 @@ def test_workday_uses_external_path_when_bullet_fields_start_with_location(
 
     assert [job.ats_id for job in jobs] == [
         (
-            "minor.wd102.myworkdayjobs.com/careers/job/Bnh-nh-Vietnam/"
+            "minor.wd102.myworkdayjobs.com/job/Bnh-nh-Vietnam/"
             "Complex-F-B-Manager_JR109533"
         ),
         (
-            "minor.wd102.myworkdayjobs.com/careers/job/Bnh-nh-Vietnam/"
+            "minor.wd102.myworkdayjobs.com/job/Bnh-nh-Vietnam/"
             "Restaurant-Manager_JR109534"
         ),
     ]
@@ -545,12 +543,8 @@ def test_workday_scopes_job_ids_to_tenant(httpx_mock) -> None:
         include_descriptions=False,
     ).fetch()[0]
 
-    assert first.ats_id == (
-        "first.wd1.myworkdayjobs.com/external/job/USA/Engineer_R-1"
-    )
-    assert second.ats_id == (
-        "second.wd1.myworkdayjobs.com/external/job/USA/Engineer_R-1"
-    )
+    assert first.ats_id == "first.wd1.myworkdayjobs.com/job/USA/Engineer_R-1"
+    assert second.ats_id == "second.wd1.myworkdayjobs.com/job/USA/Engineer_R-1"
     assert first.global_id != second.global_id
 
 
@@ -580,6 +574,97 @@ def test_workday_scopes_job_ids_to_instance(httpx_mock) -> None:
 
     assert first.ats_id != second.ats_id
     assert first.global_id != second.global_id
+
+
+def test_workday_gives_one_id_to_a_posting_listed_on_two_sites(
+    httpx_mock,
+) -> None:
+    """The second career site adds a counter to the path of the same posting."""
+    httpx_mock.add_response(
+        url="https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs",
+        json={
+            "jobPostings": [
+                {
+                    "title": "Engineer",
+                    "externalPath": "/job/USA/Engineer_R2613747",
+                    "bulletFields": ["R2613747"],
+                }
+            ],
+            "total": 1,
+        },
+    )
+    httpx_mock.add_response(
+        url="https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/Campus/jobs",
+        json={
+            "jobPostings": [
+                {
+                    "title": "Engineer",
+                    "externalPath": "/job/USA/Engineer_R2613747-1",
+                    "bulletFields": ["USA", "R2613747"],
+                }
+            ],
+            "total": 1,
+        },
+    )
+
+    first = WorkdayScraper(
+        "https://acme.wd1.myworkdayjobs.com/External",
+        include_descriptions=False,
+    ).fetch()[0]
+    second = WorkdayScraper(
+        "https://acme.wd1.myworkdayjobs.com/Campus",
+        include_descriptions=False,
+    ).fetch()[0]
+
+    assert first.ats_id == "acme.wd1.myworkdayjobs.com/job/USA/Engineer_R2613747"
+    assert second.ats_id == first.ats_id
+    assert second.requisition_id == first.requisition_id == "R2613747"
+    # The link stays the one the site serves, counter included.
+    assert str(second.url) == (
+        "https://acme.wd1.myworkdayjobs.com/Campus/job/USA/Engineer_R2613747-1"
+    )
+
+
+def test_workday_keeps_a_path_suffix_no_bullet_field_explains(
+    httpx_mock,
+) -> None:
+    api = "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs"
+    httpx_mock.add_response(
+        url=api,
+        json={
+            "jobPostings": [
+                {
+                    # The bullet field is a place, so nothing says that
+                    # ``-1`` is a counter and not part of the id.
+                    "title": "Nurse",
+                    "externalPath": "/job/Troy-MI/Nurse_R123-1",
+                    "bulletFields": ["Troy, MI"],
+                },
+                {
+                    # The bullet field is the whole token: no counter here.
+                    "title": "Analyst",
+                    "externalPath": "/job/USA/Analyst_R-2026-12",
+                    "bulletFields": ["R-2026-12"],
+                },
+                {
+                    "title": "Clerk",
+                    "externalPath": "/job/USA/Clerk_R-7",
+                },
+            ],
+            "total": 3,
+        },
+    )
+
+    jobs = WorkdayScraper(
+        "https://acme.wd1.myworkdayjobs.com/External",
+        include_descriptions=False,
+    ).fetch()
+
+    assert [(job.ats_id, job.requisition_id) for job in jobs] == [
+        ("acme.wd1.myworkdayjobs.com/job/Troy-MI/Nurse_R123-1", None),
+        ("acme.wd1.myworkdayjobs.com/job/USA/Analyst_R-2026-12", "R-2026-12"),
+        ("acme.wd1.myworkdayjobs.com/job/USA/Clerk_R-7", None),
+    ]
 
 
 def test_workday_requisition_id_ignores_embedded_title_metadata(

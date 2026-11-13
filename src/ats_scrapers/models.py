@@ -237,7 +237,7 @@ class Job(BaseModel):
             "Globally unique identifier for the posting, formatted as "
             "``{ats_type}:{ats_id}`` when both are set (e.g. "
             "``ashby:engineer-2026`` or "
-            "``workday:acme.wd1.myworkdayjobs.com/jobs/job/1``). The "
+            "``workday:acme.wd1.myworkdayjobs.com/job/USA/Engineer_R-1``). The "
             "separator is a colon — parsers should split on the FIRST "
             "colon since ``ats_id`` may itself contain colons. When "
             "``ats_id`` is missing, malformed, or contains control "
@@ -283,7 +283,7 @@ class Job(BaseModel):
         default=None,
         description=(
             "Per-ATS identifier for the posting — Greenhouse numeric "
-            "id, Workday canonical site-relative path, Lever UUID, etc. Unique "
+            "id, Workday tenant host and posting path, Lever UUID, etc. Unique "
             "within ``ats_type`` but not globally (use ``global_id`` "
             "for that). Optional defensively: when null/empty/malformed, "
             "``global_id`` falls back to UUID4 instead of crashing the "

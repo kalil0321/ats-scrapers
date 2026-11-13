@@ -44,7 +44,7 @@ Globally unique identifier for the posting, formatted as
 `{ats_type}:{ats_id}` when both are present.
 
 - **Examples:** `ashby:engineer-2026`,
-  `workday:acme.wd1.myworkdayjobs.com/jobs/job/1`, `greenhouse:6849563`.
+  `workday:acme.wd1.myworkdayjobs.com/job/USA/Engineer_R-1`, `greenhouse:6849563`.
 - **Separator:** `:`. Parsers should split on the **first** colon —
   `ats_id` may itself contain colons (some Taleo URLs encode multiple).
   Example: `"taleo:acme:req:12345"` parses as
@@ -93,7 +93,7 @@ Per-ATS identifier. Unique within `ats_type` but not globally — use
 | ATS | Typical `ats_id` |
 |---|---|
 | Greenhouse | numeric: `"6849563"` |
-| Workday | mixed-case: `"R0136150"` |
+| Workday | tenant host and posting path, career site left out: `"acme.wd1.myworkdayjobs.com/job/USA/Engineer_R-1"` |
 | Lever | UUID: `"62a8c1f4-..."` |
 | iCIMS | dash-separated: `"job-2026-04-eng"` |
 | Bundesagentur | hex hash |

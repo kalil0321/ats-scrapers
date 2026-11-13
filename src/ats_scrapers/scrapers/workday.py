@@ -32,6 +32,7 @@ import re
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -45,6 +46,8 @@ if TYPE_CHECKING:
 URL_PATTERN = re.compile(
     r"^https://(?P<company>[^.]+)\.(?P<instance>wd\d+)\.myworkdayjobs\.com/(?P<site>[^/?#]+)"
 )
+# The counter Workday adds to the path of a requisition posted again.
+_POSTING_COUNTER_RE = re.compile(r"-\d{1,3}$")
 PAGE_LIMIT = 20  # Workday hard-caps `limit` at 20 — higher returns 400.
 
 # Workday's ``timeType`` is a stable enum: "Full time" / "Part time".
@@ -515,13 +518,13 @@ class WorkdayScraper(BaseScraper):
         company: str,
     ) -> Job | None:
         external_path = item.get("externalPath", "") or ""
-        ats_id = _job_identity(base_url, external_path)
-        if ats_id is None:
-            return None
-        requisition_id = _requisition_id(
+        requisition_id, canonical_path = _requisition(
             item.get("bulletFields"),
             external_path,
         )
+        ats_id = _job_identity(base_url, canonical_path)
+        if ats_id is None:
+            return None
 
         # ``timeType`` ("Full time" / "Part time") is the canonical
         # Workday signal; map to our employment-type enum.
@@ -616,24 +619,45 @@ def _external_path(url: object) -> str | None:
     return s[idx:] if idx >= 0 else None
 
 
-def _job_identity(base_url: str, external_path: object) -> str | None:
-    if not isinstance(external_path, str) or not external_path.strip():
+def _job_identity(base_url: str, canonical_path: object) -> str | None:
+    """The posting's identity: the tenant's host and the posting's path.
+
+    The career site is left out. A tenant often lists one posting on
+    several of its sites, and the sites then give it the same path, apart
+    from a counter that :func:`_requisition` removes.
+    """
+    if not isinstance(canonical_path, str) or not canonical_path.strip():
         return None
-    path = external_path.strip()
+    path = canonical_path.strip().rstrip("/")
     if not path.startswith("/job/"):
         return None
-    namespace = base_url.removeprefix("https://").rstrip("/")
-    return f"{namespace}{path}"
-
-
-def _requisition_id(
-    bullet_fields: object,
-    external_path: str,
-) -> str | None:
-    if not isinstance(bullet_fields, list):
+    host = urlsplit(base_url).hostname
+    if not host:
         return None
-    final_segment = external_path.rstrip("/").rsplit("/", 1)[-1].casefold()
-    suffix_candidates: list[str] = []
+    return f"{host.casefold()}{path}"
+
+
+def _requisition(
+    bullet_fields: object,
+    external_path: object,
+) -> tuple[str | None, object]:
+    """The requisition id and the path without its posting counter.
+
+    Workday ends a posting's path with ``{title}_{requisition}``. When a
+    requisition is posted more than once (on a second career site, most
+    often), the later postings get a counter: ``..._R123-1``,
+    ``..._R123-2``. A bullet field is the requisition id only when the path
+    ends with it, alone or followed by such a counter; the first bullet
+    field is a location or a brand on many tenants. The counter is removed
+    from the path only in that case: ``R-2026-12`` can be a requisition id
+    of its own, and is kept whole when a bullet field says so.
+    """
+    if not isinstance(external_path, str) or not isinstance(bullet_fields, list):
+        return None, external_path
+    path = external_path.strip().rstrip("/")
+    final_segment = path.rsplit("/", 1)[-1].casefold()
+    whole: list[str] = []
+    counted: list[str] = []
     exact_candidate: str | None = None
     for value in bullet_fields:
         if not isinstance(value, str) or not value.strip():
@@ -647,12 +671,16 @@ def _requisition_id(
         ):
             continue
         if final_segment.endswith(f"_{marker}"):
-            suffix_candidates.append(cleaned)
+            whole.append(cleaned)
+        elif re.fullmatch(rf".*_{re.escape(marker)}-\d{{1,3}}", final_segment):
+            counted.append(cleaned)
         elif final_segment == marker:
             exact_candidate = cleaned
-    if suffix_candidates:
-        return min(suffix_candidates, key=len)
-    return exact_candidate
+    if whole:
+        return min(whole, key=len), external_path
+    if counted:
+        return max(counted, key=len), _POSTING_COUNTER_RE.sub("", path)
+    return exact_candidate, external_path
 
 
 def _format_locations(primary: object, additional: object) -> str | None:
