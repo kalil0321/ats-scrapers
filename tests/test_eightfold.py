@@ -579,12 +579,13 @@ def test_format_location_prefers_standardized_over_locations() -> None:
     ) == "Standardized City"
 
 
-def test_format_location_string_list_returns_first_stripped() -> None:
+def test_format_location_string_list_strips_entries() -> None:
     assert _format_location({"locations": ["  Berlin  "]}) == "Berlin"
 
 
-def test_format_location_dict_list_uses_city() -> None:
-    assert _format_location({"locations": [{"city": "Paris", "country": "FR"}]}) == "Paris"
+def test_format_location_dict_list_uses_city_and_country() -> None:
+    assert _format_location({"locations": [{"city": "Paris", "country": "FR"}]}) == "Paris, FR"
+    assert _format_location({"locations": [{"city": "Paris"}]}) == "Paris"
 
 
 def test_format_location_dict_list_falls_back_to_country() -> None:
@@ -621,6 +622,66 @@ def test_format_location_empty_list_falls_through() -> None:
     assert _format_location(
         {"standardizedLocations": [], "locations": ["Berlin"]}
     ) == "Berlin"
+
+
+def test_format_location_keeps_every_listed_location() -> None:
+    """Multi-location postings list each office; entries already carry
+    commas, so they are joined with "; "."""
+    assert _format_location(
+        {"locations": ["Toronto, ON, Canada", "Berlin, Germany", "Toronto, ON, Canada"]}
+    ) == "Toronto, ON, Canada; Berlin, Germany"
+
+
+def test_format_location_dict_list_keeps_every_location() -> None:
+    assert _format_location(
+        {"locations": [{"city": "Paris", "country": "FR"}, {"city": "Lyon"}, {}]}
+    ) == "Paris, FR; Lyon"
+
+
+def test_format_location_dict_list_keeps_same_named_cities_apart() -> None:
+    """Deduping on the city alone would drop one of two offices."""
+    assert _format_location(
+        {"locations": [
+            {"city": "London", "country": "CA"},
+            {"city": "London", "country": "GB"},
+            {"city": "London", "country": "GB"},
+        ]}
+    ) == "London, CA; London, GB"
+
+
+def test_format_location_dict_blank_fields_do_not_block_the_fallback() -> None:
+    assert _format_location({"locations": [{"city": " ", "country": "FR"}]}) == "FR"
+    assert _format_location(
+        {"locations": [{"city": "", "country": None, "name": " EMEA "}]}
+    ) == "EMEA"
+    assert _format_location(
+        {"locations": [{"city": 7, "country": ["FR"]}], "primaryLocation": "Lyon"}
+    ) == "Lyon"
+
+
+def test_format_location_skips_blank_entries_in_list() -> None:
+    assert _format_location(
+        {"standardizedLocations": ["  ", "Austin, TX, US"], "locations": ["Austin"]}
+    ) == "Austin, TX, US"
+
+
+def test_multi_location_posting_keeps_all_locations(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page(
+            [
+                {
+                    "displayJobId": "M1",
+                    "name": "Engineer",
+                    "positionUrl": "/careers/job/M1",
+                    "locations": ["Berlin, Germany", "Munich, Germany"],
+                }
+            ],
+            count=1,
+        ),
+    )
+    jobs = EightfoldScraper("dolby", include_descriptions=False).fetch()
+    assert jobs[0].location == "Berlin, Germany; Munich, Germany"
 
 
 # --- _parse_ts: timestamp helper ---------------------------------------------

@@ -110,8 +110,11 @@ ERROR is logged.
 ### `location` &nbsp;`str | None`
 
 Free-form location string as posted. Examples: `Paris, France`,
-`Remote — US`, `Berlin or Remote`. Multi-location postings are rendered
-as comma-joined when the ATS exposes a list.
+`Remote — US`, `Berlin or Remote`. When the ATS exposes a list, a
+multi-location posting keeps every place, joined with `; ` by most sources.
+A few use ` | ` (Workday, Workable, Bundesagentur) or `, ` (Ninehire). A
+single place often holds commas itself (`Toronto, ON, Canada`), so do not
+split on commas.
 
 ### `country_iso` &nbsp;`str | None`
 

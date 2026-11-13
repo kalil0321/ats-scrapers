@@ -305,9 +305,10 @@ class Job(BaseModel):
         default=None,
         description=(
             "Free-form location string as posted (e.g. ``Paris, France``, "
-            "``Remote — US``, ``Berlin or Remote``). Multi-location "
-            "postings are rendered as comma-joined when the ATS "
-            "exposes a list."
+            "``Remote — US``, ``Berlin or Remote``). When the ATS exposes "
+            "a list, a multi-location posting keeps every place, joined "
+            "with ``; `` by most sources (`` | `` or ``, `` by a few); a "
+            "single place often holds commas itself."
         ),
     )
     country_iso: str | None = Field(
