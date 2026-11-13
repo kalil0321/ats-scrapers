@@ -31,6 +31,7 @@ import sys
 import tempfile
 import time
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -1762,6 +1763,56 @@ def _job_to_row(job: Job) -> dict[str, Any]:
     }
 
 
+TENANT_STATUS_FILENAME = "tenant_status.csv"
+TENANT_STATUS_FIELDS = [
+    "ats",
+    "slug",
+    "name",
+    "url",
+    "status",
+    "jobs",
+    "error",
+    "run_started_at",
+    "checked_at",
+]
+
+
+def _tenant_status_row(
+    ats: str,
+    slug: str,
+    row: dict[str, str],
+    jobs: int,
+    err: str | None,
+    run_started_at: str,
+) -> dict[str, Any]:
+    if err == "not_found":
+        status = "not_found"
+    elif err:
+        status = "error"
+    else:
+        status = "ok" if jobs else "empty"
+    return {
+        "ats": ats,
+        "slug": slug,
+        "name": row.get("name", ""),
+        "url": row.get("url", ""),
+        "status": status,
+        "jobs": jobs,
+        "error": err if status == "error" else "",
+        "run_started_at": run_started_at,
+        "checked_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+
+
+def _write_tenant_status(path: Path, rows: list[dict[str, Any]]) -> None:
+    tmp = path.with_name(f".{path.name}.tmp")
+    with tmp.open("w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=TENANT_STATUS_FIELDS)
+        writer.writeheader()
+        writer.writerows(sorted(rows, key=lambda r: r["slug"]))
+    tmp.replace(path)
+
+
 def _tolerated_shard_failures(cfg: dict[str, Any], targets: int) -> int:
     """How many required shards may fail before a fail-closed run aborts.
 
@@ -1836,6 +1887,7 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
 
     targets: list[tuple[str, dict[str, Any]]] = []
     display_names: dict[str, str] = {}
+    tenant_rows: dict[str, dict[str, str]] = {}
     if cfg.get("singleton"):
         # Single-tenant scraper (big-tech bespoke careers). No CSV — call
         # the scraper once with the ATS name as a placeholder slug; the
@@ -1857,6 +1909,9 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                 name = (r.get("name") or "").strip()
                 if name:
                     display_names[slug] = name
+                tenant_rows.setdefault(
+                    slug, {"name": name, "url": (r.get("url") or "").strip()}
+                )
 
     configured_target_count = len(targets)
     omitted_required_shards = 0
@@ -1915,6 +1970,10 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             f"({location} cache at {description_cache.path})"
         )
     seen_keys: set[tuple[str, str]] = set()
+    tenant_status: list[dict[str, Any]] = []
+    run_started_at = datetime.now(UTC).isoformat(timespec="seconds")
+    stream_error: str | None = None
+
     t0 = time.time()
     try:
         with tmp_output_path.open("w", newline="") as f:
@@ -2005,8 +2064,16 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                     for task in pending_descriptions:
                         task.cancel()
                     counts["error"] = 1
+                    stream_error = f"{type(exc).__name__}: {str(exc)[:120]}"
                     print(f"  [{ats}] streaming failed: {type(exc).__name__}: "
                           f"{str(exc)[:200]}")
+                if counts["not_found"]:
+                    stream_error = "not_found"
+                tenant_status.append(
+                    _tenant_status_row(
+                        ats, ats, {}, counts["jobs"], stream_error, run_started_at
+                    )
+                )
             else:
                 async def scrape_tenant(slug: str, kw: dict[str, Any]) -> None:
                     started = time.time()
@@ -2024,6 +2091,12 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                         finally:
                             if tenant_delay:
                                 await asyncio.sleep(tenant_delay)
+                    tenant_status.append(
+                        _tenant_status_row(
+                            ats, slug, tenant_rows.get(slug, {}), len(jobs), err,
+                            run_started_at,
+                        )
+                    )
                     if err == "not_found":
                         counts["not_found"] += 1
                         return
@@ -2099,6 +2172,14 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             f"[{ats}] Done in {elapsed:.0f}s: {counts['jobs']:,} jobs from "
             f"{counts['success']}/{len(targets)} tenants → {output_path}"
         )
+
+        # Written even when the guards below keep the previous jobs.csv:
+        # per-tenant outcomes are still true observations. A partial run
+        # (--max-tenants) would read as tenants missing from the history.
+        if tenant_status and not max_tenants:
+            _write_tenant_status(
+                output_path.parent / TENANT_STATUS_FILENAME, tenant_status
+            )
 
         failure_threshold = max(1, (len(targets) + 1) // 2)
         streaming_failure = uses_streaming and counts["error"] > 0

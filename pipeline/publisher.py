@@ -83,6 +83,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_PREFIX = "jobhive/v1"
+# Written by scripts/run_pipeline.py next to each provider's jobs.csv.
+TENANT_STATUS_FILENAME = "tenant_status.csv"
 CACHE_CONTROL_LATEST = "public, max-age=300"  # manifest + latest data files
 
 # ``all`` ships both formats — parquet for typed pandas / DuckDB
@@ -191,6 +193,7 @@ class DatasetPublisher:
             per_ats_entries: dict[ATSType, dict[str, object]] = {}
             schema_union: list[str] = []
             seen_cols: set[str] = set()
+            tenant_status_paths = _find_tenant_status_files(source_dir, ats_csv_pattern)
 
             any_csv_found = False
             for ats in ATSType:
@@ -257,6 +260,10 @@ class DatasetPublisher:
                 files_uploaded.extend(_collect_uploaded_keys(entry))
 
             if not any_csv_found:
+                # No provider has a jobs file, so there is no dataset to
+                # publish. The per-company outcomes of the runs that failed
+                # are still worth having: upload them before giving up.
+                self._upload_tenant_status(tenant_status_paths)
                 raise StorageError(f"No ATS CSVs found in {source_dir}")
 
             # ---- Pass 2: cross-ATS dedup directly on the per-ATS temp CSVs ---
@@ -284,6 +291,10 @@ class DatasetPublisher:
             )
             files_uploaded.extend(_collect_uploaded_keys(all_entry))
 
+            tenant_status_entry = self._upload_tenant_status(tenant_status_paths)
+            if tenant_status_entry is not None:
+                files_uploaded.extend(_collect_uploaded_keys(tenant_status_entry))
+
             jobs_by_kind = _jobs_by_source_kind(survivors)
             manifest_key, badges_key = self._patch_and_upload_manifest(
                 generated_at=started,
@@ -306,6 +317,7 @@ class DatasetPublisher:
                 all_entry=all_entry,
                 by_ats=per_ats_entries,
                 existing_manifest=existing_manifest,
+                tenant_status=tenant_status_entry,
             )
             if badges_key is not None:
                 files_uploaded.append(badges_key)
@@ -510,6 +522,7 @@ class DatasetPublisher:
         all_entry: dict[str, object],
         by_ats: dict[ATSType, dict[str, object]],
         existing_manifest: dict[str, object] | None = None,
+        tenant_status: dict[str, object] | None = None,
     ) -> tuple[str, str | None]:
         """Read existing manifest, replace jobs-related fields, preserve
         the companies block written by the CI.
@@ -538,6 +551,8 @@ class DatasetPublisher:
         manifest["stats"] = stats
         manifest["all"] = all_entry
         manifest["by_ats"] = {ats.value: entry for ats, entry in by_ats.items()}
+        if tenant_status is not None:
+            manifest["tenant_status"] = tenant_status
 
         # Drop fields from the pre-2.0 layout if they survived the
         # legacy-path prune. Their data is gone so the entries point
@@ -588,6 +603,28 @@ class DatasetPublisher:
             logger.warning("Badge upload failed: %s", exc)
             return None
         return key
+
+    def _upload_tenant_status(self, paths: list[Path]) -> dict[str, object] | None:
+        """Concatenate every provider's latest per-tenant scrape outcome
+        into ``<prefix>/tenant_status.{csv,parquet}``."""
+        frames: list[pl.DataFrame] = []
+        for path in paths:
+            try:
+                frames.append(pl.read_csv(path, infer_schema_length=0))
+            except (pl.exceptions.NoDataError, pl.exceptions.ComputeError) as exc:
+                logger.warning("%s: unreadable tenant status (%s); skipping.", path, exc)
+        if not frames:
+            return None
+        df = pl.concat(frames, how="diagonal").with_columns(
+            pl.col("jobs").cast(pl.Int64, strict=False)
+        )
+        base_key = f"{self._prefix}/tenant_status"
+        with _temp_file(".csv") as csv_path:
+            df.write_csv(csv_path)
+            entry, _ = self._upload_per_ats_streaming(
+                csv_path=csv_path, base_key=base_key
+            )
+        return entry
 
     def _public_or_key(self, key: str) -> str:
         return self._r2.public_url(key) or key
@@ -1214,6 +1251,35 @@ def _safe_parse_salary(value: object) -> dict[str, float | None]:
         return {"min": None, "max": None}
     mn, mx = parse_salary_range(value)
     return {"min": mn, "max": mx}
+
+
+def _find_tenant_status_files(source_dir: Path, ats_csv_pattern: str) -> list[Path]:
+    """Status files of every provider, including those without a jobs.csv
+    (a first run that failed still has outcomes worth publishing).
+
+    The VPS publisher passes each jobs.csv as a symlink into a temp
+    directory, so the real jobs root behind those symlinks is searched too.
+    """
+    depth = len(Path(ats_csv_pattern).parts)
+    roots = [source_dir]
+    for ats in ATSType:
+        jobs_path = source_dir / ats_csv_pattern.format(ats=ats.value)
+        if jobs_path.is_symlink():
+            real_root = jobs_path.resolve().parents[depth - 1]
+            if real_root not in roots:
+                roots.append(real_root)
+    found: list[Path] = []
+    for ats in ATSType:
+        if ats is ATSType.CUSTOM:
+            continue
+        for root in roots:
+            status_path = (
+                root / ats_csv_pattern.format(ats=ats.value)
+            ).parent / TENANT_STATUS_FILENAME
+            if status_path.is_file():
+                found.append(status_path)
+                break
+    return found
 
 
 def _collect_uploaded_keys(entry: dict[str, object]) -> list[str]:

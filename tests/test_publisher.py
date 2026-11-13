@@ -1261,3 +1261,102 @@ def test_sha256_matches_uploaded_bytes(ats_csv_dir, fake_r2) -> None:
         hashlib.sha256(csv_bytes).hexdigest()
         == manifest["by_ats"]["greenhouse"]["sha256"]
     )
+
+
+# --- Per-tenant scrape status ----------------------------------------------
+
+
+def _write_status(path, rows: list[tuple[str, str, int]]) -> None:
+    lines = ["ats,slug,name,url,status,jobs,error,run_started_at,checked_at"]
+    for slug, status, jobs in rows:
+        lines.append(
+            f"{path.parent.name},{slug},{slug.title()},https://{slug}.example,"
+            f"{status},{jobs},,2026-11-11T00:00:00+00:00,2026-11-11T00:01:00+00:00"
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_publish_concatenates_tenant_status(ats_csv_dir, fake_r2) -> None:
+    _write_status(
+        ats_csv_dir / "greenhouse" / "tenant_status.csv",
+        [("acme", "ok", 3), ("gone", "not_found", 0)],
+    )
+    _write_status(ats_csv_dir / "lever" / "tenant_status.csv", [("beta", "empty", 0)])
+
+    DatasetPublisher(fake_r2).publish_from_directory(ats_csv_dir)
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    entry = manifest["tenant_status"]
+    assert entry["rows"] == 3
+    assert entry["parquet"] == "https://cdn.example.com/jobhive/v1/tenant_status.parquet"
+    df = pd.read_parquet(io.BytesIO(fake_r2.uploads["jobhive/v1/tenant_status.parquet"]["data"]))
+    assert sorted(zip(df["ats"], df["slug"], df["status"], strict=True)) == [
+        ("greenhouse", "acme", "ok"),
+        ("greenhouse", "gone", "not_found"),
+        ("lever", "beta", "empty"),
+    ]
+    assert df["jobs"].dtype.kind == "i"
+
+
+def test_publish_finds_tenant_status_behind_symlinked_jobs_csv(
+    ats_csv_dir, tmp_path_factory, fake_r2
+) -> None:
+    _write_status(ats_csv_dir / "ashby" / "tenant_status.csv", [("acme", "ok", 1)])
+    # A provider whose first run failed has a status file but no jobs.csv.
+    (ats_csv_dir / "workable").mkdir()
+    _write_status(ats_csv_dir / "workable" / "tenant_status.csv", [("x", "error", 0)])
+    selected = tmp_path_factory.mktemp("selected")
+    (selected / "ashby").mkdir()
+    (selected / "ashby" / "jobs.csv").symlink_to(ats_csv_dir / "ashby" / "jobs.csv")
+
+    DatasetPublisher(fake_r2).publish_from_directory(selected)
+
+    df = pd.read_parquet(io.BytesIO(fake_r2.uploads["jobhive/v1/tenant_status.parquet"]["data"]))
+    assert sorted(zip(df["ats"], df["slug"], strict=True)) == [
+        ("ashby", "acme"),
+        ("workable", "x"),
+    ]
+
+
+def test_publish_includes_status_of_provider_without_jobs_csv(
+    ats_csv_dir, fake_r2
+) -> None:
+    (ats_csv_dir / "workable").mkdir()
+    _write_status(ats_csv_dir / "workable" / "tenant_status.csv", [("x", "error", 0)])
+
+    DatasetPublisher(fake_r2).publish_from_directory(ats_csv_dir)
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    assert manifest["tenant_status"]["rows"] == 1
+
+
+def test_status_is_uploaded_when_no_provider_has_a_jobs_file(tmp_path, fake_r2) -> None:
+    """A first run where every provider failed: there is no dataset to
+    publish, but the per-company outcomes are uploaded before the error."""
+    (tmp_path / "workable").mkdir()
+    _write_status(
+        tmp_path / "workable" / "tenant_status.csv",
+        [("x", "error", 0), ("y", "not_found", 0)],
+    )
+
+    with pytest.raises(StorageError, match="No ATS CSVs found"):
+        DatasetPublisher(fake_r2).publish_from_directory(tmp_path)
+
+    df = pd.read_parquet(
+        io.BytesIO(fake_r2.uploads["jobhive/v1/tenant_status.parquet"]["data"])
+    )
+    assert sorted(df["slug"]) == ["x", "y"]
+    assert "jobhive/v1/manifest.json" not in fake_r2.uploads
+
+
+def test_publish_without_tenant_status_keeps_previous_entry(ats_csv_dir, fake_r2) -> None:
+    previous = {"parquet": "https://cdn.example.com/jobhive/v1/tenant_status.parquet", "rows": 7}
+    fake_r2.upload_bytes(
+        json.dumps({"tenant_status": previous}).encode(), "jobhive/v1/manifest.json"
+    )
+
+    DatasetPublisher(fake_r2).publish_from_directory(ats_csv_dir)
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    assert manifest["tenant_status"] == previous
+    assert "jobhive/v1/tenant_status.parquet" not in fake_r2.uploads
