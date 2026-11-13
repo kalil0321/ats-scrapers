@@ -36,8 +36,9 @@ with the total.
 The total is not taken as an upper bound either. A page past the end
 answers the last page again, or no posting at all, and echoes the page
 number it was asked for, so the walk reads on after the announced pages
-and stops at the first page that brings no requisition it has not seen.
-Past the announced pages that is the only end signal there is.
+and stops at the first page that lists no row it has not been given before
+(rows are compared as listed, whether or not they can be read). Past the
+announced pages that is the only end signal there is.
 
 ``column`` follows the section's own layout, so only the positions the
 payload names are trusted: ``linkedColumn`` is the title and
@@ -219,6 +220,8 @@ class TaleoEnterpriseScraper(BaseScraper):
             "tzname": "UTC",
         }
         jobs: dict[str, Job] = {}
+        # Every row listed so far, readable or not.
+        listed: set[str] = set()
         page_count = 1
         rows_seen = 0
         rows_read = 0
@@ -228,35 +231,37 @@ class TaleoEnterpriseScraper(BaseScraper):
                 url, json=_search_payload(page), headers=headers
             )
             rows, total, page_size = self._check_payload(payload, page)
-            page_count = max(page_count, math.ceil(total / page_size))
+            # Integer division: the total is whatever the response says.
+            page_count = max(page_count, -(-total // page_size))
             if page_count > MAX_PAGES:
                 raise ScraperError(
                     f"Taleo Enterprise ({self.company_slug}) announces "
                     f"{total} postings on {page_count} pages (page guard "
                     f"{MAX_PAGES}); refusing to return a partial list"
                 )
-            added = 0
+            identities = [_identity(row) for row in rows]
+            # Within the announced pages there is no early exit: a short
+            # or empty page can have postings after it. Past them, the
+            # walk goes on only while a page lists a row not listed
+            # before (see the module docstring); the page that ends it is
+            # the last page again, or an empty one, and is not counted.
+            # Rows are compared as listed, not as parsed, so a page of
+            # new rows that cannot be read does not pass for the end.
+            if page > page_count and listed.issuperset(identities):
+                break
+            listed.update(identities)
             readable = 0
             for row in rows:
                 job = self._parse_row(row)
                 if job is not None and job.ats_id:
                     readable += 1
-                    if job.ats_id not in jobs:
-                        jobs[job.ats_id] = job
-                        added += 1
-            # Within the announced pages there is no early exit: a short
-            # or empty page can have postings after it. Past them, the
-            # walk goes on only while a page brings something new (see
-            # the module docstring); the page that ends it is the last
-            # page again, or an empty one, and is not counted.
-            if page > page_count and not added:
-                break
+                    jobs.setdefault(job.ats_id, job)
             rows_seen += len(rows)
             rows_read += readable
             if page > MAX_PAGES:
                 raise ScraperError(
                     f"Taleo Enterprise ({self.company_slug}) still lists new "
-                    f"postings at page {page} (page guard {MAX_PAGES}); "
+                    f"rows at page {page} (page guard {MAX_PAGES}); "
                     f"refusing to return a partial list"
                 )
             page += 1
@@ -392,6 +397,17 @@ class TaleoEnterpriseScraper(BaseScraper):
         description = _description(page)
         if description and not job.description:
             job.description = description
+
+
+def _identity(row: dict[str, Any]) -> str:
+    """What tells one listed row from another, readable or not.
+
+    The requisition number, else the job id, else the row's whole content
+    (so that a row with neither still reads as the same row when a page
+    comes back a second time).
+    """
+    key = _text(row.get("contestNo")) or _text(row.get("jobId"))
+    return key or json.dumps(row, sort_keys=True, default=str)
 
 
 def _parse_slug(value: str) -> tuple[str, str]:

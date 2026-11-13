@@ -483,9 +483,50 @@ def test_page_guard_also_bounds_the_walk_past_the_announced_pages(
     httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
     _serve(httpx_mock, *pages, total=25)
 
-    with pytest.raises(ScraperError, match="still lists new postings at page 3"):
+    with pytest.raises(ScraperError, match="still lists new rows at page 3"):
         TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
     assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2, 3]
+
+
+def test_unreadable_rows_past_the_announced_pages_are_not_the_end(httpx_mock) -> None:
+    """One page announced, then a page of new rows that cannot be read:
+    that page is not the end of the list, and its rows count against the
+    coverage floor."""
+    first = [_row(str(n), f"Job {n}") for n in range(25)]
+    second = [_row(str(n), f"Job {n}") for n in range(25, 50)]
+    for row in second:
+        del row["linkedColumn"]
+    httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
+    _serve(httpx_mock, first, second, total=25)
+
+    with pytest.raises(ScraperError, match="could read only 25 of the 50 postings listed"):
+        TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
+    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2, 3]
+
+
+def test_row_without_any_number_does_not_keep_the_walk_going(httpx_mock) -> None:
+    """A row with no requisition number and no job id cannot be read, and
+    still reads as the same row when the last page comes back."""
+    rows = [_row(str(n), f"Job {n}") for n in range(10)]
+    rows.append({"column": ["Nameless"], "linkedColumn": 0})
+    httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
+    _serve(httpx_mock, rows)
+
+    jobs = TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
+
+    assert len(jobs) == 10
+    assert [body["pageNo"] for body in _posts(httpx_mock)] == [1, 2]
+
+
+def test_absurd_total_trips_the_page_guard(httpx_mock) -> None:
+    """A total too large for a float is still an integer to divide."""
+    httpx_mock.add_response(url=SEARCH_PAGE, text=_search_page())
+    httpx_mock.add_response(
+        url=API, method="POST", json=_payload([_row("1", "A")], total=10**400)
+    )
+
+    with pytest.raises(ScraperError, match="page guard"):
+        TaleoEnterpriseScraper(SLUG, include_descriptions=False).fetch()
 
 
 def test_answer_for_another_page_raises(httpx_mock) -> None:
