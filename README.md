@@ -125,6 +125,7 @@ Scraper adapters include:
 - PeopleAdmin applicant portals.
 - Cegid Talentsoft career sites.
 - CATS careers portals.
+- Hireology career sites.
 - WinTalent (Hotjob) career portals.
 
 Run `python -c "from ats_scrapers import list_ats; print(*list_ats())"` for the

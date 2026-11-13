@@ -384,6 +384,26 @@ Validation:
    does not: a job has the same number on every portal and is published
    once.
 
+### Hireology
+
+Rows use the path segment of the career site as ``slug`` and
+``https://careers.hireology.com/{slug}/`` as ``url``.
+
+Validation:
+
+1. Call ``https://api.hireology.com/v2/public/careers/{slug}``. It answers
+   without a token. A tenant that is gone answers 404: remove the row. The
+   career site itself does not say so (it can redirect to the employer's
+   own site), and since its 2026 rebuild it carries no data block or token.
+2. Run the scraper. A tenant with no open job answers ``count: 0`` and
+   stays.
+3. A group's site lists the jobs of its member sites, each of which can
+   have its own row: ``career_site_url`` of a job then points at the member.
+   The job id is the same on both, and the pipeline publishes the job once.
+   Count distinct job ids, not listed jobs, when sizing a catalogue change.
+4. ``created_at`` is when the job was created, not when it was last
+   published: a job that has been open for years keeps its first date.
+
 ### ClearCompany
 
 Rows use the career site name as ``slug`` and

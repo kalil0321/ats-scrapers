@@ -52,6 +52,7 @@ class ATSType(StrEnum):
     GREENHOUSE = "greenhouse"
     GUPY = "gupy"
     HERP = "herp"
+    HIREOLOGY = "hireology"
     HRMOS = "hrmos"
     ICIMS = "icims"
     # iCIMS career sites (formerly Jibe) on the employer's own domain.

@@ -37,6 +37,7 @@ from ats_scrapers.scrapers.google import GoogleScraper
 from ats_scrapers.scrapers.greenhouse import GreenhouseScraper
 from ats_scrapers.scrapers.gupy import GupyScraper
 from ats_scrapers.scrapers.herp import HerpScraper
+from ats_scrapers.scrapers.hireology import HireologyScraper
 from ats_scrapers.scrapers.hrmos import HrmosScraper
 from ats_scrapers.scrapers.icims import iCIMSScraper
 from ats_scrapers.scrapers.infojobs_es import InfoJobsSpainScraper
@@ -121,6 +122,7 @@ __all__ = [
     "GreenhouseScraper",
     "GupyScraper",
     "HerpScraper",
+    "HireologyScraper",
     "HrmosScraper",
     "InfoJobsSpainScraper",
     "JazzHRScraper",
