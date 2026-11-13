@@ -285,6 +285,27 @@ Validation:
 5. Reject login-only pages, internal career centers, expired tenant IDs, and
    duplicate URLs that differ only by ``jobId`` or tracking parameters.
 
+### Frontline AppliTrack
+
+Rows use the board URL ``https://www.applitrack.com/{tenant}/onlineapp`` as
+both ``slug`` and ``url``, the employer's name as ``name`` and its country
+(``US`` or ``CA``) as ``country_iso``. Most boards belong to school
+districts.
+
+Validation:
+
+1. Run the scraper. It reads the board's all-postings endpoint
+   (``JobPostings/Output.asp?all=1``) and requires the number of postings
+   it parsed to match the number the board announces.
+2. Add a board only when it lists at least one posting.
+3. Keep a listed board that has no posting today: school hiring is
+   seasonal and the board fills again.
+4. Remove a board whose all-postings endpoint and home page both answer an
+   error status (HTTP 500, 503 or 404): the employer has left AppliTrack.
+5. A consortium board repeats the postings of its member districts, with
+   the same posting id and the district as employer. Both rows stay; the
+   pipeline publishes a posting id once.
+
 ### Jibe (iCIMS career sites)
 
 Rows use the career-site origin on the employer's own domain

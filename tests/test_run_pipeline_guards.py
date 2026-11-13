@@ -86,6 +86,38 @@ def test_oracle_dedupes_same_tenant_job_across_named_sites() -> None:
     assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
 
 
+def test_applitrack_keeps_same_content_under_distinct_provider_ids() -> None:
+    first = Job(
+        url="https://www.applitrack.com/dupage/onlineapp/JobPostings/view.asp?AppliTrackJobId=474_142",
+        title="Elementary Teacher",
+        company="Example School District",
+        location="Example Elementary School",
+        ats_type=ATSType.APPLITRACK,
+        ats_id="142:474",
+    )
+    second = first.model_copy(
+        update={
+            "url": "https://www.applitrack.com/dupage/onlineapp/JobPostings/view.asp?AppliTrackJobId=474_143",
+            "ats_id": "143:474",
+        }
+    )
+    repeated = first.model_copy(
+        update={
+            "url": "https://www.applitrack.com/roe24/onlineapp/JobPostings/view.asp?AppliTrackJobId=474_142",
+        }
+    )
+
+    config = runner.CONFIGS["applitrack"]
+    assert runner._job_dedupe_key(first, config) != (
+        runner._job_dedupe_key(second, config)
+    )
+    # A consortium board repeats a member district's posting under the
+    # same id: it is published once.
+    assert runner._job_dedupe_key(first, config) == (
+        runner._job_dedupe_key(repeated, config)
+    )
+
+
 def test_icims_dedupes_exact_job_url_across_named_portals() -> None:
     first = Job(
         url="https://careers-acme.icims.com/jobs/1/engineer/job?in_iframe=1",
