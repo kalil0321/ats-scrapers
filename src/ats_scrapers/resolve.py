@@ -13,7 +13,8 @@ Each pattern below mirrors the slug contract documented in the
 corresponding scraper module — path-based tenants (Greenhouse, Lever,
 Ashby, …), subdomain tenants (Recruitee, Teamtailor, Breezy, …), and
 full-URL tenants (Workday, Taleo, and iCIMS variants) where the
-scraper itself wants the whole URL.
+scraper itself wants the whole URL. Taleo Enterprise is host plus career
+section (``valero.taleo.net/2``).
 
 Custom-domain career sites (careers.example.com fronting Phenom,
 Avature, or Eightfold) cannot be recognized from the URL alone —
@@ -25,7 +26,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, NamedTuple
-from urllib.parse import ParseResult, urlparse
+from urllib.parse import ParseResult, quote, unquote, urlparse
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
@@ -38,8 +39,20 @@ if TYPE_CHECKING:
 # escape the intended host when a scraper interpolates the slug into
 # an f-string URL.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._\-]*$", re.IGNORECASE)
+# Lever board slugs also use "&" (``1840&Company``). The Lever scraper
+# escapes the slug in the API URL, so the wider set is safe there.
+_LEVER_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9._&\-]*", re.IGNORECASE)
+_LEVER_REGIONS = {"jobs.lever.co": "us", "jobs.eu.lever.co": "eu"}
 _DNS_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
+# A CATS portal page: /careers/{portal number}, then "-Name" or "/jobs/...".
+_CATSONE_PORTAL_PATH_RE = re.compile(r"^/careers/(\d{1,12})(?:[-/]|$)")
 _DAYFORCE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_HOTJOB_HOST_RE = re.compile(r"(?:[a-z0-9-]+\.)*hotjob\.cn", re.IGNORECASE)
+_HOTJOB_SUITE_RE = re.compile(r"SU[a-f0-9]{24}", re.IGNORECASE)
+_HOTJOB_TENANT_RE = re.compile(
+    r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?",
+    re.IGNORECASE,
+)
 
 
 class ResolvedCareersUrl(NamedTuple):
@@ -47,6 +60,22 @@ class ResolvedCareersUrl(NamedTuple):
 
     ats: ATSType
     slug: str
+
+
+_HIREOLOGY_UNSAFE_RE = re.compile(r"[\\?#\x00-\x1f\x7f]")
+
+
+def _is_hireology_tenant(value: str) -> bool:
+    """Same rule as ``hireology.is_tenant_name``, kept here so that resolving
+    a URL does not import the scraper. A test holds the two together."""
+    return (
+        0 < len(value) <= 200
+        and not _HIREOLOGY_UNSAFE_RE.search(value)
+        and all(
+            part.strip() and part.strip() not in {".", ".."}
+            for part in value.split("/")
+        )
+    )
 
 
 def _first_path_segment(parsed: ParseResult) -> str | None:
@@ -68,26 +97,45 @@ _PATH_HOSTS: dict[str, ATSType] = {
     "jobs.smartrecruiters.com": ATSType.SMARTRECRUITERS,
     "jobs.gem.com": ATSType.GEM,
     "ats.rippling.com": ATSType.RIPPLING,
+    "apply.clearcompany.com": ATSType.CLEARCOMPANY,
 }
 
 # Subdomain tenants: https://{slug}.{suffix}/...
 _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
+    ".applicantpro.com": ATSType.APPLICANTPRO,
     ".recruitee.com": ATSType.RECRUITEE,
     ".teamtailor.com": ATSType.TEAMTAILOR,
     ".breezy.hr": ATSType.BREEZY,
     ".bamboohr.com": ATSType.BAMBOOHR,
     ".gupy.io": ATSType.GUPY,
+    ".ninehire.site": ATSType.NINEHIRE,
     ".jobs.personio.com": ATSType.PERSONIO,
     ".jobs.personio.de": ATSType.PERSONIO,
     ".pinpointhq.com": ATSType.PINPOINT,
     ".applytojob.com": ATSType.JAZZHR,
     ".avature.net": ATSType.AVATURE,
     ".eightfold.ai": ATSType.EIGHTFOLD,
+    ".career.softgarden.de": ATSType.SOFTGARDEN,
+    # ClearCompany's earlier address; {site}.hrmdirect.com redirects to
+    # apply.clearcompany.com/{site}.
+    ".hrmdirect.com": ATSType.CLEARCOMPANY,
+    ".peopleadmin.com": ATSType.PEOPLEADMIN,
+    ".talent-soft.com": ATSType.TALENTSOFT,
 }
 
 # Full-URL tenants: the scraper's slug IS the careers URL.
 _WORKDAY_HOST_RE = re.compile(r"^[^.]+\.wd\d+\.myworkdayjobs\.com$")
 _TALEO_HOST_RE = re.compile(r"^[^.]+\.tbe\.taleo\.net$")
+# Taleo Enterprise: one label before taleo.net ({zone}.taleo.net), with the
+# career section as the second path segment.
+_TALEO_ENTERPRISE_HOST_RE = re.compile(
+    r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.taleo\.net$", re.IGNORECASE
+)
+# The whole path: the section, then at most one page name ("jobsearch.ftl").
+_TALEO_ENTERPRISE_PATH_RE = re.compile(
+    r"^/careersection/(?P<section>[A-Za-z0-9][A-Za-z0-9_-]{0,79})"
+    r"(?:/(?:[A-Za-z0-9_-]+\.[A-Za-z0-9]+)?)?$"
+)
 _ICIMS_HOST_RE = re.compile(r"^(?P<prefix>[a-z0-9-]+)\.icims\.com$", re.IGNORECASE)
 _JOBVITE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _JOBVITE_RESERVED_SEGMENTS = frozenset({"jobs", "search", "viewall"})
@@ -101,6 +149,15 @@ _UUID_RE = re.compile(
     r"[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+_PAYCOM_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
+_KEKA_PORTAL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$", re.IGNORECASE)
+_KEKA_RESERVED_SEGMENTS = frozenset(
+    {"api", "applyjob", "content", "jobdetails"}
+)
+_APPLITRACK_TENANT_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+    re.IGNORECASE,
+)
 
 
 def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
@@ -111,16 +168,169 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
     the exact form the matching scraper's constructor expects.
     """
     parsed = urlparse(url if "//" in url else f"https://{url}")
-    host = (parsed.hostname or "").lower()
+    input_host = (parsed.hostname or "").lower()
+    host = input_host
     if not host:
         return None
     if host.startswith("www."):
         host = host.removeprefix("www.")
 
+    # One host label at most before the domain, as the scraper accepts:
+    # ``foo.bar.applitrack.com`` is not a board.
+    if host == "applitrack.com" or (
+        host.endswith(".applitrack.com")
+        and _APPLITRACK_TENANT_RE.fullmatch(host.removesuffix(".applitrack.com"))
+    ):
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            len(segments) >= 2
+            and _APPLITRACK_TENANT_RE.fullmatch(segments[0])
+            and segments[1].casefold() == "onlineapp"
+        ):
+            tenant = segments[0].casefold()
+            return ResolvedCareersUrl(
+                ATSType.APPLITRACK,
+                f"https://www.applitrack.com/{tenant}/onlineapp",
+            )
+        return None
+
+    if host in _LEVER_REGIONS:
+        segment = _first_path_segment(parsed)
+        slug = unquote(segment) if segment else ""
+        # fullmatch: "$" would also accept a decoded trailing newline.
+        if not _LEVER_SLUG_RE.fullmatch(slug):
+            return None
+        if _LEVER_REGIONS[host] == "eu":
+            # Lever's EU region has its own API, and a bare slug is read
+            # as a US board: the slug is the board URL.
+            return ResolvedCareersUrl(
+                ATSType.LEVER, f"https://jobs.eu.lever.co/{quote(slug, safe='')}"
+            )
+        return ResolvedCareersUrl(ATSType.LEVER, slug)
+
+    if host == "careers.hireology.com":
+        # The tenant is the first path segment, percent-decoded. It can hold
+        # an encoded slash (a child location); the scraper sends the name
+        # back as one encoded segment.
+        raw_slug = _first_path_segment(parsed)
+        slug = unquote(raw_slug).strip() if raw_slug else None
+        if slug and _is_hireology_tenant(slug):
+            return ResolvedCareersUrl(ATSType.HIREOLOGY, slug)
+        return None
+
     if host in _PATH_HOSTS:
         slug = _first_path_segment(parsed)
         if slug and _SLUG_RE.match(slug):
             return ResolvedCareersUrl(_PATH_HOSTS[host], slug)
+        return None
+
+    if host == "herp.careers":
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if len(segments) >= 2 and segments[0] == "v1" and _DNS_LABEL_RE.fullmatch(segments[1]):
+            return ResolvedCareersUrl(ATSType.HERP, segments[1])
+        return None
+
+    if host.endswith(".varbi.com"):
+        # Read the tenant from the host as given: ``www.`` was removed
+        # above, and ``www.acme.varbi.com`` is not a tenant's board.
+        slug = (parsed.hostname or "").lower().removesuffix(".varbi.com")
+        if _DNS_LABEL_RE.fullmatch(slug) and slug not in {"api", "support", "login"}:
+            return ResolvedCareersUrl(ATSType.VARBI, slug)
+        return None
+
+    if host == "hrmos.co":
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            len(segments) >= 2
+            and segments[0] == "pages"
+            and _DNS_LABEL_RE.fullmatch(segments[1])
+        ):
+            return ResolvedCareersUrl(ATSType.HRMOS, segments[1])
+        return None
+
+    if host in {"open.talentio.com", "recruit.talentio.co.jp"}:
+        # Same origin checks as TalentioScraper: anything it would reject
+        # is not a usable resolution. That includes the ``www.`` alias, which
+        # ``host`` has lost, and a port that is not a number in range, which
+        # raises when read.
+        try:
+            has_port = parsed.port is not None
+        except ValueError:
+            return None
+        if (
+            parsed.scheme != "https"
+            or (parsed.hostname or "").lower() != host
+            or parsed.username
+            or parsed.password
+            or has_port
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        match = re.fullmatch(
+            r"/r/1/c/[A-Za-z0-9._-]+/homes/[1-9]\d*/?",
+            parsed.path,
+        )
+        if match:
+            return ResolvedCareersUrl(
+                ATSType.TALENTIO,
+                parsed._replace(path=parsed.path.rstrip("/")).geturl(),
+            )
+        return None
+
+    if host.endswith(".keka.com"):
+        tenant = host.removesuffix(".keka.com")
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            _DNS_LABEL_RE.fullmatch(tenant)
+            and segments
+            and segments[0].casefold() == "careers"
+        ):
+            portal = "default"
+            if (
+                len(segments) >= 2
+                and segments[1].casefold() not in _KEKA_RESERVED_SEGMENTS
+                and _KEKA_PORTAL_RE.fullmatch(segments[1])
+            ):
+                portal = segments[1].casefold()
+            valid_remainder = (
+                len(segments) == 1
+                or (
+                    portal == "default"
+                    and len(segments) == 3
+                    and segments[1].casefold() in {"applyjob", "jobdetails"}
+                    and segments[2].isdigit()
+                )
+                or (
+                    portal != "default"
+                    and (
+                        len(segments) == 2
+                        or (
+                            len(segments) == 4
+                            and segments[2].casefold()
+                            in {"applyjob", "jobdetails"}
+                            and segments[3].isdigit()
+                        )
+                    )
+                )
+            )
+            if valid_remainder:
+                portal_url = (
+                    f"https://{host}/careers"
+                    if portal == "default"
+                    else f"https://{host}/careers/{portal}"
+                )
+                return ResolvedCareersUrl(ATSType.KEKA, portal_url)
+        return None
+
+    if host in {"paycomonline.net", "www.paycomonline.net"}:
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            len(segments) >= 5
+            and segments[:4] == ["v4", "ats", "web.php", "portal"]
+            and _PAYCOM_TOKEN_RE.fullmatch(segments[4])
+        ):
+            return ResolvedCareersUrl(ATSType.PAYCOM, segments[4].lower())
         return None
 
     if host == "jobs.jobvite.com":
@@ -172,6 +382,19 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
                 ATSType.UKG,
                 f"https://{host}/{segments[0]}/JobBoard/{segments[2]}",
             )
+        return None
+
+    if host == "recruiting.paylocity.com":
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if (
+            len(segments) == 4
+            and [segment.casefold() for segment in segments[:3]]
+            == ["recruiting", "jobs", "all"]
+            and _UUID_RE.fullmatch(segments[3])
+            and not parsed.query
+            and not parsed.fragment
+        ):
+            return ResolvedCareersUrl(ATSType.PAYLOCITY, segments[3].lower())
         return None
 
     # join.com/companies/{slug}
@@ -232,6 +455,29 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             return ResolvedCareersUrl(ATSType.DAYFORCE, slug)
         return None
 
+    if _HOTJOB_HOST_RE.fullmatch(host):
+        portal_host = (
+            input_host
+            if _HOTJOB_HOST_RE.fullmatch(input_host)
+            else host
+        )
+        segments = [segment for segment in parsed.path.split("/") if segment]
+        if segments and _HOTJOB_SUITE_RE.fullmatch(segments[0]):
+            return ResolvedCareersUrl(
+                ATSType.WINTALENT,
+                f"https://{portal_host}/{segments[0]}",
+            )
+        if (
+            len(segments) >= 2
+            and segments[0].casefold() == "wt"
+            and _HOTJOB_TENANT_RE.fullmatch(segments[1])
+        ):
+            return ResolvedCareersUrl(
+                ATSType.WINTALENT,
+                f"https://{portal_host}/wt/{segments[1]}",
+            )
+        return None
+
     for suffix, tld in ((".darwinbox.in", "in"), (".darwinbox.com", "com")):
         if host.endswith(suffix):
             tenant = host.removesuffix(suffix)
@@ -261,6 +507,22 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             return ResolvedCareersUrl(ats, tenant)
         return None
 
+    if host.endswith(".catsone.com"):
+        # A tenant can have several portals: keep the number of the one
+        # the URL names, so that the scraper reads that portal.
+        tenant = host.removesuffix(".catsone.com")
+        if not _DNS_LABEL_RE.fullmatch(tenant):
+            return None
+        portal = _CATSONE_PORTAL_PATH_RE.match(parsed.path)
+        if portal:
+            return ResolvedCareersUrl(ATSType.CATSONE, f"{tenant}/{portal.group(1)}")
+        # The tenant's own address, which leads to its default portal. Any
+        # other path names a page this does not know how to read as a
+        # portal, and is not taken for the default one.
+        if parsed.path.rstrip("/") in ("", "/careers"):
+            return ResolvedCareersUrl(ATSType.CATSONE, tenant)
+        return None
+
     for suffix, ats in _SUBDOMAIN_SUFFIXES.items():
         if host.endswith(suffix):
             slug = host.removesuffix(suffix)
@@ -277,6 +539,18 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         # Taleo TBE wants the full search-results URL including query.
         query = f"?{parsed.query}" if parsed.query else ""
         return ResolvedCareersUrl(ATSType.TALEO, f"https://{host}{parsed.path}{query}")
+
+    if _TALEO_ENTERPRISE_HOST_RE.match(host):
+        # Taleo Enterprise: the slug is "{zone}.taleo.net/{section}". A zone
+        # URL without a career section cannot be scraped ("rest" is the
+        # API path, not a section).
+        section = _TALEO_ENTERPRISE_PATH_RE.match(parsed.path)
+        if section and section.group("section") != "rest":
+            return ResolvedCareersUrl(
+                ATSType.TALEO_ENTERPRISE,
+                f"{host.lower()}/{section.group('section')}",
+            )
+        return None
 
     icims = _ICIMS_HOST_RE.match(host)
     if icims:

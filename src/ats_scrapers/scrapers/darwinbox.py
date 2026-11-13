@@ -57,31 +57,57 @@ _TYPE_MAP: dict[str, EmploymentType] = {
     "seasonal": "TEMPORARY",
 }
 _COUNTRY_METADATA = {
+    "argentina": ("AR", "South America"),
     "australia": ("AU", "Oceania"),
+    "austria": ("AT", "Europe"),
     "bahrain": ("BH", "Asia"),
     "bangladesh": ("BD", "Asia"),
+    "belgium": ("BE", "Europe"),
+    "brazil": ("BR", "South America"),
     "cambodia": ("KH", "Asia"),
+    "canada": ("CA", "North America"),
+    "chile": ("CL", "South America"),
     "china": ("CN", "Asia"),
+    "colombia": ("CO", "South America"),
+    "czech republic": ("CZ", "Europe"),
+    "denmark": ("DK", "Europe"),
+    "finland": ("FI", "Europe"),
+    "france": ("FR", "Europe"),
+    "germany": ("DE", "Europe"),
     "hong kong": ("HK", "Asia"),
     "india": ("IN", "Asia"),
     "indonesia": ("ID", "Asia"),
+    "ireland": ("IE", "Europe"),
+    "italy": ("IT", "Europe"),
     "japan": ("JP", "Asia"),
     "kuwait": ("KW", "Asia"),
     "malaysia": ("MY", "Asia"),
+    "mexico": ("MX", "North America"),
     "myanmar": ("MM", "Asia"),
     "nepal": ("NP", "Asia"),
+    "netherlands": ("NL", "Europe"),
     "new zealand": ("NZ", "Oceania"),
+    "norway": ("NO", "Europe"),
     "oman": ("OM", "Asia"),
     "pakistan": ("PK", "Asia"),
     "philippines": ("PH", "Asia"),
+    "poland": ("PL", "Europe"),
+    "portugal": ("PT", "Europe"),
     "qatar": ("QA", "Asia"),
     "saudi arabia": ("SA", "Asia"),
     "singapore": ("SG", "Asia"),
+    "south africa": ("ZA", "Africa"),
     "south korea": ("KR", "Asia"),
+    "spain": ("ES", "Europe"),
     "sri lanka": ("LK", "Asia"),
+    "sweden": ("SE", "Europe"),
+    "switzerland": ("CH", "Europe"),
     "taiwan": ("TW", "Asia"),
     "thailand": ("TH", "Asia"),
     "united arab emirates": ("AE", "Asia"),
+    "united kingdom": ("GB", "Europe"),
+    "united states": ("US", "North America"),
+    "united states of america": ("US", "North America"),
     "vietnam": ("VN", "Asia"),
 }
 
@@ -103,6 +129,27 @@ class DarwinboxScraper(BaseScraper):
         "Content-Type": "application/json",
         "X-Requested-With": "XMLHttpRequest",
     }
+
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
+        company_name: str | None = None,
+    ) -> None:
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
+        self.company_name = (
+            company_name.strip()
+            if isinstance(company_name, str) and company_name.strip()
+            else None
+        )
 
     async def afetch(self) -> list[Job]:
         tenant, tld = self._resolve_tenant()
@@ -247,7 +294,7 @@ class DarwinboxScraper(BaseScraper):
         return Job(
             url=HttpUrl(f"{base_url}/ms/candidate/careers/{ats_id}"),
             title=title,
-            company=tenant,
+            company=self.company_name or tenant,
             ats_type=ATSType.DARWINBOX,
             ats_id=ats_id,
             location=_format_location(item),

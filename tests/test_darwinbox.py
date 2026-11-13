@@ -145,6 +145,15 @@ def test_parses_current_alljobs_payload(fake_httpcloak) -> None:
     assert calls[0]["timeout"] == 30_000
 
 
+def test_uses_catalog_company_name(fake_httpcloak) -> None:
+    responses, _calls = fake_httpcloak
+    responses.append(FakeResponse(payload([listing()])))
+
+    [result] = DarwinboxScraper("airtel", company_name="Airtel").fetch()
+
+    assert result.company == "Airtel"
+
+
 def test_com_tenant_uses_com_host(fake_httpcloak) -> None:
     responses, calls = fake_httpcloak
     responses.append(FakeResponse(payload([])))
@@ -208,6 +217,31 @@ def test_preserves_zero_experience_and_normalizes_country_and_naive_time(
     assert result.experience == 0
     assert result.posted_at is not None
     assert result.posted_at.tzinfo is UTC
+
+
+@pytest.mark.parametrize(
+    ("country", "country_iso", "region"),
+    [
+        ("Canada", "CA", "North America"),
+        ("United Kingdom", "GB", "Europe"),
+        ("United States", "US", "North America"),
+    ],
+)
+def test_normalizes_global_countries(
+    fake_httpcloak,
+    country: str,
+    country_iso: str,
+    region: str,
+) -> None:
+    responses, _calls = fake_httpcloak
+    item = listing()
+    item["country"] = country
+    responses.append(FakeResponse(payload([item])))
+
+    [result] = DarwinboxScraper("airtel").fetch()
+
+    assert result.country_iso == country_iso
+    assert result.region == region
 
 
 def test_skips_rows_missing_identity(fake_httpcloak) -> None:

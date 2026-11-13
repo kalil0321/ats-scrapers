@@ -132,6 +132,14 @@ def test_uscareers_prefix_stripped() -> None:
     assert s._company_name() == "rws"
 
 
+def test_configured_company_name_overrides_subdomain() -> None:
+    s = iCIMSScraper(
+        "https://clinical-emory.icims.com",
+        company_name="Emory",
+    )
+    assert s._company_name() == "Emory"
+
+
 # --- Page parsing -----------------------------------------------------------
 
 

@@ -2,20 +2,21 @@
 
 Used by Procter & Gamble, Pfizer, Daimler, Schindler, and many others.
 
-SuccessFactors Recruiting Marketing instances expose a public RSS 2.0 feed
-at the canonical (typo-included, undocumented but stable) path:
+SuccessFactors exposes two credential-free public job feeds:
 
-    GET https://{recruiting-marketing-host}/sitemal.xml
+* Recruiting Marketing sites expose RSS 2.0 at the canonical
+  (typo-included, undocumented but stable) path:
 
-Yes, the path is ``sitemal.xml`` (one ``p`` short of ``sitemap``) — that's
-SAP's actual URL. Each ``<item>`` carries the job title (with location often
-appended in parens), an HTML-escaped ``description``, ``link``, and
-``pubDate``. The Google Merchant namespace adds ``g:id``, ``g:location``,
-etc. on some tenants.
+      GET https://{recruiting-marketing-host}/sitemal.xml
 
-There is also a server-side XML feed at ``career{N}.successfactors.com/career?company={ID}&...``
-that requires a tenant-specific ``company`` ID and picklist filters — we
-prefer the simpler RSS path here. Pass the recruiting-marketing host as
+* Legacy Recruiting Management sites expose ``Job-Listing`` XML:
+
+      GET https://career{N}.successfactors.com/career
+          ?company={ID}
+          &career_ns=job_listing_summary
+          &resultType=XML
+
+Pass either a recruiting-marketing host or a public legacy career URL as
 ``company_slug``.
 """
 
@@ -26,7 +27,7 @@ import re
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, ClassVar
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
 from ats_scrapers.exceptions import ScraperError
@@ -37,9 +38,41 @@ if TYPE_CHECKING:
     pass
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_TEMPLATE_TOKEN_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
+_INVALID_EMPTY_ELEMENT_RE = re.compile(r"<>\s*[^<]*?</>")
+_EMPTY_LEGACY_VALUES = {"", "n/a", "na", "none", "not applicable"}
 # Job titles are often `"Title (City, State, Country)"` — extract location
 # from the trailing parens when no other source is available.
 _TITLE_LOCATION_RE = re.compile(r"^(?P<title>.+?)\s*\((?P<loc>[^()]+)\)\s*$")
+_LEGACY_LOCATION_COUNTRIES = {
+    "australia",
+    "brazil",
+    "canada",
+    "china",
+    "denmark",
+    "france",
+    "germany",
+    "india",
+    "ireland",
+    "italy",
+    "japan",
+    "malaysia",
+    "mexico",
+    "netherlands",
+    "poland",
+    "romania",
+    "singapore",
+    "south africa",
+    "spain",
+    "sweden",
+    "switzerland",
+    "taiwan",
+    "thailand",
+    "united arab emirates",
+    "united kingdom",
+    "united states",
+    "vietnam",
+}
 # Google Merchant namespace
 _GOOGLE_NS = {"g": "http://base.google.com/ns/1.0"}
 
@@ -68,10 +101,10 @@ _EMPLOYMENT_TYPE_PATTERNS = {
 
 @ScraperRegistry.register(ATSType.SUCCESSFACTORS)
 class SuccessFactorsScraper(BaseScraper):
-    """SAP SuccessFactors scraper. ``company_slug`` is the recruiting-marketing
-    host (e.g. ``"job.schindler.com"`` → ``https://job.schindler.com/sitemal.xml``).
+    """SAP SuccessFactors Recruiting Marketing and legacy XML scraper.
 
-    Bare slugs are also accepted (``"schindler"`` → assumes ``job.schindler.com``).
+    ``company_slug`` may be a recruiting-marketing host or a legacy public
+    career URL containing the tenant's ``company`` query parameter.
     """
 
     ats = ATSType.SUCCESSFACTORS
@@ -81,27 +114,163 @@ class SuccessFactorsScraper(BaseScraper):
         "Accept": "application/rss+xml, application/xml, text/xml",
     }
 
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        company_name: str | None = None,
+        timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
+    ) -> None:
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
+        self.company_name = company_name
+
     async def afetch(self) -> list[Job]:
-        feed_url = self._resolve_feed_url()
+        feed_url, legacy_company_id = self._resolve_feed_target()
         async with self.make_fetcher() as fetch:
             xml_text = await fetch.get_text(feed_url)
+        if legacy_company_id is not None:
+            return self._parse_legacy_feed(
+                xml_text,
+                feed_url=feed_url,
+                company_id=legacy_company_id,
+            )
         return self._parse_feed(xml_text)
+
+    def _resolve_feed_target(self) -> tuple[str, str | None]:
+        parsed = urlparse(self.company_slug)
+        query = parse_qs(parsed.query)
+        company_values = query.get("company")
+        if (
+            parsed.scheme in {"http", "https"}
+            and parsed.hostname
+            and _is_legacy_host(parsed.hostname)
+            and company_values
+            and company_values[0].strip()
+        ):
+            company_id = company_values[0].strip()
+            legacy_query = {
+                "company": company_id,
+                "career_ns": "job_listing_summary",
+                "resultType": "XML",
+            }
+            locale_values = query.get("rcm_site_locale")
+            if locale_values and locale_values[0].strip():
+                legacy_query["rcm_site_locale"] = locale_values[0].strip()
+            feed_url = urlunparse(
+                (
+                    "https",
+                    parsed.hostname,
+                    "/career",
+                    "",
+                    urlencode(legacy_query),
+                    "",
+                )
+            )
+            return feed_url, company_id
+        return self._resolve_feed_url(), None
 
     def _resolve_feed_url(self) -> str:
         slug = self.company_slug
         if slug.startswith(("http://", "https://")):
-            base = slug.rstrip("/")
+            parsed = urlparse(slug)
+            base = urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+            base = base.rstrip("/")
         elif "." in slug:
-            # Bare host like "job.schindler.com"
             base = f"https://{slug}"
         else:
-            # Bare slug — guess `job.{slug}.com`
             base = f"https://job.{slug}.com"
         return f"{base}/sitemal.xml"
 
+    def _parse_legacy_feed(
+        self,
+        xml_text: str,
+        *,
+        feed_url: str,
+        company_id: str,
+    ) -> list[Job]:
+        try:
+            root = _parse_xml(xml_text)
+        except ET.ParseError as exc:
+            raise ScraperError(
+                f"SuccessFactors returned malformed XML: {exc}"
+            ) from exc
+        if root.tag != "Job-Listing":
+            raise ScraperError(
+                f"SuccessFactors returned non-job-listing XML for "
+                f"{self.company_slug} (root <{root.tag}>)"
+            )
+
+        parsed_feed = urlparse(feed_url)
+        feed_host = parsed_feed.hostname or ""
+        company = self.company_name or company_id
+        day_first_dates = _legacy_dates_are_day_first(root)
+        jobs: list[Job] = []
+        seen: set[str] = set()
+        for item in root.findall("./Job"):
+            requisition_id = _first_text(item.findtext("ReqId"))
+            title_raw = _first_text(item.findtext("JobTitle"))
+            if not requisition_id or not title_raw or requisition_id in seen:
+                continue
+            title, title_location = _split_legacy_title_location(
+                html.unescape(title_raw)
+            )
+            seen.add(requisition_id)
+            job_url = urlunparse(
+                (
+                    "https",
+                    feed_host,
+                    "/sfcareer/jobreqcareer",
+                    "",
+                    urlencode(
+                        {"jobId": requisition_id, "company": company_id}
+                    ),
+                    "",
+                )
+            )
+            description = None
+            if self.include_descriptions:
+                replacements = {
+                    child.tag: value
+                    for child in item
+                    if (value := _legacy_field_value(child))
+                }
+                replacements["id"] = requisition_id
+                description = _clean_description(
+                    _render_template(
+                        item.findtext("Job-Description"),
+                        replacements,
+                    )
+                )
+            jobs.append(
+                Job(
+                    url=job_url,
+                    title=title,
+                    company=company,
+                    ats_type=ATSType.SUCCESSFACTORS,
+                    ats_id=f"{company_id}:{requisition_id}",
+                    requisition_id=requisition_id,
+                    location=_legacy_location(item) or title_location,
+                    description=description,
+                    department=_legacy_department(item),
+                    posted_at=_parse_legacy_date(
+                        item.findtext("Posted-Date"),
+                        day_first=day_first_dates,
+                    ),
+                    fetched_at=datetime.now(UTC),
+                )
+            )
+        return jobs
+
     def _parse_feed(self, xml_text: str) -> list[Job]:
         try:
-            root = ET.fromstring(xml_text)
+            root = _parse_xml(xml_text)
         except ET.ParseError as exc:
             raise ScraperError(
                 f"SuccessFactors returned malformed XML: {exc}"
@@ -203,6 +372,17 @@ class SuccessFactorsScraper(BaseScraper):
                     employment_type = mapped
                     break
 
+        # ``g:expiration_date`` (Google Merchant namespace) is the source's
+        # posting-expiration / valid-through value. Tenants ship it as
+        # ``YYYY-MM-DD`` (date-only) or ISO 8601. Parse with
+        # ``datetime.fromisoformat`` (accepts both date-only and full ISO 8601
+        # with offset/``Z``) — NOT ``_parse_pubdate`` which is RFC 822 for
+        # ``pubDate``. ``None`` on absence/invalid; never fall back to
+        # ``posted_at``.
+        application_deadline = _parse_expiration_date(
+            item.findtext("g:expiration_date", namespaces=_GOOGLE_NS),
+        )
+
         return Job(
             url=link,
             title=title,
@@ -215,6 +395,7 @@ class SuccessFactorsScraper(BaseScraper):
             employment_type=employment_type,
             commitment=commitment,
             posted_at=posted_at,
+            application_deadline=application_deadline,
             fetched_at=datetime.now(UTC),
         )
 
@@ -234,10 +415,158 @@ def _split_title_location(raw: str) -> tuple[str, str | None]:
     return raw, None
 
 
+def _split_legacy_title_location(raw: str) -> tuple[str, str | None]:
+    match = _TITLE_LOCATION_RE.match(raw)
+    if not match:
+        return raw, None
+    inner = match.group("loc").strip()
+    parts = [part.strip() for part in inner.split(",")]
+    if len(parts) < 2:
+        return raw, None
+    tail = parts[-1]
+    is_country = tail.casefold() in _LEGACY_LOCATION_COUNTRIES
+    is_three_letter_code = re.fullmatch(r"[A-Z]{3}", tail) is not None
+    has_state_and_country_codes = (
+        len(parts) >= 3
+        and re.fullmatch(r"[A-Z]{2}", parts[-2]) is not None
+        and re.fullmatch(r"[A-Z]{2}", tail) is not None
+    )
+    if not (is_country or is_three_letter_code or has_state_and_country_codes):
+        return raw, None
+    return match.group("title").strip(), inner
+
+
 def _first_text(value: object) -> str | None:
     if isinstance(value, str):
         return value.strip() or None
     return None
+
+
+def _legacy_field_value(element: ET.Element) -> str | None:
+    return _first_text(element.text) or _first_text(element.findtext("value"))
+
+
+def _legacy_labeled_fields(item: ET.Element) -> list[tuple[str, str]]:
+    fields: list[tuple[str, str]] = []
+    for child in item:
+        label = _first_text(child.findtext("label"))
+        value = _first_text(child.findtext("value"))
+        if (
+            not label
+            or not value
+            or _legacy_value_is_empty(value)
+        ):
+            continue
+        fields.append((label, value))
+    return fields
+
+
+def _legacy_value_is_empty(value: str) -> bool:
+    normalized = re.sub(r"\s+", " ", value).strip().casefold()
+    return (
+        normalized in _EMPTY_LEGACY_VALUES
+        or "not applicable" in normalized
+    )
+
+
+def _legacy_location(item: ET.Element) -> str | None:
+    direct = _first_text(item.findtext("Location"))
+    if direct and not _legacy_value_is_empty(direct):
+        return html.unescape(direct)
+
+    generic_locations: list[str] = []
+    specific_locations: list[str] = []
+    cities: list[str] = []
+    states: list[str] = []
+    countries: list[str] = []
+    for label, value in _legacy_labeled_fields(item):
+        normalized = re.sub(r"[^a-z]+", " ", label.casefold()).strip()
+        if "additional" in normalized:
+            continue
+        if normalized == "location":
+            generic_locations.append(value)
+        elif "location" in normalized:
+            specific_locations.append(value)
+        elif "city" in normalized or "town" in normalized:
+            cities.append(value)
+        elif "state" in normalized or "province" in normalized:
+            states.append(value)
+        elif "country" in normalized or normalized == "region":
+            countries.append(value)
+
+    if specific_locations:
+        return html.unescape(specific_locations[0])
+
+    if generic_locations:
+        generic = generic_locations[0]
+        generic_normalized = generic.casefold()
+        atomic_values = [*cities, *states, *countries]
+        if "," in generic or (
+            len(atomic_values) >= 2
+            and all(
+                value.casefold() in generic_normalized
+                for value in atomic_values
+            )
+        ):
+            return html.unescape(generic)
+
+    components: list[str] = []
+    seen_components: set[str] = set()
+    for value in (*cities, *states, *countries, *generic_locations):
+        normalized = value.casefold()
+        if normalized not in seen_components:
+            components.append(value)
+            seen_components.add(normalized)
+    if not components:
+        return None
+    return html.unescape(", ".join(components))
+
+
+def _legacy_department(item: ET.Element) -> str | None:
+    for tag in ("Department", "Division"):
+        direct = _first_text(item.findtext(tag))
+        if direct and not _legacy_value_is_empty(direct):
+            return html.unescape(direct)
+    for label, value in _legacy_labeled_fields(item):
+        normalized = re.sub(r"[^a-z]+", " ", label.casefold()).strip()
+        if normalized in {"department", "job function", "function"}:
+            return html.unescape(value)
+    return None
+
+
+def _is_legacy_host(host: str) -> bool:
+    normalized = host.lower().rstrip(".")
+    return normalized.endswith(
+        (
+            ".successfactors.com",
+            ".successfactors.eu",
+            ".sapsf.com",
+            ".sapsf.eu",
+            ".sapsf.cn",
+        )
+    )
+
+
+def _parse_xml(xml_text: str) -> ET.Element:
+    try:
+        return ET.fromstring(xml_text)
+    except ET.ParseError:
+        sanitized = _INVALID_EMPTY_ELEMENT_RE.sub("", xml_text)
+        if sanitized == xml_text:
+            raise
+        return ET.fromstring(sanitized)
+
+
+def _render_template(
+    value: object,
+    replacements: dict[str, str],
+) -> object:
+    if not isinstance(value, str):
+        return value
+    return _TEMPLATE_TOKEN_RE.sub(
+        lambda match: replacements.get(match.group(1), ""),
+        value,
+    )
 
 
 def _clean_description(value: object) -> str | None:
@@ -256,3 +585,60 @@ def _parse_pubdate(value: object) -> datetime | None:
         return parsedate_to_datetime(value)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_expiration_date(value: object) -> datetime | None:
+    """Parse ``g:expiration_date`` (SuccessFactors application deadline).
+
+    Tenants ship this as date-only ``YYYY-MM-DD`` or full ISO 8601 (optionally
+    ending in ``Z``). Use ``datetime.fromisoformat`` — NOT ``_parse_pubdate``
+    (RFC 822, for ``pubDate``). Return ``None`` on absence or invalid input; the
+    caller never falls back to ``posted_at``.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _legacy_dates_are_day_first(root: ET.Element) -> bool:
+    day_first_votes = 0
+    month_first_votes = 0
+    for value in root.iterfind("./Job/Posted-Date"):
+        parts = (value.text or "").strip().split("/")
+        if len(parts) != 3:
+            continue
+        try:
+            first, second = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        if first > 12 >= second:
+            day_first_votes += 1
+        elif second > 12 >= first:
+            month_first_votes += 1
+    return day_first_votes > month_first_votes
+
+
+def _parse_legacy_date(
+    value: object,
+    *,
+    day_first: bool = False,
+) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    slash_format = "%d/%m/%Y" if day_first else "%m/%d/%Y"
+    for date_format in (slash_format, "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value.strip(), date_format).replace(
+                tzinfo=UTC
+            )
+        except ValueError:
+            continue
+    return None

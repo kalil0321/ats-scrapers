@@ -3,6 +3,7 @@
 Layout produced under ``<prefix>`` (default ``jobhive/v1``):
 
     jobhive/v1/manifest.json
+    jobhive/v1/badges.json           # pre-formatted README badge values
     jobhive/v1/all.{csv,parquet}     # full snapshot, both formats
     jobhive/v1/<ats>/jobs.csv        # per-ATS jobs slice
     jobhive/v1/<ats>/jobs.parquet    # idem in parquet
@@ -52,8 +53,9 @@ import tempfile
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
@@ -61,6 +63,7 @@ from ats_scrapers._version import __version__
 from ats_scrapers.enrichment import infer_is_remote, parse_salary_range
 from ats_scrapers.exceptions import StorageError
 from ats_scrapers.models import ATSType
+from ats_scrapers.source_kind import HEADLINE_KINDS, source_kind
 
 # Pull the keyword list used by ``infer_is_remote`` so the lazy
 # enrichment path can express the rule as vectorized polars
@@ -266,11 +269,20 @@ class DatasetPublisher:
             )
             files_uploaded.extend(_collect_uploaded_keys(all_entry))
 
-            manifest_key = self._patch_and_upload_manifest(
+            jobs_by_kind = _jobs_by_source_kind(survivors)
+            manifest_key, badges_key = self._patch_and_upload_manifest(
                 generated_at=started,
                 stats_factory=lambda existing: {
                     "total_jobs": n_kept,
                     "total_jobs_raw": n_raw,
+                    # Postings from employers' own hiring systems (ATS and
+                    # company career sites), after cross-source dedup. Public
+                    # employment services and job boards are excluded.
+                    "ats_jobs": sum(
+                        n for kind, n in jobs_by_kind.items()
+                        if kind in HEADLINE_KINDS
+                    ),
+                    "jobs_by_source_kind": jobs_by_kind,
                     "total_companies": _sum_by_ats_companies_rows(existing),
                     "ats_count": len(per_ats_entries),
                     "schema_version": "2.0",
@@ -280,6 +292,8 @@ class DatasetPublisher:
                 by_ats=per_ats_entries,
                 existing_manifest=existing_manifest,
             )
+            if badges_key is not None:
+                files_uploaded.append(badges_key)
             files_uploaded.append(manifest_key)
 
             deleted = self.prune_legacy_paths()
@@ -481,9 +495,12 @@ class DatasetPublisher:
         all_entry: dict[str, object],
         by_ats: dict[ATSType, dict[str, object]],
         existing_manifest: dict[str, object] | None = None,
-    ) -> str:
+    ) -> tuple[str, str | None]:
         """Read existing manifest, replace jobs-related fields, preserve
-        the companies block written by the CI."""
+        the companies block written by the CI.
+
+        Returns the manifest key and the badges key, or ``None`` for the
+        badges when their upload failed."""
         key = f"{self._prefix}/manifest.json"
         existing = (
             existing_manifest
@@ -502,7 +519,8 @@ class DatasetPublisher:
         # writer ran most recently. Format matches what the CI script
         # writes: UTC ``Z``-suffixed seconds.
         manifest["updated_at"] = generated_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-        manifest["stats"] = stats_factory(existing)
+        stats = stats_factory(existing)
+        manifest["stats"] = stats
         manifest["all"] = all_entry
         manifest["by_ats"] = {ats.value: entry for ats, entry in by_ats.items()}
 
@@ -512,6 +530,7 @@ class DatasetPublisher:
         for legacy in ("by_date", "companies_by_ats"):
             manifest.pop(legacy, None)
 
+        badges_key = self._upload_badges(stats, generated_at)
         body = json.dumps(manifest, indent=2, sort_keys=True, default=str).encode(
             "utf-8"
         )
@@ -521,6 +540,38 @@ class DatasetPublisher:
             content_type="application/json",
             cache_control=CACHE_CONTROL_LATEST,
         )
+        return key, badges_key
+
+    def _upload_badges(
+        self, stats: dict[str, Any], generated_at: datetime
+    ) -> str | None:
+        """Upload the dataset's headline values already formatted.
+
+        Shields' dynamic JSON badge can't format numbers. This file holds
+        the values ready to display, so that the README badges can read
+        them from here instead of the raw manifest.
+
+        Returns the uploaded key. A failed upload is logged, not raised,
+        and returns ``None``: badges are cosmetic and must not block the
+        manifest.
+        """
+        badges = {
+            "jobs": _compact(stats["total_jobs"]),
+            "companies": _compact(stats["total_companies"]),
+            "sources": str(stats["ats_count"]),
+            "updated": generated_at.strftime("%Y-%m-%d"),
+        }
+        key = f"{self._prefix}/badges.json"
+        try:
+            self._r2.upload_bytes(
+                json.dumps(badges).encode("utf-8"),
+                key,
+                content_type="application/json",
+                cache_control=CACHE_CONTROL_LATEST,
+            )
+        except StorageError as exc:
+            logger.warning("Badge upload failed: %s", exc)
+            return None
         return key
 
     def _public_or_key(self, key: str) -> str:
@@ -534,15 +585,24 @@ class DatasetPublisher:
 # we keep the row from the highest-priority ATS (lowest number wins).
 ATS_DEDUP_PRIORITY: dict[str, int] = {
     # Direct employer ATSes
-    "ashby": 1, "avature": 1, "bamboohr": 1, "beisen": 1, "beisen_legacy": 1,
-    "breezy": 1, "cornerstone": 1,
+    "adp": 1, "applitrack": 1, "ashby": 1, "avature": 1, "bamboohr": 1, "beisen": 1,
+    "beisen_legacy": 1,
+    "applicantpro": 1,
+    "breezy": 1, "catsone": 1, "clearcompany": 1, "cornerstone": 1,
     "darwinbox": 1, "dayforce": 1,
-    "greenhouse": 1, "gupy": 1, "icims": 1, "jazzhr": 1, "join_com": 1, "jobvite": 1,
+    "greenhouse": 1, "gupy": 1, "herp": 1, "hrmos": 1, "icims": 1, "jazzhr": 1,
+    "hireology": 1,
+    "jibe": 1, "join_com": 1, "jobvite": 1, "keka": 1,
     "lever": 1,
-    "moka": 1, "oracle": 1, "pageup": 1, "personio": 1, "phenom": 1, "pinpoint": 1,
+    "ninehire": 1,
+    "moka": 1, "oracle": 1, "pageup": 1, "paycom": 1, "paylocity": 1, "peopleadmin": 1, "personio": 1, "phenom": 1, "pinpoint": 1,
     "recruitee": 1,
-    "recruiterbox": 1, "rippling": 1, "smartrecruiters": 1,
-    "successfactors": 1, "taleo": 1, "teamtailor": 1, "ukg": 1, "workable": 1,
+    "recruiterbox": 1, "rippling": 1, "smartrecruiters": 1, "softgarden": 1,
+    "successfactors": 1, "talentbrew": 1, "talentio": 1, "talentsoft": 1, "taleo": 1,
+    "taleo_enterprise": 1, "varbi": 1,
+    "teamtailor": 1, "ukg": 1,
+    "workable": 1,
+    "wintalent": 1,
     "workday": 1,
     # Big-tech bespoke careers — also priority 1 (single-tenant, canonical)
     "amazon": 1, "apple": 1, "bytedance": 1, "google": 1, "meta": 1,
@@ -700,8 +760,8 @@ def _dedup_from_per_ats_csvs(
     not the corpus) before we run the eager dedup on it. This is the
     key memory win vs an in-memory ``pl.concat([..]).collect()``: the
     per-ATS scans are pulled in one ATS at a time, and the keys
-    parquet on disk is small (~80 MB / million rows for the nine
-    thin string columns we project).
+    parquet on disk is small because only the thin deduplication
+    columns are projected.
 
     Returns ``(survivors_by_ats, n_raw, n_kept)``.
     """
@@ -737,6 +797,9 @@ def _dedup_from_per_ats_csvs(
                 .str.to_uppercase()
                 .alias("country_iso"),
                 _key_col_or_empty(schema_names, "ats_id").alias("ats_id"),
+                _key_col_or_empty(
+                    schema_names, "requisition_id"
+                ).alias("requisition_id"),
             ]
         )
         key_lfs.append(klf)
@@ -763,12 +826,12 @@ def _decide_dedup_survivors_polars(
     fuzzy_threshold: int = 90,
     fuzzy_max_block_size: int = 5000,
 ) -> dict[str, pl.DataFrame]:
-    """Run the five-pass cross-ATS dedup.
+    """Run the six-pass cross-ATS dedup.
 
-    Passes 1-3 are exact-match window-function passes (cheap). Pass 4
+    Passes 1-4 are exact-match window-function passes (cheap). Pass 5
     is the normalisation pass that catches aggregator formatting
     variations (eures NUTS-code locations vs Bundesagentur full text,
-    trailing Berufenet tags on titles). Pass 5 layers rapidfuzz over
+    trailing Berufenet tags on titles). Pass 6 layers rapidfuzz over
     the remaining cross-ATS pairs within ``(company_norm, country_iso)``
     blocks to catch typo / minor-wording dups.
 
@@ -825,12 +888,42 @@ def _decide_dedup_survivors_polars(
     )
     work = work.filter(ctl_keep).drop("_dedup_key")
 
-    # ---- Pass 3: cross-ATS (company_norm, ats_id) dedup -------------------
+    # ---- Pass 3: cross-ATS (company_norm, requisition_id) dedup -----------
     work = work.with_columns(
         pl.col("company")
         .str.replace_all(r"[^a-z0-9]", "")
         .alias("_company_norm")
     )
+    if "requisition_id" not in work.columns:
+        work = work.with_columns(
+            pl.lit("", dtype=pl.String).alias("requisition_id")
+        )
+    work = work.with_columns(
+        (
+            pl.col("_company_norm")
+            + pl.lit("|")
+            + pl.col("requisition_id")
+        ).alias("_rid_key")
+    )
+    rid_valid = (
+        (pl.col("_company_norm").str.len_bytes() > 0)
+        & (pl.col("requisition_id").str.len_bytes() > 0)
+    )
+    n_ats_in_valid_rid = (
+        pl.when(rid_valid)
+        .then(pl.col("ats_type"))
+        .otherwise(None)
+        .n_unique()
+        .over("_rid_key")
+    )
+    is_cross_rid = rid_valid & (n_ats_in_valid_rid > 1)
+    winning_rid_ats = pl.col("ats_type").first().over("_rid_key")
+    rid_keep = ~is_cross_rid | (
+        pl.col("ats_type") == winning_rid_ats
+    )
+    work = work.filter(rid_keep).drop("_rid_key")
+
+    # ---- Pass 4: cross-ATS (company_norm, ats_id) dedup -------------------
     work = work.with_columns(
         (pl.col("_company_norm") + pl.lit("|") + pl.col("ats_id")).alias("_cid_key")
     )
@@ -846,12 +939,13 @@ def _decide_dedup_survivors_polars(
         .over("_cid_key")
     )
     is_cross_cid = cid_valid & (n_ats_in_valid_cid > 1)
+    winning_cid_ats = pl.col("ats_type").first().over("_cid_key")
     cid_keep = ~is_cross_cid | (
-        pl.col("_orig_idx") == pl.col("_orig_idx").first().over("_cid_key")
+        pl.col("ats_type") == winning_cid_ats
     )
     work = work.filter(cid_keep).drop("_cid_key")
 
-    # ---- Pass 4 (Phase 1): cross-ATS (company_norm, title_core, country) -
+    # ---- Pass 5 (Phase 1): cross-ATS (company_norm, title_core, country) -
     # ``title_core`` strips the trailing parenthesised Berufenet tag
     # that eures appends but Bundesagentur doesn't. ``country_iso`` is
     # prefers the scraper's structured value and falls back to extracting
@@ -903,7 +997,7 @@ def _decide_dedup_survivors_polars(
     )
     work = work.filter(p1_keep).drop("_p1_key")
 
-    # ---- Pass 5 (Phase 2): fuzzy within (company_norm, country) blocks ---
+    # ---- Pass 6 (Phase 2): fuzzy within (company_norm, country) blocks ---
     drop_orig_idxs = _phase2_fuzzy_drops(
         work,
         threshold=fuzzy_threshold,
@@ -1116,6 +1210,14 @@ def _collect_uploaded_keys(entry: dict[str, object]) -> list[str]:
     return keys
 
 
+def _jobs_by_source_kind(survivors: dict[str, pl.DataFrame]) -> dict[str, int]:
+    """Count deduplicated jobs per source kind (see ``source_kind``)."""
+    counts = {"ats": 0, "company_site": 0, "gov_board": 0, "job_board": 0}
+    for ats_value, frame in survivors.items():
+        counts[source_kind(ats_value)] += frame.height
+    return counts
+
+
 def _sum_by_ats_companies_rows(manifest: dict[str, object]) -> int:
     """Sum ``rows`` across every ``by_ats_companies.<ats>`` entry.
 
@@ -1195,6 +1297,24 @@ def _guard_suspicious_empty_job_slices(
             "providers.\n- "
             + "\n- ".join(suspicious)
         )
+
+
+def _compact(n: int) -> str:
+    """Same output as stapply.ai's ``Intl.NumberFormat`` compact notation,
+    e.g. 4886484 -> "4.9M"."""
+    # Decimal, rounded half up: a float's ``:.1f`` rounds ties to even and
+    # turns 1,250 into "1.2K" where the site shows "1.3K".
+    value, suffix = Decimal(n), ""
+    for next_suffix in ("K", "M", "B"):
+        if _one_decimal(value) < 1000:
+            break
+        value /= 1000
+        suffix = next_suffix
+    return f"{_one_decimal(value):f}".removesuffix(".0") + suffix
+
+
+def _one_decimal(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
 
 
 def _entry_rows(entry: object) -> int:

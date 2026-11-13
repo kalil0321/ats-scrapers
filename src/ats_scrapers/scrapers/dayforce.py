@@ -37,42 +37,47 @@ _EMPLOYMENT_TYPE_MAP: tuple[tuple[str, EmploymentType], ...] = (
     ("apprentice", "INTERN"),
 )
 
+_COUNTRY_CODES: tuple[tuple[str, str, str], ...] = (
+    ("AR", "ARG", "South America"),
+    ("AU", "AUS", "Oceania"),
+    ("AT", "AUT", "Europe"),
+    ("BE", "BEL", "Europe"),
+    ("BR", "BRA", "South America"),
+    ("CA", "CAN", "North America"),
+    ("CH", "CHE", "Europe"),
+    ("CL", "CHL", "South America"),
+    ("CN", "CHN", "Asia"),
+    ("CO", "COL", "South America"),
+    ("CZ", "CZE", "Europe"),
+    ("DE", "DEU", "Europe"),
+    ("DK", "DNK", "Europe"),
+    ("ES", "ESP", "Europe"),
+    ("FI", "FIN", "Europe"),
+    ("FR", "FRA", "Europe"),
+    ("GB", "GBR", "Europe"),
+    ("HK", "HKG", "Asia"),
+    ("IN", "IND", "Asia"),
+    ("IE", "IRL", "Europe"),
+    ("IT", "ITA", "Europe"),
+    ("JP", "JPN", "Asia"),
+    ("KR", "KOR", "Asia"),
+    ("MX", "MEX", "North America"),
+    ("MY", "MYS", "Asia"),
+    ("NL", "NLD", "Europe"),
+    ("NO", "NOR", "Europe"),
+    ("NZ", "NZL", "Oceania"),
+    ("PL", "POL", "Europe"),
+    ("PT", "PRT", "Europe"),
+    ("SG", "SGP", "Asia"),
+    ("SE", "SWE", "Europe"),
+    ("TH", "THA", "Asia"),
+    ("US", "USA", "North America"),
+    ("ZA", "ZAF", "Africa"),
+)
 _COUNTRY_METADATA: dict[str, tuple[str, str]] = {
-    "ARG": ("AR", "South America"),
-    "AUS": ("AU", "Oceania"),
-    "AUT": ("AT", "Europe"),
-    "BEL": ("BE", "Europe"),
-    "BRA": ("BR", "South America"),
-    "CAN": ("CA", "North America"),
-    "CHE": ("CH", "Europe"),
-    "CHL": ("CL", "South America"),
-    "CHN": ("CN", "Asia"),
-    "COL": ("CO", "South America"),
-    "CZE": ("CZ", "Europe"),
-    "DEU": ("DE", "Europe"),
-    "DNK": ("DK", "Europe"),
-    "ESP": ("ES", "Europe"),
-    "FIN": ("FI", "Europe"),
-    "FRA": ("FR", "Europe"),
-    "GBR": ("GB", "Europe"),
-    "HKG": ("HK", "Asia"),
-    "IND": ("IN", "Asia"),
-    "IRL": ("IE", "Europe"),
-    "ITA": ("IT", "Europe"),
-    "JPN": ("JP", "Asia"),
-    "KOR": ("KR", "Asia"),
-    "MEX": ("MX", "North America"),
-    "MYS": ("MY", "Asia"),
-    "NLD": ("NL", "Europe"),
-    "NOR": ("NO", "Europe"),
-    "NZL": ("NZ", "Oceania"),
-    "POL": ("PL", "Europe"),
-    "PRT": ("PT", "Europe"),
-    "SGP": ("SG", "Asia"),
-    "SWE": ("SE", "Europe"),
-    "THA": ("TH", "Asia"),
-    "USA": ("US", "North America"),
-    "ZAF": ("ZA", "Africa"),
+    code: (iso2, region)
+    for iso2, iso3, region in _COUNTRY_CODES
+    for code in (iso2, iso3)
 }
 
 
@@ -123,21 +128,20 @@ class DayforceScraper(BaseScraper):
                 f"Dayforce ({self.tenant}/{self.board}) returned a non-list feed"
             )
 
-        jobs: list[Job] = []
-        seen_ids: set[str] = set()
+        variants_by_id: dict[str, list[tuple[Job, dict[str, Any]]]] = {}
         for index, item in enumerate(payload):
             if not isinstance(item, dict):
                 raise ScraperError(
                     f"Dayforce feed row {index} was not an object"
                 )
             job = self._parse_job(item)
-            if job.ats_id in seen_ids:
-                raise ScraperError(
-                    f"Dayforce returned duplicate job id {job.ats_id!r}"
-                )
-            seen_ids.add(job.ats_id or "")
-            jobs.append(job)
-        return jobs
+            if not job.ats_id:
+                raise ScraperError(f"Dayforce feed row {index} omitted its job id")
+            variants_by_id.setdefault(job.ats_id, []).append((job, item))
+        return [
+            _select_job_variant(ats_id, variants)
+            for ats_id, variants in variants_by_id.items()
+        ]
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
         reference = _required_string(item, "ReferenceNumber")
@@ -176,6 +180,7 @@ class DayforceScraper(BaseScraper):
             for key in (
                 "ClientSiteName",
                 "ClientSiteXRefCode",
+                "CultureCode",
                 "ParentCompanyName",
                 "ParentRequisitionCode",
                 "LastUpdated",
@@ -215,6 +220,67 @@ class DayforceScraper(BaseScraper):
             commitment=employment_label,
             raw=raw or None,
         )
+
+
+def _select_job_variant(
+    ats_id: str,
+    variants: list[tuple[Job, dict[str, Any]]],
+) -> Job:
+    cultures_to_titles: dict[str, set[str]] = {}
+    companies: set[str] = set()
+    for job, item in variants:
+        culture = (_string(item.get("CultureCode")) or "").casefold()
+        cultures_to_titles.setdefault(culture, set()).add(
+            " ".join(job.title.split()).casefold()
+        )
+        feed_company = (
+            _string(item.get("CompanyName"))
+            or _string(item.get("ParentCompanyName"))
+            or ""
+        )
+        companies.add(" ".join(feed_company.split()).casefold())
+
+    if len(companies) != 1 or any(
+        len(titles) != 1 for titles in cultures_to_titles.values()
+    ):
+        raise ScraperError(
+            f"Dayforce returned conflicting duplicate job id {ats_id!r}"
+        )
+
+    selected_job, _ = max(
+        variants,
+        key=lambda variant: _variant_rank(*variant),
+    )
+    cultures = sorted(
+        {
+            culture
+            for _, item in variants
+            if (culture := _string(item.get("CultureCode")))
+        }
+    )
+    locations = list(
+        dict.fromkeys(
+            job.location for job, _ in variants if job.location
+        )
+    )
+    raw = dict(selected_job.raw or {})
+    if len(cultures) > 1:
+        raw["AvailableCultures"] = cultures
+    if len(locations) > 1:
+        raw["AllLocations"] = locations
+    selected_job.raw = raw or None
+    return selected_job
+
+
+def _variant_rank(job: Job, item: dict[str, Any]) -> tuple[bool, bool, bool, bool]:
+    culture = (_string(item.get("CultureCode")) or "").casefold()
+    country = (_string(item.get("Country")) or "").upper()
+    return (
+        bool(job.description),
+        culture == "en-us",
+        culture.startswith("en-"),
+        country in _COUNTRY_METADATA,
+    )
 
 
 def _normalize_tenant_board(value: str) -> tuple[str, str]:

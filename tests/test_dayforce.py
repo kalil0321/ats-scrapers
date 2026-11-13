@@ -150,6 +150,103 @@ def test_duplicate_references_fail_closed(httpx_mock) -> None:
         DayforceScraper("mayfair/CANDIDATEPORTAL").fetch()
 
 
+def test_duplicate_feed_employers_fail_closed_with_seed_override(
+    httpx_mock,
+) -> None:
+    duplicate = {
+        **FIXTURE,
+        "CompanyName": "Another Employer",
+        "ParentCompanyName": "Another Employer",
+    }
+    httpx_mock.add_response(url=API_URL, json=[FIXTURE, duplicate])
+
+    with pytest.raises(ScraperError, match="duplicate job id"):
+        DayforceScraper(
+            "mayfair/CANDIDATEPORTAL",
+            company_name="Canonical Employer",
+        ).fetch()
+
+
+def test_equivalent_duplicate_references_are_collapsed(httpx_mock) -> None:
+    duplicate = {**FIXTURE, "Country": "CA"}
+    httpx_mock.add_response(url=API_URL, json=[FIXTURE, duplicate])
+
+    jobs = DayforceScraper("mayfair/CANDIDATEPORTAL").fetch()
+
+    assert len(jobs) == 1
+    assert jobs[0].country_iso == "CA"
+    assert jobs[0].region == "North America"
+
+
+def test_multilingual_duplicate_prefers_english(httpx_mock) -> None:
+    french = {
+        **FIXTURE,
+        "Title": "Gestionnaire de la comptabilité et de la paie",
+        "CultureCode": "fr-CA",
+        "JobDetailsUrl": (
+            "https://jobs.dayforcehcm.com/fr-CA/mayfair/"
+            "CANDIDATEPORTAL/jobs/3612"
+        ),
+        "ApplyUrl": (
+            "https://jobs.dayforcehcm.com/fr-CA/mayfair/"
+            "CANDIDATEPORTAL/jobs/3612/apply"
+        ),
+    }
+    httpx_mock.add_response(url=API_URL, json=[french, FIXTURE])
+
+    jobs = DayforceScraper("mayfair/CANDIDATEPORTAL").fetch()
+
+    assert len(jobs) == 1
+    assert jobs[0].title == FIXTURE["Title"]
+    assert jobs[0].language == "en"
+    assert jobs[0].raw is not None
+    assert jobs[0].raw["AvailableCultures"] == ["en-CA", "fr-CA"]
+
+
+def test_multilingual_duplicate_keeps_available_description(httpx_mock) -> None:
+    english = {**FIXTURE, "Description": ""}
+    french = {
+        **FIXTURE,
+        "Title": "Gestionnaire de la comptabilité et de la paie",
+        "CultureCode": "fr-CA",
+        "JobDetailsUrl": (
+            "https://jobs.dayforcehcm.com/fr-CA/mayfair/"
+            "CANDIDATEPORTAL/jobs/3612"
+        ),
+        "ApplyUrl": (
+            "https://jobs.dayforcehcm.com/fr-CA/mayfair/"
+            "CANDIDATEPORTAL/jobs/3612/apply"
+        ),
+    }
+    httpx_mock.add_response(url=API_URL, json=[english, french])
+
+    jobs = DayforceScraper("mayfair/CANDIDATEPORTAL").fetch()
+
+    assert len(jobs) == 1
+    assert jobs[0].description == FIXTURE["Description"]
+    assert jobs[0].language == "fr"
+
+
+def test_multi_location_duplicate_preserves_all_locations(httpx_mock) -> None:
+    edmonton = {
+        **FIXTURE,
+        "AddressLine1": "100 Main Street",
+        "City": "Edmonton",
+        "State": "AB",
+        "PostalCode": "T5J0N3",
+    }
+    httpx_mock.add_response(url=API_URL, json=[FIXTURE, edmonton])
+
+    jobs = DayforceScraper("mayfair/CANDIDATEPORTAL").fetch()
+
+    assert len(jobs) == 1
+    assert jobs[0].raw is not None
+    assert jobs[0].raw["AllLocations"] == [
+        "132, 6707 Elbow Drive SW, Calgary, AB, CAN",
+        "100 Main Street, Edmonton, AB, CAN",
+    ]
+
+
 @pytest.mark.parametrize(
     "url",
     [

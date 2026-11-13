@@ -11,7 +11,6 @@ import pytest
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.scrapers import (
     GemScraper,
-    JoinComScraper,
     OracleScraper,
     PersonioScraper,
     RipplingScraper,
@@ -21,7 +20,7 @@ from ats_scrapers.scrapers import (
 )
 
 # Several scrapers now fan out per-job detail fetches after the listing
-# pass (Gem batched GraphQL, join.com JSON-LD, etc.). Tests below mock
+# pass (Gem batched GraphQL, etc.). Tests below mock
 # only the listing call and rely on this module-level relax-mark to
 # tolerate the unmatched detail requests.
 pytestmark = pytest.mark.httpx_mock(
@@ -80,6 +79,7 @@ def test_workable_happy_path(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://apply.workable.com/api/v1/widget/accounts/acme",
         json={
+            "name": "Acme Corporation",
             "jobs": [
                 {
                     "shortcode": "ABC123",
@@ -93,8 +93,62 @@ def test_workable_happy_path(httpx_mock) -> None:
     )
     jobs = WorkableScraper("acme").fetch()
     assert jobs[0].title == "Backend Dev"
+    assert jobs[0].company == "Acme Corporation"
     assert jobs[0].location == "Paris, France"
     assert jobs[0].ats_id == "ABC123"
+
+
+def test_workable_falls_back_to_slug_without_company_name(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://apply.workable.com/api/v1/widget/accounts/acme",
+        json={
+            "jobs": [
+                {
+                    "shortcode": "ABC123",
+                    "title": "Backend Dev",
+                    "url": "https://apply.workable.com/acme/j/ABC123",
+                }
+            ]
+        },
+    )
+
+    jobs = WorkableScraper("acme").fetch()
+
+    assert jobs[0].company == "acme"
+
+
+def test_workable_combines_locations_for_duplicate_shortcodes(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://apply.workable.com/api/v1/widget/accounts/acme",
+        json={
+            "name": "Acme Corporation",
+            "jobs": [
+                {
+                    "shortcode": "ABC123",
+                    "title": "Backend Dev",
+                    "url": "https://apply.workable.com/j/ABC123",
+                    "location": {"city": "Paris", "country": "France"},
+                },
+                {
+                    "shortcode": "ABC123",
+                    "title": "Backend Dev",
+                    "url": "https://apply.workable.com/j/ABC123",
+                    "location": {"city": "Berlin", "country": "Germany"},
+                },
+                {
+                    "shortcode": "ABC123",
+                    "title": "Backend Dev",
+                    "url": "https://apply.workable.com/j/ABC123",
+                    "location": {"city": "Paris", "country": "France"},
+                },
+            ],
+        },
+    )
+
+    jobs = WorkableScraper("acme", include_descriptions=False).fetch()
+
+    assert len(jobs) == 1
+    assert jobs[0].location == "Paris, France | Berlin, Germany"
 
 
 def test_workable_404(httpx_mock) -> None:
@@ -142,6 +196,52 @@ def test_rippling_handles_bare_list(httpx_mock) -> None:
     )
     jobs = RipplingScraper("acme").fetch()
     assert len(jobs) == 1
+
+
+def test_rippling_detail_pay_ranges_kept_in_raw(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://api.rippling.com/platform/api/ats/v1/board/acme/jobs",
+        json=[
+            {
+                "id": "xyz",
+                "name": "Engineer",
+                "url": "https://ats.rippling.com/acme/jobs/xyz",
+                "workLocation": {"displayName": "Remote"},
+                "department": {"id": "eng", "label": "Engineering"},
+            },
+            {
+                "id": "abc",
+                "name": "Designer",
+                "url": "https://ats.rippling.com/acme/jobs/abc",
+            },
+        ],
+    )
+    # Row shape is illustrative; the scraper keeps the list as-is.
+    pay = [
+        {
+            "location": "Springfield",
+            "currency": "USD",
+            "rangeStart": 1000,
+            "rangeEnd": 2000,
+            "frequency": "YEAR",
+        }
+    ]
+    httpx_mock.add_response(
+        url="https://api.rippling.com/platform/api/ats/v1/board/acme/jobs/xyz",
+        json={"description": {"role": "<p>Build things.</p>"}, "payRangeDetails": pay},
+    )
+    httpx_mock.add_response(
+        url="https://api.rippling.com/platform/api/ats/v1/board/acme/jobs/abc",
+        json={"description": {"role": "<p>Draw things.</p>"}, "payRangeDetails": []},
+    )
+    jobs = {j.ats_id: j for j in RipplingScraper("acme").fetch()}
+    assert jobs["xyz"].description == "Build things."
+    assert jobs["xyz"].raw == {
+        "department": {"id": "eng", "label": "Engineering"},
+        "workLocation": {"displayName": "Remote"},
+        "payRangeDetails": pay,
+    }
+    assert jobs["abc"].raw is None
 
 
 def test_rippling_404(httpx_mock) -> None:
@@ -244,34 +344,6 @@ def test_gem_empty_response(httpx_mock) -> None:
     assert GemScraper("empty").fetch() == []
 
 
-# --- Join.com ----------------------------------------------------------------
-
-def test_join_com_resolves_id_and_lists_jobs(httpx_mock) -> None:
-    httpx_mock.add_response(
-        url="https://join.com/companies/acme",
-        text='<html><script>{"company":{"id":"42","slug":"acme"}}</script></html>',
-    )
-    httpx_mock.add_response(
-        url=(
-            "https://join.com/api/public/companies/42/jobs"
-            "?locale=en-us&page=1&pageSize=100&withAggregations=true&sort=%2Btitle"
-        ),
-        json={
-            "items": [{"id": 100, "title": "Designer", "location": "Berlin"}],
-            "pagination": {"totalPages": 1},
-        },
-    )
-    jobs = JoinComScraper("acme").fetch()
-    assert jobs[0].title == "Designer"
-    assert jobs[0].ats_id == "100"
-
-
-def test_join_com_404(httpx_mock) -> None:
-    httpx_mock.add_response(url="https://join.com/companies/missing", status_code=404)
-    with pytest.raises(CompanyNotFoundError):
-        JoinComScraper("missing").fetch()
-
-
 # --- Workday -----------------------------------------------------------------
 
 def test_workday_parses_url_and_paginates(httpx_mock) -> None:
@@ -311,6 +383,9 @@ def test_workday_parses_url_and_paginates(httpx_mock) -> None:
     assert len(jobs) == 21
     titles = {j.title for j in jobs}
     assert "Last One" in titles
+    assert jobs[0].ats_id == (
+        "accenture.wd103.myworkdayjobs.com/job/0"
+    )
 
 
 def test_workday_dedupes_overlapping_pages(httpx_mock) -> None:
@@ -333,7 +408,10 @@ def test_workday_dedupes_overlapping_pages(httpx_mock) -> None:
     ats_ids = [j.ats_id for j in jobs]
     assert len(jobs) == 25
     assert len(set(ats_ids)) == 25  # no duplicates
-    assert ats_ids == sorted(ats_ids, key=lambda s: int(s[1:]))  # ordered correctly
+    assert ats_ids == sorted(
+        ats_ids,
+        key=lambda value: int(value.rsplit("/", 1)[-1]),
+    )
 
 
 def test_workday_short_response_returns_only_first_page(httpx_mock) -> None:
@@ -370,6 +448,292 @@ def test_workday_uses_configured_company_name(httpx_mock) -> None:
     ).fetch()
 
     assert jobs[0].company == "Acme Health"
+    assert jobs[0].ats_id == "acme.wd1.myworkdayjobs.com/job/1"
+
+
+def test_workday_uses_external_path_when_bullet_fields_start_with_location(
+    httpx_mock,
+) -> None:
+    api = "https://minor.wd102.myworkdayjobs.com/wday/cxs/minor/careers/jobs"
+    httpx_mock.add_response(
+        url=api,
+        json={
+            "jobPostings": [
+                {
+                    "title": "Complex F&B Manager",
+                    "externalPath": (
+                        "/job/Bnh-nh-Vietnam/"
+                        "Complex-F-B-Manager_JR109533"
+                    ),
+                    "locationsText": "Bình Định, Vietnam",
+                    "bulletFields": [
+                        "Bình Định, Vietnam",
+                        "JR109533",
+                        "Anantara Quy Nhon Villas",
+                    ],
+                },
+                {
+                    "title": "Restaurant Manager",
+                    "externalPath": (
+                        "/job/Bnh-nh-Vietnam/"
+                        "Restaurant-Manager_JR109534"
+                    ),
+                    "locationsText": "Bình Định, Vietnam",
+                    "bulletFields": [
+                        "Bình Định, Vietnam",
+                        "JR109534",
+                        "Anantara Quy Nhon Villas",
+                    ],
+                },
+            ],
+            "total": 2,
+        },
+    )
+
+    jobs = WorkdayScraper(
+        "https://minor.wd102.myworkdayjobs.com/careers",
+        include_descriptions=False,
+    ).fetch()
+
+    assert [job.ats_id for job in jobs] == [
+        (
+            "minor.wd102.myworkdayjobs.com/job/Bnh-nh-Vietnam/"
+            "Complex-F-B-Manager_JR109533"
+        ),
+        (
+            "minor.wd102.myworkdayjobs.com/job/Bnh-nh-Vietnam/"
+            "Restaurant-Manager_JR109534"
+        ),
+    ]
+    assert [job.requisition_id for job in jobs] == [
+        "JR109533",
+        "JR109534",
+    ]
+
+
+def test_workday_scopes_job_ids_to_tenant(httpx_mock) -> None:
+    first_api = (
+        "https://first.wd1.myworkdayjobs.com/"
+        "wday/cxs/first/external/jobs"
+    )
+    second_api = (
+        "https://second.wd1.myworkdayjobs.com/"
+        "wday/cxs/second/external/jobs"
+    )
+    posting = {
+        "title": "Engineer",
+        "externalPath": "/job/USA/Engineer_R-1",
+        "bulletFields": ["R-1"],
+    }
+    httpx_mock.add_response(
+        url=first_api,
+        json={"jobPostings": [posting], "total": 1},
+    )
+    httpx_mock.add_response(
+        url=second_api,
+        json={"jobPostings": [posting], "total": 1},
+    )
+
+    first = WorkdayScraper(
+        "https://first.wd1.myworkdayjobs.com/external",
+        include_descriptions=False,
+    ).fetch()[0]
+    second = WorkdayScraper(
+        "https://second.wd1.myworkdayjobs.com/external",
+        include_descriptions=False,
+    ).fetch()[0]
+
+    assert first.ats_id == "first.wd1.myworkdayjobs.com/job/USA/Engineer_R-1"
+    assert second.ats_id == "second.wd1.myworkdayjobs.com/job/USA/Engineer_R-1"
+    assert first.global_id != second.global_id
+
+
+def test_workday_scopes_job_ids_to_instance(httpx_mock) -> None:
+    posting = {
+        "title": "Engineer",
+        "externalPath": "/job/USA/Engineer_R-1",
+        "bulletFields": ["R-1"],
+    }
+    for instance in ("wd1", "wd5"):
+        httpx_mock.add_response(
+            url=(
+                f"https://acme.{instance}.myworkdayjobs.com/"
+                "wday/cxs/acme/external/jobs"
+            ),
+            json={"jobPostings": [posting], "total": 1},
+        )
+
+    first = WorkdayScraper(
+        "https://acme.wd1.myworkdayjobs.com/external",
+        include_descriptions=False,
+    ).fetch()[0]
+    second = WorkdayScraper(
+        "https://acme.wd5.myworkdayjobs.com/external",
+        include_descriptions=False,
+    ).fetch()[0]
+
+    assert first.ats_id != second.ats_id
+    assert first.global_id != second.global_id
+
+
+def test_workday_gives_one_id_to_a_posting_listed_on_two_sites(
+    httpx_mock,
+) -> None:
+    """The second career site adds a counter to the path of the same posting."""
+    httpx_mock.add_response(
+        url="https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs",
+        json={
+            "jobPostings": [
+                {
+                    "title": "Engineer",
+                    "externalPath": "/job/USA/Engineer_R2613747",
+                    "bulletFields": ["R2613747"],
+                }
+            ],
+            "total": 1,
+        },
+    )
+    httpx_mock.add_response(
+        url="https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/Campus/jobs",
+        json={
+            "jobPostings": [
+                {
+                    "title": "Engineer",
+                    "externalPath": "/job/USA/Engineer_R2613747-1",
+                    "bulletFields": ["USA", "R2613747"],
+                }
+            ],
+            "total": 1,
+        },
+    )
+
+    first = WorkdayScraper(
+        "https://acme.wd1.myworkdayjobs.com/External",
+        include_descriptions=False,
+    ).fetch()[0]
+    second = WorkdayScraper(
+        "https://acme.wd1.myworkdayjobs.com/Campus",
+        include_descriptions=False,
+    ).fetch()[0]
+
+    assert first.ats_id == "acme.wd1.myworkdayjobs.com/job/USA/Engineer_R2613747"
+    assert second.ats_id == first.ats_id
+    assert second.requisition_id == first.requisition_id == "R2613747"
+    # The link stays the one the site serves, counter included.
+    assert str(second.url) == (
+        "https://acme.wd1.myworkdayjobs.com/Campus/job/USA/Engineer_R2613747-1"
+    )
+
+
+def test_workday_keeps_a_path_suffix_no_bullet_field_explains(
+    httpx_mock,
+) -> None:
+    api = "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs"
+    httpx_mock.add_response(
+        url=api,
+        json={
+            "jobPostings": [
+                {
+                    # The bullet field is a place, so nothing says that
+                    # ``-1`` is a counter and not part of the id.
+                    "title": "Nurse",
+                    "externalPath": "/job/Troy-MI/Nurse_R123-1",
+                    "bulletFields": ["Troy, MI"],
+                },
+                {
+                    # The bullet field is the whole token: no counter here.
+                    "title": "Analyst",
+                    "externalPath": "/job/USA/Analyst_R-2026-12",
+                    "bulletFields": ["R-2026-12"],
+                },
+                {
+                    "title": "Clerk",
+                    "externalPath": "/job/USA/Clerk_R-7",
+                },
+            ],
+            "total": 3,
+        },
+    )
+
+    jobs = WorkdayScraper(
+        "https://acme.wd1.myworkdayjobs.com/External",
+        include_descriptions=False,
+    ).fetch()
+
+    assert [(job.ats_id, job.requisition_id) for job in jobs] == [
+        ("acme.wd1.myworkdayjobs.com/job/Troy-MI/Nurse_R123-1", None),
+        ("acme.wd1.myworkdayjobs.com/job/USA/Analyst_R-2026-12", "R-2026-12"),
+        ("acme.wd1.myworkdayjobs.com/job/USA/Clerk_R-7", None),
+    ]
+
+
+def test_workday_requisition_id_ignores_embedded_title_metadata(
+    httpx_mock,
+) -> None:
+    api = "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs"
+    httpx_mock.add_response(
+        url=api,
+        json={
+            "jobPostings": [
+                {
+                    "title": "Senior Software Engineer",
+                    "externalPath": (
+                        "/job/USA/Senior_Software_Engineer_"
+                        "Acme_Corporation_REQ-2026-0042"
+                    ),
+                    "bulletFields": [
+                        (
+                            "Senior_Software_Engineer_"
+                            "Acme_Corporation_REQ-2026-0042"
+                        ),
+                        "Senior_Software_Engineer",
+                        "Acme_Corporation",
+                        "REQ-2026-0042",
+                    ],
+                },
+            ],
+            "total": 1,
+        },
+    )
+
+    job = WorkdayScraper(
+        "https://acme.wd1.myworkdayjobs.com/External",
+        include_descriptions=False,
+    ).fetch()[0]
+
+    assert job.requisition_id == "REQ-2026-0042"
+
+
+def test_workday_skips_only_rows_without_a_valid_external_path(
+    httpx_mock,
+) -> None:
+    api = "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs"
+    httpx_mock.add_response(
+        url=api,
+        json={
+            "jobPostings": [
+                {"title": "Missing", "bulletFields": ["R-0"]},
+                {
+                    "title": "Valid",
+                    "externalPath": "/job/USA/Valid_R-1",
+                    "bulletFields": ["R-1"],
+                },
+                {
+                    "title": "Malformed",
+                    "externalPath": "/not-a-job/R-2",
+                    "bulletFields": ["R-2"],
+                },
+            ],
+            "total": 3,
+        },
+    )
+
+    jobs = WorkdayScraper(
+        "https://acme.wd1.myworkdayjobs.com/External",
+        include_descriptions=False,
+    ).fetch()
+
+    assert [job.title for job in jobs] == ["Valid"]
 
 
 def test_workday_invalid_url_raises() -> None:
@@ -452,6 +816,8 @@ def test_workday_enriches_description_from_detail_endpoint(httpx_mock) -> None:
         json={
             "jobPostingInfo": {
                 "jobDescription": "<div><p>Build <strong>search</strong>.</p></div>",
+                "startDate": "2026-08-23",
+                "endDate": "2026-09-30",
             }
         },
     )
@@ -460,6 +826,12 @@ def test_workday_enriches_description_from_detail_endpoint(httpx_mock) -> None:
 
     assert len(jobs) == 1
     assert jobs[0].description == "Build search ."
+    assert jobs[0].raw == {
+        "bullet_fields": ["R-1"],
+        "externalPath": "/job/USA/Engineer_R-1",
+        "startDate": "2026-08-23",
+        "endDate": "2026-09-30",
+    }
 
 
 def test_workday_rollup_resolution_failure_is_silent(httpx_mock) -> None:
@@ -520,9 +892,86 @@ def test_oracle_with_default_site(httpx_mock) -> None:
             }]
         },
     )
-    jobs = OracleScraper(base).fetch()
+    jobs = OracleScraper(
+        base,
+        company_name="Oracle Test Tenant",
+        include_descriptions=False,
+    ).fetch()
     assert jobs[0].title == "DBA"
     assert jobs[0].location == "Redwood Shores"
+    assert jobs[0].company == "Oracle Test Tenant"
+    assert jobs[0].ats_id == "eeho.fa.us2.oraclecloud.com:001"
+    assert jobs[0].global_id == "oracle:eeho.fa.us2.oraclecloud.com:001"
+    assert jobs[0].raw is not None
+    assert jobs[0].raw["oracle_id"] == "001"
+
+
+def test_oracle_scopes_job_ids_to_tenant_not_site() -> None:
+    item = {"Id": "1071", "Title": "Finance Manager"}
+    acme = OracleScraper(
+        "https://acme.fa.em2.oraclecloud.com",
+        include_descriptions=False,
+    )
+    other = OracleScraper(
+        "https://other.fa.em2.oraclecloud.com",
+        include_descriptions=False,
+    )
+
+    acme_english = acme._parse_job(
+        item,
+        "https://acme.fa.em2.oraclecloud.com",
+        "CX_1",
+    )
+    acme_french = acme._parse_job(
+        item,
+        "https://acme.fa.em2.oraclecloud.com",
+        "CX_2",
+    )
+    other_job = other._parse_job(
+        item,
+        "https://other.fa.em2.oraclecloud.com",
+        "CX_1",
+    )
+
+    assert acme_english.ats_id == acme_french.ats_id
+    assert acme_english.ats_id != other_job.ats_id
+
+
+def test_oracle_enriches_single_page_job_with_raw_source_id(httpx_mock) -> None:
+    base = "https://eeho.fa.us2.oraclecloud.com"
+    listing_api = (
+        f"{base}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
+    )
+    detail_api = (
+        f"{base}/hcmRestApi/resources/latest/"
+        "recruitingCEJobRequisitionDetails"
+    )
+    httpx_mock.add_response(
+        url=(
+            f"{listing_api}?onlyData=true"
+            f"&finder=findReqs%3BsiteNumber%3DCX_1%2Climit%3D200%2Coffset%3D0"
+            f"&expand=requisitionList"
+        ),
+        json={
+            "items": [{
+                "TotalJobsCount": 1,
+                "requisitionList": [{"Id": "001", "Title": "DBA"}],
+            }]
+        },
+    )
+    httpx_mock.add_response(
+        url=f"{detail_api}?finder=ById%3BId%3D001&onlyData=true",
+        json={
+            "items": [{
+                "ExternalDescriptionStr": "<p>Maintain databases.</p>",
+                "ExternalResponsibilitiesStr": "<p>Ship backups.</p>",
+            }]
+        },
+    )
+
+    [job] = OracleScraper(base).fetch()
+
+    assert job.description == "Maintain databases.\n\nShip backups."
 
 
 def test_oracle_extracts_site_number_from_query(httpx_mock) -> None:

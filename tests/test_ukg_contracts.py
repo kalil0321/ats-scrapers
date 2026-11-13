@@ -19,6 +19,8 @@ def test_ukg_pipeline_contract() -> None:
     assert config["fail_closed_on_not_found"] is True
     assert config["fail_closed_on_empty"] is True
     assert config["kwargs"]({"name": "Acme"}) == {"company_name": "Acme"}
+    # Boards of one tenant can list the same job: it is published once.
+    assert config["dedupe_by_ats_id"] is True
 
 
 def test_ukg_has_direct_employer_dedup_priority() -> None:
@@ -28,5 +30,5 @@ def test_ukg_has_direct_employer_dedup_priority() -> None:
 def test_ukg_seed_catalogue_is_provider_only() -> None:
     rows = Path("ats-companies/ukg.csv").read_text().splitlines()
 
-    assert len(rows) == 20
+    assert len(rows) >= 462
     assert all("ultipro." in row for row in rows[1:])
