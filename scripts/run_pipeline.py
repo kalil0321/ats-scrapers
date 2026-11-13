@@ -41,6 +41,7 @@ from ats_scrapers.scrapers import (
     ADPWorkforceNowScraper,
     AmazonScraper,
     AppleScraper,
+    ApplicantProScraper,
     AppliTrackScraper,
     ArbetsformedlingenScraper,
     AshbyScraper,
@@ -477,6 +478,25 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # row to remove, not a reason to hold back the others.
         "fail_closed_tolerance": 0.05,
     },
+    "applicantpro": {
+        "scraper": ApplicantProScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/applicantpro.csv",
+        "output": "applicantpro/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 4,
+        "fail_closed_on_any_error": True,
+        # A portal that is gone counts as a failed one, so many portals
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        # 5% of portals may fail or be gone; a portal that closes is a row
+        # to remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
+    },
     "cornerstone": {
         "scraper": CornerstoneScraper,
         # Scraper accepts either a bare slug OR the full career URL.
@@ -663,6 +683,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
         },
         "csv": "ats-companies/workday.csv",
         "output": "workday/jobs.csv",
+        # A tenant often lists one posting on several of its career sites.
+        # The id is the tenant host and the posting path, so the copies
+        # share it whatever name each catalogue row carries.
+        "dedupe_by_ats_id": True,
         # Workday descriptions require per-job detail calls. Defer to the
         # disk-backed description cache so the scraper's internal enrichment
         # stays off (it would re-fetch every row, bypassing the cache).
@@ -747,6 +771,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
         "csv": "ats-companies/ukg.csv",
         "output": "ukg/jobs.csv",
+        # A tenant can have several boards, one per brand, that list some
+        # of the same jobs under different names. The job id is unique
+        # across UKG, so a job is published once.
+        "dedupe_by_ats_id": True,
         "fail_closed_on_any_error": True,
         "fail_closed_tolerance": 0.02,
         "fail_closed_on_not_found": True,
