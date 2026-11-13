@@ -25,6 +25,8 @@ def test_ninehire_pipeline_is_fail_closed() -> None:
     assert config["max_concurrency"] == 6
     assert config["fail_closed_on_empty"] is True
     assert config["fail_closed_on_any_error"] is True
+    assert config["fail_closed_on_not_found"] is True
+    assert config["fail_closed_tolerance"] == 0.05
 
 
 def test_ninehire_concurrency_cap_is_enforced() -> None:
@@ -46,6 +48,8 @@ def test_ninehire_catalog_contains_only_selected_direct_employers() -> None:
     assert len({row["slug"] for row in rows}) == len(rows)
     assert len({row["url"] for row in rows}) == len(rows)
     assert all(row["name"].strip() for row in rows)
+    names = [row["name"] for row in rows]
+    assert names == sorted(names)
     assert all(
         row["url"] == f"https://{row['slug']}.ninehire.site/"
         for row in rows

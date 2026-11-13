@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import html as html_mod
 import json
+import logging
 import math
 import re
 from datetime import UTC, datetime
@@ -13,10 +15,13 @@ from bs4 import BeautifulSoup
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
+from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
+
+logger = logging.getLogger(__name__)
 
 API_URL = "https://api.ninehire.com/identity-access/homepage/recruitments"
 PAGE_SIZE = 100
@@ -276,7 +281,7 @@ class NinehireScraper(BaseScraper):
         )
         locations = _parse_locations(item.get("jobLocations"))
         location = ", ".join(locations["names"]) or None
-        country_iso, region = _location_geography(location)
+        country_iso, region = _location_geography(locations["names"])
         employment_values = _string_list(item.get("employmentType"))
         career = item.get("career")
         career_range = (
@@ -313,13 +318,16 @@ class NinehireScraper(BaseScraper):
             commitment=", ".join(employment_values) or None,
             posted_at=_parse_datetime(item.get("createdAt")),
             fetched_at=datetime.now(UTC),
-            language=_language_for_text(title),
+            # ``endAt`` is set only when the employer chose a closing date
+            # (``deadlineType`` "custom_deadline"); it is null for
+            # "until_filled" and "open_ended".
+            application_deadline=_parse_datetime(item.get("endAt")),
             raw={
                 "address_key": address_key,
                 "company_id": self.company_id,
                 "status": item.get("status"),
                 "deadline_type": item.get("deadlineType"),
-                "deadline_value": item.get("deadlineValue"),
+                "end_at": item.get("endAt"),
                 "career": career,
                 "affiliation": _nested_text(affiliation, "title"),
                 "tags": _tag_values(item.get("tags")),
@@ -338,7 +346,14 @@ class NinehireScraper(BaseScraper):
             async with semaphore:
                 try:
                     description = await self._fetch_description(fetch, job)
-                except ScraperError:
+                except ScraperError as error:
+                    # The job is kept without its description; say why, so
+                    # a change of the page format does not go unseen.
+                    logger.warning(
+                        "Ninehire description not read for %s: %s",
+                        job.url,
+                        error,
+                    )
                     return
                 if description:
                     job.description = description[:25_000]
@@ -496,25 +511,22 @@ def _coerce_float(value: object) -> float | None:
 
 
 def _clean_text(value: object) -> str | None:
+    """A plain-text field: entities decoded, white space collapsed.
+
+    The field is not HTML. A title such as ``<신입> 개발자`` keeps its
+    brackets.
+    """
     if value is None:
         return None
-    text = BeautifulSoup(str(value), "html.parser").get_text(" ", strip=True)
-    normalized = re.sub(r"\s+", " ", text).strip()
+    normalized = re.sub(r"\s+", " ", html_mod.unescape(str(value))).strip()
     return normalized or None
 
 
 def _clean_multiline(value: object) -> str | None:
+    """The text of an HTML description, one line per block."""
     if value is None:
         return None
-    text = BeautifulSoup(str(value), "html.parser").get_text(
-        "\n",
-        strip=True,
-    )
-    lines = [
-        re.sub(r"[^\S\r\n]+", " ", line).strip()
-        for line in text.splitlines()
-    ]
-    return "\n".join(line for line in lines if line) or None
+    return parse_html(str(value)).lines().strip() or None
 
 
 def _string_list(value: object) -> list[str]:
@@ -558,53 +570,47 @@ def _employment_type(values: list[str]) -> EmploymentType | None:
     )
 
 
+# A country is read only from its own name, or from the name of a Korean
+# province or metropolitan city written in Hangul. Latin names are matched
+# as whole words: "Busan" holds the letters "usa".
+_COUNTRY_MARKERS: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (
+        re.compile(
+            r"대한민국|한국|서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|"
+            r"충북|충남|충청|전북|전남|전라|경북|경남|경상|제주|"
+            r"\b(?:south korea|republic of korea|korea)\b"
+        ),
+        "KR",
+        "Asia",
+    ),
+    (re.compile(r"일본|\bjapan\b"), "JP", "Asia"),
+    (re.compile(r"싱가포르|\bsingapore\b"), "SG", "Asia"),
+    (
+        re.compile(r"미국|\b(?:united states|usa)\b"),
+        "US",
+        "North America",
+    ),
+)
+
+
 def _location_geography(
-    location: str | None,
+    names: list[str],
 ) -> tuple[str | None, str | None]:
-    normalized = (location or "").casefold()
-    if any(
-        marker in normalized
-        for marker in (
-            "대한민국",
-            "서울",
-            "부산",
-            "대구",
-            "인천",
-            "광주",
-            "대전",
-            "울산",
-            "세종",
-            "경기",
-            "강원",
-            "충북",
-            "충남",
-            "전북",
-            "전남",
-            "경북",
-            "경남",
-            "제주",
-            "south korea",
-            "korea",
-        )
-    ):
-        return "KR", "Asia"
-    if any(
-        marker in normalized
-        for marker in ("일본", "japan", "tokyo", "osaka")
-    ):
-        return "JP", "Asia"
-    if any(
-        marker in normalized
-        for marker in (
-            "united states",
-            "usa",
-            "california",
-            "new york",
-            "massachusetts",
-        )
-    ):
-        return "US", "North America"
-    return None, None
+    """The country of a job, when every location names the same one."""
+    found: set[tuple[str, str]] = set()
+    for name in names:
+        normalized = name.casefold()
+        matches = {
+            (country, region)
+            for pattern, country, region in _COUNTRY_MARKERS
+            if pattern.search(normalized)
+        }
+        if len(matches) != 1:
+            return None, None
+        found |= matches
+    if len(found) != 1:
+        return None, None
+    return next(iter(found))
 
 
 def _is_remote(title: str, location: str | None) -> bool | None:
@@ -630,14 +636,6 @@ def _parse_datetime(value: object) -> datetime | None:
         if parsed.tzinfo is None
         else parsed.astimezone(UTC)
     )
-
-
-def _language_for_text(value: str) -> str | None:
-    if re.search(r"[\uac00-\ud7af]", value):
-        return "ko"
-    if re.search(r"[A-Za-z]", value):
-        return "en"
-    return None
 
 
 def _is_real_job(title: str) -> bool:

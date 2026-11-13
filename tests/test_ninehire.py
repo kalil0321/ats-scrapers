@@ -63,7 +63,7 @@ def _job(
         "title": title,
         "externalTitle": title,
         "addressKey": address_key,
-        "deadlineValue": None,
+        "endAt": None,
         "deadlineType": "until_filled",
         "employmentType": ["contractor"],
         "career": {"type": "experienced", "range": {"over": 1, "below": 0}},
@@ -162,9 +162,84 @@ def test_fetches_structured_jobs(httpx_mock) -> None:
         2026, 7, 30, 8, 31, 42, tzinfo=UTC
     )
     assert job.fetched_at is not None
-    assert job.language == "ko"
+    # Ninehire gives no locale for a listing, and the alphabet of its title
+    # does not say what language the listing is in.
+    assert job.language is None
+    assert job.application_deadline is None
     assert job.raw["affiliation"] == "포도"
     assert job.raw["tags"] == ["계약직", "job-1"]
+
+
+def test_closing_date_chosen_by_the_employer_is_the_deadline(httpx_mock) -> None:
+    item = _job()
+    item["deadlineType"] = "custom_deadline"
+    item["endAt"] = "2026-11-20T14:59:59.000Z"
+    _add_homepage(httpx_mock)
+    httpx_mock.add_response(url=_api_url(), json=_page([item]))
+
+    job = NinehireScraper(TENANT, include_descriptions=False).fetch()[0]
+
+    assert job.application_deadline == datetime(
+        2026, 11, 20, 14, 59, 59, tzinfo=UTC
+    )
+    assert job.raw["deadline_type"] == "custom_deadline"
+    assert job.raw["end_at"] == "2026-11-20T14:59:59.000Z"
+
+
+@pytest.mark.parametrize(
+    ("addresses", "expected"),
+    [
+        (["대한민국 서울특별시 중구 충무로2가 53-3"], ("KR", "Asia")),
+        (["경기 성남시 분당구 판교로319번길 6"], ("KR", "Asia")),
+        (
+            ["16 Hakdong-ro 34-gil, Gangnam District, Seoul, South Korea"],
+            ("KR", "Asia"),
+        ),
+        (
+            ["10F, 1-6-5 Marunouchi, Chiyoda City, Tokyo 100-0005 Japan"],
+            ("JP", "Asia"),
+        ),
+        (
+            ["380 Jalan Besar #07-03, ARC 380, Singapore, 209000"],
+            ("SG", "Asia"),
+        ),
+        (["1 Market St, San Francisco, CA, USA"], ("US", "North America")),
+        # "Busan" holds the letters "usa", and names no country.
+        (["12 Centum-ro, Haeundae-gu, Busan"], (None, None)),
+        # Two places in two countries: no single country.
+        (
+            [
+                "일본 〒105-0001 Tokyo, Minato City, Toranomon",
+                "경기 안양시 동안구 시민대로327번길 11-35",
+            ],
+            (None, None),
+        ),
+        ([], (None, None)),
+    ],
+)
+def test_country_is_read_from_explicit_names_only(
+    httpx_mock, addresses, expected
+) -> None:
+    item = _job()
+    item["jobLocations"] = [{"addressName": address} for address in addresses]
+    _add_homepage(httpx_mock)
+    httpx_mock.add_response(url=_api_url(), json=_page([item]))
+
+    job = NinehireScraper(TENANT, include_descriptions=False).fetch()[0]
+
+    assert (job.country_iso, job.region) == expected
+
+
+def test_title_keeps_angle_brackets_and_decodes_entities(httpx_mock) -> None:
+    _add_homepage(httpx_mock)
+    httpx_mock.add_response(
+        url=_api_url(),
+        json=_page([_job(title="<신입>  Frontend &amp; Backend 개발자")]),
+    )
+
+    job = NinehireScraper(TENANT, include_descriptions=False).fetch()[0]
+
+    assert job.title == "<신입> Frontend & Backend 개발자"
 
 
 def test_catalog_company_name_overrides_homepage(httpx_mock) -> None:
@@ -249,6 +324,28 @@ def test_paginates_to_exact_advertised_count(httpx_mock) -> None:
     assert len(jobs) == 101
 
 
+def test_page_without_rows_before_the_advertised_count_fails_closed(
+    httpx_mock,
+) -> None:
+    _add_homepage(httpx_mock)
+    first_page = [
+        _job(
+            index,
+            recruitment_id=f"00000000-0000-4000-8000-{index:012x}",
+            address_key=f"job{index:04d}",
+        )
+        for index in range(100)
+    ]
+    httpx_mock.add_response(
+        url=_api_url(1),
+        json=_page(first_page, count=101),
+    )
+    httpx_mock.add_response(url=_api_url(2), json=_page([], count=101))
+
+    with pytest.raises(ScraperError, match="pagination stopped at 100 of 101"):
+        NinehireScraper(TENANT, include_descriptions=False).fetch()
+
+
 def test_count_change_fails_closed(httpx_mock) -> None:
     _add_homepage(httpx_mock)
     first_page = [
@@ -305,6 +402,45 @@ def test_default_fetch_hydrates_description(httpx_mock) -> None:
     job = NinehireScraper(TENANT).fetch()[0]
 
     assert job.description == "담당 업무\n고객 상담과 세일즈"
+
+
+def test_description_keeps_a_sentence_with_inline_tags_on_one_line(
+    httpx_mock,
+) -> None:
+    _add_homepage(httpx_mock)
+    httpx_mock.add_response(url=_api_url(), json=_page([_job()]))
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/job_posting/7a0UlD8L",
+        text=_detail(
+            content=(
+                "<h2><span>담당 업무</span></h2>"
+                "<p>고객 <strong>상담</strong>과 <span>세일즈</span></p>"
+                "<ul><li>첫째</li><li>둘째</li></ul>"
+            )
+        ),
+    )
+
+    job = NinehireScraper(TENANT).fetch()[0]
+
+    assert job.description == "담당 업무\n고객 상담과 세일즈\n첫째\n둘째"
+
+
+def test_unreadable_description_keeps_the_job_and_logs_why(
+    httpx_mock, caplog
+) -> None:
+    _add_homepage(httpx_mock)
+    httpx_mock.add_response(url=_api_url(), json=_page([_job()]))
+    httpx_mock.add_response(
+        url=f"{BASE_URL}/job_posting/7a0UlD8L",
+        text="<html><body>blocked</body></html>",
+    )
+
+    with caplog.at_level("WARNING", logger="ats_scrapers.scrapers.ninehire"):
+        job = NinehireScraper(TENANT).fetch()[0]
+
+    assert job.description is None
+    assert f"{BASE_URL}/job_posting/7a0UlD8L" in caplog.text
+    assert "no Next.js bootstrap data" in caplog.text
 
 
 def test_inactive_detail_returns_no_description(httpx_mock) -> None:

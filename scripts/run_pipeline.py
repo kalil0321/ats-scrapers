@@ -872,6 +872,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "max_concurrency": 6,
         "fail_closed_on_empty": True,
         "fail_closed_on_any_error": True,
+        # A homepage that answers 404 is a failed employer, not one to skip.
+        "fail_closed_on_not_found": True,
+        # One employer in 29 may fail before the dataset is held back.
+        "fail_closed_tolerance": 0.05,
     },
     "darwinbox": {
         "scraper": DarwinboxScraper,
