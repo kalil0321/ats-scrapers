@@ -151,6 +151,57 @@ def test_consortium_ids_include_district_and_preserve_employer(
     assert "AppliTrackJobId=474_55177" in str(jobs[1].url)
 
 
+def test_same_content_under_two_district_ids_is_two_postings(
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(
+        url=LISTING_URL,
+        text=_payload(
+            _posting(job_id="474", district_id="142"),
+            _posting(job_id="474", district_id="143"),
+        ),
+    )
+
+    jobs = AppliTrackScraper(TENANT).fetch()
+
+    assert [job.ats_id for job in jobs] == ["142:474", "143:474"]
+    assert jobs[0].title == jobs[1].title
+    assert jobs[0].company == jobs[1].company
+    assert jobs[0].description == jobs[1].description
+    assert str(jobs[0].url) != str(jobs[1].url)
+
+
+def test_posting_code_is_encoded_in_the_job_url(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LISTING_URL,
+        text=_payload(_posting(job_id="474", district_id="14&x=1#y")),
+    )
+
+    job = AppliTrackScraper(TENANT).fetch()[0]
+
+    assert job.ats_id == "14&x=1#y:474"
+    assert str(job.url) == (
+        "https://www.applitrack.com/leander/onlineapp/"
+        "JobPostings/view.asp?AppliTrackJobId=474_14%26x%3D1%23y"
+        "&AppliTrackLayoutMode=detail&AppliTrackViewPosting=1"
+    )
+
+
+def test_escaped_angle_brackets_stay_in_the_description(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LISTING_URL,
+        text=_payload(
+            _posting(
+                description="<p>Email &lt;hr@example.org&gt; to apply.</p>"
+            )
+        ),
+    )
+
+    job = AppliTrackScraper(TENANT).fetch()[0]
+
+    assert job.description == "Email <hr@example.org> to apply."
+
+
 def test_explicit_company_is_used_when_job_omits_employer(httpx_mock) -> None:
     httpx_mock.add_response(
         url=LISTING_URL,
@@ -187,6 +238,27 @@ def test_empty_board_returns_no_jobs(httpx_mock) -> None:
     )
 
     assert AppliTrackScraper(TENANT).fetch() == []
+
+
+def test_board_announcing_zero_openings_returns_no_jobs(httpx_mock) -> None:
+    httpx_mock.add_response(url=LISTING_URL, text=_payload())
+
+    assert AppliTrackScraper(TENANT).fetch() == []
+
+
+def test_empty_marker_with_a_nonzero_count_fails_closed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LISTING_URL,
+        text=(
+            "var VacanciesAreOnThisPage = true;"
+            "document.write('<div id=\"AppliTrackOutput\">"
+            "Viewing All Types&nbsp;(<b>3</b> openings)"
+            "&nbsp;(no results)</div>');"
+        ),
+    )
+
+    with pytest.raises(ScraperError, match="advertised 3 openings but exposed 0"):
+        AppliTrackScraper(TENANT).fetch()
 
 
 def test_advertised_count_mismatch_fails_closed(httpx_mock) -> None:
@@ -302,6 +374,20 @@ def test_decodes_javascript_surrogate_pairs(httpx_mock) -> None:
     job.title.encode("utf-8")
 
 
+def test_lone_javascript_surrogate_becomes_a_replacement_character(
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(
+        url=LISTING_URL,
+        text=_payload(_posting(title=r"Teacher \uD800")),
+    )
+
+    job = AppliTrackScraper(TENANT).fetch()[0]
+
+    assert job.title == "Teacher \ufffd"
+    job.title.encode("utf-8")
+
+
 def test_mixed_full_and_part_time_is_unclassified(httpx_mock) -> None:
     posting = _posting().replace(
         "<span class='normal'>Full-Time</span>",
@@ -348,6 +434,7 @@ def test_404_maps_to_company_not_found(httpx_mock) -> None:
         "https://www.applitrack.com/leander/onlineapp?next=evil",
         "https://www.applitrack.com/leander/jobs",
         "https://www.applitrack.com.evil.example/leander/onlineapp",
+        "https://[www.applitrack.com/leander/onlineapp",
     ],
 )
 def test_rejects_untrusted_tenants(slug: str) -> None:

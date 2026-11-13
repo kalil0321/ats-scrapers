@@ -11,11 +11,10 @@ content directly and never executes the JavaScript.
 
 from __future__ import annotations
 
-import html
 import re
 from datetime import UTC, datetime
 from typing import ClassVar
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -132,6 +131,11 @@ class AppliTrackScraper(BaseScraper):
         )
         matches = list(_POSTING_RE.finditer(payload))
         if not matches:
+            if advertised:
+                raise ScraperError(
+                    f"AppliTrack ({self.tenant}) advertised {advertised} "
+                    "openings but exposed 0 posting blocks"
+                )
             if advertised == 0 or any(
                 marker in payload for marker in _EMPTY_MARKERS
             ):
@@ -219,7 +223,7 @@ class AppliTrackScraper(BaseScraper):
         )
         job_url = (
             f"{self.company_slug}/JobPostings/view.asp?"
-            f"AppliTrackJobId={posting_code}"
+            f"AppliTrackJobId={quote(posting_code, safe='')}"
             "&AppliTrackLayoutMode=detail"
             "&AppliTrackViewPosting=1"
         )
@@ -272,7 +276,12 @@ def _normalize_tenant(value: str) -> tuple[str, str]:
                 f"AppliTrackScraper rejected invalid tenant: {value!r}"
             )
         return "www.applitrack.com", tenant
-    parsed = urlparse(cleaned)
+    try:
+        parsed = urlparse(cleaned)
+    except ValueError as error:
+        raise ScraperError(
+            f"AppliTrackScraper rejected untrusted URL: {value!r}"
+        ) from error
     if (
         parsed.scheme != "https"
         or parsed.username
@@ -436,10 +445,10 @@ def _clean_fragment(value: str | None) -> str | None:
         .replace("\\t", " ")
         .replace("\\\\", "\\")
     )
-    text = BeautifulSoup(
-        html.unescape(value),
-        "html.parser",
-    ).get_text("\n", strip=True)
+    # The parser decodes entities itself. Decoding them first would turn
+    # escaped text such as ``&lt;hr@example.org&gt;`` into a tag, which the
+    # parser then drops.
+    text = BeautifulSoup(value, "html.parser").get_text("\n", strip=True)
     text = "\n".join(
         _SPACE_RE.sub(" ", line).strip()
         for line in text.splitlines()

@@ -150,7 +150,12 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
     if host.startswith("www."):
         host = host.removeprefix("www.")
 
-    if host == "applitrack.com" or host.endswith(".applitrack.com"):
+    # One host label at most before the domain, as the scraper accepts:
+    # ``foo.bar.applitrack.com`` is not a board.
+    if host == "applitrack.com" or (
+        host.endswith(".applitrack.com")
+        and _APPLITRACK_TENANT_RE.fullmatch(host.removesuffix(".applitrack.com"))
+    ):
         segments = [segment for segment in parsed.path.split("/") if segment]
         if (
             len(segments) >= 2

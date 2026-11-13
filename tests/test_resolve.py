@@ -333,6 +333,7 @@ def test_icims_nonstandard_prefix_keeps_full_url() -> None:
         "https://www.applitrack.com/onlineapp/JobPostings/view.asp",
         "https://www.applitrack.com/bad_tenant/onlineapp/",
         "https://www.applitrack.com/leander/jobs/",
+        "https://foo.bar.applitrack.com/leander/onlineapp/",
         "https://jobs.ashbyhq.com",               # no slug in path
         "https://jobs.jobvite.com/search",
         "https://jobs.jobvite.com/jobs",
