@@ -1271,6 +1271,25 @@ def test_publish_includes_status_of_provider_without_jobs_csv(
     assert manifest["tenant_status"]["rows"] == 1
 
 
+def test_status_is_uploaded_when_no_provider_has_a_jobs_file(tmp_path, fake_r2) -> None:
+    """A first run where every provider failed: there is no dataset to
+    publish, but the per-company outcomes are uploaded before the error."""
+    (tmp_path / "workable").mkdir()
+    _write_status(
+        tmp_path / "workable" / "tenant_status.csv",
+        [("x", "error", 0), ("y", "not_found", 0)],
+    )
+
+    with pytest.raises(StorageError, match="No ATS CSVs found"):
+        DatasetPublisher(fake_r2).publish_from_directory(tmp_path)
+
+    df = pd.read_parquet(
+        io.BytesIO(fake_r2.uploads["jobhive/v1/tenant_status.parquet"]["data"])
+    )
+    assert sorted(df["slug"]) == ["x", "y"]
+    assert "jobhive/v1/manifest.json" not in fake_r2.uploads
+
+
 def test_publish_without_tenant_status_keeps_previous_entry(ats_csv_dir, fake_r2) -> None:
     previous = {"parquet": "https://cdn.example.com/jobhive/v1/tenant_status.parquet", "rows": 7}
     fake_r2.upload_bytes(

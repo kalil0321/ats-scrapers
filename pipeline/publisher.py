@@ -245,6 +245,10 @@ class DatasetPublisher:
                 files_uploaded.extend(_collect_uploaded_keys(entry))
 
             if not any_csv_found:
+                # No provider has a jobs file, so there is no dataset to
+                # publish. The per-company outcomes of the runs that failed
+                # are still worth having: upload them before giving up.
+                self._upload_tenant_status(tenant_status_paths)
                 raise StorageError(f"No ATS CSVs found in {source_dir}")
 
             # ---- Pass 2: cross-ATS dedup directly on the per-ATS temp CSVs ---
