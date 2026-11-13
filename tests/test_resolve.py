@@ -27,6 +27,7 @@ from ats_scrapers.scrapers import (
     PaylocityScraper,
     SoftgardenScraper,
     UKGProScraper,
+    WinTalentScraper,
     WorkdayScraper,
 )
 
@@ -211,6 +212,17 @@ RESOLVES = [
     ("https://amer.zhiye.com/Social/?PageIndex=1", ATSType.BEISEN_LEGACY, "amer"),
     ("https://amer.zhiye.com/zpdetail/123", ATSType.BEISEN_LEGACY, "amer"),
     ("https://newhope.zhiye.com/index", ATSType.BEISEN_LEGACY, "newhope"),
+    (
+        "https://dfmc.hotjob.cn/SU61d501d92f9d24431f65f608/mc/detail"
+        "?postId=6a3cd0971d4c30777af06d79&recruitType=12",
+        ATSType.WINTALENT,
+        "https://dfmc.hotjob.cn/SU61d501d92f9d24431f65f608",
+    ),
+    (
+        "https://www.hotjob.cn/wt/caict/web/index",
+        ATSType.WINTALENT,
+        "https://www.hotjob.cn/wt/caict",
+    ),
     # Subdomain tenants
     ("https://12build.recruitee.com", ATSType.RECRUITEE, "12build"),
     ("https://1komma5.teamtailor.com/jobs", ATSType.TEAMTAILOR, "1komma5"),
@@ -364,6 +376,11 @@ def test_icims_nonstandard_prefix_keeps_full_url() -> None:
         "https://bad_slug.darwinbox.in/ms/candidate/careers",
         f"https://{'a' * 64}.darwinbox.com/ms/candidate/careers",
         "https://trailing-.darwinbox.in/ms/candidate/careers",
+        "https://hotjob.cn/not-a-suite",
+        "https://evil.hotjob.cn.attacker.io/SU61d501d92f9d24431f65f608",
+        "https://dfmc.hotjob.cn/SU-not-valid",
+        "https://www.hotjob.cn/wt/-caict/web/index",
+        "https://www.hotjob.cn/wt/bad%20tenant/web/index",
         "https://bad_slug.zhiye.com/social/jobs",
         "https://recruiting.ultipro.com/bad-tenant/JobBoard/"
         "11111111-2222-3333-4444-555555555555",
@@ -479,6 +496,18 @@ def test_get_scraper_for_url_builds_scraper() -> None:
         ),
         NinehireScraper,
     )
+    assert isinstance(
+        get_scraper_for_url(
+            "https://dfmc.hotjob.cn/SU61d501d92f9d24431f65f608"
+        ),
+        WinTalentScraper,
+    )
+    legacy_wintalent = get_scraper_for_url(
+        "https://www.hotjob.cn/wt/caict/web/index"
+    )
+    assert isinstance(legacy_wintalent, WinTalentScraper)
+    assert legacy_wintalent.variant == "legacy"
+    assert legacy_wintalent.portal_url == "https://www.hotjob.cn/wt/caict"
     workday = get_scraper_for_url(
         "https://2020companies.wd1.myworkdayjobs.com/external_careers"
     )
