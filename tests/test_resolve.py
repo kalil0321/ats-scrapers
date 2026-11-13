@@ -368,6 +368,8 @@ def test_icims_nonstandard_prefix_keeps_full_url() -> None:
         "https://hotjob.cn/not-a-suite",
         "https://evil.hotjob.cn.attacker.io/SU61d501d92f9d24431f65f608",
         "https://dfmc.hotjob.cn/SU-not-valid",
+        "https://www.hotjob.cn/wt/-caict/web/index",
+        "https://www.hotjob.cn/wt/bad%20tenant/web/index",
         "https://bad_slug.zhiye.com/social/jobs",
         "https://recruiting.ultipro.com/bad-tenant/JobBoard/"
         "11111111-2222-3333-4444-555555555555",
@@ -483,6 +485,12 @@ def test_get_scraper_for_url_builds_scraper() -> None:
         ),
         WinTalentScraper,
     )
+    legacy_wintalent = get_scraper_for_url(
+        "https://www.hotjob.cn/wt/caict/web/index"
+    )
+    assert isinstance(legacy_wintalent, WinTalentScraper)
+    assert legacy_wintalent.variant == "legacy"
+    assert legacy_wintalent.portal_url == "https://www.hotjob.cn/wt/caict"
     workday = get_scraper_for_url(
         "https://2020companies.wd1.myworkdayjobs.com/external_careers"
     )

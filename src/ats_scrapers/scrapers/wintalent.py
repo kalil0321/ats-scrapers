@@ -9,13 +9,13 @@ WinTalent, operated by Dayee, serves public employer career sites on
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import re
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import parse_qs, quote, urljoin, urlparse
-from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup
 
@@ -26,7 +26,12 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
 
+logger = logging.getLogger(__name__)
+
 MODERN_PAGE_SIZE = 50
+# The answer of a job page whose posting is closed while the list still
+# shows it: "该职位招聘已经关闭，请关注其他职位，谢谢!".
+_CLOSED_POSTING_STATE = "1017"
 DESCRIPTION_CONCURRENCY = 4
 LEGACY_PAGE_SIZE = 1_000
 MAX_PAGES = 10_000
@@ -45,22 +50,92 @@ _LEGACY_TOTAL_RE = re.compile(r"共\s*(\d[\d,]*)\s*条(?:记录)?")
 _RECRUIT_SUFFIX_RE = re.compile(
     r"(?:校园招聘|社会招聘|人才招聘|招聘官网|招聘网站|招聘中心|招聘)$"
 )
-_SHANGHAI = ZoneInfo("Asia/Shanghai")
+# China Standard Time is UTC+8 all year (no daylight saving time), so a
+# fixed offset is exact and needs no time zone database on the machine.
+_CHINA_TIME = timezone(timedelta(hours=8))
 
-_EMPLOYMENT_TYPES: tuple[tuple[str, EmploymentType], ...] = (
-    ("实习", "INTERN"),
-    ("intern", "INTERN"),
-    ("兼职", "PART_TIME"),
-    ("part time", "PART_TIME"),
-    ("part-time", "PART_TIME"),
-    ("合同", "CONTRACT"),
-    ("contract", "CONTRACT"),
-    ("临时", "TEMPORARY"),
-    ("temporary", "TEMPORARY"),
-    ("全职", "FULL_TIME"),
-    ("full time", "FULL_TIME"),
-    ("full-time", "FULL_TIME"),
+# Labels of the portal's own work-type field. English labels are matched
+# as whole words: "International" is not "intern".
+_EMPLOYMENT_TYPES: tuple[tuple[re.Pattern[str], EmploymentType], ...] = (
+    (re.compile(r"实习|\binterns?(?:hip)?\b"), "INTERN"),
+    (re.compile(r"兼职|\bpart[ -]time\b"), "PART_TIME"),
+    (re.compile(r"合同|\bcontract(?:or)?\b"), "CONTRACT"),
+    (re.compile(r"临时|\btemporary\b"), "TEMPORARY"),
+    (re.compile(r"全职|\bfull[ -]time\b"), "FULL_TIME"),
 )
+
+# The place of a job comes from the portal's region picker. Its first level
+# is a division of mainland China, a division of Taiwan, Hong Kong, Macau,
+# a country name, or a value such as "其它" or "全部地区". A country is
+# given only for the names below, read from the picker itself (live
+# portals, 13 Nov 2026) plus the provinces; any other value gives none.
+_MAINLAND_NAMES = (
+    "七台河市 万宁市 三亚市 三明市 三沙市 三门峡市 上海市 上饶市 东方市 "
+    "东莞市 东营市 中卫市 中山市 临夏回族自治州 临汾市 临沂市 临沧市 临高县 "
+    "丹东市 丽水市 丽江市 乌兰察布市 乌海市 乌鲁木齐市 乐东黎族自治县 乐山市 "
+    "九江市 云南省 云浮市 五家渠市 五指山市 亳州市 仙桃市 伊春市 "
+    "伊犁哈萨克自治州 佛山市 佳木斯市 保亭黎族苗族自治县 保定市 保山市 信阳市 "
+    "儋州市 克孜勒苏柯尔克孜自治州 克拉玛依市 六安市 六盘水市 兰州市 兴安盟 "
+    "内江市 内蒙古自治区 凉山彝族自治州 包头市 北京市 北屯市 北海市 十堰市 "
+    "南京市 南充市 南宁市 南平市 南昌市 南通市 南阳市 博尔塔拉蒙古自治州 "
+    "厦门市 双河市 双鸭山市 可克达拉市 台州市 合肥市 吉安市 吉林市 吉林省 "
+    "吐鲁番市 吕梁市 吴忠市 周口市 呼伦贝尔市 呼和浩特市 和田地区 咸宁市 "
+    "咸阳市 哈密市 哈尔滨市 唐山市 商丘市 商洛市 喀什地区 嘉兴市 嘉峪关市 "
+    "四川省 四平市 固原市 图木舒克市 塔城地区 大兴安岭地区 大同市 大庆市 "
+    "大理白族自治州 大连市 天水市 天津市 天门市 太原市 威海市 娄底市 孝感市 "
+    "宁夏回族自治区 宁德市 宁波市 安庆市 安康市 安徽省 安阳市 安顺市 定安县 "
+    "定西市 宜宾市 宜昌市 宜春市 宝鸡市 宣城市 宿州市 宿迁市 屯昌县 山东省 "
+    "山南市 山西省 岳阳市 崇左市 巴中市 巴彦淖尔市 巴音郭楞蒙古自治州 常州市 "
+    "常德市 平凉市 平顶山市 广东省 广元市 广安市 广州市 广西壮族自治区 庆阳市 "
+    "廊坊市 延安市 延边朝鲜族自治州 开封市 张家口市 张家界市 张掖市 徐州市 "
+    "德宏傣族景颇族自治州 德州市 德阳市 忻州市 怀化市 怒江傈僳族自治州 "
+    "恩施土家族苗族自治州 惠州市 成都市 扬州市 承德市 抚州市 抚顺市 拉萨市 "
+    "揭阳市 攀枝花市 文山壮族苗族自治州 文昌市 新乡市 新余市 新疆维吾尔自治区 "
+    "无锡市 日喀则市 日照市 昆明市 昆玉市 昌吉回族自治州 昌江黎族自治县 昌都市 "
+    "昭通市 晋中市 晋城市 普洱市 景德镇市 曲靖市 朔州市 朝阳市 本溪市 来宾市 "
+    "杭州市 松原市 林芝市 果洛藏族自治州 枣庄市 柳州市 株洲市 桂林市 梅州市 "
+    "梧州市 楚雄彝族自治州 榆林市 武威市 武汉市 毕节市 永州市 汉中市 汕头市 "
+    "汕尾市 江苏省 江西省 江门市 池州市 沈阳市 沧州市 河北省 河南省 河池市 "
+    "河源市 泉州市 泰安市 泰州市 泸州市 洛阳市 济南市 济宁市 济源市 浙江省 "
+    "海东市 海北藏族自治州 海南省 海南藏族自治州 海口市 海西蒙古族藏族自治州 "
+    "淄博市 淮北市 淮南市 淮安市 深圳市 清远市 温州市 渭南市 湖北省 湖南省 "
+    "湖州市 湘潭市 湘西土家族苗族自治州 湛江市 滁州市 滨州市 漯河市 漳州市 "
+    "潍坊市 潜江市 潮州市 澄迈县 濮阳市 烟台市 焦作市 牡丹江市 特克斯县 "
+    "玉林市 玉树藏族自治州 玉溪市 珠海市 琼中黎族苗族自治县 琼海市 "
+    "甘南藏族自治州 甘孜藏族自治州 甘肃省 白城市 白山市 白沙黎族自治县 白银市 "
+    "百色市 益阳市 盐城市 盘锦市 眉山市 石嘴山市 石家庄市 石河子市 神农架林区 "
+    "福州市 福建省 秦皇岛市 红河哈尼族彝族自治州 绍兴市 绥化市 绵阳市 聊城市 "
+    "肇庆市 自贡市 舟山市 芜湖市 苏州市 茂名市 荆州市 荆门市 莆田市 莱芜市 "
+    "菏泽市 萍乡市 营口市 葫芦岛市 蚌埠市 衡水市 衡阳市 衢州市 襄阳市 "
+    "西双版纳傣族自治州 西宁市 西安市 西藏自治区 许昌市 贵州省 贵港市 贵阳市 "
+    "贺州市 资阳市 赣州市 赤峰市 辽宁省 辽源市 辽阳市 达州市 运城市 连云港市 "
+    "迪庆藏族自治州 通化市 通辽市 遂宁市 遵义市 邢台市 那曲市 邯郸市 邵阳市 "
+    "郑州市 郴州市 鄂尔多斯市 鄂州市 酒泉市 重庆市 金华市 金昌市 钦州市 "
+    "铁岭市 铁门关市 铜仁市 铜川市 铜陵市 银川市 锡林郭勒盟 锦州市 镇江市 "
+    "长春市 长沙市 长治市 阜新市 阜阳市 防城港市 阳江市 阳泉市 阿克苏地区 "
+    "阿勒泰地区 阿坝藏族羌族自治州 阿拉善盟 阿拉尔市 阿里地区 陇南市 陕西省 "
+    "陵水黎族自治县 随州市 雅安市 青岛市 青海省 鞍山市 韶关市 马鞍山市 "
+    "驻马店市 鸡西市 鹤壁市 鹤岗市 鹰潭市 黄冈市 黄南藏族自治州 黄山市 黄石市 "
+    "黑河市 黑龙江省 黔东南苗族侗族自治州 黔南布依族苗族自治州 "
+    "黔西南布依族苗族自治州 齐齐哈尔市 龙岩市 "
+)
+_TAIWAN_NAMES = (
+    "云林县 南投县 台东县 台中市 台北市 台南市 嘉义县 嘉义市 基隆市 宜兰县 "
+    "屏东县 彰化县 新北市 新竹县 新竹市 桃园市 澎湖县 花莲县 苗栗县 连江县 "
+    "金门县 高雄市 "
+)
+_PLACE_COUNTRY: dict[str, str] = {
+    **dict.fromkeys(_MAINLAND_NAMES.split(), "CN"),
+    **dict.fromkeys(("北京", "上海", "天津", "重庆"), "CN"),
+    **dict.fromkeys(_TAIWAN_NAMES.split(), "TW"),
+    **dict.fromkeys(("台湾", "台湾省"), "TW"),
+    **dict.fromkeys(("香港", "香港特别行政区"), "HK"),
+    **dict.fromkeys(("澳门", "澳门特别行政区"), "MO"),
+}
+
+
+class _PostingClosedError(Exception):
+    """The job page says the posting is closed."""
 
 
 @ScraperRegistry.register(ATSType.WINTALENT)
@@ -140,7 +215,9 @@ class WinTalentScraper(BaseScraper):
         self.company_slug = self.portal_url
         self.company_name = _clean_text(company_name)
         self._resolved_company: str | None = None
-        self._cache_bust = str(time.time_ns())
+        # Recruit types the portal itself names as internships.
+        self._intern_recruit_types: frozenset[str] = frozenset()
+        self._cache_bust = _new_cache_bust()
 
     async def afetch(self) -> list[Job]:
         async with self.make_fetcher() as fetch:
@@ -151,12 +228,15 @@ class WinTalentScraper(BaseScraper):
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
-        if job.raw.get("variant") != "modern":
+        if not job.raw or job.raw.get("variant") != "modern":
             return None
 
         async def run() -> str | None:
             async with self.make_fetcher() as fetch:
-                return await self._fetch_modern_description(fetch, job)
+                try:
+                    return await self._fetch_modern_description(fetch, job)
+                except _PostingClosedError:
+                    return None
 
         return self._run_sync(run())
 
@@ -193,6 +273,22 @@ class WinTalentScraper(BaseScraper):
             raise ScraperError(
                 f"WinTalent ({self.portal_url}) config has no recruit types"
             )
+        # The number of a recruit type says nothing fixed: "12" is
+        # "实习生招聘" on most portals and "博士招聘" or "飞行招聘" on
+        # others. Its name, as the portal gives it, decides.
+        self._intern_recruit_types = frozenset(
+            recruit_type
+            for recruit_type in recruit_types
+            if _employment_type(
+                " ".join(
+                    name
+                    for raw_key, value in recruit_map.items()
+                    if str(raw_key).split("_", 1)[0] == recruit_type
+                    and (name := _clean_text(value)) is not None
+                )
+            )
+            == "INTERN"
+        )
 
         jobs: list[Job] = []
         seen: set[str] = set()
@@ -222,7 +318,10 @@ class WinTalentScraper(BaseScraper):
         expected_total: int | None = None
         total_pages: int | None = None
         effective_page_size: int | None = None
-        raw_rows = 0
+        # ``seen`` holds the ids of the whole portal and only removes a job
+        # listed under two recruit types. Progress and completeness are
+        # judged on the ids of this recruit type alone.
+        type_ids: set[str] = set()
         for page in range(1, MAX_PAGES + 1):
             requested_page_size = (
                 effective_page_size or MODERN_PAGE_SIZE
@@ -330,30 +429,37 @@ class WinTalentScraper(BaseScraper):
             if not items:
                 raise ScraperError(
                     f"WinTalent ({self.portal_url}) pagination stopped "
-                    f"at {raw_rows} of {expected_total} rows"
+                    f"at {len(type_ids)} of {expected_total} jobs"
                 )
 
-            new_count = 0
+            new_in_type = 0
             for item in items:
                 if not isinstance(item, dict):
-                    continue
-                raw_rows += 1
+                    raise ScraperError(
+                        f"WinTalent ({self.portal_url}) page {page} "
+                        "returned a malformed job"
+                    )
                 job = self._parse_modern_job(item, recruit_type)
-                if job.ats_id in seen:
+                job_id = str(job.ats_id)
+                if job_id in type_ids:
                     continue
-                seen.add(str(job.ats_id))
+                type_ids.add(job_id)
+                new_in_type += 1
+                if job_id in seen:
+                    continue
+                seen.add(job_id)
                 jobs.append(job)
-                new_count += 1
-            if new_count == 0 and raw_rows < (expected_total or 0):
+            if new_in_type == 0:
                 raise ScraperError(
                     f"WinTalent ({self.portal_url}) repeated page {page} "
                     "without new job IDs"
                 )
             if total_pages is not None and page >= total_pages:
-                if raw_rows != expected_total:
+                if len(type_ids) != expected_total:
                     raise ScraperError(
                         f"WinTalent ({self.portal_url}) expected "
-                        f"{expected_total} jobs, received {raw_rows}"
+                        f"{expected_total} jobs, received "
+                        f"{len(type_ids)} distinct ones"
                     )
                 return
         raise ScraperError(
@@ -421,19 +527,15 @@ class WinTalentScraper(BaseScraper):
             country_iso=country_iso,
             region=region,
             employment_type=(
-                _employment_type(
-                    " ".join(
-                        filter(
-                            None,
-                            (
-                                employment,
-                                _clean_text(item.get("postTypeName")),
-                                title,
-                            ),
-                        )
-                    )
+                _employment_type(employment)
+                # Without a work type, a job on the portal's internship
+                # board is an internship.
+                or (
+                    "INTERN"
+                    if employment is None
+                    and recruit_type in self._intern_recruit_types
+                    else None
                 )
-                or ("INTERN" if recruit_type == "12" else None)
             ),
             department=_clean_text(item.get("department")),
             requisition_id=(
@@ -447,7 +549,6 @@ class WinTalentScraper(BaseScraper):
                 or _parse_china_datetime(item.get("publishDate"))
             ),
             fetched_at=datetime.now(UTC),
-            language=_language_for_text(title),
             raw=raw,
         )
 
@@ -476,8 +577,14 @@ class WinTalentScraper(BaseScraper):
                 "Referer": str(job.url),
             },
         )
+        payload = response.json()
+        if (
+            isinstance(payload, dict)
+            and str(payload.get("state")) == _CLOSED_POSTING_STATE
+        ):
+            raise _PostingClosedError
         data = _modern_data(
-            response.json(),
+            payload,
             provider=f"WinTalent job {job.ats_id}",
         )
         return _join_sections(
@@ -491,6 +598,7 @@ class WinTalentScraper(BaseScraper):
         jobs: list[Job],
     ) -> None:
         semaphore = asyncio.Semaphore(DESCRIPTION_CONCURRENCY)
+        closed: set[str] = set()
 
         async def hydrate(job: Job) -> None:
             async with semaphore:
@@ -499,12 +607,24 @@ class WinTalentScraper(BaseScraper):
                         fetch,
                         job,
                     )
-                except ScraperError:
+                except _PostingClosedError:
+                    closed.add(str(job.ats_id))
+                    return
+                except ScraperError as error:
+                    # The job is kept without its description; say why.
+                    logger.warning(
+                        "WinTalent description not read for %s: %s",
+                        job.url,
+                        error,
+                    )
                     return
                 if description:
                     job.description = description[:25_000]
 
         await asyncio.gather(*(hydrate(job) for job in jobs))
+        # A posting its own page calls closed is not a job any more.
+        if closed:
+            jobs[:] = [job for job in jobs if str(job.ats_id) not in closed]
 
     async def _fetch_legacy(self, fetch: Fetcher) -> list[Job]:
         assert self.legacy_tenant is not None
@@ -551,6 +671,11 @@ class WinTalentScraper(BaseScraper):
                     math.ceil(expected_total / LEGACY_PAGE_SIZE),
                 )
                 if expected_total == 0:
+                    if page_jobs:
+                        raise ScraperError(
+                            f"WinTalent legacy ({self.portal_url}) lists "
+                            f"{len(page_jobs)} jobs with a total of zero"
+                        )
                     return []
             elif page_total != expected_total:
                 raise ScraperError(
@@ -587,6 +712,10 @@ class WinTalentScraper(BaseScraper):
                 f"{expected_total} jobs, parsed {len(jobs)}"
             )
         return jobs
+
+
+def _new_cache_bust() -> str:
+    return str(time.time_ns())
 
 
 def _modern_data(payload: object, *, provider: str) -> dict[str, Any]:
@@ -669,7 +798,6 @@ def _parse_legacy_page(
                     or fields.get("发布日期")
                 ),
                 fetched_at=datetime.now(UTC),
-                language=_language_for_text(title_text),
                 raw={
                     "variant": "legacy",
                     "portal_url": portal,
@@ -798,75 +926,40 @@ def _join_sections(*sections: tuple[str, object]) -> str | None:
     return "\n\n".join(rendered) or None
 
 
-def _employment_type(value: str | None) -> EmploymentType | None:
-    normalized = (value or "").casefold()
-    return next(
-        (
-            employment_type
-            for marker, employment_type in _EMPLOYMENT_TYPES
-            if marker in normalized
-        ),
-        None,
-    )
+def _employment_type(work_type: str | None) -> EmploymentType | None:
+    """The employment type named by the portal's own work-type field.
+
+    A value that names two types ("全职/实习") gives none; ``commitment``
+    keeps the value as the portal wrote it. The title is not read.
+    """
+    normalized = (work_type or "").casefold()
+    found = {
+        employment_type
+        for pattern, employment_type in _EMPLOYMENT_TYPES
+        if pattern.search(normalized)
+    }
+    return found.pop() if len(found) == 1 else None
 
 
 def _location_geography(
     location: str | None,
 ) -> tuple[str | None, str | None]:
-    if location is None or any(
-        marker in location
-        for marker in ("全部地区", "其它", "全球", "海外")
-    ):
+    """The country of a job, when every place it lists is in the same one."""
+    if location is None:
         return None, None
-
-    special_regions = {
-        "香港": "HK",
-        "澳门": "MO",
-        "台湾": "TW",
-    }
-    matched = {
-        code for marker, code in special_regions.items() if marker in location
-    }
-    parts = [
-        part.strip()
-        for part in re.split(r"[、,，;/]+", location)
-        if part.strip()
-    ]
-    if matched:
-        has_mainland_part = any(
-            not any(marker in part for marker in special_regions)
-            and (
-                re.search(
-                    r"(?:省|市|自治区|自治州|地区|盟|县)",
-                    part,
-                )
-                or any(
-                    city in part
-                    for city in ("北京", "上海", "天津", "重庆")
-                )
-            )
-            for part in parts
-        )
-        if has_mainland_part:
+    countries: set[str] = set()
+    for part in re.split(r"[、,，;/]+", location):
+        # "深圳市-南山区": the first level decides.
+        name = part.strip().split("-", 1)[0].strip()
+        if not name:
+            continue
+        country = _PLACE_COUNTRY.get(name)
+        if country is None:
             return None, None
-        if len(matched) == 1:
-            return matched.pop(), "Asia"
+        countries.add(country)
+    if len(countries) != 1:
         return None, None
-    mainland = bool(
-        re.search(r"(?:省|市|自治区|自治州|地区|盟|县|区)", location)
-        or any(city in location for city in ("北京", "上海", "天津", "重庆"))
-    )
-    if mainland:
-        return "CN", "Asia"
-    return None, None
-
-
-def _language_for_text(value: str) -> str | None:
-    if re.search(r"[\u3400-\u9fff]", value):
-        return "zh"
-    if re.search(r"[A-Za-z]", value):
-        return "en"
-    return None
+    return countries.pop(), "Asia"
 
 
 def _parse_china_datetime(value: object) -> datetime | None:
@@ -876,7 +969,7 @@ def _parse_china_datetime(value: object) -> datetime | None:
     for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
             parsed = datetime.strptime(cleaned, pattern).replace(
-                tzinfo=_SHANGHAI
+                tzinfo=_CHINA_TIME
             )
         except ValueError:
             continue
