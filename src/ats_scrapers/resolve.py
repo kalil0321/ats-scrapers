@@ -94,6 +94,7 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
     # apply.clearcompany.com/{site}.
     ".hrmdirect.com": ATSType.CLEARCOMPANY,
     ".peopleadmin.com": ATSType.PEOPLEADMIN,
+    ".talent-soft.com": ATSType.TALENTSOFT,
 }
 
 # Full-URL tenants: the scraper's slug IS the careers URL.

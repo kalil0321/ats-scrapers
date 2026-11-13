@@ -70,6 +70,16 @@ RESOLVES = [
     ),
     ("https://utah.peopleadmin.com/postings/search", ATSType.PEOPLEADMIN, "utah"),
     ("https://jobs-shepherd.peopleadmin.com/postings/9286", ATSType.PEOPLEADMIN, "jobs-shepherd"),
+    (
+        "https://edf-recrute.talent-soft.com/offre-de-emploi/liste-toutes-offres.aspx",
+        ATSType.TALENTSOFT,
+        "edf-recrute",
+    ),
+    (
+        "https://aerlingus-career.talent-soft.com/job/job-buyer_2069.aspx",
+        ATSType.TALENTSOFT,
+        "aerlingus-career",
+    ),
     ("https://herp.careers/v1/herpinc", ATSType.HERP, "herpinc"),
     ("https://herp.careers/v1/herpinc/abc123", ATSType.HERP, "herpinc"),
     ("https://hrmos.co/pages/ykk/jobs", ATSType.HRMOS, "ykk"),
@@ -527,3 +537,21 @@ def test_peopleadmin_hosts_that_are_not_a_portal_are_not_resolved() -> None:
     assert resolve_careers_url("https://peopleadmin.com/products/") is None
     assert resolve_careers_url("https://www.peopleadmin.com/products/") is None
     assert resolve_careers_url("https://district.ted.peopleadmin.com/hire/index.aspx") is None
+
+
+def test_get_scraper_for_url_builds_talentsoft_scraper() -> None:
+    from ats_scrapers.scrapers import TalentsoftScraper
+
+    scraper = get_scraper_for_url(
+        "https://dassault-aviation-cand.talent-soft.com/offre-de-emploi/emploi-acheteur_15653.aspx"
+    )
+
+    assert isinstance(scraper, TalentsoftScraper)
+    assert scraper.site == "dassault-aviation-cand"
+    assert scraper.base_url == "https://dassault-aviation-cand.talent-soft.com"
+
+
+def test_talentsoft_hosts_that_are_not_a_career_site_are_not_resolved() -> None:
+    assert resolve_careers_url("https://talent-soft.com/") is None
+    assert resolve_careers_url("https://www.talent-soft.com/") is None
+    assert resolve_careers_url("https://a.b.talent-soft.com/offre-de-emploi/") is None

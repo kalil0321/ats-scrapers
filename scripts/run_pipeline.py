@@ -96,6 +96,7 @@ from ats_scrapers.scrapers import (
     SoftgardenScraper,
     SuccessFactorsScraper,
     TalentBrewScraper,
+    TalentsoftScraper,
     TaleoEnterpriseScraper,
     TaleoScraper,
     TeamtailorScraper,
@@ -497,6 +498,26 @@ CONFIGS: dict[str, dict[str, Any]] = {
         },
         "csv": "ats-companies/successfactors.csv",
         "output": "successfactors/jobs.csv",
+    },
+    "talentsoft": {
+        "scraper": TalentsoftScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/talentsoft.csv",
+        "output": "talentsoft/jobs.csv",
+        # One vendor serves every site, and a scrape reads up to four
+        # offer pages of its site at a time.
+        "max_concurrency": 6,
+        "fail_closed_on_any_error": True,
+        # A site that is gone counts as a failed one, so many sites
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        # 5% of sites may fail or be gone; a site that closes is a row to
+        # remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
     },
     "taleo": {
         "scraper": TaleoScraper,
