@@ -32,6 +32,7 @@ import re
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -45,6 +46,8 @@ if TYPE_CHECKING:
 URL_PATTERN = re.compile(
     r"^https://(?P<company>[^.]+)\.(?P<instance>wd\d+)\.myworkdayjobs\.com/(?P<site>[^/?#]+)"
 )
+# The counter Workday adds to the path of a requisition posted again.
+_POSTING_COUNTER_RE = re.compile(r"-\d{1,3}$")
 PAGE_LIMIT = 20  # Workday hard-caps `limit` at 20 — higher returns 400.
 
 # Workday's ``timeType`` is a stable enum: "Full time" / "Part time".
@@ -179,7 +182,12 @@ class WorkdayScraper(BaseScraper):
             else None
         )
         try:
-            return await self._fetch_all(api, base, display_company, detail_prefix)
+            return await self._fetch_all(
+                api,
+                base,
+                display_company,
+                detail_prefix,
+            )
         finally:
             self._deadline = None
 
@@ -216,7 +224,7 @@ class WorkdayScraper(BaseScraper):
         self,
         api: str,
         base: str,
-        company: str,
+        display_company: str,
         detail_prefix: str,
     ) -> list[Job]:
         async with httpx.AsyncClient(
@@ -228,7 +236,13 @@ class WorkdayScraper(BaseScraper):
 
             def absorb(postings: list[dict[str, Any]]) -> None:
                 for posting in postings:
-                    job = self._parse_job(posting, base, company)
+                    job = self._parse_job(
+                        posting,
+                        base,
+                        display_company,
+                    )
+                    if job is None:
+                        continue
                     key = job.ats_id or str(job.url)
                     if key in seen:
                         continue
@@ -497,16 +511,20 @@ class WorkdayScraper(BaseScraper):
             f"Workday gave up after {MAX_RETRIES} retries at offset={offset}: {last_exc}"
         )
 
-    def _parse_job(self, item: dict[str, Any], base_url: str, company: str) -> Job:
+    def _parse_job(
+        self,
+        item: dict[str, Any],
+        base_url: str,
+        company: str,
+    ) -> Job | None:
         external_path = item.get("externalPath", "") or ""
-        bullet_req = (item.get("bulletFields") or [None])[0]
-        ats_id = bullet_req or external_path.rsplit("/", 1)[-1] or "unknown"
-        # bulletFields[0] is canonically the requisition id on Workday tenants
-        # that surface it (Accenture R-…, Salesforce JR-…). Same value across
-        # mirrors (Eightfold wrappers).
-        requisition_id = bullet_req if bullet_req and bullet_req != ats_id else None
-        if bullet_req:
-            requisition_id = bullet_req
+        requisition_id, canonical_path = _requisition(
+            item.get("bulletFields"),
+            external_path,
+        )
+        ats_id = _job_identity(base_url, canonical_path)
+        if ats_id is None:
+            return None
 
         # ``timeType`` ("Full time" / "Part time") is the canonical
         # Workday signal; map to our employment-type enum.
@@ -599,6 +617,70 @@ def _external_path(url: object) -> str | None:
     s = str(url)
     idx = s.find("/job/")
     return s[idx:] if idx >= 0 else None
+
+
+def _job_identity(base_url: str, canonical_path: object) -> str | None:
+    """The posting's identity: the tenant's host and the posting's path.
+
+    The career site is left out. A tenant often lists one posting on
+    several of its sites, and the sites then give it the same path, apart
+    from a counter that :func:`_requisition` removes.
+    """
+    if not isinstance(canonical_path, str) or not canonical_path.strip():
+        return None
+    path = canonical_path.strip().rstrip("/")
+    if not path.startswith("/job/"):
+        return None
+    host = urlsplit(base_url).hostname
+    if not host:
+        return None
+    return f"{host.casefold()}{path}"
+
+
+def _requisition(
+    bullet_fields: object,
+    external_path: object,
+) -> tuple[str | None, object]:
+    """The requisition id and the path without its posting counter.
+
+    Workday ends a posting's path with ``{title}_{requisition}``. When a
+    requisition is posted more than once (on a second career site, most
+    often), the later postings get a counter: ``..._R123-1``,
+    ``..._R123-2``. A bullet field is the requisition id only when the path
+    ends with it, alone or followed by such a counter; the first bullet
+    field is a location or a brand on many tenants. The counter is removed
+    from the path only in that case: ``R-2026-12`` can be a requisition id
+    of its own, and is kept whole when a bullet field says so.
+    """
+    if not isinstance(external_path, str) or not isinstance(bullet_fields, list):
+        return None, external_path
+    path = external_path.strip().rstrip("/")
+    final_segment = path.rsplit("/", 1)[-1].casefold()
+    whole: list[str] = []
+    counted: list[str] = []
+    exact_candidate: str | None = None
+    for value in bullet_fields:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        cleaned = value.strip()
+        marker = cleaned.casefold()
+        if not (
+            len(cleaned) <= 64
+            and any(character.isdigit() for character in cleaned)
+            and re.fullmatch(r"[A-Za-z0-9._-]+", cleaned)
+        ):
+            continue
+        if final_segment.endswith(f"_{marker}"):
+            whole.append(cleaned)
+        elif re.fullmatch(rf".*_{re.escape(marker)}-\d{{1,3}}", final_segment):
+            counted.append(cleaned)
+        elif final_segment == marker:
+            exact_candidate = cleaned
+    if whole:
+        return min(whole, key=len), external_path
+    if counted:
+        return max(counted, key=len), _POSTING_COUNTER_RE.sub("", path)
+    return exact_candidate, external_path
 
 
 def _format_locations(primary: object, additional: object) -> str | None:

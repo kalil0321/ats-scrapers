@@ -48,8 +48,20 @@ def _item(
     country: str = "Germany",
     department: str = "Engineering",
     role: str | None = None,
+    locations: list[tuple[str, str]] | None = None,
 ) -> str:
     role_tag = f"<tt:role>{role}</tt:role>" if role else ""
+    location_tags = "".join(
+        f"""
+        <tt:location>
+          <tt:name>HQ</tt:name>
+          <tt:address/>
+          <tt:zip/>
+          <tt:city>{loc_city}</tt:city>
+          <tt:country>{loc_country}</tt:country>
+        </tt:location>"""
+        for loc_city, loc_country in ([(city, country)] if locations is None else locations)
+    )
     return f"""
     <item>
       <title>{title}</title>
@@ -58,14 +70,7 @@ def _item(
       <remoteStatus>{remote_status}</remoteStatus>
       <guid>{guid}</guid>
       <description>{description}</description>
-      <tt:locations>
-        <tt:location>
-          <tt:name>HQ</tt:name>
-          <tt:address/>
-          <tt:zip/>
-          <tt:city>{city}</tt:city>
-          <tt:country>{country}</tt:country>
-        </tt:location>
+      <tt:locations>{location_tags}
       </tt:locations>
       <tt:department>{department}</tt:department>
       {role_tag}
@@ -225,6 +230,56 @@ def test_location_falls_back_to_name_when_city_country_empty(httpx_mock) -> None
     assert jobs[0].location == "EMEA Region"
 
 
+def test_location_joins_every_location(httpx_mock) -> None:
+    """A posting open in several offices lists one `<tt:location>` per
+    office. Keep all of them, not only the first."""
+    httpx_mock.add_response(url=RSS_URL, text=_rss([
+        _item(locations=[("Berlin", "Germany"), ("Amsterdam", "Netherlands")]),
+    ]))
+    jobs = TeamtailorScraper("acme").fetch()
+    assert jobs[0].location == "Berlin, Germany; Amsterdam, Netherlands"
+
+
+def test_location_mixes_city_country_and_name_fallback(httpx_mock) -> None:
+    httpx_mock.add_response(url=RSS_URL, text=_rss(["""
+    <item>
+      <title>X</title>
+      <link>https://acme.teamtailor.com/jobs/1-x</link>
+      <guid>g</guid>
+      <description></description>
+      <tt:locations>
+        <tt:location>
+          <tt:name>EMEA Region</tt:name>
+        </tt:location>
+        <tt:location>
+          <tt:name>HQ</tt:name>
+          <tt:city>Paris</tt:city>
+          <tt:country>France</tt:country>
+        </tt:location>
+        <tt:location/>
+      </tt:locations>
+    </item>
+    """]))
+    jobs = TeamtailorScraper("acme").fetch()
+    assert jobs[0].location == "EMEA Region; Paris, France"
+
+
+def test_location_dedupes_repeated_locations(httpx_mock) -> None:
+    httpx_mock.add_response(url=RSS_URL, text=_rss([
+        _item(locations=[("Berlin", "Germany"), ("Berlin", "Germany")]),
+    ]))
+    jobs = TeamtailorScraper("acme").fetch()
+    assert jobs[0].location == "Berlin, Germany"
+
+
+def test_location_none_when_locations_is_empty(httpx_mock) -> None:
+    """An empty `<tt:locations>` is not the same as a missing one in the
+    helper: no office listed means no location, not the default office."""
+    httpx_mock.add_response(url=RSS_URL, text=_rss([_item(locations=[])]))
+    jobs = TeamtailorScraper("acme").fetch()
+    assert jobs[0].location is None
+
+
 def test_location_none_when_missing(httpx_mock) -> None:
     httpx_mock.add_response(url=RSS_URL, text=_rss(["""
     <item>
@@ -355,3 +410,107 @@ def test_malformed_xml_raises_scraper_error(httpx_mock) -> None:
     httpx_mock.add_response(url=RSS_URL, text="<html>not RSS</html>")
     with pytest.raises(ScraperError, match="malformed RSS"):
         TeamtailorScraper("acme").fetch()
+
+
+# --- Pagination --------------------------------------------------------------
+#
+# The feed returns at most 100 items per request; later pages are read with
+# ?offset=100, ?offset=200, ...
+
+
+def _page(start: int, count: int) -> str:
+    return _rss([
+        _item(
+            title=f"Role {i}",
+            link=f"https://acme.teamtailor.com/jobs/{i}-role",
+            guid=f"guid-{i}",
+        )
+        for i in range(start, start + count)
+    ])
+
+
+def test_short_feed_is_a_single_request(httpx_mock) -> None:
+    httpx_mock.add_response(url=RSS_URL, text=_page(1, 99))
+
+    jobs = TeamtailorScraper("acme").fetch()
+
+    assert len(jobs) == 99
+    assert [str(r.url) for r in httpx_mock.get_requests()] == [RSS_URL]
+
+
+def test_walks_offset_pages_until_a_short_page(httpx_mock) -> None:
+    httpx_mock.add_response(url=RSS_URL, text=_page(1, 100))
+    httpx_mock.add_response(url=f"{RSS_URL}?offset=100", text=_page(101, 100))
+    httpx_mock.add_response(url=f"{RSS_URL}?offset=200", text=_page(201, 37))
+
+    jobs = TeamtailorScraper("acme").fetch()
+
+    assert len(jobs) == 237
+    assert [job.ats_id for job in jobs[:2]] == ["1", "2"]
+    assert jobs[-1].ats_id == "237"
+    assert len(httpx_mock.get_requests()) == 3
+
+
+def test_full_last_page_ends_on_the_empty_page_after_it(httpx_mock) -> None:
+    httpx_mock.add_response(url=RSS_URL, text=_page(1, 100))
+    httpx_mock.add_response(url=f"{RSS_URL}?offset=100", text=_rss([]))
+
+    assert len(TeamtailorScraper("acme").fetch()) == 100
+    assert len(httpx_mock.get_requests()) == 2
+
+
+def test_feed_that_ignores_the_offset_stops_after_one_repeat(httpx_mock) -> None:
+    httpx_mock.add_response(url=RSS_URL, text=_page(1, 100))
+    httpx_mock.add_response(url=f"{RSS_URL}?offset=100", text=_page(1, 100))
+
+    assert len(TeamtailorScraper("acme").fetch()) == 100
+    assert len(httpx_mock.get_requests()) == 2
+
+
+def test_overlapping_pages_are_deduplicated(httpx_mock) -> None:
+    # A posting published during the walk shifts every later item by one.
+    httpx_mock.add_response(url=RSS_URL, text=_page(1, 100))
+    httpx_mock.add_response(url=f"{RSS_URL}?offset=100", text=_page(100, 50))
+
+    jobs = TeamtailorScraper("acme").fetch()
+
+    assert len(jobs) == 149
+    assert len({job.ats_id for job in jobs}) == 149
+
+
+def test_failed_later_page_raises_instead_of_returning_a_partial_list(httpx_mock) -> None:
+    httpx_mock.add_response(url=RSS_URL, text=_page(1, 100))
+    httpx_mock.add_response(url=f"{RSS_URL}?offset=100", status_code=404)
+
+    with pytest.raises(CompanyNotFoundError):
+        TeamtailorScraper("acme").fetch()
+
+
+def test_malformed_later_page_raises(httpx_mock) -> None:
+    httpx_mock.add_response(url=RSS_URL, text=_page(1, 100))
+    httpx_mock.add_response(url=f"{RSS_URL}?offset=100", text="<html><body>oops</body></html>")
+
+    with pytest.raises(ScraperError, match="malformed RSS"):
+        TeamtailorScraper("acme").fetch()
+
+
+def test_page_guard_raises_instead_of_returning_a_cut_list(monkeypatch, httpx_mock) -> None:
+    import ats_scrapers.scrapers.teamtailor as module
+
+    monkeypatch.setattr(module, "MAX_PAGES", 2)
+    httpx_mock.add_response(url=RSS_URL, text=_page(1, 100))
+    httpx_mock.add_response(url=f"{RSS_URL}?offset=100", text=_page(101, 100))
+
+    with pytest.raises(ScraperError, match="still returned full pages after 200 postings"):
+        TeamtailorScraper("acme").fetch()
+    assert len(httpx_mock.get_requests()) == 2
+
+
+def test_last_allowed_page_may_be_short(monkeypatch, httpx_mock) -> None:
+    import ats_scrapers.scrapers.teamtailor as module
+
+    monkeypatch.setattr(module, "MAX_PAGES", 2)
+    httpx_mock.add_response(url=RSS_URL, text=_page(1, 100))
+    httpx_mock.add_response(url=f"{RSS_URL}?offset=100", text=_page(101, 12))
+
+    assert len(TeamtailorScraper("acme").fetch()) == 112

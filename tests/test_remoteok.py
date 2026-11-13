@@ -6,6 +6,7 @@ Pin parsing, the metadata-skip behaviour, and the antibot-line stripping.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -92,6 +93,20 @@ def test_parses_full_payload(httpx_mock) -> None:
     assert j.posted_at is not None
     assert j.description == "Build a UI."
     assert str(j.apply_url) == "https://example.com/apply"
+
+
+@pytest.mark.parametrize("epoch", [1777996882, 0])
+def test_posted_at_is_utc(httpx_mock, epoch: int) -> None:
+    """``epoch`` and ``date`` are the same instant. Whichever one is
+    used, ``posted_at`` must be that instant in UTC, not the host's
+    local wall-clock time."""
+    httpx_mock.add_response(
+        url="https://remoteok.com/api",
+        json=[_meta(), _job(epoch=epoch)],
+    )
+    j = RemoteOKScraper("any").fetch()[0]
+    assert j.posted_at == datetime(2026, 5, 5, 16, 1, 22, tzinfo=UTC)
+    assert j.posted_at.tzinfo is UTC
 
 
 def test_strips_antibot_reminder_from_description(httpx_mock) -> None:

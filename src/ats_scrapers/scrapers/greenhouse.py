@@ -34,6 +34,9 @@ if TYPE_CHECKING:
 API_TEMPLATE = (
     "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
 )
+# Board metadata. ``name`` is the employer's display name ("Stripe"),
+# which the jobs endpoint does not return.
+BOARD_TEMPLATE = "https://boards-api.greenhouse.io/v1/boards/{slug}"
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -42,11 +45,28 @@ _TAG_RE = re.compile(r"<[^>]+>")
 class GreenhouseScraper(BaseScraper):
     ats = ATSType.GREENHOUSE
 
+    def __init__(self, company_slug: str, *, company_name: str | None = None, **kwargs: Any) -> None:
+        super().__init__(company_slug, **kwargs)
+        #: Display name. Read from the board when not given; falls back
+        #: to the slug if the board endpoint fails.
+        self.company_name = (company_name or "").strip() or None
+
     async def afetch(self) -> list[Job]:
         url = API_TEMPLATE.format(slug=self.company_slug)
         async with self.make_fetcher() as fetch:
             payload = await fetch.get_json(url)
-        return [self._parse_job(item) for item in payload.get("jobs", [])]
+            items = payload.get("jobs", [])
+            if items and not self.company_name:
+                self.company_name = await self._board_name(fetch)
+        return [self._parse_job(item) for item in items]
+
+    async def _board_name(self, fetch: Any) -> str | None:
+        try:
+            board = await fetch.get_json(BOARD_TEMPLATE.format(slug=self.company_slug))
+        except Exception:  # cosmetic field: never fail a scrape over it
+            return None
+        name = board.get("name") if isinstance(board, dict) else None
+        return name.strip() if isinstance(name, str) and name.strip() else None
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
         offices = item.get("offices") or []
@@ -96,7 +116,7 @@ class GreenhouseScraper(BaseScraper):
         return Job(
             url=item["absolute_url"],
             title=item["title"],
-            company=self.company_slug,
+            company=self.company_name or self.company_slug,
             ats_type=ATSType.GREENHOUSE,
             ats_id=str(item["id"]),
             location=(item.get("location") or {}).get("name"),

@@ -12,6 +12,11 @@ Returns ``{"data": [{"id": "...", "title": "...", "url": "...",
 "job": {"department": {"name": ...}}}]}`` — every active posting in one
 response, no pagination.
 
+The advert's HTML is split across ``description`` plus three more
+sections — ``key_responsibilities``, ``skills_knowledge_expertise`` and
+``benefits`` — each with the employer's own heading in
+``<field>_header``. We join them into ``Job.description``.
+
 Tenants without an active Pinpoint careers site return 404. Locale variants
 (``/fr/postings.json``) are supported but we always pull English.
 """
@@ -63,6 +68,14 @@ _TYPE_MAP = {
     "permanent_part_time": "PART_TIME",
     "permanent": "FULL_TIME",
 }
+
+# Sections appended after ``description``, in this order, each
+# paired with the field holding its heading.
+_DESCRIPTION_SECTIONS = (
+    ("key_responsibilities", "key_responsibilities_header"),
+    ("skills_knowledge_expertise", "skills_knowledge_expertise_header"),
+    ("benefits", "benefits_header"),
+)
 
 _PERIOD_MAP = {
     "yearly": "YEAR",
@@ -180,7 +193,7 @@ class PinpointScraper(BaseScraper):
             department=department,
             commitment=item.get("schedule") if isinstance(item.get("schedule"), str) else None,
             requisition_id=item.get("reference") if isinstance(item.get("reference"), str) else None,
-            description=_html_unescape_for_desc(item.get("description")),
+            description=_html_unescape_for_desc(_assemble_description(item)),
             salary_currency=comp_currency,
             salary_min=comp_min,
             salary_max=comp_max,
@@ -243,6 +256,23 @@ def _extract_is_remote(workplace_type: object) -> bool | None:
     if wt in ("onsite", "on_site", "office"):
         return False
     return None
+
+
+def _assemble_description(item: dict[str, Any]) -> str:
+    """Join ``description`` with the sections that follow it, each under
+    its own ``<h3>`` heading (the same shape as Lever's ``lists[]``)."""
+    intro = item.get("description")
+    parts: list[str] = [intro] if isinstance(intro, str) and intro.strip() else []
+    for body_key, header_key in _DESCRIPTION_SECTIONS:
+        body = item.get(body_key)
+        if not isinstance(body, str) or not body.strip():
+            continue
+        header = item.get(header_key)
+        if isinstance(header, str) and header.strip():
+            parts.append(f"<h3>{header.strip()}</h3>\n{body.strip()}")
+        else:
+            parts.append(body.strip())
+    return "\n\n".join(parts)
 
 
 def _html_unescape_for_desc(value: object, *, cap: int = 25_000) -> str | None:

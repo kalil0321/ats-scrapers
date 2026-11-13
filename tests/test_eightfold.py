@@ -329,6 +329,18 @@ def test_fetch_returns_empty_when_first_page_empty(httpx_mock) -> None:
     assert EightfoldScraper("dolby").fetch() == []
 
 
+def test_preserves_requisition_id_equal_to_ats_id(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page([_position(job_id="R-123")]),
+    )
+
+    job = EightfoldScraper("dolby", include_descriptions=False).fetch()[0]
+
+    assert job.ats_id == "R-123"
+    assert job.requisition_id == "R-123"
+
+
 def test_fetch_dedupes_jobs_with_same_ats_id(httpx_mock) -> None:
     """If concurrent pages return the same `displayJobId` (the listing can
     shift between requests), the final list must contain each id once."""
@@ -567,12 +579,13 @@ def test_format_location_prefers_standardized_over_locations() -> None:
     ) == "Standardized City"
 
 
-def test_format_location_string_list_returns_first_stripped() -> None:
+def test_format_location_string_list_strips_entries() -> None:
     assert _format_location({"locations": ["  Berlin  "]}) == "Berlin"
 
 
-def test_format_location_dict_list_uses_city() -> None:
-    assert _format_location({"locations": [{"city": "Paris", "country": "FR"}]}) == "Paris"
+def test_format_location_dict_list_uses_city_and_country() -> None:
+    assert _format_location({"locations": [{"city": "Paris", "country": "FR"}]}) == "Paris, FR"
+    assert _format_location({"locations": [{"city": "Paris"}]}) == "Paris"
 
 
 def test_format_location_dict_list_falls_back_to_country() -> None:
@@ -611,6 +624,66 @@ def test_format_location_empty_list_falls_through() -> None:
     ) == "Berlin"
 
 
+def test_format_location_keeps_every_listed_location() -> None:
+    """Multi-location postings list each office; entries already carry
+    commas, so they are joined with "; "."""
+    assert _format_location(
+        {"locations": ["Toronto, ON, Canada", "Berlin, Germany", "Toronto, ON, Canada"]}
+    ) == "Toronto, ON, Canada; Berlin, Germany"
+
+
+def test_format_location_dict_list_keeps_every_location() -> None:
+    assert _format_location(
+        {"locations": [{"city": "Paris", "country": "FR"}, {"city": "Lyon"}, {}]}
+    ) == "Paris, FR; Lyon"
+
+
+def test_format_location_dict_list_keeps_same_named_cities_apart() -> None:
+    """Deduping on the city alone would drop one of two offices."""
+    assert _format_location(
+        {"locations": [
+            {"city": "London", "country": "CA"},
+            {"city": "London", "country": "GB"},
+            {"city": "London", "country": "GB"},
+        ]}
+    ) == "London, CA; London, GB"
+
+
+def test_format_location_dict_blank_fields_do_not_block_the_fallback() -> None:
+    assert _format_location({"locations": [{"city": " ", "country": "FR"}]}) == "FR"
+    assert _format_location(
+        {"locations": [{"city": "", "country": None, "name": " EMEA "}]}
+    ) == "EMEA"
+    assert _format_location(
+        {"locations": [{"city": 7, "country": ["FR"]}], "primaryLocation": "Lyon"}
+    ) == "Lyon"
+
+
+def test_format_location_skips_blank_entries_in_list() -> None:
+    assert _format_location(
+        {"standardizedLocations": ["  ", "Austin, TX, US"], "locations": ["Austin"]}
+    ) == "Austin, TX, US"
+
+
+def test_multi_location_posting_keeps_all_locations(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page(
+            [
+                {
+                    "displayJobId": "M1",
+                    "name": "Engineer",
+                    "positionUrl": "/careers/job/M1",
+                    "locations": ["Berlin, Germany", "Munich, Germany"],
+                }
+            ],
+            count=1,
+        ),
+    )
+    jobs = EightfoldScraper("dolby", include_descriptions=False).fetch()
+    assert jobs[0].location == "Berlin, Germany; Munich, Germany"
+
+
 # --- _parse_ts: timestamp helper ---------------------------------------------
 
 
@@ -640,6 +713,17 @@ def test_parse_ts_unix_milliseconds() -> None:
     result = _parse_ts(1767225600000)
     assert result is not None
     assert result.year == 2026
+
+
+@pytest.mark.parametrize("value", [1767225600, 1767225600000])
+def test_parse_ts_epoch_is_utc_aware(value: int) -> None:
+    """Epoch values are UTC instants; the result must not depend on the
+    host's local timezone, and must compare with the ISO-string path."""
+    result = _parse_ts(value)
+    assert result is not None
+    assert result.tzinfo is UTC
+    assert result == datetime(2026, 1, 1, tzinfo=UTC)
+    assert result == _parse_ts("2026-01-01T00:00:00Z")
 
 
 def test_parse_ts_none_returns_none() -> None:
