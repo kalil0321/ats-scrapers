@@ -28,7 +28,22 @@ offer answers the same frame with a "no result" block and no count.
 
 The list stops at its hundredth page, so a site with more offers than a
 hundred pages hold cannot be read in full this way. The pager names its last
-page, which tells on the first page: such a site raises instead of
+page, which tells on the first page. Such a site is read through one of its
+search filters instead. The first page lists them with the number of offers
+of each value:
+
+    <a href="/offre-de-emploi/liste-toutes-offres.aspx?changefacet=1&amp;facet_JobFamily=3226"
+       >Affaires juridiques (322)</a>
+
+and ``?changefacet=1&facet_JobFamily=3226&mode=list&page={n}`` is the list
+of that value. Other sites show the same filters as the lists of a search
+form, whose element id ends with the filter's name
+(``..._EngineCriteriaCollection_Contract``, option ``CDI (1448)``); the
+address is the same. A filter is used only when its values add up to the whole
+list and each fits in a hundred pages; the offers of all its values are
+then the whole list. The site keeps the chosen values in its session, where
+they add up from one request to the next, so these requests are sent
+without cookies. When no filter qualifies the site raises instead of
 returning the first part of its offers.
 
 The lines under the title are chosen by each customer and carry no label,
@@ -82,6 +97,15 @@ _LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 # number.
 _OFFER_PATH_RE = re.compile(r"^/[A-Za-z0-9-]+/[^/?#\s]*_(\d+)\.aspx$")
 _PAGE_PARAM_RE = re.compile(r"[?&]page=(\d+)(?:&|$)")
+# A value of a search filter, in a link that selects it.
+_FACET_PARAM_RE = re.compile(r"[?&]facet_([A-Za-z0-9_]+)=(-?\d+)(?=&|$)")
+# The search form names each of its lists after the filter it sets.
+_CRITERIA_ID_MARK = "EngineCriteriaCollection_"
+# The number of offers of a filter value, at the end of its label.
+_FACET_COUNT_RE = re.compile(r"\(([\d\s\u00a0\u202f.,]+)\)\s*$")
+# A filtered list may differ from the number its filter announced by this
+# share (offers come and go during the walk), and by two offers at least.
+_FACET_DRIFT = 0.05
 _LANGUAGE_RE = re.compile(r"^[A-Za-z]{2}(?:$|[-_])")
 
 _TOTAL_ID_SUFFIX = "pagination_totaloffers"
@@ -152,16 +176,70 @@ class TalentsoftScraper(BaseScraper):
         return self._run_sync(run())
 
     async def _walk(self, fetch: Fetcher) -> list[Job]:
+        try:
+            walked = await self._walk_list(fetch, {})
+        except _ListCutError as cut:
+            walked = await self._walk_by_filter(fetch, cut.listing)
+        # Offers that could not be read, and offers the list announces but
+        # does not give, both count against the floor.
+        expected = max(walked.total, len(walked.listed))
+        if len(walked.rows) < math.ceil(expected * MIN_COVERAGE):
+            raise ScraperError(
+                f"Talentsoft ({self.company_slug}) could read only "
+                f"{len(walked.rows)} of the {expected} offers listed"
+            )
+        return [
+            self._job(row, walked.language) for row in walked.rows.values()
+        ]
+
+    async def _walk_by_filter(
+        self, fetch: Fetcher, first: _Listing
+    ) -> _Walked:
+        """Read a list too long for its pager, one filter value at a time."""
+        total = first.total or 0
+        capacity = first.last_page * len(first.identities)
+        choice = _choose_filter(first.facets, total=total, capacity=capacity)
+        if choice is None:
+            raise ScraperError(
+                f"Talentsoft ({self.company_slug}) announces {total} "
+                f"offers but its list stops at page {first.last_page} "
+                f"({capacity} offers), and no search filter splits it into "
+                f"lists that fit; refusing to return a partial list"
+            )
+        key, values = choice
+        whole = _Walked(total=total, language=first.language)
+        for value, announced in values:
+            part = await self._walk_list(
+                fetch,
+                {"changefacet": "1", f"facet_{key}": value},
+                announced=announced,
+            )
+            whole.listed.update(part.listed)
+            for number, row in part.rows.items():
+                whole.rows.setdefault(number, row)
+            whole.language = whole.language or part.language
+        return whole
+
+    async def _walk_list(
+        self,
+        fetch: Fetcher,
+        selection: dict[str, str],
+        *,
+        announced: int | None = None,
+    ) -> _Walked:
+        """Walk the whole list, or the list of one filter value."""
         url = f"{self.base_url}{LIST_PATH}"
-        rows: dict[str, _Row] = {}
-        language: str | None = None
-        # Every offer listed so far, readable or not.
-        listed: set[str] = set()
-        total = 0
+        walked = _Walked()
         page = 1
         while True:
+            if selection:
+                # The site adds each filter value it is sent to the ones
+                # its session already holds: no session, no leftovers.
+                fetch.cookies.clear()
             listing = _parse_listing(
-                await fetch.get_text(url, params={"mode": "list", "page": page})
+                await fetch.get_text(
+                    url, params={**selection, "mode": "list", "page": page}
+                )
             )
             if not listing.is_offer_list:
                 raise ScraperError(
@@ -172,29 +250,44 @@ class TalentsoftScraper(BaseScraper):
             # says which page this is.
             if listing.page is not None and listing.page != page:
                 break
-            language = language or listing.language
+            walked.language = walked.language or listing.language
             if listing.total is not None:
-                total = max(total, listing.total)
+                walked.total = max(walked.total, listing.total)
+            if page == 1 and announced is not None:
+                drift = max(2, math.ceil(announced * _FACET_DRIFT))
+                if abs(walked.total - announced) > drift:
+                    raise ScraperError(
+                        f"Talentsoft ({self.company_slug}) lists "
+                        f"{walked.total} offers for a filter value that "
+                        f"announced {announced}"
+                    )
             # The count and the pager of a page are built together: the
             # pages the pager names hold every offer announced unless the
             # list is cut.
             reachable = listing.last_page * len(listing.identities)
-            if page == 1 and reachable < total:
+            if page == 1 and reachable < walked.total:
+                if not selection:
+                    raise _ListCutError(listing)
                 raise ScraperError(
-                    f"Talentsoft ({self.company_slug}) announces {total} "
-                    f"offers but its list stops at page {listing.last_page} "
-                    f"({reachable} offers); refusing to return a partial list"
+                    f"Talentsoft ({self.company_slug}) announces "
+                    f"{walked.total} offers for one filter value but its "
+                    f"list stops at page {listing.last_page} ({reachable} "
+                    f"offers); refusing to return a partial list"
                 )
-            fresh = [key for key in listing.identities if key not in listed]
-            listed.update(fresh)
+            fresh = [
+                key for key in listing.identities if key not in walked.listed
+            ]
+            walked.listed.update(fresh)
             for row in listing.rows:
-                rows.setdefault(row.number, row)
+                walked.rows.setdefault(row.number, row)
             # The list ends at the page the pager shows no page after, once
             # every offer announced has been listed. A page that lists
             # nothing it has not listed before ends it too. Offers are
             # compared as listed, not as read, so a page of new offers that
             # cannot be read does not pass for the end.
-            if not fresh or (not listing.has_next and len(listed) >= total):
+            if not fresh or (
+                not listing.has_next and len(walked.listed) >= walked.total
+            ):
                 break
             if page >= MAX_PAGES:
                 raise ScraperError(
@@ -203,15 +296,7 @@ class TalentsoftScraper(BaseScraper):
                     f"return a partial list"
                 )
             page += 1
-        # Offers that could not be read, and offers the list announces but
-        # does not give, both count against the floor.
-        expected = max(total, len(listed))
-        if len(rows) < math.ceil(expected * MIN_COVERAGE):
-            raise ScraperError(
-                f"Talentsoft ({self.company_slug}) could read only "
-                f"{len(rows)} of the {expected} offers listed"
-            )
-        return [self._job(row, language) for row in rows.values()]
+        return walked
 
     def _job(self, row: _Row, language: str | None) -> Job:
         return Job(
@@ -273,6 +358,28 @@ class _Listing:
     # What tells each listed offer from the others, readable or not.
     identities: list[str]
     rows: list[_Row]
+    # The search filters the page offers: for each filter, its values and
+    # the number of offers each announces.
+    facets: dict[str, list[tuple[str, int]]] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class _Walked:
+    """What walking a list gave."""
+
+    total: int = 0
+    language: str | None = None
+    # Every offer listed, readable or not.
+    listed: set[str] = field(default_factory=set)
+    rows: dict[str, _Row] = field(default_factory=dict)
+
+
+class _ListCutError(Exception):
+    """The list announces more offers than its pager reaches."""
+
+    def __init__(self, listing: _Listing) -> None:
+        super().__init__("list cut")
+        self.listing = listing
 
 
 @dataclass(slots=True)
@@ -295,6 +402,7 @@ def _parse_listing(page: str) -> _Listing:
     current: int | None = None
     linked_pages: list[int] = []
     items: list[Node] = []
+    facets: dict[str, list[tuple[str, int]]] = {}
     for node in root.walk():
         identifier = node.attrs.get("id", "").lower()
         classes = node.classes
@@ -305,6 +413,19 @@ def _parse_listing(page: str) -> _Listing:
                 total = int(digits)
         elif _NO_RESULT_ID_PART in identifier or _SEARCH_PANEL_ID_PART in identifier:
             is_offer_list = True
+        found: list[tuple[str, str, int]] = []
+        if node.tag == "a" and "changefacet=1" in node.attrs.get("href", ""):
+            facet = _parse_facet_link(node)
+            if facet is not None:
+                found.append(facet)
+        elif node.tag == "select" and _CRITERIA_ID_MARK in node.attrs.get(
+            "id", ""
+        ):
+            found.extend(_parse_criteria_list(node))
+        for key, value, count in found:
+            values = facets.setdefault(key, [])
+            if value not in {known for known, _ in values}:
+                values.append((value, count))
         if node.tag == "li" and "ts-offer-list-item" in classes:
             items.append(node)
         elif node.tag == "li" and "ts-ol-pagination-list-item" in classes:
@@ -337,7 +458,65 @@ def _parse_listing(page: str) -> _Listing:
         last_page=max([current or 1, *linked_pages]),
         identities=identities,
         rows=rows,
+        facets=facets,
     )
+
+
+def _parse_facet_link(link: Node) -> tuple[str, str, int] | None:
+    """The filter, the value and the count of a link that selects a value."""
+    selected = _FACET_PARAM_RE.findall(link.attrs.get("href", ""))
+    # One value, added: a link that also drops a value, or adds two, is not
+    # the list of one value.
+    if len(selected) != 1 or selected[0][1].startswith("-"):
+        return None
+    count = _FACET_COUNT_RE.search(link.text())
+    if count is None:
+        return None
+    digits = re.sub(r"\D", "", count.group(1))
+    if not digits:
+        return None
+    return selected[0][0], selected[0][1], int(digits)
+
+
+def _parse_criteria_list(select: Node) -> list[tuple[str, str, int]]:
+    """The filter and the values of one list of the search form."""
+    key = select.attrs["id"].split(_CRITERIA_ID_MARK, 1)[1]
+    if not re.fullmatch(r"[A-Za-z0-9_]+", key):
+        return []
+    found: list[tuple[str, str, int]] = []
+    for option in select.walk():
+        value = option.attrs.get("value", "")
+        # "0" is the "choose a value" line.
+        if option.tag != "option" or not value.isdigit() or value == "0":
+            continue
+        count = _FACET_COUNT_RE.search(option.text())
+        digits = re.sub(r"\D", "", count.group(1)) if count else ""
+        if digits:
+            found.append((key, value, int(digits)))
+    return found
+
+
+def _choose_filter(
+    facets: dict[str, list[tuple[str, int]]],
+    *,
+    total: int,
+    capacity: int,
+) -> tuple[str, list[tuple[str, int]]] | None:
+    """The filter whose values split the list into lists that fit.
+
+    Its values must add up to the whole list, so that no offer is left
+    out, and each must fit in the pages the pager reaches. Among several,
+    the one with the fewest values costs the fewest requests.
+    """
+    fitting = [
+        (key, values)
+        for key, values in facets.items()
+        if sum(count for _, count in values) == total
+        and all(0 < count <= capacity for _, count in values)
+    ]
+    if not fitting:
+        return None
+    return min(fitting, key=lambda item: (len(item[1]), item[0]))
 
 
 def _parse_row(item: Node) -> _Row | None:

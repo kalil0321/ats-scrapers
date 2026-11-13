@@ -494,9 +494,11 @@ Validation:
    list. A site that sends visitors to its log-in page is an internal
    mobility site: leave it out.
 2. Run the scraper's full walk and require at least one offer. The list
-   stops at 1,000 offers; the scraper refuses a site that announces more
-   than its list can show, so such a site cannot be a row until its list is
-   read another way.
+   stops at 1,000 offers. A site that announces more is read through one of
+   its search filters, one value at a time, when the values of a filter add
+   up to the whole list and each holds 1,000 offers at most. Require the
+   number of offers read to equal the number announced. A site with no such
+   filter is refused by the scraper and cannot be a row.
 3. Leave out the copies a customer keeps beside its live site (labels with
    ``test``, ``recette``, ``preprod`` and the like) and the sites for its
    own staff (``-employee``, ``mobilite``): they list invented offers, or
