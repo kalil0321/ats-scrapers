@@ -6,6 +6,7 @@ from datetime import datetime
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers import BreezyScraper, SmartRecruitersScraper, WorkableScraper
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
+from ats_scrapers.scrapers.workday import WorkdayScraper
 
 TWO_STEP_PROVIDERS = {
     ATSType.ADP,
@@ -65,6 +66,27 @@ def test_two_step_providers_override_get_description() -> None:
     ]
 
     assert missing == []
+
+
+def test_workday_overrides_get_details() -> None:
+    assert WorkdayScraper.get_details is not BaseScraper.get_details
+
+
+def test_get_details_overrides_also_define_get_description() -> None:
+    """A provider with a native ``get_details`` (own or inherited) must not
+    fall back to the base ``get_description``: it must define
+    ``get_description`` as the one-way wrapper over ``get_details``.
+    Otherwise the inherited base ``get_description`` would return only
+    ``job.description`` and skip the detail fetch.
+    """
+    offenders = sorted(
+        cls.__name__
+        for cls in ScraperRegistry.all().values()
+        if cls.get_details is not BaseScraper.get_details
+        and cls.get_description is BaseScraper.get_description
+    )
+
+    assert offenders == []
 
 
 def test_base_get_description_returns_existing_description() -> None:

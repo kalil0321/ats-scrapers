@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, DetailFetchError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -158,19 +158,17 @@ class WorkdayScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         match = URL_PATTERN.match(self.company_slug.rstrip("/"))
-        if not match:
+        detail_prefix = _detail_prefix_from_slug(self.company_slug)
+        if not match or detail_prefix is None:
             raise ScraperError(
                 f"Workday URL must look like https://{{co}}.wdN.myworkdayjobs.com/{{site}} — "
                 f"got {self.company_slug!r}"
             )
         company = match.group("company")
         display_company = self.company_name or company
-        instance = match.group("instance")
-        site = match.group("site")
-        api = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}/jobs"
         # The detail endpoint shares the cxs prefix but takes a job-relative
         # path: GET /wday/cxs/{co}/{site}{externalPath}.
-        detail_prefix = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}"
+        api = f"{detail_prefix}/jobs"
         base = self.company_slug.split("/wday/")[0].rstrip("/")
 
         self._deadline = (
@@ -190,27 +188,96 @@ class WorkdayScraper(BaseScraper):
                 f"{self.max_fetch_seconds:g}: {self.company_slug}"
             )
 
-    def get_description(self, job: Job) -> str | None:
-        if job.description:
-            return job.description
-        match = URL_PATTERN.match(self.company_slug.rstrip("/"))
-        if not match:
-            return None
-        company = match.group("company")
-        instance = match.group("instance")
-        site = match.group("site")
-        detail_prefix = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}"
-        jobs = [job.model_copy()]
+    def get_details(self, job: Job) -> Job:
+        """Fetch the Workday detail payload for ``job`` and merge it.
 
-        async def run() -> str | None:
+        Always performs the request (even when ``job`` already has a
+        description) so the resolved location and posting dates come back.
+        Raises :class:`DetailFetchError` on any failure; never mutates ``job``.
+        """
+        detail_prefix = _detail_prefix_from_slug(self.company_slug)
+        if detail_prefix is None:
+            raise DetailFetchError(
+                f"Workday company_slug is not a tenant URL: {self.company_slug!r}",
+                status_code=None,
+                url=str(job.url),
+            )
+        external_path = (job.raw or {}).get("externalPath") or _external_path(job.url)
+        if not external_path:
+            raise DetailFetchError(
+                "Workday job has no externalPath",
+                status_code=None,
+                url=str(job.url),
+            )
+        url = f"{detail_prefix}{external_path}"
+
+        async def run() -> dict[str, Any]:
             async with httpx.AsyncClient(
                 timeout=self.timeout, follow_redirects=True, proxy=self.proxy,
             ) as client:
-                sem = asyncio.Semaphore(1)
-                await self._enrich_details(client, sem, detail_prefix, jobs)
-            return jobs[0].description
+                return await self._fetch_detail_payload(client, url)
 
-        return self._run_sync(run())
+        return _merge_detail_payload(job, self._run_sync(run()))
+
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        try:
+            return self.get_details(job).description
+        except DetailFetchError:
+            return None
+
+    async def _fetch_detail_payload(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+    ) -> dict[str, Any]:
+        """GET one Workday detail payload, raising :class:`DetailFetchError`
+        on transport errors, non-200 statuses, and non-JSON bodies. No retry."""
+        try:
+            response = await client.get(
+                url,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "Mozilla/5.0",
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise DetailFetchError(
+                f"Workday detail fetch failed: {url}: {exc}",
+                status_code=None,
+                url=url,
+            ) from exc
+        status = response.status_code
+        if status != 200:
+            raise DetailFetchError(
+                f"Workday detail returned {status} for {url}",
+                status_code=status,
+                url=url,
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            ct = response.headers.get("Content-Type", "unknown")
+            raise DetailFetchError(
+                f"Workday detail returned non-JSON for {url} (content-type {ct})",
+                status_code=200,
+                url=url,
+            ) from exc
+        if not isinstance(payload, dict):
+            raise DetailFetchError(
+                f"Workday detail returned an unexpected JSON payload for {url}",
+                status_code=200,
+                url=url,
+            )
+        jpi = payload.get("jobPostingInfo")
+        if jpi is not None and not isinstance(jpi, dict):
+            raise DetailFetchError(
+                f"Workday detail returned an unexpected jobPostingInfo for {url}",
+                status_code=200,
+                url=url,
+            )
+        return payload
 
     async def _fetch_all(
         self,
@@ -278,51 +345,12 @@ class WorkdayScraper(BaseScraper):
             url = f"{detail_prefix}{external_path}"
             async with sem:
                 try:
-                    response = await client.get(
-                        url,
-                        headers={
-                            "Accept": "application/json",
-                            "User-Agent": "Mozilla/5.0",
-                        },
-                    )
-                except httpx.HTTPError:
+                    payload = await self._fetch_detail_payload(client, url)
+                except DetailFetchError:
                     return
-            if response.status_code != 200:
-                return
-            try:
-                payload = response.json()
-            except ValueError:
-                return
-            jpi = payload.get("jobPostingInfo") or {}
-            updates: dict[str, Any] = {}
-
-            description = _extract_description(jpi)
-            if description and not job.description:
-                updates["description"] = description[:25_000]
-
-            if isinstance(job.location, str) and _LOCATION_ROLLUP_RE.match(job.location):
-                primary = jpi.get("location")
-                additional = jpi.get("additionalLocations") or []
-                resolved = _format_locations(primary, additional)
-                if resolved:
-                    updates["location"] = resolved
-
-            # Capture posting dates from the detail payload. Workday sends
-            # bare 'YYYY-MM-DD' strings with no time or timezone. Merge into
-            # raw rather than replacing it, so listing-sourced keys
-            # (externalPath, bullet_fields) survive the model_copy update below.
-            start_date = jpi.get("startDate")
-            end_date = jpi.get("endDate")
-            if start_date or end_date:
-                merged_raw = dict(job.raw or {})
-                if start_date:
-                    merged_raw["startDate"] = start_date
-                if end_date:
-                    merged_raw["endDate"] = end_date
-                updates["raw"] = merged_raw
-
-            if updates:
-                jobs[i] = job.model_copy(update=updates)
+            merged = _merge_detail_payload(job, payload)
+            if merged is not job:
+                jobs[i] = merged
 
         await asyncio.gather(*(resolve(i, j) for i, j in targets))
 
@@ -585,6 +613,56 @@ def _parse_workday_date(value: str | None) -> datetime | None:
     if not value:
         return None
     return None  # Relative; absolute date requires fetching the per-job detail.
+
+
+def _detail_prefix_from_slug(company_slug: str) -> str | None:
+    """Build the cxs detail prefix (``.../wday/cxs/{co}/{site}``) from a
+    careers URL, or return None when it is not a Workday tenant URL."""
+    match = URL_PATTERN.match(company_slug.rstrip("/"))
+    if not match:
+        return None
+    company = match.group("company")
+    instance = match.group("instance")
+    site = match.group("site")
+    return f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}"
+
+
+def _merge_detail_payload(job: Job, payload: dict[str, Any]) -> Job:
+    """Merge a Workday detail payload into a copy of ``job``. Pure, no I/O.
+
+    Fills the description (only when ``job`` has none), resolves rollup
+    locations like ``"2 Locations"``, and merges posting dates into ``raw``.
+    Returns ``job`` itself when nothing changes.
+    """
+    jpi = payload.get("jobPostingInfo") or {}
+    updates: dict[str, Any] = {}
+
+    description = _extract_description(jpi)
+    if description and not job.description:
+        updates["description"] = description[:25_000]
+
+    if isinstance(job.location, str) and _LOCATION_ROLLUP_RE.match(job.location):
+        primary = jpi.get("location")
+        additional = jpi.get("additionalLocations") or []
+        resolved = _format_locations(primary, additional)
+        if resolved:
+            updates["location"] = resolved
+
+    # Capture posting dates from the detail payload. Workday sends
+    # bare 'YYYY-MM-DD' strings with no time or timezone. Merge into
+    # raw rather than replacing it, so listing-sourced keys
+    # (externalPath, bullet_fields) survive the model_copy update below.
+    start_date = jpi.get("startDate")
+    end_date = jpi.get("endDate")
+    if start_date or end_date:
+        merged_raw = dict(job.raw or {})
+        if start_date:
+            merged_raw["startDate"] = start_date
+        if end_date:
+            merged_raw["endDate"] = end_date
+        updates["raw"] = merged_raw
+
+    return job.model_copy(update=updates) if updates else job
 
 
 def _external_path(url: object) -> str | None:
