@@ -78,6 +78,7 @@ class ATSType(StrEnum):
     SUCCESSFACTORS = "successfactors"
     TALENTIO = "talentio"
     UKG = "ukg"
+    WINTALENT = "wintalent"
     WORKABLE = "workable"
     # Workable's public job marketplace: every customer's live postings
     # in one paginated feed (single-source scraper).
