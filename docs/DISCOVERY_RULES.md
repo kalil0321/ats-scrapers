@@ -452,6 +452,14 @@ Validation must prove both URL validity and name quality:
 4. Reject rows where the final company name would be an unreadable slug unless
    a reliable name source is found.
 
+A tenant can run several career sites (``/careersite/{n}/``) that share one
+requisition numbering. An extra site is listed when it shows at least one
+requisition that no listed site of the tenant shows and its newest posting is
+under a year old. Its row carries the tenant's existing `name`, so that the
+pipeline's `(company, ats_id)` key keeps one copy of a requisition shown on
+several sites. A site that shows test requisitions, or whose titles are mostly
+unfilled in the culture it opens in, is left out.
+
 ### Radancy TalentBrew
 
 Rows use the career-site origin on the employer's own domain
