@@ -254,6 +254,49 @@ def test_row_without_locations_uses_the_location_line(httpx_mock) -> None:
     assert job.salary_period is None
 
 
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://[::1",
+        "https://acme.clearcompany.com:99999/careers/jobs/1/apply",
+        "https://acme.clearcompany.com:8443/careers/jobs/1/apply",
+        "https://user:pw@acme.clearcompany.com/careers/jobs/1/apply",
+        "not a link",
+        12,
+    ],
+)
+def test_apply_link_that_does_not_parse_is_dropped_not_fatal(httpx_mock, link) -> None:
+    httpx_mock.add_response(url=SITE, text=_site_page())
+    _serve(httpx_mock, [_row(1, applyLink=link), _row(2)])
+
+    jobs = ClearCompanyScraper("acme").fetch()
+
+    assert [job.requisition_id for job in jobs] == ["R1", "R2"]
+    assert jobs[0].apply_url is None
+    assert jobs[1].apply_url is not None
+
+
+def test_posting_the_model_refuses_is_one_unreadable_row(monkeypatch, httpx_mock) -> None:
+    """One bad posting does not end the walk; it counts against coverage."""
+    real = ClearCompanyScraper._job
+
+    def picky(self, row, **kwargs):
+        if row["userDefinedId"] == "R3":
+            from pydantic import TypeAdapter
+
+            TypeAdapter(int).validate_python("not a number")
+        return real(self, row, **kwargs)
+
+    monkeypatch.setattr(ClearCompanyScraper, "_job", picky)
+    httpx_mock.add_response(url=SITE, text=_site_page())
+    _serve(httpx_mock, [_row(n) for n in range(20)])
+
+    jobs = ClearCompanyScraper("acme").fetch()
+
+    assert len(jobs) == 19
+    assert "R3" not in {job.requisition_id for job in jobs}
+
+
 def test_apply_link_on_another_host_is_dropped(httpx_mock) -> None:
     httpx_mock.add_response(url=SITE, text=_site_page())
     _serve(httpx_mock, [_row(1, applyLink="https://evil.example.com/apply")])
@@ -337,6 +380,17 @@ def test_page_guard_raises_instead_of_returning_a_partial_list(monkeypatch, http
 
     with pytest.raises(ScraperError, match="after 2 pages"):
         ClearCompanyScraper("acme").fetch()
+    assert _pages(httpx_mock) == [0, 1]
+
+
+def test_list_that_ends_exactly_at_the_page_guard_is_returned(monkeypatch, httpx_mock) -> None:
+    """Two full pages, the total reached, and no room for a third request:
+    that is a complete list, not an overrun."""
+    monkeypatch.setattr(module, "MAX_PAGES", 2)
+    httpx_mock.add_response(url=SITE, text=_site_page())
+    _serve(httpx_mock, [_row(n) for n in range(200)])
+
+    assert len(ClearCompanyScraper("acme").fetch()) == 200
     assert _pages(httpx_mock) == [0, 1]
 
 
@@ -449,11 +503,17 @@ def test_apply_url() -> None:
     assert _apply_url("https://acme.clearcompany.com.evil.com/apply") is None
     assert _apply_url(None) is None
     assert _apply_url(json.dumps({"a": 1})) is None
+    assert _apply_url("https://[::1") is None
+    assert _apply_url("https://acme.clearcompany.com:99999/apply") is None
 
 
 def test_parse_date() -> None:
     assert _parse_date("2026-11-12T00:00:00") == datetime(2026, 11, 12, tzinfo=UTC)
     assert _parse_date("2026-11-12T08:30:00Z") == datetime(2026, 11, 12, 8, 30, tzinfo=UTC)
+    # An offset is converted, so the value is always in UTC.
+    converted = _parse_date("2026-11-12T08:30:00-05:00")
+    assert converted == datetime(2026, 11, 12, 13, 30, tzinfo=UTC)
+    assert converted is not None and converted.utcoffset().total_seconds() == 0
     assert _parse_date("yesterday") is None
     assert _parse_date("") is None
     assert _parse_date(None) is None

@@ -385,6 +385,9 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "output": "clearcompany/jobs.csv",
         "max_concurrency": 8,
         "fail_closed_on_any_error": True,
+        # A site that is gone counts as a failed one, so many sites
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
         # 5% of sites may fail or be gone; a site that closes is a
         # row to remove, not a reason to hold back the others.

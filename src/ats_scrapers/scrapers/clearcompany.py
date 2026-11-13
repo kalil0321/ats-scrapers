@@ -33,9 +33,11 @@ Pages are numbered from 0 and a page past the end has no result. The list
 carries the description, so no posting needs a request of its own.
 
 The walk reads on to an empty page, or to a short page once the rows read
-reach ``totalCount``. It raises when a page fails, when the rows it could
-read fall short of the rows listed, or when the postings it ends with fall
-short of ``totalCount``; it never returns a partial list.
+reach ``totalCount``. It raises when a page fails, when it could read fewer
+than 90% of the rows listed, or when it ends with fewer than 90% of
+``totalCount`` (postings open and close while the pages are read, so the two
+are not required to be equal). Below those floors it raises and returns
+nothing.
 
 ``company_slug`` is the site name or the career site URL. A posting's URL
 is the address the widget gives it on the career site:
@@ -55,6 +57,8 @@ import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
+
+from pydantic import HttpUrl, TypeAdapter, ValidationError
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -88,6 +92,7 @@ _APPLY_HOST_RE = re.compile(
     r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.clearcompany\.com", re.IGNORECASE
 )
 _WHITESPACE_RE = re.compile(r"\s+")
+_HTTP_URL = TypeAdapter(HttpUrl)
 
 _SALARY_PERIODS = {"per hour": "HOUR", "per year": "YEAR"}
 
@@ -146,7 +151,8 @@ class ClearCompanyScraper(BaseScraper):
         rows_seen = 0
         rows_read = 0
         total = 0
-        for page in range(MAX_PAGES):
+        page = 0
+        while True:
             payload = await fetch.get_json(
                 url,
                 params={"pageIndex": page, "pageSize": PAGE_SIZE},
@@ -159,15 +165,18 @@ class ClearCompanyScraper(BaseScraper):
                     rows_read += 1
                     jobs.setdefault(job.ats_id, job)
             rows_seen += len(rows)
+            page += 1
             if not rows:
                 break
-            if len(rows) < PAGE_SIZE and rows_seen >= total:
+            # The announced total is reached: a short page ends the list,
+            # and so does the last page the guard allows.
+            if rows_seen >= total and (len(rows) < PAGE_SIZE or page >= MAX_PAGES):
                 break
-        else:
-            raise ScraperError(
-                f"ClearCompany ({self.site}) still lists postings after "
-                f"{MAX_PAGES} pages; refusing to return a partial list"
-            )
+            if page >= MAX_PAGES:
+                raise ScraperError(
+                    f"ClearCompany ({self.site}) still lists postings after "
+                    f"{MAX_PAGES} pages; refusing to return a partial list"
+                )
         if rows_read < math.ceil(rows_seen * MIN_COVERAGE):
             raise ScraperError(
                 f"ClearCompany ({self.site}) could read only {rows_read} of "
@@ -270,6 +279,35 @@ class ClearCompanyScraper(BaseScraper):
             if value:
                 raw[key] = value
 
+        try:
+            return self._job(
+                row,
+                job_id=job_id,
+                title=title,
+                location=location,
+                country_iso=country_iso,
+                is_remote=is_remote,
+                salary=(salary_min, salary_max, salary_period),
+                raw=raw,
+            )
+        except ValidationError:
+            # A posting the model refuses is one unreadable row, counted
+            # against the coverage floor, not the end of the walk.
+            return None
+
+    def _job(
+        self,
+        row: dict[str, Any],
+        *,
+        job_id: str,
+        title: str,
+        location: str | None,
+        country_iso: str | None,
+        is_remote: bool | None,
+        salary: tuple[float | None, float | None, str | None],
+        raw: dict[str, Any],
+    ) -> Job:
+        salary_min, salary_max, salary_period = salary
         return Job(
             url=f"{self.site_url}?jobId={job_id}",
             title=title,
@@ -359,12 +397,25 @@ def _amount(value: object) -> float | None:
 
 
 def _apply_url(value: object) -> str | None:
+    """The apply link when it is an https link to a ClearCompany host; a
+    link that does not parse is dropped, not an error."""
     if not isinstance(value, str):
         return None
-    parsed = urlparse(value.strip())
-    if parsed.scheme != "https" or not _APPLY_HOST_RE.fullmatch(parsed.hostname or ""):
+    link = value.strip()
+    try:
+        parsed = urlparse(link)
+        if (
+            parsed.scheme != "https"
+            or parsed.username
+            or parsed.password
+            or parsed.port
+            or not _APPLY_HOST_RE.fullmatch(parsed.hostname or "")
+        ):
+            return None
+        _HTTP_URL.validate_python(link)
+    except ValueError:  # includes pydantic's ValidationError
         return None
-    return value.strip()
+    return link
 
 
 def _description(value: object) -> str | None:
@@ -383,4 +434,4 @@ def _parse_date(value: object) -> datetime | None:
         parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)

@@ -298,7 +298,9 @@ Validation:
 3. A customer can have several career sites that list the same postings (a
    group site and its brand sites). A posting has the same id on each and is
    published once. Add a second site of a customer only when it lists
-   postings the first does not.
+   postings the first does not: compare the posting ids, and leave out a
+   site when 90% or more of its postings are on a larger site (the few
+   that differ are postings opened or closed between the two reads).
 4. The row name is the career site's own name (its page title without the
    `` – Careers`` suffix). Each posting names its employer (``brandName``),
    which is what is published; the row name is the fallback.

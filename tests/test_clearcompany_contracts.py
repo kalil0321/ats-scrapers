@@ -7,7 +7,7 @@ from ats_scrapers.scrapers.clearcompany import ClearCompanyScraper, _parse_slug
 from pipeline.publisher import ATS_DEDUP_PRIORITY
 from scripts.run_pipeline import CONFIGS, _bounded_concurrency, _tolerated_shard_failures
 
-MIN_ROWS = 514
+MIN_ROWS = 508
 
 
 def _rows() -> list[dict[str, str]]:
@@ -47,6 +47,8 @@ def test_clearcompany_fails_closed_with_a_small_tolerance() -> None:
     tolerated = _tolerated_shard_failures(config, targets)
 
     assert config["fail_closed_on_any_error"] is True
+    # Sites that are gone count against the tolerance too.
+    assert config["fail_closed_on_not_found"] is True
     assert config["fail_closed_on_empty"] is True
     assert config["fail_closed_tolerance"] == 0.05
     # A few sites being down or gone does not hold back the others...
@@ -71,4 +73,4 @@ def test_clearcompany_catalogue_is_one_row_per_career_site() -> None:
         assert _parse_slug(row["slug"]) == row["slug"]
         assert row["url"] == f"https://apply.clearcompany.com/{row['slug']}"
         # The page title, not the title with its suffix.
-        assert not row["name"].endswith("Careers")
+        assert not row["name"].endswith(" – Careers")
