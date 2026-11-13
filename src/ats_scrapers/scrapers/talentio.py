@@ -268,7 +268,7 @@ class TalentioScraper(BaseScraper):
         if detail is not None:
             _apply_detail(job, detail, namespace=self.namespace)
         else:
-            return _apply_react_detail(job, response.text, namespace=self.namespace)
+            _apply_react_detail(job, response.text, namespace=self.namespace)
         return True
 
 
@@ -491,7 +491,7 @@ def _apply_detail(job: Job, detail: dict[str, Any], *, namespace: str) -> None:
     _apply_salary(job, detail.get("baseSalary"))
 
 
-def _apply_react_detail(job: Job, html: str, *, namespace: str) -> bool:
+def _apply_react_detail(job: Job, html: str, *, namespace: str) -> None:
     payload = _react_payload(html, "RecruitmentOpenPageView")
     page = _required_dict(payload, "recruitmentOpenPage", "detail")
     if _bootstrap_namespace(payload, page.get("publishedUrl")) != namespace:
@@ -525,10 +525,11 @@ def _apply_react_detail(job: Job, html: str, *, namespace: str) -> bool:
                 f"Talentio detail {job.ats_id} returned a requisition ID mismatch"
             )
 
+    # A page without text is still a live job: only a page that is gone
+    # (404, 410) removes it from the listing.
     description = _react_description(page)
-    if description is None:
-        return False
-    job.description = description[:25_000]
+    if description is not None:
+        job.description = description[:25_000]
     company_name = _company_name_from_html(html)
     if company_name:
         job.company = company_name
@@ -542,7 +543,6 @@ def _apply_react_detail(job: Job, html: str, *, namespace: str) -> bool:
     location = _react_location(page)
     if location:
         job.location = location
-    return True
 
 
 def _react_description(page: dict[str, Any]) -> str | None:

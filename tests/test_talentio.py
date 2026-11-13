@@ -269,14 +269,20 @@ def test_react_detail_fallback_preserves_legacy_jobs(httpx_mock) -> None:
     )
 
 
-def test_react_detail_without_content_is_dropped(httpx_mock) -> None:
+def test_react_detail_without_content_keeps_the_listed_job(httpx_mock) -> None:
+    """The page answers and passes every identity check: the job is live, it
+    only has no text. Dropping it would publish a home with jobs missing."""
     httpx_mock.add_response(url=PORTAL_URL, text=_home_html())
     httpx_mock.add_response(
         url=JOB_URL,
         text=_react_detail_html(include_description=False),
     )
 
-    assert TalentioScraper(PORTAL_URL).fetch() == []
+    job = TalentioScraper(PORTAL_URL).fetch()[0]
+
+    assert job.ats_id == "21394"
+    assert job.description is None
+    assert job.company == "株式会社ビューン"
 
 
 def test_stale_detail_is_dropped(httpx_mock) -> None:
