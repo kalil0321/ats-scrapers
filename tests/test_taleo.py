@@ -340,3 +340,49 @@ def test_page_url_for_a_listing_without_a_query() -> None:
     assert _page_url(base, 0) == base
     assert _page_url(base, 10) == f"{base}?rowFrom=10"
     assert _page_url(URL, 30) == f"{URL}&rowFrom=30"
+
+
+def test_fragment_in_the_listing_url_does_not_swallow_the_offset(httpx_mock) -> None:
+    """A fragment is not sent to the server: an offset appended after it
+    would be lost and the first page served again."""
+    httpx_mock.add_response(
+        url=URL, text=_page([_job_link("1", "A"), _next_link(10)])
+    )
+    httpx_mock.add_response(
+        url=f"{URL}&rowFrom=10", text=_page([_job_link("2", "B")])
+    )
+
+    jobs = TaleoScraper(f"{URL}#jobs", include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["1", "2"]
+    assert jobs[0].company == "ACME"
+    assert _listing_requests(httpx_mock) == [URL, f"{URL}&rowFrom=10"]
+
+
+def test_offset_already_in_the_listing_url_is_dropped(httpx_mock) -> None:
+    """The walk starts at the top of the list, whatever page the URL was
+    copied from."""
+    httpx_mock.add_response(
+        url=URL, text=_page([_job_link("1", "A"), _next_link(10)])
+    )
+    httpx_mock.add_response(
+        url=f"{URL}&rowFrom=10", text=_page([_job_link("2", "B")])
+    )
+
+    jobs = TaleoScraper(f"{URL}&rowFrom=10", include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["1", "2"]
+    assert _listing_requests(httpx_mock) == [URL, f"{URL}&rowFrom=10"]
+
+
+def test_listing_url_normalisation() -> None:
+    from ats_scrapers.scrapers.taleo import _listing_url
+
+    base = "https://phe.tbe.taleo.net/phe01/ats/careers/v2/searchResults"
+    assert _listing_url(URL) == URL
+    assert _listing_url(f"{URL}#jobs") == URL
+    assert _listing_url(f"{base}?rowFrom=20&org=ACME&cws=41") == URL
+    assert _listing_url(f"{base}?org=ACME&rowFrom=20&cws=41") == URL
+    assert _listing_url(f"{base}?org=ACME&cws=41&rowFrom=") == URL
+    assert _listing_url(f"{base}?rowFrom=20") == base
+    assert _listing_url(f"{base}?rowFrom=20#top") == base

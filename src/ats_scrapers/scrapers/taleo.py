@@ -56,6 +56,9 @@ DETAIL_CONCURRENCY = 8
 # walk raises instead of going on.
 MAX_PAGES = 2_000
 
+# A page offset inside a listing URL: ``?rowFrom=10&`` or ``&rowFrom=10``.
+_ROW_PARAM_RE = re.compile(r"([?&])rowFrom=[^&#]*&?")
+
 # The infinite-scroll link, present while more postings remain.
 _NEXT_ROW_RE = re.compile(
     r'<a[^>]+href="[^"]*searchResults\?next\b[^"]*?\browFrom=(\d+)',
@@ -128,7 +131,7 @@ class TaleoScraper(BaseScraper):
         return self._run_sync(run())
 
     async def afetch(self) -> list[Job]:
-        url = self._validate_url(self.company_slug)
+        url = _listing_url(self._validate_url(self.company_slug))
         jobs: list[Job] = []
         seen: set[str] = set()
         async with self.make_fetcher() as fetch:
@@ -242,6 +245,18 @@ class TaleoScraper(BaseScraper):
                 )
             )
         return len(page_rids), added
+
+
+def _listing_url(url: str) -> str:
+    """The listing URL without a fragment or a page offset of its own.
+
+    A fragment is never sent to the server, so an offset appended after
+    it would be lost; an offset already in the URL would start the walk
+    in the middle of the list.
+    """
+    base = url.partition("#")[0]
+    base = _ROW_PARAM_RE.sub(lambda match: match.group(1), base)
+    return base.rstrip("?&")
 
 
 def _page_url(url: str, row: int) -> str:
