@@ -1,9 +1,14 @@
 """Join.com scraper.
 
-Two-step API: resolve slug → company_id, then fetch company jobs.
+Two-step API: resolve slug → company_id, then list the company's jobs
+through the GraphQL query join.com's own company page uses.
 
-    GET https://join.com/companies/{slug}        # returns metadata with id
-    GET https://join.com/api/public/companies/{id}/jobs
+    GET  https://join.com/companies/{slug}        # returns metadata with id
+    POST https://join.com/candidate-api/graphql   # publicJobs(companyId)
+
+``GET /api/public/companies/{id}/jobs`` is not used: it rejects
+``pageSize`` above 5 with a 422 and rate-limits per IP (about 2 req/s,
+nginx 429 without ``Retry-After``).
 
 After the listing pass we enrich each job with the schema.org JSON-LD
 JobPosting block on its detail page (description body, baseSalary,
@@ -30,8 +35,31 @@ if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
 
 BASE_URL = "https://join.com"
-API_BASE = f"{BASE_URL}/api/public"
+GRAPHQL_URL = f"{BASE_URL}/candidate-api/graphql"
+PAGE_SIZE = 100
 DETAIL_CONCURRENCY = 8
+
+# Category and employment type names are localized by this header.
+_GRAPHQL_HEADERS = {"content-language": "en-us"}
+
+_JOBS_QUERY = """
+query PublicJobsList($input: PublicJobsQueryInput!) {
+  publicJobs(input: $input) {
+    items {
+      id
+      idParam
+      title
+      createdAt
+      workplaceType
+      remoteType
+      city { cityName countryName }
+      category { name }
+      employmentType { name }
+    }
+    pageInfo { pageCount rowCount }
+  }
+}
+"""
 
 # Per-job JSON-LD detail fetches are best-effort — any error keeps the
 # listing-derived row, so error statuses come back unmapped.
@@ -67,27 +95,10 @@ class JoinComScraper(BaseScraper):
     ats = ATSType.JOIN_COM
 
     async def afetch(self) -> list[Job]:
-        all_jobs: list[Job] = []
         async with self.make_fetcher() as fetch:
             company_id = await self._resolve_company_id(fetch)
-            page = 1
-            while True:
-                params = {
-                    "locale": "en-us",
-                    "page": page,
-                    "pageSize": 100,
-                    "withAggregations": "true",
-                    "sort": "+title",
-                }
-                payload = await fetch.get_json(
-                    f"{API_BASE}/companies/{company_id}/jobs", params=params
-                )
-                items = payload.get("items") or []
-                all_jobs.extend(self._parse_job(item) for item in items)
-                pagination = payload.get("pagination") or {}
-                if page >= pagination.get("totalPages", page):
-                    break
-                page += 1
+            items = await self._list_items(fetch, company_id)
+            all_jobs = [self._parse_job(item) for item in items]
 
             if self.include_descriptions and all_jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
@@ -175,20 +186,99 @@ class JoinComScraper(BaseScraper):
             f"join.com page for {self.company_slug} did not expose a company id"
         )
 
+    async def _list_items(
+        self, fetch: Fetcher, company_id: str
+    ) -> list[dict[str, Any]]:
+        by_id: dict[str, dict[str, Any]] = {}
+        page = 1
+        while True:
+            body = await fetch.post_json(
+                GRAPHQL_URL,
+                json={
+                    "query": _JOBS_QUERY,
+                    "variables": {
+                        "input": {
+                            "companyId": int(company_id),
+                            "paginationPage": {"page": page, "pageSize": PAGE_SIZE},
+                            # ``id`` breaks title ties so offset pages
+                            # keep a stable order.
+                            "sort": [
+                                {"name": "title", "direction": "ASC"},
+                                {"name": "id", "direction": "ASC"},
+                            ],
+                        }
+                    },
+                },
+                headers=_GRAPHQL_HEADERS,
+            )
+            items, raw_len, page_count, row_count = self._read_listing(body)
+            for item in items:
+                by_id.setdefault(str(item["id"]), item)
+            if page >= page_count:
+                break
+            if raw_len == 0:
+                # pageCount says more pages remain but this one is empty:
+                # stopping here would publish a partial board.
+                raise ScraperError(
+                    f"join.com publicJobs for {self.company_slug} returned an "
+                    f"empty page {page} of {page_count}"
+                )
+            # A page of only null entries (stale search index) is skipped,
+            # not treated as the end of the listing.
+            page += 1
+        if row_count and not by_id:
+            raise ScraperError(
+                f"join.com publicJobs for {self.company_slug} reported "
+                f"{row_count} jobs but returned none"
+            )
+        return list(by_id.values())
+
+    def _read_listing(
+        self, body: Any
+    ) -> tuple[list[dict[str, Any]], int, int, int]:
+        """Return ``(items, raw item count, pageCount, rowCount)`` or raise
+        if the response does not have the expected shape. ``items`` has
+        null entries removed; the raw count includes them."""
+        errors = body.get("errors") if isinstance(body, dict) else None
+        data = body.get("data") if isinstance(body, dict) else None
+        listing = data.get("publicJobs") if isinstance(data, dict) else None
+        page_info = listing.get("pageInfo") if isinstance(listing, dict) else None
+        items = listing.get("items") if isinstance(listing, dict) else None
+        page_count = page_info.get("pageCount") if isinstance(page_info, dict) else None
+        row_count = page_info.get("rowCount") if isinstance(page_info, dict) else None
+        if (
+            errors
+            or not isinstance(items, list)
+            or not isinstance(page_count, int)
+            or not isinstance(row_count, int)
+        ):
+            detail = json.dumps(errors or body)[:300]
+            raise ScraperError(
+                f"join.com publicJobs for {self.company_slug} is unreadable: {detail}"
+            )
+        # publicJobs returns null entries when its search index is out of
+        # sync; join.com's frontend drops them too.
+        jobs = [item for item in items if item is not None]
+        if not all(isinstance(item, dict) and "id" in item for item in jobs):
+            raise ScraperError(
+                f"join.com publicJobs for {self.company_slug} returned malformed items"
+            )
+        return jobs, len(items), page_count, row_count
+
     def _parse_job(self, item: dict[str, Any]) -> Job:
         raw: dict[str, Any] = {}
-        for k in ("department", "category", "industry", "skills",
-                  "language", "employmentType", "remoteWork", "workplaceType"):
+        for k in ("category", "industry", "skills",
+                  "language", "employmentType", "remoteWork", "workplaceType",
+                  "remoteType"):
             v = item.get(k)
             if v:
                 raw[k] = v
 
         # join.com's API returns ``city`` as an object — pull a flat
-        # ``City, Country`` label out of it. ``employmentType`` and
-        # ``department`` are similarly structured; fall through to None
-        # when they aren't a plain string.
+        # ``City, Country`` label out of it. ``employmentType`` is
+        # similarly structured; fall through to None when it isn't a plain
+        # string. ``publicJobs`` has no department field.
         location = _flatten_location(item.get("location"), item.get("city"))
-        department = _name_or_none(item.get("department"))
         employment_type = _name_or_none(item.get("employmentType"))
 
         # ``workplaceType``: REMOTE and ONSITE set ``is_remote``; HYBRID
@@ -218,7 +308,6 @@ class JoinComScraper(BaseScraper):
             ats_id=str(item["id"]),
             location=location,
             is_remote=is_remote,
-            department=department,
             commitment=employment_type,
             posted_at=_parse_iso(item.get("publishedAt") or item.get("createdAt")),
             fetched_at=datetime.now(UTC),
