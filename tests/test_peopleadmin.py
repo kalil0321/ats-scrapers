@@ -379,17 +379,22 @@ def test_pools_can_be_left_out(httpx_mock) -> None:
     assert [job.ats_id for job in jobs] == ["acme:1", "acme:3"]
 
 
+# Opening dates the scraper must accept are well in the past: it drops the
+# ones that are still to come, so they must not depend on the day the suite
+# runs.
+
+
 def test_column_values_fill_the_fields(httpx_mock) -> None:
     _serve(
         httpx_mock,
-        [_item(1, cells=("Fresno City College", "11/02/2026", "$24.50/hour", "12/01/2026"))],
+        [_item(1, cells=("Fresno City College", "11/02/2024", "$24.50/hour", "12/01/2026"))],
         headers=("Campus Location", "Job Open Date", "Salary Range", "Close Date"),
     )
 
     job = _scraper().fetch()[0]
 
     assert job.location == "Fresno City College"
-    assert job.posted_at == datetime(2026, 11, 2, tzinfo=UTC)
+    assert job.posted_at == datetime(2024, 11, 2, tzinfo=UTC)
     assert job.salary_summary == "$24.50/hour"
     assert job.raw["close_date"] == "12/01/2026"
     # The closing hour and time zone are not given: no instant is derived.
@@ -612,7 +617,7 @@ def test_the_posting_page_gives_the_description_and_fields(httpx_mock) -> None:
         httpx_mock,
         211962,
         [
-            ("Open Date", "11/10/2026"),
+            ("Open Date", "11/10/2024"),
             ("Requisition Number", "PRN46725B"),
             ("Department", "00286 - Budget &amp; Analysis"),
             ("Location", "Campus"),
@@ -631,7 +636,7 @@ def test_the_posting_page_gives_the_description_and_fields(httpx_mock) -> None:
 
     job = _scraper(include_descriptions=True).fetch()[0]
 
-    assert job.posted_at == datetime(2026, 11, 10, tzinfo=UTC)
+    assert job.posted_at == datetime(2024, 11, 10, tzinfo=UTC)
     assert job.requisition_id == "PRN46725B"
     assert job.department == "00286 - Budget & Analysis"
     # The city rather than "Campus".
@@ -639,7 +644,7 @@ def test_the_posting_page_gives_the_description_and_fields(httpx_mock) -> None:
     assert job.salary_summary == "$56,000-$130,000 dependent on level."
     assert job.raw["close_date"] == "11/17/2026"
     assert job.description == (
-        "Open Date\n11/10/2026\n\n"
+        "Open Date\n11/10/2024\n\n"
         "Requisition Number\nPRN46725B\n\n"
         "Department\n00286 - Budget & Analysis\n\n"
         "Location\nCampus\n\n"
@@ -679,14 +684,14 @@ def test_an_opening_date_in_the_future_is_not_a_posting_date(httpx_mock) -> None
     _serve(httpx_mock, [_item(1), _item(2, "Registrar")])
     _serve_posting(httpx_mock, 1, [("Open Date", "01/11/2099")])
     _serve_posting(
-        httpx_mock, 2, [("Open Date", "08/09/2099"), ("Posting Date", "11/02/2026")]
+        httpx_mock, 2, [("Open Date", "08/09/2099"), ("Posting Date", "11/02/2024")]
     )
 
     jobs = _scraper(include_descriptions=True).fetch()
 
     assert jobs[0].posted_at is None
     # The next label that gives a date that has come.
-    assert jobs[1].posted_at == datetime(2026, 11, 2, tzinfo=UTC)
+    assert jobs[1].posted_at == datetime(2024, 11, 2, tzinfo=UTC)
 
 
 def test_a_pool_page_is_read_like_a_posting_page(httpx_mock) -> None:
@@ -694,15 +699,15 @@ def test_a_pool_page_is_read_like_a_posting_page(httpx_mock) -> None:
     _serve_posting(
         httpx_mock,
         16992,
-        [("Pool Number", ""), ("Open Date", "07/01/2026"), ("Job Description", "Tutor students.")],
+        [("Pool Number", ""), ("Open Date", "07/01/2024"), ("Job Description", "Tutor students.")],
         path="pools",
     )
 
     job = _scraper(include_descriptions=True).fetch()[0]
 
-    assert job.posted_at == datetime(2026, 7, 1, tzinfo=UTC)
+    assert job.posted_at == datetime(2024, 7, 1, tzinfo=UTC)
     assert job.requisition_id is None
-    assert job.description == "Open Date\n07/01/2026\n\nJob Description\nTutor students."
+    assert job.description == "Open Date\n07/01/2024\n\nJob Description\nTutor students."
 
 
 def test_a_posting_page_that_fails_keeps_the_posting(httpx_mock) -> None:
