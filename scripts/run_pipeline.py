@@ -900,6 +900,11 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "max_concurrency": 6,
         "fail_closed_on_empty": True,
         "fail_closed_on_any_error": True,
+        # A portal that is gone counts as a failed one.
+        "fail_closed_on_not_found": True,
+        # The catalogue is small: 5% lets one portal fail without holding
+        # back the others.
+        "fail_closed_tolerance": 0.05,
     },
     "workable": {
         "scraper": WorkableScraper,

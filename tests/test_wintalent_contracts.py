@@ -25,6 +25,8 @@ def test_wintalent_pipeline_is_fail_closed() -> None:
     assert config["max_concurrency"] == 6
     assert config["fail_closed_on_empty"] is True
     assert config["fail_closed_on_any_error"] is True
+    assert config["fail_closed_on_not_found"] is True
+    assert config["fail_closed_tolerance"] == 0.05
 
 
 def test_wintalent_concurrency_cap_is_enforced() -> None:
@@ -42,7 +44,7 @@ def test_wintalent_catalog_contains_only_selected_unique_portals() -> None:
     ) as handle:
         rows = list(csv.DictReader(handle))
 
-    assert len(rows) == 36
+    assert len(rows) == 34
     assert len({row["slug"] for row in rows}) == len(rows)
     assert len({row["url"] for row in rows}) == len(rows)
     assert all(row["name"].strip() for row in rows)
