@@ -395,8 +395,14 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         if not _DNS_LABEL_RE.fullmatch(tenant):
             return None
         portal = _CATSONE_PORTAL_PATH_RE.match(parsed.path)
-        slug = f"{tenant}/{portal.group(1)}" if portal else tenant
-        return ResolvedCareersUrl(ATSType.CATSONE, slug)
+        if portal:
+            return ResolvedCareersUrl(ATSType.CATSONE, f"{tenant}/{portal.group(1)}")
+        # The tenant's own address, which leads to its default portal. Any
+        # other path names a page this does not know how to read as a
+        # portal, and is not taken for the default one.
+        if parsed.path.rstrip("/") in ("", "/careers"):
+            return ResolvedCareersUrl(ATSType.CATSONE, tenant)
+        return None
 
     for suffix, ats in _SUBDOMAIN_SUFFIXES.items():
         if host.endswith(suffix):

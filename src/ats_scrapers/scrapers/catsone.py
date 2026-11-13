@@ -28,7 +28,8 @@ gives the portal and its jobs:
                      "salary": "$25.78/hour", "remoteType": null, ...}}]
 
 The job page (``/careers/{portalId}/jobs/{jobId}``) carries the same way
-the job with its description (``descriptionHtml``) and its country code.
+the job with its description (``descriptionHtml``, whose text is kept) and
+its country code.
 
 Job numbers are the same on every portal of CATS, so ``ats_id`` is the job
 number alone.
@@ -51,6 +52,7 @@ from urllib.parse import urlparse
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -198,7 +200,9 @@ class CatsOneScraper(BaseScraper):
             location=_location(row, fields),
             is_remote=True if remote and remote.casefold() == _FULLY_REMOTE else None,
             salary_summary=_text(fields.get("salary")),
-            employment_type="CONTRACT" if kind in _CONTRACT_TYPES else None,
+            employment_type=(
+                "CONTRACT" if kind and kind.casefold() in _CONTRACT_TYPES else None
+            ),
             commitment=kind,
             department=_text(fields.get("department")),
             posted_at=_date(row.get("datePosted")),
@@ -222,9 +226,12 @@ class CatsOneScraper(BaseScraper):
         detail = route.get("job") if isinstance(route, dict) else None
         if not isinstance(detail, dict) or _text(detail.get("jobId")) != job.ats_id:
             return
-        description = _text(detail.get("descriptionHtml"))
-        if description and not job.description:
-            job.description = description[:MAX_DESCRIPTION_CHARS]
+        markup = detail.get("descriptionHtml")
+        if isinstance(markup, str) and not job.description:
+            # The description is plain text in the dataset: the text of the
+            # markup, one line per block.
+            text = parse_html(markup).lines()[:MAX_DESCRIPTION_CHARS].strip()
+            job.description = text or None
         code = _text(detail.get("countryCode"))
         if code and re.fullmatch(r"[A-Za-z]{2}", code) and job.country_iso is None:
             job.country_iso = code.upper()

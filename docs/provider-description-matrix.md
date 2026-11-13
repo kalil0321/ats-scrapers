@@ -16,7 +16,7 @@ page/rendered page rather than a structured job payload.
 | `breezy` | Yes | Yes | API | HTML |
 | `builtin` | Yes | No | HTML | HTML |
 | `bundesagentur` | Yes | Yes | API | API |
-| `catsone` | Yes | Yes | Data embedded in the page | Data embedded in the page |
+| `catsone` | Yes | Yes | HTML (embedded data) | HTML (embedded data) |
 | `clearcompany` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `cornerstone` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `eightfold` | Yes | Yes | API | API |

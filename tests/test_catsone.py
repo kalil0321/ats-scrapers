@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -268,6 +269,7 @@ def test_a_portal_number_in_the_slug_is_the_page_read(httpx_mock) -> None:
         ("hire", "hire", None),
         ("contract", "contract", "CONTRACT"),
         ("contract-to-hire", "contract-to-hire", "CONTRACT"),
+        ("Contract", "Contract", "CONTRACT"),
         (None, None, None),
     ],
 )
@@ -414,6 +416,80 @@ def test_data_sent_in_several_pieces_is_put_together() -> None:
     assert _loader_data(page) == {"route": {"value": "x" * 50}}
 
 
+# --- Pages as the portals serve them ----------------------------------------
+
+# The argument of ``streamController.enqueue(...)`` of two pages of one
+# portal (visionpool.catsone.com, three jobs), captured on 13 Nov 2026: the
+# portal page and the page of its job 16872462. They are kept as served,
+# except three identifiers the tests do not need (the captcha site key and
+# two form numbers), replaced by zeros of the same length.
+FIXTURES = Path(__file__).parent / "fixtures" / "catsone"
+REAL = "https://visionpool.catsone.com"
+
+
+def _captured(name: str) -> str:
+    argument = (FIXTURES / name).read_text(encoding="utf-8")
+    return (
+        "<html><body><script>window.__reactRouterContext.streamController.enqueue("
+        f"{argument});</script></body></html>"
+    )
+
+
+def test_a_captured_portal_page_is_read(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=f"{REAL}/careers/", text=_captured("portal_enqueue_argument.txt")
+    )
+
+    jobs = CatsOneScraper("visionpool", include_descriptions=False).fetch()
+
+    assert [(job.ats_id, job.title) for job in jobs] == [
+        ("16872952", "Senior Project Manager"),
+        ("16872462", "Senior AI Solutions Lead"),
+        ("16872450", "Senior Development, Maintenance, and Support (.NET) Consultant"),
+    ]
+    job = jobs[1]
+    assert str(job.url) == f"{REAL}/careers/78002/jobs/16872462"
+    assert job.company == "Visionpool Business Services"
+    assert job.location == "Regina, SK, Canada"
+    assert job.posted_at == datetime(2026, 11, 9, 15, 43, 8, tzinfo=UTC)
+    assert job.commitment == "hire"
+    assert job.employment_type is None
+    assert job.raw == {
+        "portal": "78002",
+        "branch": "SaskEnergy",
+        "date_modified": "2026-11-12T16:32:52.000Z",
+    }
+
+
+def test_a_captured_job_page_is_read(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=f"{REAL}/careers/", text=_captured("portal_enqueue_argument.txt")
+    )
+    httpx_mock.add_response(
+        url=f"{REAL}/careers/78002/jobs/16872462", text=_captured("job_enqueue_argument.txt")
+    )
+    scraper = CatsOneScraper("visionpool", include_descriptions=False)
+    job = scraper.fetch()[1]
+
+    description = scraper.get_description(job)
+
+    assert description is not None
+    assert "Senior AI Solutions Lead" in description
+    assert "<p>" not in description
+    assert len(description) > 2000
+    assert job.country_iso == "CA"
+
+
+def test_the_captured_job_page_gives_its_date_as_a_typed_value() -> None:
+    data = _loader_data(_captured("job_enqueue_argument.txt"))
+
+    detail = data["portals/cats-careers/job"]["job"]
+    assert detail["jobId"] == "16872462"
+    assert detail["datePosted"] == datetime(2026, 11, 9, 15, 43, 8, tzinfo=UTC)
+    assert detail["countryCode"] == "CA"
+    assert detail["recruiterSignatureHtml"] is None
+
+
 # --- Decoding ---------------------------------------------------------------
 
 
@@ -488,7 +564,8 @@ def test_the_job_page_gives_the_description_and_the_country(httpx_mock) -> None:
 
     job = _scraper(include_descriptions=True).fetch()[0]
 
-    assert job.description == "<p>Maintain &amp; repair <b>machines</b>.</p>"
+    # Plain text, as everywhere in the dataset.
+    assert job.description == "Maintain & repair machines."
     assert job.country_iso == "CA"
     # The date of the list stands.
     assert job.posted_at == datetime(2026, 10, 16, 7, 34, 42, tzinfo=UTC)
@@ -511,6 +588,30 @@ def test_a_country_code_that_is_not_two_letters_is_not_kept(httpx_mock, code: ob
     assert _scraper(include_descriptions=True).fetch()[0].country_iso is None
 
 
+def test_the_description_keeps_one_line_per_block(httpx_mock) -> None:
+    _serve(httpx_mock, [_row(1)])
+    _serve_job(
+        httpx_mock,
+        1,
+        descriptionHtml=(
+            "<p>Duties:</p><ul><li>Weld</li><li>Fit &amp; grind</li></ul>"
+            "<pre>Mon  08:00\nTue  09:00</pre><script>track()</script>"
+        ),
+    )
+
+    job = _scraper(include_descriptions=True).fetch()[0]
+
+    assert job.description == "Duties:\nWeld\nFit & grind\nMon 08:00\nTue 09:00"
+
+
+@pytest.mark.parametrize("markup", ["", "   ", "<p> </p>", None, 12])
+def test_a_description_without_text_is_no_description(httpx_mock, markup: object) -> None:
+    _serve(httpx_mock, [_row(1)])
+    _serve_job(httpx_mock, 1, descriptionHtml=markup)
+
+    assert _scraper(include_descriptions=True).fetch()[0].description is None
+
+
 def test_a_job_page_that_shows_another_job_is_not_used(httpx_mock) -> None:
     _serve(httpx_mock, [_row(1)])
     httpx_mock.add_response(url=f"{BASE}/careers/{PORTAL}/jobs/1", text=_job_page(2))
@@ -531,7 +632,7 @@ def test_a_job_page_that_fails_keeps_the_job(httpx_mock) -> None:
 
     jobs = _scraper(include_descriptions=True).fetch()
 
-    assert [job.description for job in jobs] == [None, None, "<p>Fits.</p>"]
+    assert [job.description for job in jobs] == [None, None, "Fits."]
 
 
 def test_the_description_is_capped(httpx_mock, monkeypatch) -> None:
@@ -541,7 +642,7 @@ def test_the_description_is_capped(httpx_mock, monkeypatch) -> None:
 
     job = _scraper(include_descriptions=True).fetch()[0]
 
-    assert job.description == "<p>word word word wo"
+    assert job.description == "word word word word"
 
 
 def test_get_description_fetches_one_job(httpx_mock) -> None:
@@ -551,6 +652,6 @@ def test_get_description_fetches_one_job(httpx_mock) -> None:
     job = scraper.fetch()[0]
     assert job.description is None
 
-    assert scraper.get_description(job) == "<p>Welds.</p>"
-    assert scraper.get_description(job) == "<p>Welds.</p>"
+    assert scraper.get_description(job) == "Welds."
+    assert scraper.get_description(job) == "Welds."
     assert len([r for r in httpx_mock.get_requests() if r.url.path.endswith("/jobs/1")]) == 1

@@ -349,11 +349,14 @@ Validation:
 1. Fetch the portal. Require HTTP 200 and the portal's data in the page,
    with a portal that does not say it is inactive.
 2. Run the scraper and require at least one job.
-3. Require a job posted in the 90 days before validation (``datePosted``,
-   which every job carries). Many firms leave a portal online with the jobs
-   it had when they stopped using it.
+3. Require a job posted in the 90 days before validation: its
+   ``datePosted``, which the list gives and, failing that, the job page.
+   Many firms leave a portal online with the jobs it had when they stopped
+   using it.
 4. The row name is the portal's own name (``portal.name`` in the page's
-   data).
+   data). When that is a generic word or a lower-case label
+   ("Recruitment", "rsg"), take the firm's name from the site the portal
+   links to (``portal.siteUrl``), as that site states it.
 5. A tenant can have several portals (``/careers/{number}``). The row is
    the default one, where ``/careers/`` leads. Add another portal of a
    tenant, as ``{slug}/{number}``, only when it lists jobs the default one

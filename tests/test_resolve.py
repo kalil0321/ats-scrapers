@@ -578,3 +578,34 @@ def test_catsone_hosts_that_are_not_a_tenant_are_not_resolved() -> None:
     assert resolve_careers_url("https://catsone.com/careers/") is None
     assert resolve_careers_url("https://www.catsone.com/pricing/") is None
     assert resolve_careers_url("https://a.b.catsone.com/careers/") is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://emergitel.catsone.com",
+        "https://emergitel.catsone.com/",
+        "https://emergitel.catsone.com/careers",
+        "https://emergitel.catsone.com/careers/",
+    ],
+)
+def test_a_catsone_tenant_address_is_its_default_portal(url: str) -> None:
+    resolved = resolve_careers_url(url)
+
+    assert resolved is not None
+    assert (resolved.ats, resolved.slug) == (ATSType.CATSONE, "emergitel")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://emergitel.catsone.com/careers/index.php?m=portal&portalID=7701",
+        "https://emergitel.catsone.com/careers/General",
+        "https://emergitel.catsone.com/careers/x7701",
+        "https://emergitel.catsone.com/index.php?m=careers",
+    ],
+)
+def test_a_catsone_path_that_names_no_portal_number_is_not_the_default_portal(url: str) -> None:
+    """Such a URL names a page; resolving it to the default portal would read
+    another portal than the one meant."""
+    assert resolve_careers_url(url) is None
