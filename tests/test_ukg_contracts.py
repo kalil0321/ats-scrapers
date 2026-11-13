@@ -19,6 +19,8 @@ def test_ukg_pipeline_contract() -> None:
     assert config["fail_closed_on_not_found"] is True
     assert config["fail_closed_on_empty"] is True
     assert config["kwargs"]({"name": "Acme"}) == {"company_name": "Acme"}
+    # Boards of one tenant can list the same job: it is published once.
+    assert config["dedupe_by_ats_id"] is True
 
 
 def test_ukg_has_direct_employer_dedup_priority() -> None:

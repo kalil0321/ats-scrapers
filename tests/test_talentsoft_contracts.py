@@ -8,7 +8,7 @@ from ats_scrapers.scrapers.talentsoft import TalentsoftScraper, _parse_slug
 from pipeline.publisher import ATS_DEDUP_PRIORITY
 from scripts.run_pipeline import CONFIGS, _bounded_concurrency, _tolerated_shard_failures
 
-MIN_ROWS = 161
+MIN_ROWS = 164
 
 # Labels of the copies customers keep beside their live site (test,
 # pre-production, training): they list invented or copied offers.
