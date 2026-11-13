@@ -11,10 +11,9 @@ import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from bs4 import BeautifulSoup
-
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
+from ats_scrapers.scrapers._bs4 import bs4_soup
 from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -402,7 +401,7 @@ class NinehireScraper(BaseScraper):
 
 
 def _next_page_props(html: str, *, provider: str) -> dict[str, Any]:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = bs4_soup(html, scraper="Ninehire")
     script = soup.find("script", id="__NEXT_DATA__")
     if script is None or not script.string:
         raise ScraperError(f"{provider} has no Next.js bootstrap data")

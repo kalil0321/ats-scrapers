@@ -8,10 +8,9 @@ import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from bs4 import BeautifulSoup
-
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
+from ats_scrapers.scrapers._bs4 import bs4_soup
 from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers._slug import require_host_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -457,7 +456,7 @@ def _portal_identity(page: str, tenant: str) -> tuple[str, str]:
         raise CompanyNotFoundError(
             f"ApplicantPro tenant has no public careers site: {tenant}"
         )
-    soup = BeautifulSoup(page, "html.parser")
+    soup = bs4_soup(page, scraper="ApplicantPro")
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
     company = _TITLE_SUFFIX_RE.sub("", _TITLE_PREFIX_RE.sub("", title)).strip()
     return domain_match.group(1), company or tenant

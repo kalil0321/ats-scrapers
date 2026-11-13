@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import textwrap
@@ -62,3 +63,68 @@ def test_bs4_scrapers_raise_scraper_error_when_parsing_without_beautifulsoup4() 
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_scrapers_import_without_any_optional_extra() -> None:
+    """Every module the ``scrapers`` and ``parquet`` extras install is
+    blocked: the registry still imports, with the same scrapers registered
+    as in this interpreter, where the extras are installed."""
+    from ats_scrapers.scrapers import ScraperRegistry
+
+    blocked = ("bs4", "aiohttp", "html2text", "httpcloak", "cloakbrowser", "Crypto", "pyarrow")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys\n"
+            + "".join(f"sys.modules[{name!r}] = None\n" for name in blocked)
+            + textwrap.dedent(
+                """
+                import json
+
+                from ats_scrapers.scrapers import ScraperRegistry
+
+                print(json.dumps(sorted(t.value for t in ScraperRegistry.all())))
+                """
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == sorted(t.value for t in ScraperRegistry.all())
+
+
+def test_shared_bs4_helper_raises_scraper_error_without_beautifulsoup4() -> None:
+    """The scrapers that parse through ``_bs4.bs4_soup`` (ApplicantPro,
+    AppliTrack, Hireology, Ninehire, Talentio, WinTalent) fail with the
+    install hint, not with an ImportError."""
+    result = _run_without_bs4(
+        """
+        from ats_scrapers.exceptions import ScraperError
+        from ats_scrapers.scrapers._bs4 import bs4_soup
+        from ats_scrapers.scrapers.hireology import _html_text
+
+        for parse in (
+            lambda: bs4_soup("<p>x</p>", scraper="Hireology"),
+            lambda: _html_text("<p>x</p>"),
+        ):
+            try:
+                parse()
+            except ScraperError as exc:
+                assert "Hireology scraper requires beautifulsoup4" in str(exc)
+                assert "ats-scrapers[scrapers]" in str(exc)
+            else:
+                raise AssertionError("expected ScraperError")
+        """
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_shared_bs4_helper_parses_when_beautifulsoup4_is_installed() -> None:
+    from ats_scrapers.scrapers._bs4 import bs4_soup
+
+    assert bs4_soup("<p>Hello <b>there</b></p>", scraper="Hireology").get_text() == "Hello there"

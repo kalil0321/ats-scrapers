@@ -17,10 +17,9 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import parse_qs, quote, urljoin, urlparse
 
-from bs4 import BeautifulSoup
-
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
+from ats_scrapers.scrapers._bs4 import bs4_soup
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -738,7 +737,7 @@ def _parse_legacy_page(
     portal: str,
     fallback_company: str,
 ) -> tuple[list[Job], int, str | None]:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = bs4_soup(html, scraper="WinTalent")
     text = soup.get_text(" ", strip=True)
     total_match = _LEGACY_TOTAL_RE.search(text)
     if total_match is None:
@@ -894,7 +893,7 @@ def _coerce_int(value: object) -> int | None:
 def _clean_text(value: object) -> str | None:
     if value is None:
         return None
-    text = BeautifulSoup(str(value), "html.parser").get_text(
+    text = bs4_soup(str(value), scraper="WinTalent").get_text(
         " ",
         strip=True,
     )
@@ -905,7 +904,7 @@ def _clean_text(value: object) -> str | None:
 def _clean_multiline(value: object) -> str | None:
     if value is None:
         return None
-    text = BeautifulSoup(str(value), "html.parser").get_text(
+    text = bs4_soup(str(value), scraper="WinTalent").get_text(
         "\n",
         strip=True,
     )
