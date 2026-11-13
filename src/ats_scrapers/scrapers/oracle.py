@@ -240,8 +240,11 @@ class OracleScraper(BaseScraper):
             "ExternalQualificationsStr",
         ):
             v = detail.get(key)
-            if isinstance(v, str) and v.strip():
-                parts.append(_strip_html(v))
+            # Kept only when text is left once the markup is gone:
+            # ``<p></p>`` must not replace the listing summary with "".
+            text = _strip_html(v) if isinstance(v, str) else ""
+            if text:
+                parts.append(text)
         if parts:
             job.description = "\n\n".join(parts)[:25_000]
 
