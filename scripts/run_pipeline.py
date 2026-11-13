@@ -101,6 +101,7 @@ from ats_scrapers.scrapers import (
     SoftgardenScraper,
     SuccessFactorsScraper,
     TalentBrewScraper,
+    TalentioScraper,
     TalentsoftScraper,
     TaleoEnterpriseScraper,
     TaleoScraper,
@@ -634,6 +635,26 @@ CONFIGS: dict[str, dict[str, Any]] = {
         ),
         "csv": "ats-companies/taleo.csv",
         "output": "taleo/jobs.csv",
+    },
+    "talentio": {
+        "scraper": TalentioScraper,
+        "slug": lambda r: (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/talentio.csv",
+        "output": "talentio/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 2,
+        "tenant_delay_seconds": 0.25,
+        # A home that failed or is gone (404) counts against the same
+        # allowance: at most one home in fifty, otherwise the previous
+        # dataset is kept. A closed home is a row to remove, not a reason to
+        # hold back the others.
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        "fail_closed_tolerance": 0.02,
     },
     "taleo_enterprise": {
         # Oracle Taleo Enterprise Edition career sections

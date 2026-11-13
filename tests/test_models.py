@@ -25,7 +25,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "peopleadmin", "personio", "phenom",
         "applicantpro",
         "pinpoint", "recruiterbox", "rippling", "smartrecruiters", "softgarden",
-        "successfactors", "ukg", "workable", "workable_marketplace", "workday",
+        "successfactors", "talentio", "ukg", "workable", "workable_marketplace", "workday",
         "wintalent",
         # Big-tech custom careers systems
         "amazon", "apple", "bytedance", "google", "meta",

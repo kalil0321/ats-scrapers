@@ -248,6 +248,36 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             return ResolvedCareersUrl(ATSType.HRMOS, segments[1])
         return None
 
+    if host in {"open.talentio.com", "recruit.talentio.co.jp"}:
+        # Same origin checks as TalentioScraper: anything it would reject
+        # is not a usable resolution. That includes the ``www.`` alias, which
+        # ``host`` has lost, and a port that is not a number in range, which
+        # raises when read.
+        try:
+            has_port = parsed.port is not None
+        except ValueError:
+            return None
+        if (
+            parsed.scheme != "https"
+            or (parsed.hostname or "").lower() != host
+            or parsed.username
+            or parsed.password
+            or has_port
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        match = re.fullmatch(
+            r"/r/1/c/[A-Za-z0-9._-]+/homes/[1-9]\d*/?",
+            parsed.path,
+        )
+        if match:
+            return ResolvedCareersUrl(
+                ATSType.TALENTIO,
+                parsed._replace(path=parsed.path.rstrip("/")).geturl(),
+            )
+        return None
+
     if host.endswith(".keka.com"):
         tenant = host.removesuffix(".keka.com")
         segments = [segment for segment in parsed.path.split("/") if segment]

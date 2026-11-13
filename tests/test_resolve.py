@@ -715,3 +715,21 @@ def test_a_catsone_path_that_names_no_portal_number_is_not_the_default_portal(ur
 )
 def test_hireology_url_without_a_usable_tenant_is_not_resolved(url: str) -> None:
     assert resolve_careers_url(url) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://open.talentio.com/r/1/c/acme/homes/123",
+        "https://user@open.talentio.com/r/1/c/acme/homes/123",
+        "https://open.talentio.com:8443/r/1/c/acme/homes/123",
+        # A port that is not a number in range raises when read.
+        "https://open.talentio.com:port/r/1/c/acme/homes/123",
+        "https://open.talentio.com:99999/r/1/c/acme/homes/123",
+        # The scraper accepts the two official hosts only, not a www alias.
+        "https://www.open.talentio.com/r/1/c/acme/homes/123",
+        "https://www.recruit.talentio.co.jp/r/1/c/acme/homes/123",
+    ],
+)
+def test_talentio_rejects_urls_the_scraper_would_reject(url: str) -> None:
+    assert resolve_careers_url(url) is None

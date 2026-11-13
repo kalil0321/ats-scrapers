@@ -509,6 +509,23 @@ Validation:
    list different postings (say so in the PR): listing both would publish
    the same postings twice.
 
+### Talentio
+
+Rows use the employer's recruitment home
+``https://open.talentio.com/r/1/c/{namespace}/homes/{id}`` (or the same path on
+``recruit.talentio.co.jp``) as ``url`` and the employer's name as ``name``.
+One employer can have several homes; each is a row.
+
+Validation:
+
+1. Run the scraper. The home must answer for its own namespace and home id,
+   and each job's published URL must belong to that namespace.
+2. Add a home only when it lists at least one job.
+3. Keep a listed home that has no job today.
+4. Remove a home that answers 404 on two checks.
+5. A job shown on several homes of one employer has one page id; the pipeline
+   publishes a page id once.
+
 ### Talentsoft (Cegid)
 
 Rows use the career site's host label as ``slug`` and
