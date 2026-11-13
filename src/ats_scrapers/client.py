@@ -22,6 +22,7 @@ import httpx
 import pandas as pd
 
 from ats_scrapers.exceptions import StorageError
+from ats_scrapers.identity import URL_SCOPED_PROVIDERS, build_global_id
 from ats_scrapers.manifest import DEFAULT_MANIFEST_URL, Manifest
 from ats_scrapers.models import ATSType
 
@@ -215,6 +216,8 @@ class Client:
         buffer = BytesIO(response.content)
         if url.endswith(".parquet"):
             try:
+                if find_spec("pyarrow") is not None:
+                    return pd.read_parquet(buffer, engine="pyarrow", dtype_backend="numpy_nullable")
                 return pd.read_parquet(buffer)
             except ImportError as exc:
                 raise StorageError(
@@ -222,7 +225,7 @@ class Client:
                     "is installed. Install with `pip install ats-scrapers[parquet]`, "
                     "or load a per-ATS CSV slice with `Client(prefer_parquet=False).load(ats=...)`."
                 ) from exc
-        return pd.read_csv(buffer)
+        return pd.read_csv(buffer, converters={"ats_id": str, "global_id": str})
 
 
 @lru_cache(maxsize=1)
@@ -237,12 +240,19 @@ def _has_parquet_engine() -> bool:
 def _normalize_dataset(df: pd.DataFrame) -> pd.DataFrame:
     """Bring older hosted slices up to the current client schema.
 
-    Dataset schema v2 predates ``Job.global_id``. Derive it with the current
-    model's composite format so callers get a stable public column while old
-    hosted artifacts are phased out. Invalid identifiers receive the model's
-    UUID fallback instead of producing malformed composite IDs.
+    Published, nonblank IDs are authoritative. Backfill only absent values
+    with the model's identity policy; this also covers mixed-schema snapshots.
     """
-    if "global_id" in df.columns or not {"ats_type", "ats_id"}.issubset(df.columns):
+    if not {"ats_type", "ats_id"}.issubset(df.columns):
+        return df
+
+    published = "global_id" in df.columns
+    global_ids = (
+        df["global_id"].astype("string") if published
+        else pd.Series(index=df.index, dtype="string")
+    )
+    missing = global_ids.isna() | global_ids.str.strip().eq("")
+    if published and not missing.any():
         return df
 
     ats_types = df["ats_type"].astype("string").str.strip()
@@ -250,20 +260,37 @@ def _normalize_dataset(df: pd.DataFrame) -> pd.DataFrame:
     valid = (
         ats_types.notna()
         & ats_types.ne("")
+        & ~ats_types.str.contains(r"[\x00-\x1f\x7f]", regex=True, na=False)
         & ats_ids.notna()
         & ats_ids.ne("")
         & ~ats_ids.str.contains(r"[\x00-\x1f\x7f]", regex=True, na=False)
     )
 
-    global_ids = pd.Series(index=df.index, dtype="string")
-    global_ids.loc[valid] = ats_types.loc[valid].str.cat(ats_ids.loc[valid], sep=":")
-    invalid_count = int((~valid).sum())
+    scoped = missing & valid & ats_types.isin(URL_SCOPED_PROVIDERS)
+    legacy = missing & valid & ~scoped
+    global_ids.loc[legacy] = ats_types.loc[legacy].str.cat(ats_ids.loc[legacy], sep=":")
+    if scoped.any():
+        urls = (
+            df["url"].astype("string").fillna("") if "url" in df.columns
+            else pd.Series("", index=df.index, dtype="string")
+        )
+        global_ids.loc[scoped] = [
+            build_global_id(provider, native_id, url)
+            for provider, native_id, url in zip(
+                ats_types.loc[scoped], ats_ids.loc[scoped], urls.loc[scoped], strict=True
+            )
+        ]
+    invalid = missing & ~valid
+    invalid_count = int(invalid.sum())
     if invalid_count:
-        global_ids.loc[~valid] = [str(uuid4()) for _ in range(invalid_count)]
+        global_ids.loc[invalid] = [str(uuid4()) for _ in range(invalid_count)]
 
     # ``df`` is freshly created by the download parser. Insert in place to
     # avoid doubling memory use for the multi-gigabyte full snapshot.
-    df.insert(0, "global_id", global_ids)
+    if published:
+        df["global_id"] = global_ids
+    else:
+        df.insert(0, "global_id", global_ids)
     return df
 
 

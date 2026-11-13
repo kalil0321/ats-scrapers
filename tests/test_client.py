@@ -16,6 +16,7 @@ import pytest
 from ats_scrapers import client as client_module
 from ats_scrapers.client import Client, list_ats, search
 from ats_scrapers.exceptions import ManifestError, StorageError
+from ats_scrapers.identity import build_global_id
 from ats_scrapers.models import ATSType
 
 
@@ -186,10 +187,10 @@ def test_load_backfills_global_id_for_legacy_dataset(stub_client: Client) -> Non
     df = stub_client.load(ats="greenhouse")
     assert df.columns[0] == "global_id"
     assert list(df["global_id"]) == [
-        "ashby:1",
-        "ashby:2",
-        "greenhouse:3",
-        "lever:4",
+        build_global_id("ashby", "1", "https://example.com/1"),
+        build_global_id("ashby", "2", "https://example.com/2"),
+        build_global_id("greenhouse", "3", "https://example.com/3"),
+        build_global_id("lever", "4", "https://example.com/4"),
     ]
 
 
