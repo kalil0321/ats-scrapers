@@ -143,8 +143,12 @@ Known edge case:
 
 ### Recruiterbox (Trakstar Hire)
 
-Rows use the account name (``client_name``) as ``slug`` and
-``https://{slug}.hire.trakstar.com`` as ``url``.
+Rows use the account name (``client_name``) as ``slug``. The pipeline reads
+the ``slug`` column only. New rows use ``https://{slug}.hire.trakstar.com``
+as ``url``. Older rows carry ``https://{slug}.recruiterbox.com``, the host
+before the rename to Trakstar Hire; it redirects to
+``https://{slug}.hire.trakstar.com`` and is left as it is. Validate every
+row, old or new, on its ``hire.trakstar.com`` pages.
 
 Validation:
 
@@ -153,8 +157,10 @@ Validation:
    The feed goes on listing the openings of an account after the employer
    has left Trakstar Hire. Open one job page (``hosted_url``): a closed
    account answers 404 with "This employer is no longer using Trakstar Hire
-   to collect applications". Reject it. The scraper makes the same check and
-   reports such a tenant as not found.
+   to collect applications". Reject it. Request the page only when its host
+   is ``{account}.hire.trakstar.com`` (``hosted_url`` comes from the feed),
+   and do not follow redirects. The scraper makes the same check, with the
+   same limits, and reports such a tenant as not found.
 2. Do not judge by the career home page (``https://{slug}.hire.trakstar.com/``):
    it answers 404 for some accounts whose job pages work.
 3. An account can be reached under an earlier name. The feed then answers

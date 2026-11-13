@@ -21,9 +21,10 @@ The feed is not enough to tell that an account is open. It goes on listing
 the openings of an account after the employer has left Trakstar Hire, while
 the job pages themselves (``hosted_url``) answer 404 with the notice "This
 employer is no longer using Trakstar Hire to collect applications". So when
-the feed lists openings, one job page is read, and that notice makes the
-tenant a ``CompanyNotFoundError``. A 404 without the notice is one removed
-posting on an open account and is not a closed account.
+the feed lists openings, one job page is read, and a 404 with that notice
+makes the tenant a ``CompanyNotFoundError``. A 404 without the notice is one
+removed posting on an open account and is not a closed account; neither is
+a page that answers 200 and happens to contain the sentence.
 
 An account can also be reached under an earlier name: the feed answers the
 same openings, with the account's current name in ``client_name`` and in the
@@ -120,7 +121,7 @@ class RecruiterboxScraper(BaseScraper):
                     # 99 instead of 100 on a non-final page; if we have
                     # `total` we trust it.
                     break
-            if await self._account_is_closed(fetch, jobs):
+            if await self._account_is_closed(jobs):
                 raise CompanyNotFoundError(
                     f"Recruiterbox account {self.company_slug} is closed: "
                     f"its job pages say the employer no longer uses "
@@ -128,10 +129,12 @@ class RecruiterboxScraper(BaseScraper):
                 )
         return jobs
 
-    async def _account_is_closed(self, fetch: Fetcher, jobs: list[Job]) -> bool:
-        """True when a job page carries the closed-account notice.
+    async def _account_is_closed(self, jobs: list[Job]) -> bool:
+        """True when a job page answers 404 with the closed-account notice.
 
-        One page is enough: on a closed account every job page carries it.
+        One page is enough: on a closed account every job page answers
+        that. Only a ``*.hire.trakstar.com`` page is requested, and
+        redirects are not followed, so the request stays on that host.
         """
         url = next(
             (
@@ -144,17 +147,20 @@ class RecruiterboxScraper(BaseScraper):
         if url is None:
             return False
         try:
-            response = await fetch.request(
-                "GET",
-                url,
-                headers={"Accept": "text/html,application/xhtml+xml"},
-                handled=frozenset({404}),
-            )
+            async with self.make_fetcher(follow_redirects=False) as probe:
+                response = await probe.request(
+                    "GET",
+                    url,
+                    headers={"Accept": "text/html,application/xhtml+xml"},
+                    handled=frozenset({404}),
+                )
         except ScraperError:
-            # The feed answered. A job page that cannot be read is not
-            # evidence that the account is closed.
+            # The feed answered. A job page that cannot be read (or that
+            # redirects) is not evidence that the account is closed.
             return False
-        return CLOSED_ACCOUNT_NOTICE in response.text
+        # Both: a live posting could quote the sentence, and a 404 alone
+        # is one removed posting.
+        return response.status_code == 404 and CLOSED_ACCOUNT_NOTICE in response.text
 
     async def _fetch_page(self, fetch: Fetcher, offset: int) -> dict[str, Any]:
         params = {

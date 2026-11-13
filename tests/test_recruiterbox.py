@@ -271,6 +271,42 @@ def test_removed_posting_on_an_open_account_is_not_a_closed_account(httpx_mock) 
     assert [job.ats_id for job in jobs] == ["a", "b"]
 
 
+def test_live_page_quoting_the_notice_is_not_a_closed_account(httpx_mock) -> None:
+    """The notice counts only on a 404: a posting can contain the sentence."""
+    httpx_mock.add_response(
+        url=f"{API}?client_name=quoter&offset=0&limit=100",
+        json=_page([_opening(oid="a", client="quoter")]),
+    )
+    httpx_mock.add_response(
+        url="https://quoter.hire.trakstar.com/jobs/a/", status_code=200, html=INACTIVE_PAGE
+    )
+
+    jobs = RecruiterboxScraper("quoter").fetch()
+
+    assert [job.ats_id for job in jobs] == ["a"]
+
+
+def test_job_page_redirect_is_not_followed(httpx_mock) -> None:
+    """The check stays on the Trakstar Hire host the feed named."""
+    httpx_mock.add_response(
+        url=f"{API}?client_name=mover&offset=0&limit=100",
+        json=_page([_opening(oid="a", client="mover")]),
+    )
+    httpx_mock.add_response(
+        url="https://mover.hire.trakstar.com/jobs/a/",
+        status_code=302,
+        headers={"Location": "https://elsewhere.example.com/gone"},
+    )
+
+    jobs = RecruiterboxScraper("mover").fetch()
+
+    assert [job.ats_id for job in jobs] == ["a"]
+    assert [r.url.host for r in httpx_mock.get_requests()] == [
+        "jsapi.recruiterbox.com",
+        "mover.hire.trakstar.com",
+    ]
+
+
 def test_job_page_that_cannot_be_read_keeps_the_openings(monkeypatch, httpx_mock) -> None:
     import ats_scrapers.fetch
 
