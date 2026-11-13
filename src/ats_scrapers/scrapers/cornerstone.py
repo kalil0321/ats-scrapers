@@ -16,6 +16,14 @@ The flow is two-step:
    ``totalCount`` and ``requisitions`` per page; we paginate via ``pageNumber``
    until we've collected everything.
 
+The search answers in one culture (language and region) at a time. Recruiters
+fill the advert's title and text in their site's culture, and the other
+cultures keep the form's default text (``<<ENTER DISPLAY JOB TITLE>>``,
+``Display job title``...). The career site HTML names its own culture next to
+the token (``"cultureID":2,"cultureName":"en-GB"``), so the search asks for
+that one, and for US English when the page names none. A requisition whose
+title is still unfilled in the site's culture is read once more in US English.
+
 JWT tokens expire after ~1 hour, but typical scrapes finish well within that.
 Rate limit: ~60 req/min — we use MAX_CONCURRENCY=4 with the global retry policy.
 """
@@ -23,8 +31,9 @@ Rate limit: ~60 req/min — we use MAX_CONCURRENCY=4 with the global retry polic
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlparse
 
@@ -38,6 +47,8 @@ if TYPE_CHECKING:
 
     from ats_scrapers.fetch import Fetcher
 
+logger = logging.getLogger(__name__)
+
 PAGE_SIZE = 25
 MAX_CONCURRENCY = 4  # Cornerstone rate-limits ~60 req/min
 
@@ -48,6 +59,19 @@ _TOKEN_FALLBACK_RE = re.compile(r'"token"\s*:\s*"([^"]+)"')
 _API_HOST_RE = re.compile(r'(https?://[a-z0-9-]+\.api\.csod\.com)')
 
 _DEFAULT_API_HOST = "https://na.api.csod.com"
+# The culture pair as the career site writes it in ``csod.context``.
+_CULTURE_ID_RE = re.compile(r'"cultureID"\s*:\s*"?(\d{1,5})"?')
+_CULTURE_NAME_RE = re.compile(
+    r'"cultureName"\s*:\s*"([A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3})"'
+)
+_DEFAULT_CULTURE: tuple[int, str] = (1, "en-US")
+# A date as the search prints it: three numbers and the culture's punctuation
+# (``11/6/2026``, ``24.08.2026``, ``13. 11. 2026.``, ``2026-11-12``).
+_NUMERIC_DATE_RE = re.compile(r"^\D*(\d{1,4})\D+(\d{1,2})\D+(\d{1,4})\D*$")
+# Cultures seen to print the month before the day. Used only when a listing
+# holds no date that settles the order by itself.
+_MONTH_FIRST_CULTURES = frozenset({"en-us", "ca-es"})
+_EARLIEST_POSTING_YEAR = 1990
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -93,44 +117,108 @@ class CornerstoneScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         async with self.make_fetcher() as fetch:
-            token, api_host = await self._init_session(fetch)
+            token, api_host, culture = await self._init_session(fetch)
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
-            first = await self._search(
-                fetch, sem, token=token, api_host=api_host, page=1
+            items = await self._list(
+                fetch, sem, token=token, api_host=api_host, culture=culture
             )
-            data = first.get("data") or {}
-            total = int(data.get("totalCount") or 0)
-            requisitions = data.get("requisitions") or []
-
-            seen: set[str] = set()
-            all_jobs: list[Job] = []
-
-            def absorb(reqs: list[dict[str, Any]]) -> None:
-                for item in reqs:
-                    job = self._parse_requisition(item)
-                    if job is None or job.ats_id in seen:
-                        continue
-                    seen.add(job.ats_id)
-                    all_jobs.append(job)
-
-            absorb(requisitions)
-
-            if total > len(requisitions):
-                # Fan out remaining pages.
-                last_page = (total + PAGE_SIZE - 1) // PAGE_SIZE
-
-                async def task(page: int) -> None:
-                    payload = await self._search(
-                        fetch, sem, token=token, api_host=api_host, page=page
-                    )
-                    absorb((payload.get("data") or {}).get("requisitions") or [])
-
-                await asyncio.gather(
-                    *(task(p) for p in range(2, last_page + 1))
+            if culture != _DEFAULT_CULTURE and any(
+                _title_unfilled(item) for item in items
+            ):
+                items = await self._fill_from_default_culture(
+                    fetch, sem, token=token, api_host=api_host, items=items
                 )
+
+        seen: set[str] = set()
+        all_jobs: list[Job] = []
+        for item in items:
+            job = self._parse_requisition(item)
+            if job is None or job.ats_id in seen:
+                continue
+            seen.add(job.ats_id)
+            all_jobs.append(job)
         return all_jobs
 
-    async def _init_session(self, fetch: Fetcher) -> tuple[str, str]:
+    async def _list(
+        self,
+        fetch: Fetcher,
+        sem: asyncio.Semaphore,
+        *,
+        token: str,
+        api_host: str,
+        culture: tuple[int, str],
+    ) -> list[dict[str, Any]]:
+        """Every requisition of the site in one culture, in page order."""
+        first = await self._search(
+            fetch, sem, token=token, api_host=api_host, culture=culture, page=1
+        )
+        data = first.get("data") or {}
+        total = int(data.get("totalCount") or 0)
+        items: list[dict[str, Any]] = list(data.get("requisitions") or [])
+        if total > len(items):
+            # Fan out remaining pages.
+            last_page = (total + PAGE_SIZE - 1) // PAGE_SIZE
+
+            async def task(page: int) -> list[dict[str, Any]]:
+                payload = await self._search(
+                    fetch,
+                    sem,
+                    token=token,
+                    api_host=api_host,
+                    culture=culture,
+                    page=page,
+                )
+                return (payload.get("data") or {}).get("requisitions") or []
+
+            for page_items in await asyncio.gather(
+                *(task(p) for p in range(2, last_page + 1))
+            ):
+                items.extend(page_items)
+        return _iso_posting_dates(items, culture[1])
+
+    async def _fill_from_default_culture(
+        self,
+        fetch: Fetcher,
+        sem: asyncio.Semaphore,
+        *,
+        token: str,
+        api_host: str,
+        items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Take the US English advert where the site's culture has none.
+
+        Some tenants write part of their adverts in US English only, whatever
+        culture their site opens in. Only requisitions whose title is unfilled
+        change, and only when the US English one is filled; the advert is
+        taken whole so that title and text stay in one language.
+        """
+        try:
+            english = await self._list(
+                fetch, sem, token=token, api_host=api_host, culture=_DEFAULT_CULTURE
+            )
+        except ScraperError as exc:
+            logger.warning(
+                "Cornerstone %s: US English listing failed, keeping unfilled "
+                "titles of the site's culture: %s",
+                self.career_url,
+                exc,
+            )
+            return items
+        by_id = {
+            str(item.get("requisitionId")): item
+            for item in english
+            if not _title_unfilled(item)
+        }
+        return [
+            by_id.get(str(item.get("requisitionId")), item)
+            if _title_unfilled(item)
+            else item
+            for item in items
+        ]
+
+    async def _init_session(
+        self, fetch: Fetcher
+    ) -> tuple[str, str, tuple[int, str]]:
         text = await fetch.get_text(self.career_url)
         match = _TOKEN_RE.search(text) or _TOKEN_FALLBACK_RE.search(text)
         if not match:
@@ -141,7 +229,7 @@ class CornerstoneScraper(BaseScraper):
         token = match.group(1)
         host_match = _API_HOST_RE.search(text)
         api_host = host_match.group(1) if host_match else _DEFAULT_API_HOST
-        return token, api_host
+        return token, api_host, _site_culture(text)
 
     async def _search(
         self,
@@ -150,6 +238,7 @@ class CornerstoneScraper(BaseScraper):
         *,
         token: str,
         api_host: str,
+        culture: tuple[int, str] = _DEFAULT_CULTURE,
         page: int,
     ) -> dict[str, Any]:
         url = f"{api_host}/rec-job-search/external/jobs"
@@ -158,8 +247,8 @@ class CornerstoneScraper(BaseScraper):
             "careerSitePageId": self.site_id,
             "pageNumber": page,
             "pageSize": PAGE_SIZE,
-            "cultureId": 1,  # English
-            "cultureName": "en-US",
+            "cultureId": culture[0],
+            "cultureName": culture[1],
         }
         career_origin = f"https://{urlparse(self.career_url).hostname}"
         headers = {
@@ -210,6 +299,88 @@ class CornerstoneScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _iso_posting_dates(
+    items: list[dict[str, Any]], culture_name: str
+) -> list[dict[str, Any]]:
+    """Rewrite each ``postingEffectiveDate`` of one listing as ``YYYY-MM-DD``.
+
+    The search prints the date the way the culture asked for writes it, so
+    ``05/11/2026`` is 11 May on a US site and 5 November on a British one. The
+    listing settles the order when one of its dates has a number above 12 in
+    the day's place; otherwise the culture does. A date that cannot be read,
+    or whose year is not a plausible posting year (another calendar), becomes
+    ``None`` instead of a guess. Other values (ISO timestamps) are left as
+    they are.
+    """
+    matches = [
+        _NUMERIC_DATE_RE.match(value)
+        if isinstance(value := item.get("postingEffectiveDate"), str)
+        else None
+        for item in items
+    ]
+    year_last = [
+        (int(match.group(1)), int(match.group(2)))
+        for match in matches
+        if match is not None and len(match.group(3)) == 4
+    ]
+    day_first_seen = any(first > 12 for first, _ in year_last)
+    month_first_seen = any(second > 12 for _, second in year_last)
+    if day_first_seen != month_first_seen:
+        day_first = day_first_seen
+    else:
+        day_first = culture_name.casefold() not in _MONTH_FIRST_CULTURES
+    return [
+        item
+        if match is None
+        else {**item, "postingEffectiveDate": _iso_date(match, day_first=day_first)}
+        for item, match in zip(items, matches, strict=True)
+    ]
+
+
+def _iso_date(match: re.Match[str], *, day_first: bool) -> str | None:
+    first, second, third = match.groups()
+    if len(first) == 4:
+        year, month, day = first, second, third
+    elif len(third) == 4:
+        year = third
+        day, month = (first, second) if day_first else (second, first)
+    else:
+        return None
+    if not _EARLIEST_POSTING_YEAR <= int(year) <= datetime.now(UTC).year + 1:
+        return None
+    try:
+        return date(int(year), int(month), int(day)).isoformat()
+    except ValueError:
+        return None
+
+
+def _title_unfilled(item: dict[str, Any]) -> bool:
+    """True when the advert's title was never written in the culture asked for.
+
+    The search then answers nothing, the text ``null``, or the form's default,
+    which Cornerstone wraps in angle brackets (``<<ENTER DISPLAY JOB TITLE>>``,
+    sent as ``&lt;&lt;...``). No job title starts with an angle bracket.
+    """
+    title = item.get("displayJobTitle")
+    if not isinstance(title, str):
+        return True
+    title = title.strip()
+    return not title or title.casefold() == "null" or title.startswith(("<", "&lt;"))
+
+
+def _site_culture(page: str) -> tuple[int, str]:
+    """The culture the career site serves, as an (id, name) pair.
+
+    Both halves come from the page or neither does: an id sent with another
+    culture's name would ask the search for a pair the site never set up.
+    """
+    culture_id = _CULTURE_ID_RE.search(page)
+    culture_name = _CULTURE_NAME_RE.search(page)
+    if culture_id is None or culture_name is None:
+        return _DEFAULT_CULTURE
+    return int(culture_id.group(1)), culture_name.group(1)
 
 
 def _resolve_career_url(slug_or_url: str, site_id: int) -> tuple[str, str, int]:
@@ -291,23 +462,13 @@ def _clean_description(value: object) -> str | None:
 
 
 def _parse_iso(value: object) -> datetime | None:
-    """Parse Cornerstone's posted-date field.
+    """Parse a posting date that :func:`_iso_posting_dates` has made ISO 8601.
 
-    The API ships ``postingEffectiveDate`` as ``M/D/YYYY`` (US locale,
-    e.g. ``"5/6/2026"``). ISO 8601 is the fallback for tenants on
-    non-US locales — we try it first because it's the cheaper parse,
-    then fall through to the localized US format.
+    Tenants that already send an ISO timestamp pass through the same parse.
     """
     if not isinstance(value, str) or not value.strip():
         return None
-    cleaned = value.strip()
     try:
-        return datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     except ValueError:
-        pass
-    for fmt in ("%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(cleaned, fmt)
-        except ValueError:
-            continue
-    return None
+        return None

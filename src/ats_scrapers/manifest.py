@@ -43,6 +43,11 @@ class ManifestStats(BaseModel):
     total_jobs: int
     total_companies: int
     ats_count: int
+    # Jobs from employer hiring systems only (source kinds ``ats`` and
+    # ``company_site``). ``None`` on manifests published before this field.
+    ats_jobs: int | None = None
+    # Jobs kept after dedup, per source kind (see ``ats_scrapers.source_kind``).
+    jobs_by_source_kind: dict[str, int] | None = None
 
 
 class Manifest(BaseModel):
