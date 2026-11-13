@@ -86,6 +86,7 @@ from ats_scrapers.scrapers.ukg import UKGProScraper
 from ats_scrapers.scrapers.usajobs import USAJobsScraper
 from ats_scrapers.scrapers.varbi import VarbiScraper
 from ats_scrapers.scrapers.wanted import WantedScraper
+from ats_scrapers.scrapers.wantedly import WantedlyScraper
 from ats_scrapers.scrapers.welcometothejungle import WTTJScraper
 from ats_scrapers.scrapers.wellfound import WellfoundScraper
 from ats_scrapers.scrapers.weworkremotely import WeWorkRemotelyScraper
@@ -175,6 +176,7 @@ __all__ = [
     "VarbiScraper",
     "WTTJScraper",
     "WantedScraper",
+    "WantedlyScraper",
     "WeWorkRemotelyScraper",
     "WellfoundScraper",
     "WinTalentScraper",

@@ -40,7 +40,7 @@ GOV_BOARDS: Final[frozenset[str]] = frozenset({
 JOB_BOARDS: Final[frozenset[str]] = frozenset({
     "builtin", "gem", "getonbrd", "infojobs_es", "jobs_cz", "jobsch",
     "manfred", "mercor", "programathor", "remoteok", "seek", "thehub",
-    "wanted", "wellfound", "welcometothejungle", "weworkremotely",
+    "wanted", "wantedly", "wellfound", "welcometothejungle", "weworkremotely",
     "ycombinator",
 })
 

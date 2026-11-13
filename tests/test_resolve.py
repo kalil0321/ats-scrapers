@@ -237,6 +237,12 @@ RESOLVES = [
         "kirkhill",
     ),
     (
+        "https://www.wantedly.com/companies/Acme_Japan/projects",
+        ATSType.WANTEDLY,
+        "Acme_Japan",
+    ),
+    ("https://wantedly.com/companies/wantedly", ATSType.WANTEDLY, "wantedly"),
+    (
         "https://careers.hireology.com/andersonautogroup/2827500/description",
         ATSType.HIREOLOGY,
         "andersonautogroup",
@@ -733,3 +739,26 @@ def test_hireology_url_without_a_usable_tenant_is_not_resolved(url: str) -> None
 )
 def test_talentio_rejects_urls_the_scraper_would_reject(url: str) -> None:
     assert resolve_careers_url(url) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.wantedly.com/",
+        "https://www.wantedly.com/projects/2599130",
+        "https://www.wantedly.com/companies/",
+        "https://www.wantedly.com/companies/acme%20japan",
+        "https://www.wantedly.com/id/someone",
+    ],
+)
+def test_wantedly_url_that_names_no_company_is_not_resolved(url: str) -> None:
+    assert resolve_careers_url(url) is None
+
+
+def test_get_scraper_for_url_builds_wantedly_scraper() -> None:
+    from ats_scrapers.scrapers import WantedlyScraper
+
+    scraper = get_scraper_for_url("https://www.wantedly.com/companies/Acme_Japan")
+
+    assert isinstance(scraper, WantedlyScraper)
+    assert scraper.company_slug == "Acme_Japan"
