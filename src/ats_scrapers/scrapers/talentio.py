@@ -22,10 +22,9 @@ from html import escape
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import ParseResult, urlparse
 
-from bs4 import BeautifulSoup
-
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._bs4 import bs4_soup
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -289,7 +288,7 @@ def _parse_home_url(value: str) -> tuple[str, str, int]:
 
 
 def _react_payload(html: str, component: str) -> dict[str, Any]:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = bs4_soup(html, scraper="Talentio")
     element = soup.select_one(f'[data-react-class*="{component}"][data-react-props]')
     if element is None:
         raise ScraperError(f"Talentio response omitted {component} bootstrap")
@@ -313,7 +312,7 @@ def _required_dict(payload: dict[str, Any], key: str, context: str) -> dict[str,
 
 
 def _company_name_from_html(html: str) -> str | None:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = bs4_soup(html, scraper="Talentio")
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
     if " / " not in title:
         return None
@@ -388,7 +387,7 @@ def _job_posting_json_ld(html: str, job_id: str | None = None) -> dict[str, Any]
     ``identifier.value`` matches wins. Without a match the first block is
     returned so the caller's ID check reports the mismatch.
     """
-    soup = BeautifulSoup(html, "html.parser")
+    soup = bs4_soup(html, scraper="Talentio")
     first: dict[str, Any] | None = None
     for script in soup.select('script[type="application/ld+json"]'):
         try:

@@ -20,8 +20,6 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
-from bs4 import BeautifulSoup
-
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -519,5 +517,12 @@ def _html_to_text(value: object) -> str | None:
     text = _string(value)
     if text is None:
         return None
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError as exc:
+        raise ScraperError(
+            "Keka scraper requires beautifulsoup4; "
+            "install `ats-scrapers[scrapers]`"
+        ) from exc
     cleaned = BeautifulSoup(text, "html.parser").get_text("\n", strip=True)
     return cleaned or None
