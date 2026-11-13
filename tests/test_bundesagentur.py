@@ -1,24 +1,19 @@
-"""Tests for the Bundesagentur scraper.
-
-Focused on the failure-mode contract: probe failures must skip the affected
-subtree (and shout about it), page failures must skip just one page, and
-neither may silently look like a clean ``maxErgebnisse=0`` response.
-"""
+"""Tests for the Bundesagentur v6 scraper and fail-closed contract."""
 
 from __future__ import annotations
 
 import asyncio
-import logging
 import re
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
 
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.scrapers import BundesagenturScraper
 
 _API_RE = re.compile(
-    r"^https://rest\.arbeitsagentur\.de/jobboerse/jobsuche-service/pc/v4/jobs"
+    r"^https://rest\.arbeitsagentur\.de/jobboerse/jobsuche-service/pc/v6/jobs"
 )
 
 
@@ -32,12 +27,30 @@ def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _job(refnr: str, titel: str, ort: str | None = None) -> dict:
     return {
-        "refnr": refnr,
-        "titel": titel,
+        "referenznummer": refnr,
+        "stellenangebotsTitel": titel,
         "stellenangebotsBeschreibung": "Build public services.",
-        "arbeitsort": {"ort": ort or "Berlin", "land": "Deutschland"},
-        "arbeitgeber": "ACME",
-        "aktuelleVeroeffentlichungsdatum": "2026-05-01",
+        "stellenlokationen": [
+            {
+                "adresse": {
+                    "plz": "10115",
+                    "ort": ort or "Berlin",
+                    "region": "BERLIN",
+                    "land": "DEUTSCHLAND",
+                },
+                "breite": 52.532,
+                "laenge": 13.384,
+            }
+        ],
+        "firma": "ACME",
+        "datumErsteVeroeffentlichung": "2026-05-01",
+        "berufsfeld": "IT",
+        "hauptberuf": "Softwareentwicklung und Programmierung",
+        "arbeitszeitVollzeit": True,
+        "homeofficemoeglich": False,
+        "verguetungsangabe": "JAHRESGEHALT",
+        "gehaltsspanneVon": 50_000,
+        "gehaltsspanneBis": 70_000,
     }
 
 
@@ -48,62 +61,274 @@ def test_simple_run_under_pagination_cap(httpx_mock) -> None:
     """A small dataset (≤10k) just paginates and returns everything."""
     httpx_mock.add_response(
         url=_API_RE,
-        json={"stellenangebote": [_job("1", "Probe")], "maxErgebnisse": 1},
+        json={"ergebnisliste": [_job("1", "Probe")], "maxErgebnisse": 1},
         is_reusable=True,
     )
     jobs = BundesagenturScraper("any").fetch()
     assert {j.ats_id for j in jobs} == {"1"}
     assert jobs[0].description == "Build public services."
+    assert jobs[0].company == "ACME"
+    assert jobs[0].location == "10115 Berlin, Berlin, Deutschland"
+    assert jobs[0].country_iso == "DE"
+    assert jobs[0].region == "Europe"
+    assert jobs[0].department == "IT"
+    assert jobs[0].employment_type == "FULL_TIME"
+    assert jobs[0].salary_currency == "EUR"
+    assert jobs[0].salary_period == "YEAR"
+    assert jobs[0].salary_min == 50_000
 
 
-# --- Probe failure: must NOT silently look like maxErgebnisse=0 -------------
+def test_preserves_multiple_locations_without_ambiguous_coordinates() -> None:
+    item = _job("multi", "Multi-location role")
+    item["stellenlokationen"].append(
+        {
+            "adresse": {
+                "plz": "80331",
+                "ort": "München",
+                "region": "BAYERN",
+                "land": "DEUTSCHLAND",
+            },
+            "breite": 48.137,
+            "laenge": 11.575,
+        }
+    )
+
+    job = BundesagenturScraper("any")._parse(item)
+
+    assert job is not None
+    assert job.location == (
+        "10115 Berlin, Berlin, Deutschland | "
+        "80331 München, Bayern, Deutschland"
+    )
+    assert job.country_iso == "DE"
+    assert job.region == "Europe"
+    assert (job.lat, job.lon) == (None, None)
+    assert len(job.raw["stellenlokationen"]) == 2
 
 
-def test_root_probe_persistent_403_skips_subtree(httpx_mock, caplog) -> None:
-    """If the very first probe (no facets) keeps returning 403 the entire
-    scrape must NOT just return an empty list silently — that would publish
-    a wholesale undercount as a successful run. We log loudly and return
-    whatever was collected (here: nothing)."""
+def test_partition_ignores_non_exhaustive_facets() -> None:
+    from ats_scrapers.scrapers.bundesagentur import _select_partition
+
+    payload = {
+        "facetten": {
+            "angebotsart": {"counts": {"1": 9, "4": 1}},
+            "befristung": {"counts": {"1": 6, "2": 4}},
+            "berufsfeld": {"counts": {"IT": 6, "Sales": 3}},
+        }
+    }
+
+    assert _select_partition(payload, total=10, applied=set()) == (
+        "befristung",
+        {"1": 6, "2": 4},
+    )
+
+
+def test_partition_uses_exact_profession_buckets() -> None:
+    from ats_scrapers.scrapers.bundesagentur import _select_partition
+
+    payload = {
+        "facetten": {
+            "beruf": {
+                "counts": {
+                    "Kaufmann/-frau - Einzelhandel": 8_000,
+                    "Verkäufer/in": 4_000,
+                }
+            },
+            "arbeitszeit": {"counts": {"vz": 11_900, "tz": 300}},
+        }
+    }
+
+    assert _select_partition(payload, total=12_000, applied=set()) == (
+        "beruf",
+        {
+            "Kaufmann/-frau - Einzelhandel": 8_000,
+            "Verkäufer/in": 4_000,
+        },
+    )
+
+
+def test_oversize_query_without_verified_cover_crashes(
+    httpx_mock, monkeypatch
+) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 1)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 1)
+    httpx_mock.add_response(
+        url=_API_RE,
+        json={
+            "ergebnisliste": [_job("1", "Probe")],
+            "maxErgebnisse": 2,
+            "facetten": {},
+        },
+        is_reusable=True,
+    )
+
+    with pytest.raises(ScraperError, match="count-complete covers"):
+        BundesagenturScraper("any").fetch()
+
+
+def test_oversize_query_uses_verified_overlapping_cover(
+    httpx_mock, monkeypatch
+) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 2)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        params = parse_qs(urlparse(str(request.url)).query)
+        size = int(params.get("size", ["1"])[0])
+        additional_profession = params.get("weitereberufe", [None])[0]
+        if size == 1:
+            items = [_job("A", "Job A")]
+        elif additional_profession == "missing-tail":
+            items = [_job("C", "Job C")]
+        else:
+            items = [_job("A", "Job A"), _job("B", "Job B")]
+        return httpx.Response(
+            200,
+            json={
+                "ergebnisliste": items,
+                "maxErgebnisse": 3,
+                "facetten": {
+                    "arbeitsort": {
+                        "counts": {"common": 2, "missing-tail": 1}
+                    },
+                    "weitereberufe": {
+                        "counts": {"common": 2, "missing-tail": 1}
+                    },
+                },
+            },
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert {job.ats_id for job in jobs} == {"A", "B", "C"}
+
+
+def test_verified_cover_retries_catalogue_churn(httpx_mock, monkeypatch) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 2)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
+    pass_number = 0
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        nonlocal pass_number
+        params = parse_qs(urlparse(str(request.url)).query)
+        size = int(params.get("size", ["1"])[0])
+        sort = params.get("sort", [None])[0]
+        location = params.get("arbeitsort", [None])[0]
+        if size == 1:
+            items = [_job("B", "Job B")]
+        else:
+            if sort == "relevanz":
+                pass_number += 1
+            if pass_number == 1:
+                items = (
+                    [_job("C", "Job C")]
+                    if location == "missing-tail"
+                    else [_job("A", "Job A"), _job("B", "Job B")]
+                )
+            else:
+                items = (
+                    [_job("D", "Job D")]
+                    if location == "missing-tail"
+                    else [_job("B", "Job B"), _job("C", "Job C")]
+                )
+        return httpx.Response(
+            200,
+            json={
+                "ergebnisliste": items,
+                "maxErgebnisse": 3,
+                "facetten": {
+                    "arbeitsort": {
+                        "counts": {"common": 2, "missing-tail": 1}
+                    }
+                },
+            },
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert {job.ats_id for job in jobs} == {"B", "C", "D"}
+    assert pass_number == 2
+
+
+def test_verified_cover_retries_catalogue_shrink(httpx_mock, monkeypatch) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 2)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
+    probe_number = 0
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        nonlocal probe_number
+        params = parse_qs(urlparse(str(request.url)).query)
+        size = int(params.get("size", ["1"])[0])
+        if size == 1:
+            probe_number += 1
+            total = 3 if probe_number <= 2 else 2
+            items = [_job("A", "Job A")]
+        else:
+            total = 2
+            items = [_job("A", "Job A"), _job("B", "Job B")]
+        return httpx.Response(
+            200,
+            json={
+                "ergebnisliste": items,
+                "maxErgebnisse": total,
+                "facetten": {},
+            },
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert {job.ats_id for job in jobs} == {"A", "B"}
+    assert probe_number == 7
+
+
+def test_missing_result_total_is_a_contract_break(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_RE,
+        json={"ergebnisliste": [_job("1", "Probe")]},
+        is_reusable=True,
+    )
+
+    with pytest.raises(ScraperError, match="valid maxErgebnisse"):
+        BundesagenturScraper("any").fetch()
+
+
+# --- Retry exhaustion: abort rather than publish a partial catalogue --------
+
+
+def test_root_probe_persistent_403_crashes(httpx_mock) -> None:
     httpx_mock.add_response(url=_API_RE, status_code=403, is_reusable=True)
-    with caplog.at_level(logging.WARNING, logger="ats_scrapers.scrapers.bundesagentur"):
-        jobs = BundesagenturScraper("any").fetch()
-    assert jobs == []
-    # The warning must say "subtree skipped" so an operator can spot the
-    # undercount in the logs. The previous soft-fail returned a fake
-    # ``maxErgebnisse=0`` payload that produced no warning at all.
-    assert any(
-        "subtree skipped" in rec.getMessage().lower()
-        for rec in caplog.records
-    ), "expected 'subtree skipped' warning, got: " + "\n".join(
-        rec.getMessage() for rec in caplog.records
-    )
+    with pytest.raises(ScraperError, match="returned 403"):
+        BundesagenturScraper("any").fetch()
 
 
-def test_probe_500_after_retries_skips_with_warning(
-    httpx_mock, caplog
-) -> None:
-    """Same pattern for 500 — the previous code returned empty and looked
-    like a clean zero-result query. Now the failure is logged."""
+def test_probe_500_after_retries_crashes(httpx_mock) -> None:
     httpx_mock.add_response(url=_API_RE, status_code=500, is_reusable=True)
-    with caplog.at_level(logging.WARNING, logger="ats_scrapers.scrapers.bundesagentur"):
-        jobs = BundesagenturScraper("any").fetch()
-    assert jobs == []
-    assert any(
-        "subtree skipped" in rec.getMessage().lower()
-        for rec in caplog.records
-    )
+    with pytest.raises(ScraperError, match="returned 500"):
+        BundesagenturScraper("any").fetch()
 
 
-# --- Page failure: skip just the page, keep going ---------------------------
+# --- Page failure: abort rather than omit one page --------------------------
 
 
-def test_page_failure_logs_page_skip_not_subtree_skip(
-    httpx_mock, monkeypatch, caplog
-) -> None:
-    """A page-level failure inside ``_fan_out_pages`` must log a *page*
-    skip (bounded loss) — not a subtree skip — and must not silently
-    look like a clean response.
-    """
+def test_page_failure_crashes(httpx_mock, monkeypatch) -> None:
     import ats_scrapers.scrapers.bundesagentur as ba
     # Tiny page size so a 3-row dataset spans 3 pages and we can exercise
     # the per-page failure path deterministically.
@@ -119,30 +344,15 @@ def test_page_failure_logs_page_skip_not_subtree_skip(
         return httpx.Response(
             200,
             json={
-                "stellenangebote": [_job(str(page), f"Page-{page} row")],
+                "ergebnisliste": [_job(str(page), f"Page-{page} row")],
                 "maxErgebnisse": 3,
             },
         )
 
     httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
 
-    with caplog.at_level(logging.WARNING, logger="ats_scrapers.scrapers.bundesagentur"):
-        jobs = BundesagenturScraper("any").fetch()
-
-    # Pages 1 and 3 made it through; page 2 was lost. The leaf and the
-    # subtree both kept going.
-    ats_ids = {j.ats_id for j in jobs}
-    assert "1" in ats_ids and "3" in ats_ids
-    assert "2" not in ats_ids
-
-    page_warnings = [
-        r for r in caplog.records if "page skipped" in r.getMessage().lower()
-    ]
-    subtree_warnings = [
-        r for r in caplog.records if "subtree skipped" in r.getMessage().lower()
-    ]
-    assert page_warnings, "expected page-level warning"
-    assert not subtree_warnings, "page failure must NOT escalate to subtree skip"
+    with pytest.raises(ScraperError, match="returned 403"):
+        BundesagenturScraper("any").fetch()
 
 
 # --- Contract-break failures: must crash, not soft-fail --------------------
@@ -177,9 +387,7 @@ def test_root_probe_404_crashes_not_skips(httpx_mock) -> None:
 
 
 def test_malformed_json_crashes_not_skips(httpx_mock) -> None:
-    """A 200 OK with a malformed body is a contract break — the schema
-    we're parsing against is unknown — and must crash rather than
-    soft-fail to ``[]``."""
+    """Repeated malformed 200 responses must fail closed."""
     from ats_scrapers.exceptions import ScraperError
     httpx_mock.add_response(
         url=_API_RE,
@@ -187,8 +395,27 @@ def test_malformed_json_crashes_not_skips(httpx_mock) -> None:
         content=b"<html>Maintenance</html>",
         is_reusable=True,
     )
-    with pytest.raises(ScraperError):
+    with pytest.raises(ScraperError) as exc_info:
         BundesagenturScraper("any").fetch()
+    assert type(exc_info.value) is ScraperError
+
+
+def test_incomplete_200_retries_then_succeeds(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_RE,
+        status_code=200,
+        json={"maxErgebnisse": 1},
+    )
+    httpx_mock.add_response(
+        url=_API_RE,
+        status_code=200,
+        json={"ergebnisliste": [_job("1", "Probe")], "maxErgebnisse": 1},
+        is_reusable=True,
+    )
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert {job.ats_id for job in jobs} == {"1"}
 
 
 # ---------------------------------------------------------------------------
@@ -260,3 +487,11 @@ def test_fetch_stream_yields_same_jobs_as_legacy(monkeypatch) -> None:
 
     streamed = asyncio.run(collect_stream())
     assert sorted(j.ats_id for j in streamed) == sorted(f"R-{i}" for i in range(7))
+
+
+def test_pipeline_config_fails_closed_without_bulk_detail_requests() -> None:
+    from scripts.run_pipeline import CONFIGS
+
+    config = CONFIGS["bundesagentur"]
+    assert config["fail_closed_on_empty"] is True
+    assert config["skip_description_enrichment"] is True

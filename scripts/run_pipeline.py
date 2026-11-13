@@ -41,6 +41,8 @@ from ats_scrapers.scrapers import (
     ADPWorkforceNowScraper,
     AmazonScraper,
     AppleScraper,
+    ApplicantProScraper,
+    AppliTrackScraper,
     ArbetsformedlingenScraper,
     AshbyScraper,
     AvatureScraper,
@@ -51,6 +53,8 @@ from ats_scrapers.scrapers import (
     BuiltInScraper,
     BundesagenturScraper,
     BytedanceScraper,
+    CatsOneScraper,
+    ClearCompanyScraper,
     CornerstoneScraper,
     DarwinboxScraper,
     DayforceScraper,
@@ -65,6 +69,7 @@ from ats_scrapers.scrapers import (
     HrmosScraper,
     InfoJobsSpainScraper,
     JazzHRScraper,
+    JibeScraper,
     JobBankCAScraper,
     JobsChScraper,
     JobsCzScraper,
@@ -80,6 +85,7 @@ from ats_scrapers.scrapers import (
     PageUpScraper,
     PaycomScraper,
     PaylocityScraper,
+    PeopleAdminScraper,
     PersonioScraper,
     PhenomScraper,
     PinpointScraper,
@@ -92,7 +98,10 @@ from ats_scrapers.scrapers import (
     SmartRecruitersScraper,
     SoftgardenScraper,
     SuccessFactorsScraper,
+    TalentBrewScraper,
     TalentioScraper,
+    TalentsoftScraper,
+    TaleoEnterpriseScraper,
     TaleoScraper,
     TeamtailorScraper,
     TeslaScraper,
@@ -103,6 +112,7 @@ from ats_scrapers.scrapers import (
     WantedScraper,
     WellfoundScraper,
     WeWorkRemotelyScraper,
+    WorkableMarketplaceScraper,
     WorkableScraper,
     WorkdayScraper,
     YCombinatorScraper,
@@ -231,16 +241,39 @@ def _workable_slug(row: dict[str, Any]) -> str | None:
     return name or None
 
 
-def _lever_slug(row: dict[str, Any]) -> str | None:
-    url = (row.get("url") or "").strip()
-    if url.startswith("http"):
-        m = re.match(r"https?://jobs\.lever\.co/([^/?#]+)", url, re.IGNORECASE)
+# A Lever board is on jobs.lever.co (US region) or jobs.eu.lever.co (EU
+# region); the two regions have separate APIs.
+_LEVER_BOARD_RE = re.compile(
+    r"https?://jobs\.(?P<eu>eu\.)?lever\.co/(?P<slug>[^/?#]+)", re.IGNORECASE
+)
+
+
+def _lever_board(row: dict[str, Any]) -> re.Match[str] | None:
+    """The row's board URL: its ``url``, else a board URL in ``slug`` (an
+    EU row carries its board URL there)."""
+    for column in ("url", "slug"):
+        m = _LEVER_BOARD_RE.match((row.get(column) or "").strip())
         if m:
-            return unquote(m.group(1))
+            return m
+    return None
+
+
+def _lever_slug(row: dict[str, Any]) -> str | None:
+    """The bare board slug, in either region, so the row's display name
+    applies (the scraper stores the bare slug as ``company``)."""
+    m = _lever_board(row)
+    if m:
+        return unquote(m.group("slug"))
     if (slug := _slug_col(row)):
         return slug
     name = (row.get("name") or "").strip()
     return name or None
+
+
+def _lever_kwargs(row: dict[str, Any]) -> dict[str, Any]:
+    """The region of the row's board."""
+    m = _lever_board(row)
+    return {"region": "eu"} if m and m.group("eu") else {}
 
 
 def _greenhouse_slug(row: dict[str, Any]) -> str | None:
@@ -350,6 +383,27 @@ def _icims_slug(row: dict[str, Any]) -> str | None:
 #   is ``ats-companies/{ats}.csv`` with columns ``name,url``)
 # - output: jobs CSV output path (per-ATS jobs dataset under ``{ats}/``)
 CONFIGS: dict[str, dict[str, Any]] = {
+    "applitrack": {
+        "scraper": AppliTrackScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip(),
+            "country_iso": (r.get("country_iso") or "").strip() or None,
+        },
+        "csv": "ats-companies/applitrack.csv",
+        "output": "applitrack/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 4,
+        "min_timeout": 120.0,
+        "fail_closed_on_any_error": True,
+        # A board that is gone counts as a failed one, so many boards
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        # 5% of boards may fail or be gone; a board that closes is a row
+        # to remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
+    },
     "adp": {
         "scraper": ADPWorkforceNowScraper,
         "slug": lambda r: (r.get("url") or "").strip() or None,
@@ -367,6 +421,69 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "description_delay_seconds": 0.5,
         "fail_closed_on_any_error": True,
         "fail_closed_on_empty": True,
+    },
+    "catsone": {
+        "scraper": CatsOneScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        # A job has one number on every portal of CATS: a job listed on
+        # two portals of a customer is published once.
+        "dedupe_by_ats_id": True,
+        "csv": "ats-companies/catsone.csv",
+        "output": "catsone/jobs.csv",
+        # One vendor serves every portal, and a scrape reads up to four
+        # job pages of its portal at a time.
+        "max_concurrency": 6,
+        "fail_closed_on_any_error": True,
+        # A portal that is gone counts as a failed one, so many portals
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        # 5% of portals may fail or be gone; a portal that closes is a row
+        # to remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
+    },
+    "clearcompany": {
+        "scraper": ClearCompanyScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        # A posting can be listed on several career sites of one customer
+        # (a group site and a brand site); its id is the same on each.
+        "dedupe_by_ats_id": True,
+        "csv": "ats-companies/clearcompany.csv",
+        "output": "clearcompany/jobs.csv",
+        "max_concurrency": 8,
+        "fail_closed_on_any_error": True,
+        # A site that is gone counts as a failed one, so many sites
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        # 5% of sites may fail or be gone; a site that closes is a
+        # row to remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
+    },
+    "applicantpro": {
+        "scraper": ApplicantProScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/applicantpro.csv",
+        "output": "applicantpro/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 4,
+        "fail_closed_on_any_error": True,
+        # A portal that is gone counts as a failed one, so many portals
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        # 5% of portals may fail or be gone; a portal that closes is a row
+        # to remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
     },
     "cornerstone": {
         "scraper": CornerstoneScraper,
@@ -425,6 +542,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "max_concurrency": 6,
         "fail_closed_on_empty": True,
         "fail_closed_on_any_error": True,
+        "fail_closed_tolerance": 0.02,
     },
     "keka": {
         "scraper": KekaScraper,
@@ -447,6 +565,26 @@ CONFIGS: dict[str, dict[str, Any]] = {
         },
         "csv": "ats-companies/successfactors.csv",
         "output": "successfactors/jobs.csv",
+    },
+    "talentsoft": {
+        "scraper": TalentsoftScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/talentsoft.csv",
+        "output": "talentsoft/jobs.csv",
+        # One vendor serves every site, and a scrape reads up to four
+        # offer pages of its site at a time.
+        "max_concurrency": 6,
+        "fail_closed_on_any_error": True,
+        # A site that is gone counts as a failed one, so many sites
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        # 5% of sites may fail or be gone; a site that closes is a row to
+        # remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
     },
     "taleo": {
         "scraper": TaleoScraper,
@@ -474,6 +612,32 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "tenant_delay_seconds": 0.25,
         "fail_closed_on_empty": True,
         "fail_closed_on_any_error": True,
+    },
+    "taleo_enterprise": {
+        # Oracle Taleo Enterprise Edition career sections
+        # ({zone}.taleo.net/careersection/{section}). The slug is
+        # "{zone}.taleo.net/{section}". A requisition listed in several
+        # sections of a zone has the same ats_id ("{zone}:{number}"), so it
+        # is published once.
+        "scraper": TaleoEnterpriseScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip() or None},
+        "dedupe_by_ats_id": True,
+        # The listing has title, location and date; the description is on
+        # the detail page and is read once per posting, then cached.
+        "defer_descriptions_to_cache": True,
+        "csv": "ats-companies/taleo_enterprise.csv",
+        "output": "taleo_enterprise/jobs.csv",
+        "max_concurrency": 4,
+        # Publish the new file only when at most one section in twenty
+        # failed or went missing; above that, or when the run returns no
+        # job at all, the previous dataset is kept. A tolerated failure
+        # leaves that section out of the new file until its next
+        # successful run.
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        "fail_closed_tolerance": 0.05,
     },
     "oracle": {
         "scraper": OracleScraper,
@@ -521,6 +685,10 @@ CONFIGS: dict[str, dict[str, Any]] = {
         },
         "csv": "ats-companies/workday.csv",
         "output": "workday/jobs.csv",
+        # A tenant often lists one posting on several of its career sites.
+        # The id is the tenant host and the posting path, so the copies
+        # share it whatever name each catalogue row carries.
+        "dedupe_by_ats_id": True,
         # Workday descriptions require per-job detail calls. Defer to the
         # disk-backed description cache so the scraper's internal enrichment
         # stays off (it would re-fetch every row, bypassing the cache).
@@ -539,6 +707,49 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
         "csv": "ats-companies/bamboohr.csv",
         "output": "bamboohr/jobs.csv",
+        "fail_closed_on_empty": True,
+    },
+    "jibe": {
+        # iCIMS career sites (formerly Jibe) on the employer's own domain.
+        # The URL column is the site origin, e.g. https://careers.costco.com.
+        "scraper": JibeScraper,
+        "slug": lambda r: (r.get("url") or "").strip() or _slug_col(r),
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip() or None},
+        "dedupe_by_ats_id": True,
+        "csv": "ats-companies/jibe.csv",
+        "output": "jibe/jobs.csv",
+        "max_concurrency": 4,
+        # A failed or missing employer must not vanish from the published
+        # file: keep the previous dataset unless (almost) every employer
+        # succeeded. A site that answers 404 counts like any other failure.
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        "fail_closed_tolerance": 0.02,
+    },
+    "talentbrew": {
+        # Radancy TalentBrew career sites on the employer's own domain.
+        # The result list only has title, location and link; the posting
+        # date, country, employment type and description are on the detail
+        # page. The scraper therefore reads every detail page on every run
+        # (no defer_descriptions_to_cache, which would keep only the
+        # description for postings already in the cache).
+        "scraper": TalentBrewScraper,
+        "slug": lambda r: (r.get("url") or "").strip() or _slug_col(r),
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip() or None},
+        "dedupe_by_ats_id": True,
+        "csv": "ats-companies/talentbrew.csv",
+        "output": "talentbrew/jobs.csv",
+        "max_concurrency": 4,
+        # Publish the new file only when at most one site in ten failed or
+        # went missing (the catalogue is small, so the usual 2% would be
+        # zero). Above that, or when the run returns no job at all, the
+        # previous dataset is kept. A tolerated failure leaves that
+        # employer out of the new file until its next successful run.
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        "fail_closed_tolerance": 0.1,
     },
     "dayforce": {
         "scraper": DayforceScraper,
@@ -547,6 +758,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/dayforce.csv",
         "output": "dayforce/jobs.csv",
         "fail_closed_on_any_error": True,
+        "fail_closed_tolerance": 0.02,
         "fail_closed_on_empty": True,
     },
     "teamtailor": {
@@ -562,6 +774,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/ukg.csv",
         "output": "ukg/jobs.csv",
         "fail_closed_on_any_error": True,
+        "fail_closed_tolerance": 0.02,
         "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
     },
@@ -580,6 +793,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/jobvite.csv",
         "output": "jobvite/jobs.csv",
         "fail_closed_on_any_error": True,
+        "fail_closed_tolerance": 0.02,
         "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
     },
@@ -590,6 +804,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/pageup.csv",
         "output": "pageup/jobs.csv",
         "fail_closed_on_any_error": True,
+        "fail_closed_tolerance": 0.02,
         "fail_closed_on_empty": True,
     },
     "paycom": {
@@ -609,10 +824,33 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "kwargs": lambda r: {"company_name": (r.get("name") or "").strip()},
         "csv": "ats-companies/paylocity.csv",
         "output": "paylocity/jobs.csv",
-        "max_concurrency": 1,
+        # Thousands of small employer boards: a few closed or slow boards
+        # must not freeze the whole provider.
+        "max_concurrency": 4,
+        "fail_closed_tolerance": 0.02,
         "fail_closed_on_any_error": True,
         "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
+    },
+    "peopleadmin": {
+        "scraper": PeopleAdminScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/peopleadmin.csv",
+        "output": "peopleadmin/jobs.csv",
+        # One vendor serves every portal, and a scrape reads up to four
+        # posting pages of its portal at a time.
+        "max_concurrency": 6,
+        "fail_closed_on_any_error": True,
+        # A portal that is gone counts as a failed one, so many portals
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        # 5% of portals may fail or be gone; a portal that closes is a
+        # row to remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
     },
     "recruitee": {
         "scraper": RecruiteeScraper,
@@ -632,12 +870,16 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "lever": {
         "scraper": LeverScraper,
         "slug": _lever_slug,
+        "kwargs": _lever_kwargs,
         "csv": "ats-companies/lever.csv",
         "output": "lever/jobs.csv",
     },
     "greenhouse": {
         "scraper": GreenhouseScraper,
         "slug": _greenhouse_slug,
+        # A CSV name saves the board-name request; without one the
+        # scraper reads the display name from the board itself.
+        "kwargs": lambda r: {"company_name": (r.get("name") or "").strip() or None},
         "csv": "ats-companies/greenhouse.csv",
         "output": "greenhouse/jobs.csv",
     },
@@ -710,6 +952,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "max_concurrency": 8,
         "fail_closed_on_empty": True,
         "fail_closed_on_any_error": True,
+        "fail_closed_tolerance": 0.02,
     },
     "personio": {
         "scraper": PersonioScraper,
@@ -787,6 +1030,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "uber": {
         "scraper": UberScraper, "singleton": True,
         "output": "uber/jobs.csv",
+        "fail_closed_on_empty": True,
     },
     "bundesagentur": {
         # German federal employment agency — official, public, ~1M+ jobs.
@@ -794,6 +1038,12 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # (job category) to bypass the 10k pagination cap.
         "scraper": BundesagenturScraper, "singleton": True,
         "output": "bundesagentur/jobs.csv",
+        "fail_closed_on_empty": True,
+        # The listing API already provides the fields needed for the public
+        # index. Fetching ~1M individual detail pages would take days and put
+        # unnecessary load on the federal service; preserve cached bodies for
+        # existing rows and leave new descriptions for a separate backfill.
+        "skip_description_enrichment": True,
     },
     "arbetsformedlingen": {
         # Sweden's federal employment service — public JSON API. ~46k
@@ -864,15 +1114,24 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "scraper": ProgramathorScraper, "singleton": True,
         "output": "programathor/jobs.csv",
     },
+    "workable_marketplace": {
+        # Workable's public job marketplace: every customer's live postings
+        # (~170k in Nov 2026) in one cursor walk at ~1 page/s, 20 per page.
+        # A full pass takes about 3 hours.
+        "scraper": WorkableMarketplaceScraper, "singleton": True,
+        "output": "workable_marketplace/jobs.csv",
+        "publish_previous_while_running": True,
+    },
     "remoteok": {
         # RemoteOK — remote-only listings, US-heavy. ~100 live.
         "scraper": RemoteOKScraper, "singleton": True,
         "output": "remoteok/jobs.csv",
     },
     "thehub": {
-        # The Hub — Nordic startups, ships lat/lon. ~1k live.
+        # The Hub — Nordic startups, ships lat/lon.
         "scraper": TheHubScraper, "singleton": True,
         "output": "thehub/jobs.csv",
+        "fail_closed_on_empty": True,
     },
     "wanted": {
         # Wanted — Korea + Japan tech roles. ~10k live.
@@ -1351,6 +1610,46 @@ async def _ensure_description(
     return "missing"
 
 
+def _norm_company(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").casefold())
+
+
+def _apply_display_name(job: Job, slug: str, display_names: dict[str, str]) -> None:
+    """Replace a slug-valued ``company`` with the tenant's display name.
+
+    Most scrapers only know the tenant slug (``openai``) and store it as
+    ``company``. The tenant CSV usually carries the real name
+    (``OpenAI``). Only rewrite when ``company`` is still the slug, so
+    names a scraper read from the source itself are kept.
+    """
+    name = display_names.get(slug)
+    if name and _is_slug_fallback(job.company, slug):
+        job.company = name
+
+
+def _is_slug_fallback(company: str | None, slug: str) -> bool:
+    """True when ``company`` is a value the scraper derived from ``slug``.
+
+    Scrapers fall back to the slug itself (Greenhouse ``openai``), to the
+    hostname of a URL slug (Phenom ``jobs.bell.ca``, Oracle
+    ``ebwg.fa.us2.oraclecloud.com``) or to the tenant subdomain host
+    (Personio ``4screen.jobs.personio.com`` for slug ``4screen``).
+    """
+    c = (company or "").strip().casefold()
+    s = slug.strip().casefold()
+    if not c or _norm_company(c) == _norm_company(s):
+        return True
+    if "://" in s and c == (urlparse(s).hostname or ""):
+        return True
+    return c in {f"{s}{suffix}" for suffix in _TENANT_HOST_SUFFIXES}
+
+
+# Hosts scrapers build from a bare slug and store as company. Kept to
+# known ATS domains so a source-provided name like ``acme.io`` for slug
+# ``acme`` is never overwritten.
+_TENANT_HOST_SUFFIXES = (".jobs.personio.com", ".jobs.personio.de")
+
+
 def _job_to_row(job: Job) -> dict[str, Any]:
     """Flatten a Job to CSV-friendly fields. ``raw`` is JSON-serialized."""
     raw_json = ""
@@ -1389,12 +1688,42 @@ def _job_to_row(job: Job) -> dict[str, Any]:
     }
 
 
+def _tolerated_shard_failures(cfg: dict[str, Any], targets: int) -> int:
+    """How many required shards may fail before a fail-closed run aborts.
+
+    ``fail_closed_tolerance`` is a fraction of the configured tenants. It
+    lets providers with thousands of small boards publish when a handful
+    of boards close or time out, while a wider outage still keeps the
+    previous dataset. Missing or invalid values mean no tolerance.
+    """
+    raw = cfg.get("fail_closed_tolerance", 0)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return 0
+    try:
+        fraction = float(raw)
+    except OverflowError:  # an integer too large for a float
+        fraction = 1.0 if raw > 0 else 0.0
+    if fraction != fraction:  # NaN
+        return 0
+    fraction = min(max(fraction, 0.0), 1.0)
+    return int(fraction * max(targets, 0))
+
+
 def _bounded_concurrency(cfg: dict[str, Any], requested: int) -> int:
     if requested < 1:
         raise ValueError("concurrency must be at least 1")
     configured = cfg.get("max_concurrency")
     if isinstance(configured, int) and configured > 0:
         return min(requested, configured)
+    return requested
+
+
+def _bounded_timeout(cfg: dict[str, Any], requested: float) -> float:
+    if requested <= 0:
+        raise ValueError("timeout must be greater than zero")
+    configured = cfg.get("min_timeout")
+    if isinstance(configured, (int, float)) and configured > 0:
+        return max(requested, float(configured))
     return requested
 
 
@@ -1426,11 +1755,13 @@ async def _run_scraper(
 async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: float) -> int:
     cfg = CONFIGS[ats]
     concurrency = _bounded_concurrency(cfg, concurrency)
+    timeout = _bounded_timeout(cfg, timeout)
     configured_max_concurrency = cfg.get("max_concurrency")
     if isinstance(configured_max_concurrency, int):
         concurrency = min(concurrency, max(1, configured_max_concurrency))
 
     targets: list[tuple[str, dict[str, Any]]] = []
+    display_names: dict[str, str] = {}
     if cfg.get("singleton"):
         # Single-tenant scraper (big-tech bespoke careers). No CSV — call
         # the scraper once with the ATS name as a placeholder slug; the
@@ -1449,6 +1780,9 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             if slug:
                 kw = kwargs_factory(r) if kwargs_factory else {}
                 targets.append((slug, kw))
+                name = (r.get("name") or "").strip()
+                if name:
+                    display_names[slug] = name
 
     configured_target_count = len(targets)
     omitted_required_shards = 0
@@ -1506,8 +1840,7 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             f"[{ats}] Loaded {description_cache.count:,} cached description keys "
             f"({location} cache at {description_cache.path})"
         )
-    seen_keys: set[tuple[str, str]] = set()  # (company, ats_id) for cross-tenant dedup
-
+    seen_keys: set[tuple[str, str]] = set()
     t0 = time.time()
     try:
         with tmp_output_path.open("w", newline="") as f:
@@ -1523,7 +1856,14 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             # today — its ~2.7 M-row pan-EU catalog would peak at ~10 GB
             # RSS in legacy mode, exceeding the VPS RAM budget.
             if uses_streaming:
-                scraper = cfg["scraper"](ats, timeout=timeout)
+                skip_description_enrichment = bool(
+                    cfg.get("skip_description_enrichment")
+                )
+                scraper = cfg["scraper"](
+                    ats,
+                    timeout=timeout,
+                    include_descriptions=not skip_description_enrichment,
+                )
                 pending_descriptions: set[asyncio.Task[Job]] = set()
 
                 def write_streamed_job(job: Job) -> None:
@@ -1561,7 +1901,11 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                 try:
                     async for job in scraper.fetch_stream():
                         cached = _cached_description(job, description_cache)
-                        if cached:
+                        if skip_description_enrichment:
+                            if cached:
+                                job.description = cached
+                            write_streamed_job(job)
+                        elif cached:
                             job.description = cached
                             write_streamed_job(job)
                         elif job.description:
@@ -1645,6 +1989,9 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                                         if description_delay:
                                             await asyncio.sleep(description_delay)
                             desc_stats[desc_status] += 1
+                        # After dedupe + description cache lookups, which
+                        # are keyed on the scraper's own company value.
+                        _apply_display_name(job, slug, display_names)
                         writer.writerow(_job_to_row(job))
                         counts["jobs"] += 1
                     elapsed = time.time() - started
@@ -1721,13 +2068,25 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
             if cfg.get("fail_closed_on_not_found")
             else 0
         )
-        sharded_failure = (
-            (
-                bool(cfg.get("fail_closed_on_any_error"))
-                and (counts["error"] > 0 or omitted_required_shards > 0)
-            )
-            or required_not_found > 0
+        required_errors = (
+            counts["error"] if cfg.get("fail_closed_on_any_error") else 0
         )
+        tolerated_failures = _tolerated_shard_failures(
+            cfg, configured_target_count
+        )
+        sharded_failure = (
+            bool(cfg.get("fail_closed_on_any_error"))
+            and omitted_required_shards > 0
+        ) or required_errors + required_not_found > tolerated_failures
+        if (
+            not sharded_failure
+            and required_errors + required_not_found > 0
+        ):
+            print(
+                f"[{ats}] tolerated {required_errors + required_not_found}/"
+                f"{configured_target_count} failed required shards "
+                f"(limit {tolerated_failures})"
+            )
         if sharded_failure:
             tmp_output_path.unlink(missing_ok=True)
             required_failures = (

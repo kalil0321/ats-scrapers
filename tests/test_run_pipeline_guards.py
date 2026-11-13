@@ -12,6 +12,10 @@ from ats_scrapers.exceptions import CompanyNotFoundError
 from ats_scrapers.models import ATSType, Job
 
 
+def test_bamboohr_pipeline_fails_closed_on_empty() -> None:
+    assert runner.CONFIGS["bamboohr"]["fail_closed_on_empty"] is True
+
+
 def test_jobs_output_root_defaults_to_repository_root(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -80,6 +84,38 @@ def test_oracle_dedupes_same_tenant_job_across_named_sites() -> None:
         runner._job_dedupe_key(second, oracle_config)
     )
     assert runner._job_dedupe_key(first, {}) != runner._job_dedupe_key(second, {})
+
+
+def test_applitrack_keeps_same_content_under_distinct_provider_ids() -> None:
+    first = Job(
+        url="https://www.applitrack.com/dupage/onlineapp/JobPostings/view.asp?AppliTrackJobId=474_142",
+        title="Elementary Teacher",
+        company="Example School District",
+        location="Example Elementary School",
+        ats_type=ATSType.APPLITRACK,
+        ats_id="142:474",
+    )
+    second = first.model_copy(
+        update={
+            "url": "https://www.applitrack.com/dupage/onlineapp/JobPostings/view.asp?AppliTrackJobId=474_143",
+            "ats_id": "143:474",
+        }
+    )
+    repeated = first.model_copy(
+        update={
+            "url": "https://www.applitrack.com/roe24/onlineapp/JobPostings/view.asp?AppliTrackJobId=474_142",
+        }
+    )
+
+    config = runner.CONFIGS["applitrack"]
+    assert runner._job_dedupe_key(first, config) != (
+        runner._job_dedupe_key(second, config)
+    )
+    # A consortium board repeats a member district's posting under the
+    # same id: it is published once.
+    assert runner._job_dedupe_key(first, config) == (
+        runner._job_dedupe_key(repeated, config)
+    )
 
 
 def test_icims_dedupes_exact_job_url_across_named_portals() -> None:
@@ -231,6 +267,24 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
         "url": "",
     }
     assert runner._lever_slug(lever_slug_only_row) == "OpenPayd"
+    assert runner.CONFIGS["lever"]["kwargs"](lever_row) == {}
+    assert runner.CONFIGS["lever"]["kwargs"](lever_slug_only_row) == {}
+
+    # A board in Lever's EU region: same bare slug, and the region as a
+    # scraper argument.
+    lever_eu_row = {
+        "name": "Acme",
+        "slug": "https://jobs.eu.lever.co/Acme",
+        "url": "https://jobs.eu.lever.co/Acme",
+    }
+    assert runner._lever_slug(lever_eu_row) == "Acme"
+    assert runner.CONFIGS["lever"]["kwargs"](lever_eu_row) == {"region": "eu"}
+    # The region survives a row without a ``url``.
+    lever_eu_slug_only_row = {**lever_eu_row, "url": ""}
+    assert runner._lever_slug(lever_eu_slug_only_row) == "Acme"
+    assert runner.CONFIGS["lever"]["kwargs"](lever_eu_slug_only_row) == {
+        "region": "eu"
+    }
     assert runner.CONFIGS["oracle"]["kwargs"](oracle_row) == {
         "company_name": "ABM US"
     }
@@ -241,12 +295,26 @@ def test_lever_catalog_slugs_preserve_canonical_url_case() -> None:
         rows = list(csv.DictReader(handle))
 
     mismatches = []
+    boards = []
     for row in rows:
-        canonical = unquote(urlparse(row["url"]).path.strip("/").split("/", 1)[0])
-        if row["slug"] != canonical:
-            mismatches.append((row["slug"], canonical, row["url"]))
+        parsed = urlparse(row["url"])
+        canonical = unquote(parsed.path.strip("/").split("/", 1)[0])
+        boards.append(canonical.casefold())
+        # ``slug`` is what ``get_scraper("lever", slug)`` is given. A bare
+        # slug is read from the US API, so a board in the EU region
+        # carries its board URL.
+        expected = (
+            f"https://jobs.eu.lever.co/{canonical}"
+            if parsed.hostname == "jobs.eu.lever.co"
+            else canonical
+        )
+        if row["slug"] != expected:
+            mismatches.append((row["slug"], expected, row["url"]))
 
     assert mismatches == []
+    # The pipeline keys a row's display name by its bare board slug, so a
+    # slug is listed once, in one region.
+    assert len(set(boards)) == len(boards)
     assert runner.CONFIGS["oracle"]["dedupe_by_ats_id"] is True
 
     cornerstone_row = {
@@ -952,6 +1020,54 @@ def test_streaming_pipeline_reuses_sqlite_description_cache(
     assert rows[0]["description"] == "cached"
 
 
+def test_streaming_pipeline_can_skip_description_enrichment(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_dir = tmp_path / "stream"
+    out_dir.mkdir()
+    out_path = out_dir / "jobs.csv"
+
+    class StreamingScraper:
+        include_descriptions: bool | None = None
+        description_calls = 0
+
+        def __init__(self, *_args, include_descriptions=True, **_kwargs) -> None:
+            self.__class__.include_descriptions = include_descriptions
+
+        async def fetch_stream(self):
+            yield Job(
+                url="https://example.com/jobs/1",
+                title="Engineer",
+                company="Acme",
+                ats_type=ATSType.CUSTOM,
+                ats_id="1",
+            )
+
+        def get_description(self, _job):
+            self.__class__.description_calls += 1
+            raise AssertionError("description endpoint must not be called")
+
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "stream",
+        {
+            "scraper": StreamingScraper,
+            "singleton": True,
+            "output": "stream/jobs.csv",
+            "skip_description_enrichment": True,
+        },
+    )
+
+    rc = asyncio.run(runner.run("stream", concurrency=1, max_tenants=None, timeout=1))
+
+    assert rc == 0
+    rows = list(csv.DictReader(out_path.open(newline="")))
+    assert rows[0]["description"] == ""
+    assert StreamingScraper.include_descriptions is False
+    assert StreamingScraper.description_calls == 0
+
+
 def test_streaming_failure_preserves_previous_jobs_csv(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1327,3 +1443,129 @@ def test_streaming_pipeline_fetches_missing_descriptions_concurrently(
         "2": "streamed description 2",
     }
     assert StreamingScraper.calls == 3
+
+
+@pytest.mark.parametrize(
+    ("raw", "targets", "expected"),
+    [
+        (None, 100, 0),
+        (0, 100, 0),
+        (0.02, 100, 2),
+        (0.02, 49, 0),
+        (0.5, 3, 1),
+        (2, 10, 10),
+        (-1, 10, 0),
+        (True, 10, 0),
+        ("0.5", 10, 0),
+        (float("nan"), 10, 0),
+        (10**400, 10, 10),
+        (-(10**400), 10, 0),
+    ],
+)
+def test_tolerated_shard_failures(raw, targets: int, expected: int) -> None:
+    cfg = {} if raw is None else {"fail_closed_tolerance": raw}
+
+    assert runner._tolerated_shard_failures(cfg, targets) == expected
+
+
+def _write_tolerance_fixture(tmp_path: Path, slugs: list[str]) -> Path:
+    (tmp_path / "ats-companies").mkdir()
+    (tmp_path / "ats-companies" / "shards.csv").write_text(
+        "name,slug,url\n"
+        + "".join(f"{s},{s},https://{s}\n" for s in slugs),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "sharded"
+    out_dir.mkdir()
+    return out_dir / "jobs.csv"
+
+
+class _ToleranceScraper:
+    def __init__(self, slug, **_kwargs) -> None:
+        self.slug = slug
+
+    def fetch(self):
+        if self.slug.startswith("missing"):
+            raise CompanyNotFoundError("board missing")
+        if self.slug.startswith("broken"):
+            raise RuntimeError("board timed out")
+        return [
+            Job(
+                url=f"https://example.com/{self.slug}",
+                title="Engineer",
+                company="Acme",
+                ats_type=ATSType.CUSTOM,
+                ats_id=self.slug,
+            )
+        ]
+
+
+@pytest.mark.parametrize(
+    ("slugs", "tolerance", "expected_rc"),
+    [
+        (["a", "b", "c", "missing"], 0.25, 0),
+        (["a", "b", "c", "broken"], 0.25, 0),
+        (["a", "b", "missing", "broken"], 0.25, 1),
+        (["a", "b", "c", "missing"], 0, 1),
+    ],
+)
+def test_fail_closed_tolerance_allows_a_few_failed_shards(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    slugs: list[str],
+    tolerance: float,
+    expected_rc: int,
+) -> None:
+    out_path = _write_tolerance_fixture(tmp_path, slugs)
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "sharded",
+        {
+            "scraper": _ToleranceScraper,
+            "slug": lambda row: row["slug"],
+            "csv": "ats-companies/shards.csv",
+            "output": "sharded/jobs.csv",
+            "fail_closed_on_any_error": True,
+            "fail_closed_on_not_found": True,
+            "fail_closed_tolerance": tolerance,
+        },
+    )
+
+    rc = asyncio.run(
+        runner.run("sharded", concurrency=2, max_tenants=None, timeout=1)
+    )
+
+    assert rc == expected_rc
+    if expected_rc == 0:
+        rows = list(csv.DictReader(out_path.open(newline="")))
+        healthy = [s for s in slugs if s not in {"missing", "broken"}]
+        assert sorted(row["ats_id"] for row in rows) == sorted(healthy)
+    else:
+        assert not out_path.exists()
+
+
+def test_fail_closed_tolerance_does_not_cover_omitted_shards(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out_path = _write_tolerance_fixture(tmp_path, ["a", "b", "c", "d"])
+    monkeypatch.setattr(runner, "DATA_ROOT", tmp_path)
+    monkeypatch.setitem(
+        runner.CONFIGS,
+        "sharded",
+        {
+            "scraper": _ToleranceScraper,
+            "slug": lambda row: row["slug"],
+            "csv": "ats-companies/shards.csv",
+            "output": "sharded/jobs.csv",
+            "fail_closed_on_any_error": True,
+            "fail_closed_tolerance": 0.5,
+        },
+    )
+
+    rc = asyncio.run(
+        runner.run("sharded", concurrency=1, max_tenants=3, timeout=1)
+    )
+
+    assert rc == 1
+    assert not out_path.exists()

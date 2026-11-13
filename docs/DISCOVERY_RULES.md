@@ -141,6 +141,39 @@ Known edge case:
   404. Do not add those to `gem.csv`; the row URL would be misleading and may
   break users that inspect company boards.
 
+### Recruiterbox (Trakstar Hire)
+
+Rows use the account name (``client_name``) as ``slug``. The pipeline reads
+the ``slug`` column only. New rows use ``https://{slug}.hire.trakstar.com``
+as ``url``. Older rows carry ``https://{slug}.recruiterbox.com``, the host
+before the rename to Trakstar Hire; it redirects to
+``https://{slug}.hire.trakstar.com`` and is left as it is. Validate every
+row, old or new, on its ``hire.trakstar.com`` pages.
+
+Validation:
+
+1. A live count from the feed
+   (``jsapi.recruiterbox.com/v1/openings?client_name={slug}``) is not enough.
+   The feed goes on listing the openings of an account after the employer
+   has left Trakstar Hire. Open one job page (``hosted_url``): a closed
+   account answers 404 with "This employer is no longer using Trakstar Hire
+   to collect applications". Reject it. Request the page only when its host
+   is ``{account}.hire.trakstar.com`` (``hosted_url`` comes from the feed),
+   and do not follow redirects. The scraper makes the same check, with the
+   same limits, and reports such a tenant as not found.
+2. Do not judge by the career home page (``https://{slug}.hire.trakstar.com/``):
+   it answers 404 for some accounts whose job pages work.
+3. An account can be reached under an earlier name. The feed then answers
+   the same openings, with the current name in ``client_name`` and in the
+   host of ``hosted_url``. List the current name only: under an earlier name
+   the display name of the row is not applied, and a second row adds
+   requests and no posting.
+4. Take the employer name from the page: the career home page title
+   (``X jobs | X openings | X careers``) or the job page title
+   (``{job title} at X``). Do not use the account name as the employer name.
+5. Read the openings before adding a row. Reject test accounts and accounts
+   whose page names no employer (``No``, ``Editor``).
+
 ### Taleo
 
 Scraper input:
@@ -166,6 +199,27 @@ Known edge cases:
 - Reject demo/sandbox orgs such as `RDASH_DEMO*`.
 - Reject generic names like `Career Centre` when no other employer identity is
   available.
+
+### Lever
+
+Lever hosts its customers in two regions with separate APIs. A board on
+``jobs.lever.co`` is read from ``api.lever.co``; a board on
+``jobs.eu.lever.co`` is read from ``api.eu.lever.co`` and answers 404 on the
+other one.
+
+- ``url`` is the board URL, and its host gives the region.
+- ``slug`` is what ``get_scraper("lever", slug)`` is given. For a US board it
+  is the board slug, in the case the board URL uses. For an EU board it is
+  the board URL (``https://jobs.eu.lever.co/{slug}``), because a bare slug
+  is read from the US API.
+- Validate against the API of the row's region, and require the board page
+  itself to answer 200.
+- List a board slug once, in one region. The two regions are separate
+  namespaces, so the same slug can be another company in the other region,
+  but the pipeline keys a row's display name by its bare board slug: two
+  rows with one slug would share a name. If both boards are live, keep the
+  one that was validated and leave the other out.
+- The employer name is the board page title without its `` jobs`` suffix.
 
 ### Eightfold
 
@@ -231,6 +285,41 @@ Validation:
 5. Reject login-only pages, internal career centers, expired tenant IDs, and
    duplicate URLs that differ only by ``jobId`` or tracking parameters.
 
+### Frontline AppliTrack
+
+Rows use the board URL ``https://www.applitrack.com/{tenant}/onlineapp`` as
+both ``slug`` and ``url``, the employer's name as ``name`` and its country
+(``US`` or ``CA``) as ``country_iso``. Most boards belong to school
+districts.
+
+Validation:
+
+1. Run the scraper. It reads the board's all-postings endpoint
+   (``JobPostings/Output.asp?all=1``) and requires the number of postings
+   it parsed to match the number the board announces.
+2. Add a board only when it lists at least one posting.
+3. Keep a listed board that has no posting today: school hiring is
+   seasonal and the board fills again.
+4. Remove a board whose all-postings endpoint and home page both answer an
+   error status (HTTP 500, 503 or 404): the employer has left AppliTrack.
+5. A consortium board repeats the postings of its member districts, with
+   the same posting id and the district as employer. Both rows stay; the
+   pipeline publishes a posting id once.
+
+### Jibe (iCIMS career sites)
+
+Rows use the career-site origin on the employer's own domain
+(``https://careers.example.com``) as ``url`` and the host as ``slug``.
+
+Validation:
+
+1. Call ``https://{host}/api/jobs?page=1&limit=100&internal=false``.
+2. Require HTTP 200, a JSON object with a ``jobs`` list and a numeric
+   ``totalCount`` above zero.
+3. Require each posting to carry ``data.slug`` and ``data.title``.
+4. Reject hosts that answer the path with HTML, a 404 or a login page:
+   they run another career-site product.
+
 ### SuccessFactors
 
 Validation:
@@ -269,6 +358,89 @@ Validation:
 3. Require HTTP 200 and non-empty postings.
 4. Reject generic Pinpoint pages and inactive boards.
 
+### CATS
+
+Rows use the tenant's host label as ``slug`` and
+``https://{slug}.catsone.com/careers/`` as ``url``. Most customers are
+staffing and recruiting firms; the row is the firm, which is the one that
+posts the job.
+
+Validation:
+
+1. Fetch the portal. Require HTTP 200 and the portal's data in the page,
+   with a portal that does not say it is inactive.
+2. Run the scraper and require at least one job.
+3. Require a job posted in the 90 days before validation: its
+   ``datePosted``, which the list gives and, failing that, the job page.
+   Many firms leave a portal online with the jobs it had when they stopped
+   using it.
+4. The row name is the portal's own name (``portal.name`` in the page's
+   data). When that is a generic word or a lower-case label
+   ("Recruitment", "rsg"), take the firm's name from the site the portal
+   links to (``portal.siteUrl``), as that site states it.
+5. A tenant can have several portals (``/careers/{number}``). The row is
+   the default one, where ``/careers/`` leads. Add another portal of a
+   tenant, as ``{slug}/{number}``, only when it lists jobs the default one
+   does not: a job has the same number on every portal and is published
+   once.
+
+### ClearCompany
+
+Rows use the career site name as ``slug`` and
+``https://apply.clearcompany.com/{slug}`` as ``url``. The earlier
+``{slug}.hrmdirect.com`` addresses redirect there.
+
+Validation:
+
+1. Fetch the career site. Require HTTP 200 and a site id
+   (``data-site-id``). A site that is gone answers 404 ("This careers page
+   isn't available right now").
+2. Run the scraper's full walk and require at least one posting.
+3. A customer can have several career sites that list the same postings (a
+   group site and its brand sites). A posting has the same id on each and is
+   published once. Add a second site of a customer only when it lists
+   postings the first does not: compare the posting ids, and leave out a
+   site when 90% or more of its postings are on a larger site (the few
+   that differ are postings opened or closed between the two reads).
+4. The row name is the career site's own name (its page title without the
+   `` – Careers`` suffix). Each posting names its employer (``brandName``),
+   which is what is published; the row name is the fallback.
+5. ``{tenant}.clearcompany.com`` is the application portal. Its host label
+   is not always the career site name, so do not derive a row from it.
+
+### PeopleAdmin
+
+Rows use the portal's host label as ``slug`` and
+``https://{slug}.peopleadmin.com`` as ``url``. Portals served on an
+institution's own domain are not covered.
+
+Validation:
+
+1. Fetch ``/postings/search``. Require HTTP 200 and the search page (a
+   result count and the list). Hosts under ``ted.peopleadmin.com`` are
+   school-district sites that moved to another product, not portals.
+2. Leave out the copies an institution keeps beside its live portal:
+   labels ending in ``-sb``, ``-training``, ``-test`` and the like. They
+   list invented or copied postings.
+3. Run the scraper's full walk and require at least one row.
+4. Require a posting opened in the 90 days before validation: the newest
+   ``Open Date`` (or ``Job Open Date``, ``Posting Date``) of the postings
+   that is not in the future, or, when the portal prints no such date, the
+   newest ``published`` date of its Atom feed
+   (``/postings/all_jobs.atom``). An institution that moved to another
+   system often leaves its old portal online with its last postings, test
+   postings included.
+5. The list holds postings and applicant pools (``/pools/{id}``, standing
+   recruitments such as adjunct or tutor pools). Both are published;
+   ``raw["kind"]`` tells them apart.
+6. The row name is the institution's name as the portal states it (page
+   title, footer or feed title), not the host label. A portal can serve one
+   part of an institution (student employment, academic positions): name
+   the institution.
+7. The Atom feed is evidence for rule 4 only, not a source of postings: on
+   the portals compared it was a subset of the search list, and stale on
+   some.
+
 ### Cornerstone
 
 Validation must prove both URL validity and name quality:
@@ -279,6 +451,117 @@ Validation must prove both URL validity and name quality:
    exposes only technical slugs.
 4. Reject rows where the final company name would be an unreadable slug unless
    a reliable name source is found.
+
+### Radancy TalentBrew
+
+Rows use the career-site origin on the employer's own domain
+(``https://jobs.example.com``) as ``url`` and the host as ``slug``.
+
+Validation:
+
+1. Call ``https://{host}/search-jobs/results`` with the site's full search
+   parameter set (see the scraper) and ``CurrentPage=1``.
+2. Require HTTP 200 and a JSON object whose ``results`` HTML carries a
+   numeric ``data-total-results`` above zero.
+3. Require at least one ``<a href="/job/.../{org}/{id}" data-job-id="{id}">``
+   row (the path may start with a locale, ``/en/job/...`` or
+   ``/fr-fr/job/...``), and a schema.org ``JobPosting`` JSON-LD block on
+   that posting's page.
+4. Record the announced total and run the scraper's full walk. It must
+   collect at least 60% of ``min(total, 10000)`` distinct postings (the
+   announced total counts a posting once per location). A search returns
+   nothing past 10,000 postings: a site above that size is read up to the
+   limit and the scraper logs the announced total, so note it in the PR.
+5. Reject hosts that are an alias of a site already listed. Posting ids are
+   scoped to a host, so an equal total and first id prove nothing: compare
+   several full posting paths (``/job/{city}/{title}/{org}/{id}``) and the
+   title plus location of the postings.
+6. TalentBrew sits in front of the employer's ATS. Skip an employer whose
+   ATS board is already listed in another provider file, unless the two
+   list different postings (say so in the PR): listing both would publish
+   the same postings twice.
+
+### Talentsoft (Cegid)
+
+Rows use the career site's host label as ``slug`` and
+``https://{slug}.talent-soft.com`` as ``url``. Career sites served on the
+customer's own domain are not covered.
+
+Validation:
+
+1. Fetch ``/offre-de-emploi/liste-toutes-offres.aspx?mode=list`` (the path
+   is the same on sites in every language). Require HTTP 200 and the offer
+   list. A site that sends visitors to its log-in page is an internal
+   mobility site: leave it out.
+2. Run the scraper's full walk and require at least one offer. The list
+   stops at 1,000 offers; the scraper refuses a site that announces more
+   than its list can show, so such a site cannot be a row until its list is
+   read another way.
+3. Leave out the copies a customer keeps beside its live site (labels with
+   ``test``, ``recette``, ``preprod`` and the like) and the sites for its
+   own staff (``-employee``, ``mobilite``): they list invented offers, or
+   offers that are not open to outside candidates.
+4. A customer can have several sites that list the same offers (an old and
+   a new host name, a group site and a brand site). Compare the offer
+   numbers and references, and leave out a site when 90% or more of its
+   offers are on a larger site.
+5. Require an offer dated within the 90 days before validation (the date
+   the list shows beside each offer, which is the date the offer was last
+   published or updated). A customer that left the product can leave its
+   site online with its last offers.
+6. Leave out job boards that list offers of many employers without naming
+   the employer of each offer in a field the scraper reads, and the State's
+   own job board (``place-ep-recrute``, "Choisir le Service Public"), which
+   is a government board.
+7. The row name is the employer's name as the site states it: the page
+   title of the offer list, before " - Résultat de votre recherche". When
+   that title is empty or is a label of the site rather than the employer
+   ("CANDIDAT ...", "Website ..."), take the name from the site's home page
+   or from an offer page, as it is written there.
+
+### Taleo Enterprise
+
+Taleo Enterprise Edition (``{zone}.taleo.net``) is a different product from
+Taleo Business Edition (``*.tbe.taleo.net``, the ``taleo`` provider above).
+
+Rows use ``{zone}.taleo.net/{section}`` as ``slug`` and the section's search
+page (``https://{zone}.taleo.net/careersection/{section}/jobsearch.ftl``) as
+``url``. A zone can have several rows, one per career section.
+
+Validation:
+
+1. Fetch the search page. Require HTTP 200 and a portal number
+   (``portal=NNN``). Pages titled ``Career Section Unavailable``,
+   ``Privacy Agreement`` or ``Zone Maintenance`` have none: reject them.
+2. Run the scraper's full walk and require at least one posting. Do not
+   validate on the announced ``totalCount``: it is often larger than the
+   number of postings the pages hold, and a section can announce postings
+   and list none.
+3. Keep external sections only. Reject sections for employees (names such
+   as ``in``, ``int``, ``internal``) and sections whose search page asks to
+   sign in.
+4. A requisition listed in several sections of a zone is published once
+   (``ats_id`` is ``{zone}:{requisition number}``). Add a second section of
+   a zone only when it lists postings the first does not; a section that
+   repeats another adds requests and nothing else.
+5. A zone belongs to one Taleo customer, and its sections can still list
+   different employers (``edmonton.taleo.net``: the city in one section, the
+   public library in another). Give a section its own employer name only
+   when it shares no requisition with the other sections of the zone.
+   Sections that share requisitions carry one name, the zone customer's
+   (``textron.taleo.net``: the ``kautex`` section lists 57 postings that the
+   ``textron`` section also lists, so both rows are named Textron). A shared
+   requisition is published once, under the name of whichever section is
+   read first, so two names for it would make the published employer depend
+   on the order of the run. A zone with more than one name is listed in
+   ``tests/test_taleo_enterprise_contracts.py``; add it there after
+   comparing the requisition numbers of its sections.
+6. Reject a zone that is an alias of one already listed (same postings
+   under two host names, for example ``tas-acme.taleo.net`` and
+   ``acme.taleo.net``): compare requisition numbers and titles.
+7. The search page title is usually just ``Job Search``. Take the employer
+   name from the detail page title or the postings themselves, and check it
+   by hand; never use the zone label (``aa123``) as the name.
 
 ### Avature
 
