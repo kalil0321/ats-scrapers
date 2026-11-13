@@ -54,6 +54,7 @@ from ats_scrapers.scrapers.oracle import OracleScraper
 from ats_scrapers.scrapers.pageup import PageUpScraper
 from ats_scrapers.scrapers.paycom import PaycomScraper
 from ats_scrapers.scrapers.paylocity import PaylocityScraper
+from ats_scrapers.scrapers.peopleadmin import PeopleAdminScraper
 from ats_scrapers.scrapers.personio import PersonioScraper
 from ats_scrapers.scrapers.phenom import PhenomScraper
 from ats_scrapers.scrapers.pinpoint import PinpointScraper
@@ -131,6 +132,7 @@ __all__ = [
     "PageUpScraper",
     "PaycomScraper",
     "PaylocityScraper",
+    "PeopleAdminScraper",
     "PersonioScraper",
     "PhenomScraper",
     "PinpointScraper",

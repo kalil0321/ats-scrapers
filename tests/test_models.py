@@ -21,7 +21,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "cornerstone",
         "darwinbox", "dayforce", "eightfold", "gem", "greenhouse", "gupy", "herp", "hrmos",
         "icims", "jibe", "join_com", "jobvite", "keka", "lever", "mercor", "moka", "oracle", "pageup", "paycom", "paylocity",
-        "personio", "phenom",
+        "peopleadmin", "personio", "phenom",
         "pinpoint", "recruiterbox", "rippling", "smartrecruiters", "softgarden",
         "successfactors", "ukg", "workable", "workable_marketplace", "workday",
         # Big-tech custom careers systems

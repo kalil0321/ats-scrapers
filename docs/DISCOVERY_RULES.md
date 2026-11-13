@@ -361,6 +361,39 @@ Validation:
 5. ``{tenant}.clearcompany.com`` is the application portal. Its host label
    is not always the career site name, so do not derive a row from it.
 
+### PeopleAdmin
+
+Rows use the portal's host label as ``slug`` and
+``https://{slug}.peopleadmin.com`` as ``url``. Portals served on an
+institution's own domain are not covered.
+
+Validation:
+
+1. Fetch ``/postings/search``. Require HTTP 200 and the search page (a
+   result count and the list). Hosts under ``ted.peopleadmin.com`` are
+   school-district sites that moved to another product, not portals.
+2. Leave out the copies an institution keeps beside its live portal:
+   labels ending in ``-sb``, ``-training``, ``-test`` and the like. They
+   list invented or copied postings.
+3. Run the scraper's full walk and require at least one row.
+4. Require a posting opened in the 90 days before validation: the newest
+   ``Open Date`` (or ``Job Open Date``, ``Posting Date``) of the postings
+   that is not in the future, or, when the portal prints no such date, the
+   newest ``published`` date of its Atom feed
+   (``/postings/all_jobs.atom``). An institution that moved to another
+   system often leaves its old portal online with its last postings, test
+   postings included.
+5. The list holds postings and applicant pools (``/pools/{id}``, standing
+   recruitments such as adjunct or tutor pools). Both are published;
+   ``raw["kind"]`` tells them apart.
+6. The row name is the institution's name as the portal states it (page
+   title, footer or feed title), not the host label. A portal can serve one
+   part of an institution (student employment, academic positions): name
+   the institution.
+7. The Atom feed is evidence for rule 4 only, not a source of postings: on
+   the portals compared it was a subset of the search list, and stale on
+   some.
+
 ### Cornerstone
 
 Validation must prove both URL validity and name quality:

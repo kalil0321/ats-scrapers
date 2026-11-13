@@ -66,10 +66,10 @@ from ats_scrapers.scrapers import (
     HrmosScraper,
     InfoJobsSpainScraper,
     JazzHRScraper,
+    JibeScraper,
     JobBankCAScraper,
     JobsChScraper,
     JobsCzScraper,
-    JibeScraper,
     JobviteScraper,
     JoinComScraper,
     KekaScraper,
@@ -82,6 +82,7 @@ from ats_scrapers.scrapers import (
     PageUpScraper,
     PaycomScraper,
     PaylocityScraper,
+    PeopleAdminScraper,
     PersonioScraper,
     PhenomScraper,
     PinpointScraper,
@@ -724,6 +725,26 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "fail_closed_on_any_error": True,
         "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
+    },
+    "peopleadmin": {
+        "scraper": PeopleAdminScraper,
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/peopleadmin.csv",
+        "output": "peopleadmin/jobs.csv",
+        # One vendor serves every portal, and a scrape reads up to four
+        # posting pages of its portal at a time.
+        "max_concurrency": 6,
+        "fail_closed_on_any_error": True,
+        # A portal that is gone counts as a failed one, so many portals
+        # disappearing at once keeps the previous dataset.
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        # 5% of portals may fail or be gone; a portal that closes is a
+        # row to remove, not a reason to hold back the others.
+        "fail_closed_tolerance": 0.05,
     },
     "recruitee": {
         "scraper": RecruiteeScraper,

@@ -93,6 +93,7 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
     # ClearCompany's earlier address; {site}.hrmdirect.com redirects to
     # apply.clearcompany.com/{site}.
     ".hrmdirect.com": ATSType.CLEARCOMPANY,
+    ".peopleadmin.com": ATSType.PEOPLEADMIN,
 }
 
 # Full-URL tenants: the scraper's slug IS the careers URL.
