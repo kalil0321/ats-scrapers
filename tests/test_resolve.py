@@ -36,7 +36,13 @@ RESOLVES = [
     ("https://job-boards.greenhouse.io/anthropic/jobs/123", ATSType.GREENHOUSE, "anthropic"),
     ("https://boards.eu.greenhouse.io/acme", ATSType.GREENHOUSE, "acme"),
     ("https://jobs.lever.co/palantir", ATSType.LEVER, "palantir"),
-    ("https://jobs.eu.lever.co/acme", ATSType.LEVER, "acme"),
+    # Lever's EU region has its own API: the slug keeps the board URL.
+    ("https://jobs.eu.lever.co/acme", ATSType.LEVER, "https://jobs.eu.lever.co/acme"),
+    (
+        "https://jobs.eu.lever.co/acme/1b2c3d4e-0000/apply",
+        ATSType.LEVER,
+        "https://jobs.eu.lever.co/acme",
+    ),
     ("https://apply.workable.com/0x/", ATSType.WORKABLE, "0x"),
     ("https://careers.smartrecruiters.com/10Pearls", ATSType.SMARTRECRUITERS, "10Pearls"),
     ("https://jobs.gem.com/accel", ATSType.GEM, "accel"),
@@ -363,3 +369,15 @@ def test_get_scraper_for_url_from_fresh_interpreter() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "AshbyScraper openai"
+
+
+def test_get_scraper_for_url_keeps_the_lever_region() -> None:
+    from ats_scrapers.scrapers import LeverScraper
+
+    eu = get_scraper_for_url("https://jobs.eu.lever.co/acme/1b2c3d4e-0000")
+    us = get_scraper_for_url("https://jobs.lever.co/acme/1b2c3d4e-0000")
+
+    assert isinstance(eu, LeverScraper)
+    assert (eu.tenant, eu.region) == ("acme", "eu")
+    assert isinstance(us, LeverScraper)
+    assert (us.tenant, us.region) == ("acme", "us")

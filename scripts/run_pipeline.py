@@ -233,16 +233,30 @@ def _workable_slug(row: dict[str, Any]) -> str | None:
     return name or None
 
 
+# A Lever board is on jobs.lever.co (US region) or jobs.eu.lever.co (EU
+# region); the two regions have separate APIs.
+_LEVER_BOARD_RE = re.compile(
+    r"https?://jobs\.(?P<eu>eu\.)?lever\.co/(?P<slug>[^/?#]+)", re.IGNORECASE
+)
+
+
 def _lever_slug(row: dict[str, Any]) -> str | None:
     url = (row.get("url") or "").strip()
     if url.startswith("http"):
-        m = re.match(r"https?://jobs\.lever\.co/([^/?#]+)", url, re.IGNORECASE)
+        m = _LEVER_BOARD_RE.match(url)
         if m:
-            return unquote(m.group(1))
+            return unquote(m.group("slug"))
     if (slug := _slug_col(row)):
         return slug
     name = (row.get("name") or "").strip()
     return name or None
+
+
+def _lever_kwargs(row: dict[str, Any]) -> dict[str, Any]:
+    """The region of the row's board; the slug stays the bare board slug
+    so the row's display name applies."""
+    m = _LEVER_BOARD_RE.match((row.get("url") or "").strip())
+    return {"region": "eu"} if m and m.group("eu") else {}
 
 
 def _greenhouse_slug(row: dict[str, Any]) -> str | None:
@@ -671,6 +685,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "lever": {
         "scraper": LeverScraper,
         "slug": _lever_slug,
+        "kwargs": _lever_kwargs,
         "csv": "ats-companies/lever.csv",
         "output": "lever/jobs.csv",
     },

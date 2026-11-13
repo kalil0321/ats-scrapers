@@ -167,6 +167,22 @@ Known edge cases:
 - Reject generic names like `Career Centre` when no other employer identity is
   available.
 
+### Lever
+
+Lever hosts its customers in two regions with separate APIs. A board on
+``jobs.lever.co`` is read from ``api.lever.co``; a board on
+``jobs.eu.lever.co`` is read from ``api.eu.lever.co`` and answers 404 on the
+other one.
+
+- ``slug`` is the board slug in the case the board URL uses; ``url`` is the
+  board URL. The host of ``url`` gives the region: an EU row must have a
+  ``https://jobs.eu.lever.co/{slug}`` URL.
+- Validate against the API of the row's region, and require the board page
+  itself to answer 200.
+- A slug must stay unique in the file. The same slug can be two different
+  companies in the two regions; list the one that was validated.
+- The employer name is the board page title without its `` jobs`` suffix.
+
 ### Eightfold
 
 Scraper input:

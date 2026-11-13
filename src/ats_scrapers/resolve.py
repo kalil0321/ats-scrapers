@@ -126,6 +126,12 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
     if host in _PATH_HOSTS:
         slug = _first_path_segment(parsed)
         if slug and _SLUG_RE.match(slug):
+            if host == "jobs.eu.lever.co":
+                # Lever's EU region has its own API, and a bare slug is
+                # read as a US board: the slug is the board URL.
+                return ResolvedCareersUrl(
+                    ATSType.LEVER, f"https://jobs.eu.lever.co/{slug}"
+                )
             return ResolvedCareersUrl(_PATH_HOSTS[host], slug)
         return None
 

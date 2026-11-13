@@ -235,6 +235,18 @@ def test_provider_slug_normalizers_match_current_company_csv_shape() -> None:
         "url": "",
     }
     assert runner._lever_slug(lever_slug_only_row) == "OpenPayd"
+    assert runner.CONFIGS["lever"]["kwargs"](lever_row) == {}
+    assert runner.CONFIGS["lever"]["kwargs"](lever_slug_only_row) == {}
+
+    # A board in Lever's EU region: same bare slug, and the region as a
+    # scraper argument.
+    lever_eu_row = {
+        "name": "Acme",
+        "slug": "Acme",
+        "url": "https://jobs.eu.lever.co/Acme",
+    }
+    assert runner._lever_slug(lever_eu_row) == "Acme"
+    assert runner.CONFIGS["lever"]["kwargs"](lever_eu_row) == {"region": "eu"}
     assert runner.CONFIGS["oracle"]["kwargs"](oracle_row) == {
         "company_name": "ABM US"
     }
