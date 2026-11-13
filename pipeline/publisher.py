@@ -3,6 +3,7 @@
 Layout produced under ``<prefix>`` (default ``jobhive/v1``):
 
     jobhive/v1/manifest.json
+    jobhive/v1/badges.json           # pre-formatted README badge values
     jobhive/v1/all.{csv,parquet}     # full snapshot, both formats
     jobhive/v1/<ats>/jobs.csv        # per-ATS jobs slice
     jobhive/v1/<ats>/jobs.parquet    # idem in parquet
@@ -52,8 +53,9 @@ import tempfile
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
@@ -81,6 +83,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_PREFIX = "jobhive/v1"
+# Written by scripts/run_pipeline.py next to each provider's jobs.csv.
+TENANT_STATUS_FILENAME = "tenant_status.csv"
 CACHE_CONTROL_LATEST = "public, max-age=300"  # manifest + latest data files
 
 # ``all`` ships both formats — parquet for typed pandas / DuckDB
@@ -184,6 +188,7 @@ class DatasetPublisher:
             per_ats_entries: dict[ATSType, dict[str, object]] = {}
             schema_union: list[str] = []
             seen_cols: set[str] = set()
+            tenant_status_paths = _find_tenant_status_files(source_dir, ats_csv_pattern)
 
             any_csv_found = False
             for ats in ATSType:
@@ -240,6 +245,10 @@ class DatasetPublisher:
                 files_uploaded.extend(_collect_uploaded_keys(entry))
 
             if not any_csv_found:
+                # No provider has a jobs file, so there is no dataset to
+                # publish. The per-company outcomes of the runs that failed
+                # are still worth having: upload them before giving up.
+                self._upload_tenant_status(tenant_status_paths)
                 raise StorageError(f"No ATS CSVs found in {source_dir}")
 
             # ---- Pass 2: cross-ATS dedup directly on the per-ATS temp CSVs ---
@@ -267,8 +276,12 @@ class DatasetPublisher:
             )
             files_uploaded.extend(_collect_uploaded_keys(all_entry))
 
+            tenant_status_entry = self._upload_tenant_status(tenant_status_paths)
+            if tenant_status_entry is not None:
+                files_uploaded.extend(_collect_uploaded_keys(tenant_status_entry))
+
             jobs_by_kind = _jobs_by_source_kind(survivors)
-            manifest_key = self._patch_and_upload_manifest(
+            manifest_key, badges_key = self._patch_and_upload_manifest(
                 generated_at=started,
                 stats_factory=lambda existing: {
                     "total_jobs": n_kept,
@@ -289,7 +302,10 @@ class DatasetPublisher:
                 all_entry=all_entry,
                 by_ats=per_ats_entries,
                 existing_manifest=existing_manifest,
+                tenant_status=tenant_status_entry,
             )
+            if badges_key is not None:
+                files_uploaded.append(badges_key)
             files_uploaded.append(manifest_key)
 
             deleted = self.prune_legacy_paths()
@@ -491,9 +507,13 @@ class DatasetPublisher:
         all_entry: dict[str, object],
         by_ats: dict[ATSType, dict[str, object]],
         existing_manifest: dict[str, object] | None = None,
-    ) -> str:
+        tenant_status: dict[str, object] | None = None,
+    ) -> tuple[str, str | None]:
         """Read existing manifest, replace jobs-related fields, preserve
-        the companies block written by the CI."""
+        the companies block written by the CI.
+
+        Returns the manifest key and the badges key, or ``None`` for the
+        badges when their upload failed."""
         key = f"{self._prefix}/manifest.json"
         existing = (
             existing_manifest
@@ -512,9 +532,12 @@ class DatasetPublisher:
         # writer ran most recently. Format matches what the CI script
         # writes: UTC ``Z``-suffixed seconds.
         manifest["updated_at"] = generated_at.strftime("%Y-%m-%dT%H:%M:%SZ")
-        manifest["stats"] = stats_factory(existing)
+        stats = stats_factory(existing)
+        manifest["stats"] = stats
         manifest["all"] = all_entry
         manifest["by_ats"] = {ats.value: entry for ats, entry in by_ats.items()}
+        if tenant_status is not None:
+            manifest["tenant_status"] = tenant_status
 
         # Drop fields from the pre-2.0 layout if they survived the
         # legacy-path prune. Their data is gone so the entries point
@@ -522,6 +545,7 @@ class DatasetPublisher:
         for legacy in ("by_date", "companies_by_ats"):
             manifest.pop(legacy, None)
 
+        badges_key = self._upload_badges(stats, generated_at)
         body = json.dumps(manifest, indent=2, sort_keys=True, default=str).encode(
             "utf-8"
         )
@@ -531,7 +555,61 @@ class DatasetPublisher:
             content_type="application/json",
             cache_control=CACHE_CONTROL_LATEST,
         )
+        return key, badges_key
+
+    def _upload_badges(
+        self, stats: dict[str, Any], generated_at: datetime
+    ) -> str | None:
+        """Upload the dataset's headline values already formatted.
+
+        Shields' dynamic JSON badge can't format numbers. This file holds
+        the values ready to display, so that the README badges can read
+        them from here instead of the raw manifest.
+
+        Returns the uploaded key. A failed upload is logged, not raised,
+        and returns ``None``: badges are cosmetic and must not block the
+        manifest.
+        """
+        badges = {
+            "jobs": _compact(stats["total_jobs"]),
+            "companies": _compact(stats["total_companies"]),
+            "sources": str(stats["ats_count"]),
+            "updated": generated_at.strftime("%Y-%m-%d"),
+        }
+        key = f"{self._prefix}/badges.json"
+        try:
+            self._r2.upload_bytes(
+                json.dumps(badges).encode("utf-8"),
+                key,
+                content_type="application/json",
+                cache_control=CACHE_CONTROL_LATEST,
+            )
+        except StorageError as exc:
+            logger.warning("Badge upload failed: %s", exc)
+            return None
         return key
+
+    def _upload_tenant_status(self, paths: list[Path]) -> dict[str, object] | None:
+        """Concatenate every provider's latest per-tenant scrape outcome
+        into ``<prefix>/tenant_status.{csv,parquet}``."""
+        frames: list[pl.DataFrame] = []
+        for path in paths:
+            try:
+                frames.append(pl.read_csv(path, infer_schema_length=0))
+            except (pl.exceptions.NoDataError, pl.exceptions.ComputeError) as exc:
+                logger.warning("%s: unreadable tenant status (%s); skipping.", path, exc)
+        if not frames:
+            return None
+        df = pl.concat(frames, how="diagonal").with_columns(
+            pl.col("jobs").cast(pl.Int64, strict=False)
+        )
+        base_key = f"{self._prefix}/tenant_status"
+        with _temp_file(".csv") as csv_path:
+            df.write_csv(csv_path)
+            entry, _ = self._upload_per_ats_streaming(
+                csv_path=csv_path, base_key=base_key
+            )
+        return entry
 
     def _public_or_key(self, key: str) -> str:
         return self._r2.public_url(key) or key
@@ -1160,6 +1238,35 @@ def _safe_parse_salary(value: object) -> dict[str, float | None]:
     return {"min": mn, "max": mx}
 
 
+def _find_tenant_status_files(source_dir: Path, ats_csv_pattern: str) -> list[Path]:
+    """Status files of every provider, including those without a jobs.csv
+    (a first run that failed still has outcomes worth publishing).
+
+    The VPS publisher passes each jobs.csv as a symlink into a temp
+    directory, so the real jobs root behind those symlinks is searched too.
+    """
+    depth = len(Path(ats_csv_pattern).parts)
+    roots = [source_dir]
+    for ats in ATSType:
+        jobs_path = source_dir / ats_csv_pattern.format(ats=ats.value)
+        if jobs_path.is_symlink():
+            real_root = jobs_path.resolve().parents[depth - 1]
+            if real_root not in roots:
+                roots.append(real_root)
+    found: list[Path] = []
+    for ats in ATSType:
+        if ats is ATSType.CUSTOM:
+            continue
+        for root in roots:
+            status_path = (
+                root / ats_csv_pattern.format(ats=ats.value)
+            ).parent / TENANT_STATUS_FILENAME
+            if status_path.is_file():
+                found.append(status_path)
+                break
+    return found
+
+
 def _collect_uploaded_keys(entry: dict[str, object]) -> list[str]:
     keys: list[str] = []
     for field_name in ("csv", "parquet"):
@@ -1256,6 +1363,24 @@ def _guard_suspicious_empty_job_slices(
             "providers.\n- "
             + "\n- ".join(suspicious)
         )
+
+
+def _compact(n: int) -> str:
+    """Same output as stapply.ai's ``Intl.NumberFormat`` compact notation,
+    e.g. 4886484 -> "4.9M"."""
+    # Decimal, rounded half up: a float's ``:.1f`` rounds ties to even and
+    # turns 1,250 into "1.2K" where the site shows "1.3K".
+    value, suffix = Decimal(n), ""
+    for next_suffix in ("K", "M", "B"):
+        if _one_decimal(value) < 1000:
+            break
+        value /= 1000
+        suffix = next_suffix
+    return f"{_one_decimal(value):f}".removesuffix(".0") + suffix
+
+
+def _one_decimal(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
 
 
 def _entry_rows(entry: object) -> int:
