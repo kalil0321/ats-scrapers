@@ -105,6 +105,11 @@ _SCAN_CSV_KWARGS: dict[str, object] = {
 }
 
 
+# Sources the scheduled pipeline no longer runs. A jobs file an earlier run
+# left on the operator's disk is ignored instead of being republished.
+RETIRED_SOURCES: frozenset[str] = frozenset({"seek"})
+
+
 @dataclass
 class PublishResult:
     """Summary of what was uploaded in a single publish run."""
@@ -196,6 +201,16 @@ class DatasetPublisher:
                     continue
                 source_path = source_dir / ats_csv_pattern.format(ats=ats.value)
                 if not source_path.exists():
+                    continue
+                if ats.value in RETIRED_SOURCES:
+                    # The scheduled run no longer refreshes this file, so
+                    # what a past run left behind would be published again
+                    # on every run, a little more out of date each time.
+                    logger.info(
+                        "%s: source retired from scheduled ingestion; "
+                        "its jobs file is not published.",
+                        ats.value,
+                    )
                     continue
                 # Defense against the publisher firing while a scraper
                 # is mid-write (cron + ad-hoc publish race): a 0-byte
@@ -1327,7 +1342,9 @@ def _guard_suspicious_empty_job_slices(
 
     suspicious: list[str] = []
     for ats in ATSType:
-        if ats is ATSType.CUSTOM:
+        # A retired source's file is not published, so an empty one cannot
+        # replace anything, and no later run would refresh it.
+        if ats is ATSType.CUSTOM or ats.value in RETIRED_SOURCES:
             continue
         source_path = source_dir / ats_csv_pattern.format(ats=ats.value)
         if not source_path.exists():
