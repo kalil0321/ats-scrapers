@@ -43,7 +43,8 @@ the Pydantic descriptions are the source of truth; please update both.
 Globally unique identifier for the posting, formatted as
 `{ats_type}:{ats_id}` when both are present.
 
-- **Examples:** `ashby:engineer-2026`, `workday:R0136150`, `greenhouse:6849563`.
+- **Examples:** `ashby:engineer-2026`,
+  `workday:acme.wd1.myworkdayjobs.com/job/USA/Engineer_R-1`, `greenhouse:6849563`.
 - **Separator:** `:`. Parsers should split on the **first** colon —
   `ats_id` may itself contain colons (some Taleo URLs encode multiple).
   Example: `"taleo:acme:req:12345"` parses as
@@ -92,7 +93,7 @@ Per-ATS identifier. Unique within `ats_type` but not globally — use
 | ATS | Typical `ats_id` |
 |---|---|
 | Greenhouse | numeric: `"6849563"` |
-| Workday | mixed-case: `"R0136150"` |
+| Workday | tenant host and posting path, career site left out: `"acme.wd1.myworkdayjobs.com/job/USA/Engineer_R-1"` |
 | Lever | UUID: `"62a8c1f4-..."` |
 | iCIMS | dash-separated: `"job-2026-04-eng"` |
 | Bundesagentur | hex hash |
@@ -218,8 +219,8 @@ filtering. The ATS-specific raw label lives in `commitment`.
 ### `requisition_id` &nbsp;`str | None`
 
 **Employer-internal** requisition identifier (Greenhouse
-`requisition_id`, Workday `bulletFields[0]`, Lever's private id,
-Bundesagentur `hashId`).
+`requisition_id`, a Workday bullet field only when it is embedded in
+the canonical posting path, Lever's private id, Bundesagentur `hashId`).
 
 Distinct from `ats_id` which is **platform-side**. The same role
 mirrored on two different ATSes shares the same `requisition_id` but
