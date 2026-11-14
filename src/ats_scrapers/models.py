@@ -89,6 +89,7 @@ class ATSType(StrEnum):
     # in one paginated feed (single-source scraper).
     WORKABLE_MARKETPLACE = "workable_marketplace"
     WORKDAY = "workday"
+    ZOHO_RECRUIT = "zoho_recruit"
     # Big-tech custom careers systems (single-tenant, bespoke APIs)
     AMAZON = "amazon"
     APPLE = "apple"

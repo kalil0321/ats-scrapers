@@ -99,6 +99,7 @@ from ats_scrapers.scrapers.workable import WorkableScraper
 from ats_scrapers.scrapers.workable_marketplace import WorkableMarketplaceScraper
 from ats_scrapers.scrapers.workday import WorkdayScraper
 from ats_scrapers.scrapers.ycombinator import YCombinatorScraper
+from ats_scrapers.scrapers.zoho_recruit import ZohoRecruitScraper
 
 __all__ = [
     "ADPWorkforceNowScraper",
@@ -192,6 +193,7 @@ __all__ = [
     "WorkableScraper",
     "WorkdayScraper",
     "YCombinatorScraper",
+    "ZohoRecruitScraper",
     "get_scraper",
     "iCIMSScraper",
 ]
