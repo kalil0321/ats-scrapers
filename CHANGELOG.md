@@ -10,6 +10,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - Greeting career sites.
 - Feishu Hire career sites.
 - Zoho Recruit career sites.
+- MyCareersFuture, the public job portal of Singapore.
 - Manatal career pages.
 - Varbi employer RSS scraper with complete descriptions, public detail metadata,
   locale-independent tenant IDs, URL resolution, and a validated employer catalog.
