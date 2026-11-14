@@ -59,6 +59,10 @@ def test_wttj_per_org_parses_full_payload(httpx_mock) -> None:
     jobs = WTTJScraper("openai", timeout=10).fetch()
     assert len(jobs) == 1
     job = jobs[0]
+    assert str(job.url) == (
+        "https://www.welcometothejungle.com/en/companies/openai/jobs/"
+        "senior-ml-engineer-paris"
+    )
     assert job.title == "Senior ML Engineer"
     assert job.company == "OpenAI France"
     assert job.location == "Paris, Île-de-France, France"
@@ -73,6 +77,40 @@ def test_wttj_per_org_parses_full_payload(httpx_mock) -> None:
     assert job.experience == 3
     assert job.department == "Software"
     assert job.description and "Build models" in job.description
+
+
+@pytest.mark.parametrize("company_slug", ["*", "all", "", "openai-fr"])
+@pytest.mark.parametrize("language", ["en", "fr"])
+def test_wttj_job_url_uses_organization_slug(company_slug: str, language: str) -> None:
+    """The public company path uses its slug, even when its reference differs."""
+    job = WTTJScraper(company_slug, language=language)._parse_hit(SAMPLE_HIT)
+    assert str(job.url) == (
+        f"https://www.welcometothejungle.com/{language}/companies/openai/jobs/"
+        "senior-ml-engineer-paris"
+    )
+
+
+@pytest.mark.parametrize("organization", [None, "OpenAI", {}, {"slug": ""}])
+def test_wttj_job_url_falls_back_to_company_slug(organization: object) -> None:
+    hit = {**SAMPLE_HIT, "organization": organization}
+    job = WTTJScraper("openai")._parse_hit(hit)
+    assert str(job.url) == (
+        "https://www.welcometothejungle.com/en/companies/openai/jobs/"
+        "senior-ml-engineer-paris"
+    )
+
+
+@pytest.mark.parametrize("company_slug", ["*", "all", ""])
+@pytest.mark.parametrize("organization", [None, "OpenAI", {}, {"slug": ""}])
+def test_wttj_job_url_excludes_full_walk_placeholder(
+    company_slug: str, organization: object,
+) -> None:
+    hit = {**SAMPLE_HIT, "organization": organization}
+    job = WTTJScraper(company_slug)._parse_hit(hit)
+    assert str(job.url) == (
+        "https://www.welcometothejungle.com/en/companies//jobs/"
+        "senior-ml-engineer-paris"
+    )
 
 
 def test_wttj_honors_include_descriptions_false(httpx_mock) -> None:
