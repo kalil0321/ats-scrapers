@@ -649,6 +649,7 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "hireology": 1,
     "jibe": 1, "join_com": 1, "jobvite": 1, "keka": 1,
     "lever": 1,
+    "manatal": 1,
     "ninehire": 1,
     "moka": 1, "oracle": 1, "pageup": 1, "paycom": 1, "paylocity": 1, "peopleadmin": 1, "personio": 1, "phenom": 1, "pinpoint": 1,
     "recruitee": 1,

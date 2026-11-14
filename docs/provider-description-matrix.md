@@ -38,6 +38,7 @@ page/rendered page rather than a structured job payload.
 | `join_com` | Yes | Yes | HTML | HTML |
 | `keka` | Yes | No | HTML bootstrap + API | API |
 | `lever` | Yes | No | API | API |
+| `manatal` | Yes | No | API | API |
 | `manfred` | Yes | Yes | API/feed | API/feed |
 | `mercor` | Yes | No | API/feed | API/feed |
 | `meta` | Yes | Yes | HTML / browser | HTML |

@@ -7,6 +7,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Added
 
+- Manatal career pages.
 - Feishu Hire career sites.
 - Varbi employer RSS scraper with complete descriptions, public detail metadata,
   locale-independent tenant IDs, URL resolution, and a validated employer catalog.

@@ -82,6 +82,7 @@ from ats_scrapers.scrapers import (
     KekaScraper,
     LeverScraper,
     ManfredScraper,
+    ManatalScraper,
     MercorScraper,
     MetaScraper,
     MokaScraper,
@@ -1090,6 +1091,17 @@ CONFIGS: dict[str, dict[str, Any]] = {
         ),
         "csv": "ats-companies/join_com.csv",
         "output": "join_com/jobs.csv",
+    },
+    "manatal": {
+        "scraper": ManatalScraper,
+        "slug": lambda r: _slug_col(r) or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/manatal.csv",
+        "output": "manatal/jobs.csv",
+        # The API refuses for a while when asked too fast: one page at a time.
+        "max_concurrency": 1,
     },
     "mercor": {
         "scraper": MercorScraper,

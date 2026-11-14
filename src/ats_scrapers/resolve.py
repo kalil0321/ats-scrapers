@@ -99,6 +99,8 @@ _PATH_HOSTS: dict[str, ATSType] = {
     "careers.smartrecruiters.com": ATSType.SMARTRECRUITERS,
     "jobs.smartrecruiters.com": ATSType.SMARTRECRUITERS,
     "jobs.gem.com": ATSType.GEM,
+    "www.careers-page.com": ATSType.MANATAL,
+    "careers-page.com": ATSType.MANATAL,
     "ats.rippling.com": ATSType.RIPPLING,
     "apply.clearcompany.com": ATSType.CLEARCOMPANY,
 }
