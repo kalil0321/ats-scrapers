@@ -112,6 +112,7 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
     ".teamtailor.com": ATSType.TEAMTAILOR,
     ".breezy.hr": ATSType.BREEZY,
     ".bamboohr.com": ATSType.BAMBOOHR,
+    ".career.greetinghr.com": ATSType.GREETING,
     ".gupy.io": ATSType.GUPY,
     ".ninehire.site": ATSType.NINEHIRE,
     ".jobs.personio.com": ATSType.PERSONIO,

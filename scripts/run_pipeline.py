@@ -66,6 +66,7 @@ from ats_scrapers.scrapers import (
     GetOnBrdScraper,
     GoogleScraper,
     GreenhouseScraper,
+    GreetingScraper,
     GupyScraper,
     HerpScraper,
     HireologyScraper,
@@ -953,6 +954,17 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "kwargs": lambda r: {"company_name": (r.get("name") or "").strip() or None},
         "csv": "ats-companies/greenhouse.csv",
         "output": "greenhouse/jobs.csv",
+    },
+    "greeting": {
+        "scraper": GreetingScraper,
+        "slug": lambda r: _slug_col(r) or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/greeting.csv",
+        "output": "greeting/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 4,
     },
     "gupy": {
         "scraper": GupyScraper,
