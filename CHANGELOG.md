@@ -7,6 +7,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Added
 
+- Greeting career sites.
 - Feishu Hire career sites.
 - Zoho Recruit career sites.
 - Varbi employer RSS scraper with complete descriptions, public detail metadata,

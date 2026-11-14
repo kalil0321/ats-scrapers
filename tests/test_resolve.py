@@ -263,6 +263,7 @@ RESOLVES = [
     ("https://bloomberg.avature.net/careers", ATSType.AVATURE, "bloomberg"),
     ("https://nvidia.eightfold.ai/careers", ATSType.EIGHTFOLD, "nvidia"),
     ("https://petz.gupy.io/jobs/123", ATSType.GUPY, "petz"),
+    ("https://kurly.career.greetinghr.com/o/188454", ATSType.GREETING, "kurly"),
     (
         "https://nio.jobs.feishu.cn/campus/position/7707592102096718121/detail",
         ATSType.FEISHU_HIRE,
