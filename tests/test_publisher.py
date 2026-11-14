@@ -992,15 +992,13 @@ def test_phase1_dedups_formatting_variations(ats_csv_dir_phase1, fake_r2):
 
 @pytest.fixture
 def ats_csv_dir_phase2(tmp_path):
-    """Two aggregators emit the same job with title typos / minor
-    wording differences that defeat both the exact-key (Pass 2) and
-    the formatting-normalised (Pass 4) dedups. Only Phase 2 fuzzy
-    should collapse them.
+    """Two aggregators emit the same job at the same place with a
+    typo in the title. The exact-key pass (Pass 2) and the same-title
+    pass (Pass 5) both miss it; only the fuzzy pass collapses them.
 
     ``"Senior Backend Engineer (m/w/d)"`` vs
-    ``"Sr. Backend Engineer (m/w/d)"`` — same role, ``token_set_ratio``
-    sits around 86–95 depending on the rapidfuzz version. Phase 2's
-    default threshold is 90 so this passes the bar.
+    ``"Senior Backend Enginer (m/w/d)"``: ``token_sort_ratio`` is well
+    above the default threshold of 90.
     """
     eures_dir = tmp_path / "eures"
     eures_dir.mkdir()
@@ -1016,9 +1014,9 @@ def ats_csv_dir_phase2(tmp_path):
     bundes_dir.mkdir()
     pd.DataFrame([{
         "url": "https://arbeitsagentur.example/fuzzy/1",
-        "title": "Senior Backend Engineer (m/w/d) - flexible",
+        "title": "Senior Backend Enginer (m/w/d)",
         "company": "Fuzzy GmbH",
-        "location": "München, Deutschland",
+        "location": "10115 Berlin, Berlin, Deutschland",
         "ats_id": "bf1",
     }]).to_csv(bundes_dir / "jobs.csv", index=False)
 
@@ -1026,9 +1024,8 @@ def ats_csv_dir_phase2(tmp_path):
 
 
 def test_phase2_fuzzy_dedups_title_variations(ats_csv_dir_phase2, fake_r2):
-    """Pass 5 (Phase 2) must collapse cross-source rows whose titles
-    differ by minor wording but share the ``(company_norm, country)``
-    block."""
+    """The fuzzy pass must collapse cross-source rows of one employer
+    whose titles differ by a typo and whose places agree."""
     publisher = DatasetPublisher(fake_r2, write_parquet=True)
     result = publisher.publish_from_directory(ats_csv_dir_phase2)
 
@@ -1218,21 +1215,28 @@ def test_country_iso_uses_word_boundaries():
     assert f("Remote, XX") == ""
 
 
-def test_title_core_strips_trailing_parenthesised_tag():
-    from pipeline.publisher import _title_core as f
+def test_country_iso_reads_a_trailing_ca_or_de_as_a_us_state_when_it_is_one():
+    """``"san francisco, ca"`` is California, not Canada. On the 12 Nov
+    2026 snapshot 34,573 rows were published with ``country_iso = CA``
+    for that reason."""
+    from pipeline.publisher import _country_iso_from_location as f
 
-    # The classic eures pattern: trailing Berufenet code in parens.
-    assert (
-        f("Anlagenmechaniker (m/w/d) ab 20€/Std. (Anlagenmechaniker/in)")
-        == "anlagenmechaniker (m/w/d) ab 20€/std."
-    )
-    # Keep internal parens (m/w/d signals the same job).
-    assert f("Marketing Manager (m/w/d)") == "marketing manager (m/w/d)"
-    # Already clean title — no strip.
-    assert f("Software Engineer") == "software engineer"
-    # Empty / non-string
-    assert f("") == ""
-    assert f(None) == ""
+    assert f("San Francisco, CA") == "US"
+    assert f("Hybrid - Los Angeles, CA") == "US"
+    assert f("US, San Diego, CA") == "US"
+    # Canada: a province or a large Canadian city in front, or the code alone.
+    assert f("Toronto, ON, CA") == "CA"
+    assert f("Montréal, Québec, CA") == "CA"
+    assert f("Vancouver, CA") == "CA"
+    assert f("CA") == "CA"
+    assert f("Toronto, Canada") == "CA"
+    assert f("Ottawa, Ontario, CA") == "CA"
+    assert f("Ontario, CA") == "US"  # the Californian city
+    # Delaware towns in a two-part location; Germany everywhere else.
+    assert f("Wilmington, DE") == "US"
+    assert f("Berlin, DE") == "DE"
+    assert f("Hamburg, HH, DE") == "DE"
+    assert f("DE") == "DE"
 
 
 # --- SHA256 stability -------------------------------------------------------

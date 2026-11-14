@@ -15,6 +15,17 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
+- Cross-source dedup, title passes (`pipeline/crossdedup.py`). A kept row now
+  absorbs at most one row per other source and per place it lists, and the
+  better source keeps all of its rows: one title advertised for 200 shops stays
+  200 postings instead of one. Rows without a country are compared too (their
+  place is judged on the city), employer names in non-Latin scripts get a key,
+  and titles are compared without case, accents, punctuation, gender tags or a
+  closing bracket. The fuzzy pass no longer treats a title contained in a
+  longer one as the same job.
+- `country_iso` derived from the location: a trailing `, CA` is California
+  unless a Canadian province or city precedes it, and `Wilmington, DE` is
+  Delaware. Both were published as Canada and Germany.
 - Eightfold detail enrichment retries 429 responses using `Retry-After` or
   exponential backoff, and retries 5xx responses with linear delays. It stops
   the per-job detail calls for the rest of the run after a 403 or 405 block,
