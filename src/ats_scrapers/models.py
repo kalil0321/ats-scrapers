@@ -92,6 +92,7 @@ class ATSType(StrEnum):
     APPLE = "apple"
     BYTEDANCE = "bytedance"
     GOOGLE = "google"
+    JD = "jd"
     META = "meta"
     TESLA = "tesla"
     TIKTOK = "tiktok"

@@ -72,6 +72,7 @@ from ats_scrapers.scrapers import (
     InfoJobsSpainScraper,
     JazzHRScraper,
     JibeScraper,
+    JDScraper,
     JobBankCAScraper,
     JobsChScraper,
     JobsCzScraper,
@@ -1096,6 +1097,14 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "google": {
         "scraper": GoogleScraper, "singleton": True,
         "output": "google/jobs.csv",
+    },
+    "jd": {
+        # One list for the whole JD.com group. A read that comes back short
+        # or empty must not replace the last full snapshot.
+        "scraper": JDScraper, "singleton": True,
+        "output": "jd/jobs.csv",
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_empty": True,
     },
     "meta": {
         "scraper": MetaScraper, "singleton": True,

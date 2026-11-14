@@ -29,8 +29,8 @@ SourceKind = Literal["ats", "company_site", "gov_board", "job_board"]
 HEADLINE_KINDS: Final[frozenset[str]] = frozenset({"ats", "company_site"})
 
 COMPANY_SITES: Final[frozenset[str]] = frozenset({
-    "amazon", "apple", "bytedance", "google", "meta", "tesla", "tiktok",
-    "uber",
+    "amazon", "apple", "bytedance", "google", "jd", "meta", "tesla",
+    "tiktok", "uber",
 })
 
 GOV_BOARDS: Final[frozenset[str]] = frozenset({
