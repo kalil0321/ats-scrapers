@@ -95,7 +95,7 @@ class GreetingScraper(BaseScraper):
                 and (job := self._parse_opening(item, company)) is not None
             ]
             if self.include_descriptions and jobs:
-                await self._add_descriptions(fetch, jobs)
+                jobs = await self._add_descriptions(fetch, jobs)
         return jobs
 
     def get_description(self, job: Job) -> str | None:
@@ -107,13 +107,19 @@ class GreetingScraper(BaseScraper):
         async with self.make_fetcher() as fetch:
             return await _opening_description(fetch, url)
 
-    async def _add_descriptions(self, fetch: Fetcher, jobs: list[Job]) -> None:
+    async def _add_descriptions(self, fetch: Fetcher, jobs: list[Job]) -> list[Job]:
+        """Fill in the texts and return the openings whose page still exists."""
         semaphore = asyncio.Semaphore(DETAIL_CONCURRENCY)
+        closed: set[str] = set()
 
         async def fill(job: Job) -> None:
             async with semaphore:
                 try:
                     description = await _opening_description(fetch, str(job.url))
+                except CompanyNotFoundError:
+                    # Closed since the list was read.
+                    closed.add(job.ats_id)
+                    return
                 except ScraperError as exc:
                     # The opening stays, without its text.
                     logger.warning("Greeting opening %s could not be read: %s", job.url, exc)
@@ -122,6 +128,7 @@ class GreetingScraper(BaseScraper):
                 job.description = description[:25_000]
 
         await asyncio.gather(*(fill(job) for job in jobs))
+        return [job for job in jobs if job.ats_id not in closed]
 
     def _parse_opening(self, item: dict[str, Any], company: str) -> Job | None:
         ats_id = str(item.get("openingId") or "").strip()

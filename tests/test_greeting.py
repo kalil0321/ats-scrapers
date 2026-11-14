@@ -126,9 +126,19 @@ def test_descriptions_can_be_left_out(httpx_mock) -> None:
     assert len(httpx_mock.get_requests()) == 1
 
 
-def test_an_opening_whose_page_cannot_be_read_is_kept(httpx_mock) -> None:
+def test_an_opening_closed_since_the_list_was_read_is_dropped(httpx_mock) -> None:
     httpx_mock.add_response(url=HOME, text=_home([_opening(), _opening(1002)]))
     httpx_mock.add_response(url=f"{BASE}/o/1001", status_code=404)
+    httpx_mock.add_response(url=f"{BASE}/o/1002", text=_detail("<p>두번째</p>"))
+
+    jobs = GreetingScraper("acme").fetch()
+
+    assert [job.ats_id for job in jobs] == ["1002"]
+
+
+def test_an_opening_whose_page_cannot_be_read_is_kept(httpx_mock) -> None:
+    httpx_mock.add_response(url=HOME, text=_home([_opening(), _opening(1002)]))
+    httpx_mock.add_response(url=f"{BASE}/o/1001", text="<html></html>")
     httpx_mock.add_response(url=f"{BASE}/o/1002", text=_detail("<p>두번째</p>"))
 
     jobs = GreetingScraper("acme").fetch()
