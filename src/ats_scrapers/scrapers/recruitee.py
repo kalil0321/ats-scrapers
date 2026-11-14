@@ -19,8 +19,9 @@ import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._public_page import PAGE_CHECK_ATTEMPTS, redirect_target
 from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -70,7 +71,21 @@ class RecruiteeScraper(BaseScraper):
         except ValueError as exc:
             raise ScraperError(f"Recruitee returned non-JSON: {exc}") from exc
         offers = payload.get("offers") or []
+        if offers and await self._site_is_closed(api_url):
+            raise CompanyNotFoundError(
+                f"Recruitee still lists offers for {self.company_slug!r}, "
+                f"but its careers site is closed"
+            )
         return [self._parse_offer(o) for o in offers if isinstance(o, dict)]
+
+    async def _site_is_closed(self, api_url: str) -> bool:
+        """Recruitee sends a closed careers site to its own "not hosted" page."""
+        site_url = api_url.removesuffix("/api/offers") + "/"
+        async with self.make_fetcher(
+            follow_redirects=False, retries=PAGE_CHECK_ATTEMPTS
+        ) as fetch:
+            target = await redirect_target(fetch, site_url)
+        return target is not None and CLOSED_SITE_MARKER in target
 
     def _resolve_api_url(self) -> str:
         slug = self.company_slug.strip().rstrip("/")
@@ -126,6 +141,9 @@ class RecruiteeScraper(BaseScraper):
             raw=raw or None,
         )
 
+
+# Where Recruitee sends visitors of a careers site that is no longer hosted.
+CLOSED_SITE_MARKER = "recruitee.com/careers_not_hosted"
 
 _EMPLOYMENT_MAP = {
     "permanent": "FULL_TIME",

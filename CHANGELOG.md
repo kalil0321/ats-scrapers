@@ -19,6 +19,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
+- Lever, Gem, Recruitee: a board whose public page is closed is reported as not found.
 - Phenom: job links open the posting.
 - Oracle: job links open the posting.
 - Amazon: job links open the posting.
