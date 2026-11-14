@@ -29,7 +29,7 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/kalil0321/ats-scrapers/main/assets/demo.gif" alt="Scraping OpenAI's careers page from Python, querying the full dataset with DuckDB, and browsing it on data.stapply.ai">
+  <img src="https://raw.githubusercontent.com/kalil0321/ats-scrapers/main/assets/demo.gif" alt="The sources ats-scrapers covers, get_scraper_for_url on eight real careers pages, and search() over the hosted dataset">
 </p>
 
 ## Why ats-scrapers
