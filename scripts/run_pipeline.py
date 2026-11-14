@@ -61,6 +61,7 @@ from ats_scrapers.scrapers import (
     DayforceScraper,
     EightfoldScraper,
     EuresScraper,
+    FeishuHireScraper,
     GemScraper,
     GetOnBrdScraper,
     GoogleScraper,
@@ -533,6 +534,18 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: _slug_col(r) or r.get("name"),
         "csv": "ats-companies/breezy.csv",
         "output": "breezy/jobs.csv",
+    },
+    "feishu_hire": {
+        "scraper": FeishuHireScraper,
+        "slug": lambda r: _slug_col(r) or None,
+        "kwargs": lambda r: {
+            "sites": (r.get("sites") or "").strip() or None,
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/feishu_hire.csv",
+        "output": "feishu_hire/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 4,
     },
     "gem": {
         # Gem boards live at ``jobs.gem.com/{slug}``. Post-migration the

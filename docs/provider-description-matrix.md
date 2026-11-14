@@ -21,6 +21,7 @@ page/rendered page rather than a structured job payload.
 | `clearcompany` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `cornerstone` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `eightfold` | Yes | Yes | API | API |
+| `feishu_hire` | Yes | No | API | API |
 | `eures` | Yes | Yes | API/feed | API/feed + detail API fallback |
 | `gem` | Yes | Yes | API/feed | API/feed |
 | `getonbrd` | Yes | No | API/feed | API/feed |
