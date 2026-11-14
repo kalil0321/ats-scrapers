@@ -1217,8 +1217,8 @@ def test_country_iso_uses_word_boundaries():
 
 def test_country_iso_reads_a_trailing_ca_or_de_as_a_us_state_when_it_is_one():
     """``"san francisco, ca"`` is California, not Canada. On the 12 Nov
-    2026 snapshot about 40,000 rows were published with
-    ``country_iso = CA`` for that reason."""
+    2026 snapshot 34,573 rows were published with ``country_iso = CA``
+    for that reason."""
     from pipeline.publisher import _country_iso_from_location as f
 
     assert f("San Francisco, CA") == "US"
@@ -1230,6 +1230,8 @@ def test_country_iso_reads_a_trailing_ca_or_de_as_a_us_state_when_it_is_one():
     assert f("Vancouver, CA") == "CA"
     assert f("CA") == "CA"
     assert f("Toronto, Canada") == "CA"
+    assert f("Ottawa, Ontario, CA") == "CA"
+    assert f("Ontario, CA") == "US"  # the Californian city
     # Delaware towns in a two-part location; Germany everywhere else.
     assert f("Wilmington, DE") == "US"
     assert f("Berlin, DE") == "DE"

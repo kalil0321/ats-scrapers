@@ -780,13 +780,16 @@ def _trailing_code_country(lowered: str, code: str) -> str:
     """Country for a location that ends in the two-letter ``code``.
 
     ``ca`` is Canada when it stands alone or follows a Canadian province or
-    a large Canadian city (``"toronto, on, ca"``), California otherwise.
+    a large Canadian city (``"toronto, on, ca"``), California otherwise;
+    ``"ontario, ca"`` on its own is the Californian city.
     ``de`` is Germany unless it follows a Delaware town in a two-part
     location (``"wilmington, de"``).
     """
     parts = [part.strip() for part in lowered.split(",")]
     before = parts[-2] if len(parts) >= 2 else ""
     if code == "CA":
+        if len(parts) == 2 and before == "ontario":
+            return "US"  # the city of Ontario, California; the province follows a city
         if len(parts) == 1 or before in _CANADIAN_PROVINCES or before in _CANADIAN_CITIES:
             return "CA"
         return "US"
