@@ -321,6 +321,7 @@ def test_gem_parses_jobpostings(httpx_mock) -> None:
             }
         ],
     )
+    httpx_mock.add_response(method="HEAD", url="https://jobs.gem.com/acme")
     jobs = GemScraper("acme").fetch()
     assert jobs[0].title == "ML Engineer"
     assert jobs[0].location == "San Francisco, USA"

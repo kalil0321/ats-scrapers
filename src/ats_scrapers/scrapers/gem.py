@@ -19,9 +19,11 @@ import html as html_mod
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._public_page import page_is_gone
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -144,6 +146,13 @@ class GemScraper(BaseScraper):
     async def afetch(self) -> list[Job]:
         async with self.make_fetcher() as fetch:
             postings = await self._fetch_list(fetch)
+            if postings and await page_is_gone(
+                fetch, f"{BASE_URL}/{quote(self.company_slug, safe='')}"
+            ):
+                raise CompanyNotFoundError(
+                    f"Gem still lists postings for {self.company_slug!r}, "
+                    f"but its board page is closed"
+                )
             jobs = [self._parse_job(item) for item in postings]
             if self.include_descriptions and jobs:
                 await self._enrich_with_details(fetch, jobs, postings)
