@@ -20,6 +20,10 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 ### Fixed
 
 - Phenom: job links open the posting.
+- Oracle: job links open the posting.
+- Amazon: job links open the posting.
+- Beisen: job links open the posting.
+- Cornerstone: job links open the posting.
 - Moka: job links open the posting. The scraper built
   `{tenant}/job/{id}`, which answers 404 on Moka's career sites; the posting
   lives at `{tenant}#/job/{id}`. Every Moka job published so far carried the
