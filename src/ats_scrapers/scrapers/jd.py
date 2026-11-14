@@ -21,9 +21,13 @@ therefore the list page, with the opening's id as a fragment so that every
 job keeps an address of its own; the fragment is not something the site
 reads.
 
-The list moves while it is read (openings are published all day), so a row
-can show on two pages while another is skipped. The pages are read again, up
-to ``MAX_PASSES`` times, until every announced opening has been seen.
+A few requisitions fill two or more rows of the list, one after the other;
+they are one job. Read three times in a row, the list gave the same rows each
+time, so one reading is a whole snapshot as long as the list did not change
+meanwhile. The total is therefore asked again after the pages: if it moved,
+or the rows do not add up to it, the reading is thrown away and the list is
+read again from the start, ``MAX_PASSES`` times at most. Rows of two readings
+are never mixed, so an opening closed in between cannot be returned.
 
 The rows also name the staff who opened or own the requisition. Nothing
 about a person is read or stored.
@@ -54,9 +58,9 @@ PAGE_SIZE = 100
 # 2026): a total that needs more pages is not believed.
 MAX_PAGES = 200
 PAGE_CONCURRENCY = 2
-# How many times the pages are read to collect the openings the moving list
-# skipped, and the share of the announced total below which the list is
-# refused.
+# How many times the list is read before giving up on a reading that agrees
+# with its own total, and the share of that total the distinct openings must
+# reach (rows repeat a requisition now and then; they must not be most of it).
 MAX_PASSES = 3
 MIN_COVERAGE = 0.98
 MAX_DESCRIPTION_CHARS = 25_000
@@ -92,8 +96,6 @@ class JDScraper(BaseScraper):
     }
 
     async def afetch(self) -> list[Job]:
-        found: dict[str, dict[str, Any]] = {}
-        total = 0
         async with self.make_fetcher() as fetch:
             semaphore = asyncio.Semaphore(PAGE_CONCURRENCY)
 
@@ -103,21 +105,26 @@ class JDScraper(BaseScraper):
 
             for _ in range(MAX_PASSES):
                 total = await self._total(fetch)
-                pages = math.ceil(total / PAGE_SIZE)
-                rows = await asyncio.gather(
-                    *(read(page) for page in range(1, pages + 1))
+                pages = await asyncio.gather(
+                    *(read(page) for page in range(1, math.ceil(total / PAGE_SIZE) + 1))
                 )
-                for page_rows in rows:
-                    for row in page_rows:
-                        found.setdefault(_opening_id(row), row)
-                if len(found) >= total:
+                rows = [row for page_rows in pages for row in page_rows]
+                # The list changed while it was read when either differs:
+                # this reading is dropped whole, never completed by the next.
+                if len(rows) == total and await self._total(fetch) == total:
                     break
+            else:
+                raise ScraperError(
+                    f"JD.com: the list did not agree with its total in "
+                    f"{MAX_PASSES} readings (last: {len(rows)} rows for {total})"
+                )
 
-        # ``total`` is the one the last pass announced.
+        found: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            found.setdefault(_opening_id(row), row)
         if len(found) < math.ceil(total * MIN_COVERAGE):
             raise ScraperError(
-                f"JD.com announces {total} openings and listed {len(found)} "
-                f"in {MAX_PASSES} passes"
+                f"JD.com announces {total} openings and listed {len(found)} distinct ones"
             )
         fetched_at = datetime.now(UTC)
         return [self._parse_job(row, fetched_at) for row in found.values()]

@@ -80,7 +80,7 @@ def test_reads_one_opening(httpx_mock) -> None:
 
     assert _asked(httpx_mock, COUNT) == [
         {"workCityJson": "[]", "jobTypeJson": "[]", "jobSearch": "", "depTypeJson": "[]"}
-    ]
+    ] * 2
     assert _asked(httpx_mock, LIST) == [
         {
             "workCityJson": "[]",
@@ -139,44 +139,90 @@ def test_reads_every_page(httpx_mock) -> None:
 
     assert len(jobs) == 250
     assert sorted(p["pageIndex"] for p in _asked(httpx_mock, LIST)) == ["1", "2", "3"]
-    assert len(_asked(httpx_mock, COUNT)) == 1
+    assert len(_asked(httpx_mock, COUNT)) == 2
 
 
-def test_a_row_shown_twice_is_one_job(httpx_mock) -> None:
-    """The list moves while it is read: the same row can close one page and
-    open the next. Three more passes do not change what was found, and the
-    list is accepted because almost all of it was seen."""
+def test_a_requisition_on_two_rows_is_one_job(httpx_mock) -> None:
+    """The site's list repeats a requisition on neighbouring rows. One
+    reading is enough: nothing moved."""
     rows = [_row(i) for i in range(1, 100)] + [_row(99)]
     _serve(httpx_mock, rows)
 
     jobs = JDScraper("jd").fetch()
 
     assert len(jobs) == 99
-    assert len(_asked(httpx_mock, COUNT)) == 3
+    assert len(_asked(httpx_mock, COUNT)) == 2  # before and after the pages
+    assert len(_asked(httpx_mock, LIST)) == 1
 
 
-def test_a_second_pass_collects_what_the_first_skipped(httpx_mock) -> None:
+def _changing_site(httpx_mock, totals: list[int], readings: list[list[dict[str, object]]]):
+    """Totals answered one after the other, and one list per reading."""
     import httpx
 
-    httpx_mock.add_response(method="POST", url=COUNT, text="3", is_reusable=True)
-    passes = iter([[_row(1), _row(2), _row(2)], [_row(1), _row(3), _row(2)]])
+    answers = iter(totals)
+    lists = iter(readings)
     httpx_mock.add_callback(
-        lambda request: httpx.Response(200, json=next(passes)),
+        lambda request: httpx.Response(200, text=str(next(answers))),
+        method="POST",
+        url=COUNT,
+        is_reusable=True,
+    )
+    httpx_mock.add_callback(
+        lambda request: httpx.Response(200, json=next(lists)),
         method="POST",
         url=LIST,
         is_reusable=True,
     )
 
+
+def test_an_opening_closed_during_the_reading_is_not_returned(httpx_mock) -> None:
+    """Opening 1 closes while the first reading is under way and opening 3
+    was pushed off it. The first reading is dropped whole: mixing the two
+    would return the closed opening and call the list complete."""
+    _changing_site(
+        httpx_mock,
+        totals=[3, 2, 2, 2],
+        readings=[[_row(1), _row(1), _row(2)], [_row(2), _row(3)]],
+    )
+
     jobs = JDScraper("jd").fetch()
 
-    assert sorted(job.ats_id for job in jobs) == ["1", "2", "3"]
+    assert sorted(job.ats_id for job in jobs) == ["2", "3"]
+    assert len(_asked(httpx_mock, COUNT)) == 4
     assert len(_asked(httpx_mock, LIST)) == 2
 
 
-def test_a_list_far_short_of_its_total_is_refused(httpx_mock) -> None:
-    _serve(httpx_mock, [_row(i) for i in range(1, 91)], total=100)
+def test_rows_that_do_not_add_up_to_the_total_are_read_again(httpx_mock) -> None:
+    _changing_site(
+        httpx_mock,
+        totals=[3, 3, 3],
+        readings=[[_row(1), _row(2)], [_row(1), _row(2), _row(3)]],
+    )
 
-    with pytest.raises(ScraperError, match="announces 100 openings and listed 90"):
+    jobs = JDScraper("jd").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["1", "2", "3"]
+    # A short reading is dropped without asking the total again.
+    assert len(_asked(httpx_mock, COUNT)) == 3
+
+
+def test_a_list_that_keeps_changing_is_refused(httpx_mock) -> None:
+    _changing_site(
+        httpx_mock,
+        totals=[2, 3, 3, 4, 4, 5],
+        readings=[[_row(1), _row(2)], [_row(1), _row(2), _row(3)], [_row(i) for i in range(1, 5)]],
+    )
+
+    with pytest.raises(ScraperError, match="did not agree with its total in 3 readings"):
+        JDScraper("jd").fetch()
+
+
+def test_a_list_made_mostly_of_repeated_rows_is_refused(httpx_mock) -> None:
+    """Rows that add up to the total are not enough: the same page served
+    for every page index would add up too."""
+    _serve(httpx_mock, [_row(i % 50 + 1) for i in range(100)])
+
+    with pytest.raises(ScraperError, match="announces 100 openings and listed 50 distinct"):
         JDScraper("jd").fetch()
 
 
