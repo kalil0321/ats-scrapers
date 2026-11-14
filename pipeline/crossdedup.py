@@ -106,8 +106,20 @@ _GENDER_TAG_RE = re.compile(
 _NOT_WORD_RE = re.compile(r"[^\w]+", re.UNICODE)
 
 
+# Punctuation that names a language: "C++ Developer" is not "C# Developer".
+_SPELLED_OUT = (
+    (re.compile(r"(?<![a-z0-9])c\+\+"), " cpp "),
+    (re.compile(r"(?<![a-z0-9])c#"), " csharp "),
+    (re.compile(r"(?<![a-z0-9])f#"), " fsharp "),
+    (re.compile(r"(?<![a-z0-9])\.net(?![a-z0-9])"), " dotnet "),
+)
+
+
 def _tokens(text: str) -> str:
-    cleaned = _GENDER_TAG_RE.sub(" ", _fold(text.lower()))
+    lowered = _fold(text.lower())
+    for pattern, word in _SPELLED_OUT:
+        lowered = pattern.sub(word, lowered)
+    cleaned = _GENDER_TAG_RE.sub(" ", lowered)
     return " ".join(_NOT_WORD_RE.sub(" ", cleaned).replace("_", " ").split())
 
 
@@ -331,6 +343,33 @@ def _free_slot(
     return best, best_position
 
 
+def _claim(
+    row: _Row,
+    kept: _Row,
+    taken: dict[int, _Row] | set[int],
+    *,
+    other_city_ok: bool,
+) -> tuple[int, list[int]]:
+    """Slots of ``kept`` that ``row`` fills: ``(agreement, positions)``, ``(0, [])`` when none.
+
+    The first position is the best free slot. A row that lists several
+    places also fills every other free slot naming one of its cities: a
+    board row at ``"Paris; Lyon"`` covers both places of a kept ``"Paris;
+    Lyon"`` row, so a second board row in Lyon is another opening.
+    """
+    agreement, position = _free_slot(row, kept, taken, other_city_ok=other_city_ok)
+    if not agreement:
+        return 0, []
+    positions = [position]
+    if len(row.cities) > 1:
+        positions += [
+            other
+            for other, city in enumerate(kept.slots)
+            if other != position and other not in taken and city and city in row.cities
+        ]
+    return agreement, positions
+
+
 def _hand_over_plan(row: _Row, kept: _Row) -> list[tuple[int, int, _Row]] | None:
     """Where the rows ``row`` stands for would go if ``kept`` absorbed it.
 
@@ -342,12 +381,13 @@ def _hand_over_plan(row: _Row, kept: _Row) -> list[tuple[int, int, _Row]] | None
     plan: list[tuple[int, int, _Row]] = []
     for source, absorbed in row.used.items():
         taken = set(kept.used.get(source, ()))
-        for earlier in absorbed.values():
-            agreement, position = _free_slot(earlier, kept, taken, other_city_ok=True)
+        # A row that filled several slots is one row to hand over.
+        for earlier in {id(member): member for member in absorbed.values()}.values():
+            agreement, positions = _claim(earlier, kept, taken, other_city_ok=True)
             if not agreement:
                 return None
-            taken.add(position)
-            plan.append((source, position, earlier))
+            taken.update(positions)
+            plan.extend((source, position, earlier) for position in positions)
     return plan
 
 
@@ -376,10 +416,11 @@ def absorb(
             kept.extend(current)
             current, current_source = [], row.source
         best: _Row | None = None
-        best_agreement, best_position = 0, -1
+        best_agreement = 0
+        best_positions: list[int] = []
         best_plan: list[tuple[int, int, _Row]] = []
         for candidate in kept:
-            agreement, position = _free_slot(
+            agreement, positions = _claim(
                 row, candidate, candidate.used.get(row.source, ()), other_city_ok=other_city_ok
             )
             if agreement <= best_agreement or not same_title(row, candidate):
@@ -387,13 +428,14 @@ def absorb(
             plan = _hand_over_plan(row, candidate)
             if plan is None:
                 continue
-            best, best_agreement, best_position, best_plan = candidate, agreement, position, plan
+            best, best_agreement, best_positions, best_plan = candidate, agreement, positions, plan
             if agreement == _SAME_CITY:
                 break
         if best is None:
             current.append(row)
             continue
-        best.used.setdefault(row.source, {})[best_position] = row
+        for position in best_positions:
+            best.used.setdefault(row.source, {})[position] = row
         for source, position, earlier in best_plan:
             best.used.setdefault(source, {})[position] = earlier
         row.used = {}

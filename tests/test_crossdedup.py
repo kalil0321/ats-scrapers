@@ -113,6 +113,18 @@ def test_an_absorbed_row_hands_over_what_it_absorbed() -> None:
     assert _survivors(rows) == {"workday": 1, "eures": 1}
 
 
+def test_a_board_row_that_lists_two_places_fills_both() -> None:
+    """The first board row already covers Lyon: the second one in Lyon is
+    another opening."""
+    rows = [
+        ("greenhouse", 1, "Account Executive", "Acme", "Paris; Lyon"),
+        ("welcometothejungle", 3, "Account Executive", "Acme", "Paris (HQ); Lyon (Office)"),
+        ("welcometothejungle", 3, "Account Executive", "Acme", "Lyon, France"),
+    ]
+
+    assert _survivors(rows) == {"greenhouse": 1, "welcometothejungle": 1}
+
+
 def test_a_handed_over_row_keeps_its_place() -> None:
     """B (Lyon) had absorbed a Lyon row of C. When A ("Paris; Lyon") absorbs
     B, that row fills A's Lyon slot, so the second Lyon row of C stays."""
@@ -307,6 +319,17 @@ def test_two_different_brackets_are_two_jobs() -> None:
     assert _survivors(rows) == {"ashby": 1, "welcometothejungle": 1}
 
 
+def test_punctuation_that_names_a_language_is_kept() -> None:
+    rows = [
+        ("greenhouse", 1, "C++ Developer", "Acme", "Paris"),
+        ("welcometothejungle", 3, "C# Developer", "Acme", "Paris, France"),
+        ("greenhouse", 1, ".NET Engineer", "Acme", "Paris"),
+        ("welcometothejungle", 3, "Net Engineer", "Acme", "Paris, France"),
+    ]
+
+    assert _survivors(rows) == {"greenhouse": 2, "welcometothejungle": 2}
+
+
 def test_a_title_inside_a_longer_title_is_another_job() -> None:
     """``token_set_ratio`` scored these 100: one title's words are all in
     the other. They are different jobs."""
@@ -345,7 +368,8 @@ def test_a_typo_is_the_same_job_only_where_the_places_agree() -> None:
         ("Front Office Agent (all genders) (Empfangsmitarbeiter/in (Hotel))",
          "front office agent empfangsmitarbeiter in hotel", "front office agent"),
         ("R&D Engineer F/H", "r d engineer", "r d engineer"),
-        ("C/C++ Developer", "c c developer", "c c developer"),
+        ("C/C++ Developer", "c cpp developer", "c cpp developer"),
+        ("C# / F# Engineer (.NET)", "csharp fsharp engineer dotnet", "csharp fsharp engineer"),
         ("", "", ""),
         (None, "", ""),
     ],
