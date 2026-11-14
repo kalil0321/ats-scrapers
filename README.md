@@ -1,32 +1,66 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/kalil0321/ats-scrapers/main/assets/banner.jpeg" alt="ats-scrapers" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/kalil0321/ats-scrapers/main/assets/banner-dark.png">
+    <img src="https://raw.githubusercontent.com/kalil0321/ats-scrapers/main/assets/banner-light.png" alt="ats-scrapers by Stapply. Open job data, straight from the ATS.">
+  </picture>
 </p>
 
+<p align="center">
+  Live job postings from 60+ ATS platforms, company career APIs and public job services,
+  normalized into one schema and published as a free dataset. Part of <a href="https://stapply.ai">Stapply</a>.
+</p>
 
-# ats-scrapers
+<p align="center">
+  <a href="https://data.stapply.ai">Browse the data</a> ·
+  <a href="https://map.stapply.ai">Live map</a> ·
+  <a href="https://github.com/kalil0321/ats-scrapers/blob/main/docs/JOB_SCHEMA.md">Job schema</a> ·
+  <a href="#hosted-api-coming-soon">Hosted API (coming soon)</a>
+</p>
 
-An open dataset and Python toolkit for job data from ATS platforms and public
-sources.
+<p align="center">
+  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.total_jobs&label=live%20jobs&color=3b82f6&cacheSeconds=300" alt="Live jobs"></a>
+  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.total_companies&label=companies&color=3b82f6&cacheSeconds=300" alt="Companies"></a>
+  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.ats_count&label=sources&color=3b82f6&cacheSeconds=300" alt="Sources"></a>
+  <a href="https://pypi.org/project/ats-scrapers/"><img src="https://img.shields.io/pypi/v/ats-scrapers?color=3b82f6" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/ats-scrapers/"><img src="https://img.shields.io/pypi/pyversions/ats-scrapers" alt="Python versions"></a>
+  <a href="https://github.com/kalil0321/ats-scrapers/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
+</p>
 
-[![PyPI version](https://img.shields.io/pypi/v/ats-scrapers)](https://pypi.org/project/ats-scrapers/)
-[![Python versions](https://img.shields.io/pypi/pyversions/ats-scrapers)](https://pypi.org/project/ats-scrapers/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/kalil0321/ats-scrapers/blob/main/LICENSE)
-[![Live jobs](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.total_jobs&label=live%20jobs&cacheSeconds=300)](https://storage.stapply.ai/jobhive/v1/manifest.json)
-[![Companies](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.total_companies&label=companies&cacheSeconds=300)](https://storage.stapply.ai/jobhive/v1/manifest.json)
-[![Sources](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.ats_count&label=sources&cacheSeconds=300)](https://storage.stapply.ai/jobhive/v1/manifest.json)
-[![Dataset snapshot](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.generated_at&label=snapshot&cacheSeconds=300)](https://storage.stapply.ai/jobhive/v1/manifest.json)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/kalil0321/ats-scrapers/main/assets/demo.gif" alt="Scraping OpenAI's careers page from Python, querying the full dataset with DuckDB, and browsing it on data.stapply.ai">
+</p>
 
-`ats-scrapers` provides two layers:
+## Why ats-scrapers
 
-- A free, hosted dataset of live jobs from company career sites, ATS
-  platforms, and public job feeds. The badges above read current counts and
-  snapshot time directly from the live manifest.
-- Reusable scraper adapters for Workday, Greenhouse, Lever,
-  Ashby, SmartRecruiters, and SuccessFactors.
+- **From the source.** Jobs come from the ATS platforms and career APIs that
+  companies publish to, plus public employment services such as EURES. Each
+  row keeps the original apply link, and duplicates across sources are removed.
+- **One schema.** Every source maps to the same typed `Job`: title, company,
+  location, remote, salary, posted date and apply URL. See the
+  [job schema](https://github.com/kalil0321/ats-scrapers/blob/main/docs/JOB_SCHEMA.md).
+- **Free and open.** The hosted snapshot needs no API key or account, and the
+  library is MIT.
 
-Jobs are collected from ATS endpoints, company career sites, and public job
-feeds, then normalized into one typed schema. Querying the hosted dataset
-requires no API key or account.
+## Get the data
+
+**Browse it** at [data.stapply.ai](https://data.stapply.ai), no setup needed.
+
+**Query it with [DuckDB](https://duckdb.org)** without downloading the
+snapshot. DuckDB fetches only the parts of the hosted Parquet file that the
+query needs:
+
+```bash
+duckdb -c "SELECT company, title, location, apply_url
+  FROM 'https://storage.stapply.ai/jobhive/v1/all.parquet'
+  WHERE title ILIKE '%machine learning%' AND location ILIKE '%paris%'
+  LIMIT 20"
+```
+
+**Download it.** The [manifest](https://storage.stapply.ai/jobhive/v1/manifest.json)
+lists the full snapshot and every per-source slice as Parquet and CSV, with
+row counts, sizes and checksums.
+
+**Use it from Python** with the package below.
 
 ## Install
 
@@ -43,7 +77,7 @@ pip install "ats-scrapers[scrapers]"  # run the scraper library
 pip install "ats-scrapers[all]"       # install every runtime extra
 ```
 
-## Query the public dataset
+## Query the dataset from Python
 
 ```python
 from ats_scrapers import search
@@ -60,19 +94,16 @@ jobs = search(
 print(jobs[["company", "title", "location", "apply_url"]])
 ```
 
-For practical full-dataset queries, install the `parquet` extra. The base
-install is intended for smaller per-source CSV slices.
+Without `ats=`, `search()` downloads the full snapshot and loads it into
+memory: over 2 GB with the `parquet` extra, and the much larger CSV without
+it. For one-off questions across every source, the DuckDB query above is
+faster.
 
 ```python
 from ats_scrapers import search
 
 jobs = search(query="data engineer", remote=True, salary_min=80_000)
 ```
-
-The [live manifest](https://storage.stapply.ai/jobhive/v1/manifest.json)
-contains current row counts and artifact URLs. See the
-[job schema](https://github.com/kalil0321/ats-scrapers/blob/main/docs/JOB_SCHEMA.md)
-for field definitions and normalization rules.
 
 ## Scrape a company
 
@@ -104,55 +135,77 @@ from ats_scrapers.scrapers import GreenhouseScraper
 jobs = GreenhouseScraper("anthropic").fetch()
 ```
 
-Scrapers are async-first — in async code (or for concurrency) use
-`await scraper.afetch()` instead. The sync `fetch()` also works from
-inside a running event loop (Jupyter, FastAPI): it transparently runs
-on a worker thread.
+Scrapers are async-first. In async code, or for concurrency, use
+`await scraper.afetch()`. The sync `fetch()` also works inside a running event
+loop (Jupyter, FastAPI) by running on a worker thread.
 
-Scraper adapters include:
+## Sources
 
-- Major ATS platforms: ADP Workforce Now, Frontline AppliTrack, Greenhouse, Lever, Ashby,
-  Workday, SmartRecruiters, SuccessFactors, Oracle, iCIMS (and its Jibe career sites),
-  HERP Hire, HRMOS, Keka, Paycom,
-  Softgarden, Workable, Personio,
-  and more.
-- First-party company APIs: Amazon, Apple, Google, TikTok, and Uber.
-- Public and regional sources: EURES, Bundesagentur, Arbetsformedlingen,
-  Welcome to the Jungle, and others.
-- Career-site platforms on the employer's own domain: Radancy TalentBrew.
-- Oracle Taleo, both editions: Business Edition and Enterprise Edition.
-- ClearCompany hosted career sites.
-- Ninehire career sites.
-- PeopleAdmin applicant portals.
-- Talentio recruitment homes (Japan).
-- Varbi employer boards.
-- Wantedly company pages (Japan).
-- Cegid Talentsoft career sites.
-- CATS careers portals.
-- Hireology career sites.
-- WinTalent (Hotjob) career portals.
+The package ships scrapers for 80+ sources: Workday, Greenhouse, Lever, Ashby,
+SmartRecruiters, SuccessFactors, Oracle, iCIMS, Workable, Personio and many
+more, plus company career APIs and public employment services.
 
-Run `python -c "from ats_scrapers import list_ats; print(*list_ats())"` for the
-sources currently present in the hosted dataset. The dataset can list a source
-before this package ships a scraper for it — `search()` still returns those
-rows; only building your own scraper needs one. To skip sources without a
-scraper:
+<details>
+<summary>All sources with a scraper</summary>
+
+**ATS platforms:** ADP Workforce Now, ApplicantPro, Ashby, Avature, BambooHR,
+Breezy HR, CATS, Cegid Talentsoft, ClearCompany, Cornerstone, Dayforce,
+Eightfold, Frontline AppliTrack, Gem, Greenhouse, Hireology, iCIMS, iCIMS Jibe,
+JazzHR, Jobvite, JOIN, Lever, Oracle Recruiting, PageUp, Paycom, Paylocity,
+PeopleAdmin, Personio, Phenom, Pinpoint, Radancy TalentBrew, Recruitee,
+Recruiterbox, Rippling, SmartRecruiters, Softgarden, SuccessFactors, Taleo
+Business Edition, Taleo Enterprise, Teamtailor, UKG Pro, Varbi, Workable,
+Workday.
+
+**Regional hiring platforms:** Beisen, Beisen (legacy), Darwinbox, Gupy,
+HERP Hire, HRMOS, Keka, Moka, Ninehire, Talentio, Wanted, Wantedly, WinTalent.
+
+**Company career APIs:** Amazon, Apple, ByteDance, Google, Meta, Tesla,
+TikTok, Uber.
+
+**Public employment services:** Arbetsförmedlingen, Bundesagentur für Arbeit,
+EURES, Job Bank Canada, USAJOBS.
+
+**Job boards:** Built In, Get on Board, InfoJobs, jobs.ch, Jobs.cz, Manfred,
+Mercor, ProgramaThor, Remote OK, SEEK, The Hub, We Work Remotely, Welcome to
+the Jungle, Wellfound, Workable Jobs, Y Combinator.
+
+</details>
+
+The hosted dataset and the package are versioned separately, so the dataset
+can include a source before this package ships its scraper. `search()` returns
+those rows either way. To list the sources in the dataset and keep only the
+ones you can scrape yourself:
 
 ```python
 from ats_scrapers import list_ats
-from ats_scrapers.scrapers import ScraperRegistry, get_scraper
+from ats_scrapers.scrapers import ScraperRegistry
 
 scrapeable = [a for a in list_ats() if ScraperRegistry.has_scraper(a)]
 ```
+
+## Hosted API (coming soon)
+
+A paid API on top of the free dataset, for when downloading snapshots isn't
+enough:
+
+- **Search:** query live jobs with filters, without downloading anything.
+- **Job history:** when each posting was first seen, last seen and closed.
+- **Change feeds:** new and closed jobs since your last call.
+- **Faster refreshes** than the free snapshot.
+
+The library, the snapshot and the company lists stay free. Plans, and what
+you'd want from the API, are discussed in
+[#314](https://github.com/kalil0321/ats-scrapers/issues/314).
 
 ## Contributing
 
 Contributions can add a source, improve an existing scraper, or add companies
 to the CSV inventories in
 [`ats-companies/`](https://github.com/kalil0321/ats-scrapers/tree/main/ats-companies).
-The scraper API is intentionally tiny: subclass `BaseScraper`, set `ats`, and
-implement `async def afetch()` using `self.make_fetcher()` for HTTP — retries,
-backoff, and error mapping come for free. See
+The scraper API is intentionally small: subclass `BaseScraper`, set `ats`, and
+implement `async def afetch()` using `self.make_fetcher()` for HTTP, which
+handles retries, backoff and error mapping. See
 `src/ats_scrapers/scrapers/greenhouse.py` for a compact reference and the `Job`
 model in `src/ats_scrapers/models.py` for the schema you populate.
 
@@ -167,4 +220,6 @@ uv run ruff check .
 
 ## License
 
-[MIT](https://github.com/kalil0321/ats-scrapers/blob/main/LICENSE)
+[MIT](https://github.com/kalil0321/ats-scrapers/blob/main/LICENSE). ats-scrapers
+is built by [Stapply](https://stapply.ai), which also runs
+[data.stapply.ai](https://data.stapply.ai) and [map.stapply.ai](https://map.stapply.ai).
