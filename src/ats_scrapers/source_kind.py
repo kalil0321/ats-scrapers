@@ -36,7 +36,8 @@ COMPANY_SITES: Final[frozenset[str]] = frozenset({
 })
 
 GOV_BOARDS: Final[frozenset[str]] = frozenset({
-    "arbetsformedlingen", "bundesagentur", "eures", "jobbankca", "usajobs",
+    "arbetsformedlingen", "bundesagentur", "eures", "jobbankca",
+    "mycareersfuture", "usajobs",
 })
 
 JOB_BOARDS: Final[frozenset[str]] = frozenset({

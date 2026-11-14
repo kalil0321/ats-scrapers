@@ -82,6 +82,7 @@ from ats_scrapers.scrapers import (
     KekaScraper,
     LeverScraper,
     ManfredScraper,
+    MyCareersFutureScraper,
     MercorScraper,
     MetaScraper,
     MokaScraper,
@@ -1202,6 +1203,11 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "jobbankca": {
         "scraper": JobBankCAScraper, "singleton": True,
         "output": "jobbankca/jobs.csv",
+        "fail_closed_on_empty": True,
+    },
+    "mycareersfuture": {
+        "scraper": MyCareersFutureScraper, "singleton": True,
+        "output": "mycareersfuture/jobs.csv",
         "fail_closed_on_empty": True,
     },
     "jobs_cz": {

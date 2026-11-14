@@ -56,6 +56,7 @@ from ats_scrapers.scrapers.manfred import ManfredScraper
 from ats_scrapers.scrapers.mercor import MercorScraper
 from ats_scrapers.scrapers.meta import MetaScraper
 from ats_scrapers.scrapers.moka import MokaScraper
+from ats_scrapers.scrapers.mycareersfuture import MyCareersFutureScraper
 from ats_scrapers.scrapers.ninehire import NinehireScraper
 from ats_scrapers.scrapers.oracle import OracleScraper
 from ats_scrapers.scrapers.pageup import PageUpScraper
@@ -146,6 +147,7 @@ __all__ = [
     "MercorScraper",
     "MetaScraper",
     "MokaScraper",
+    "MyCareersFutureScraper",
     "NinehireScraper",
     "OracleScraper",
     "PageUpScraper",

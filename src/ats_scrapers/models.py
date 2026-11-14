@@ -122,6 +122,7 @@ class ATSType(StrEnum):
     WELLFOUND = "wellfound"
     INFOJOBSES = "infojobs_es"
     JOBBANKCA = "jobbankca"
+    MYCAREERSFUTURE = "mycareersfuture"
     SEEK = "seek"
     # Additional multi-tenant ATSes (post-0.1)
     BAMBOOHR = "bamboohr"
