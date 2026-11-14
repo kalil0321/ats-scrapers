@@ -46,6 +46,11 @@ MAX_CONCURRENCY_HTTPCLOAK = 4  # browser-fingerprint clients are heavier per-req
 DETAIL_CONCURRENCY = 8  # per-tenant detail-page enrichment cap
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5  # seconds; exponential for 429, linear for 5xx
+# A detail 429 that asks for a longer wait than this ends the detail calls
+# for the run. The wait is slept once per job while holding a slot, so a
+# tenant answering ``Retry-After: 3600`` would otherwise stall its run for
+# hours for descriptions it is refusing to serve anyway.
+DETAIL_MAX_RETRY_WAIT = 60.0
 SLOW_REQUEST_THRESHOLD = 5.0  # log a warning for any single request slower than this
 
 _TAG_RE_EF = re.compile(r"<[^>]+>")
@@ -270,7 +275,8 @@ class EightfoldScraper(BaseScraper):
 
         Retries network errors, 429 (honouring ``Retry-After``) and 5xx. A
         403/405 is a block: it is not retried and sets ``_detail_blocked`` so
-        the rest of the detail swarm stops. The backoff sleeps happen while
+        the rest of the detail swarm stops. So does a 429 whose
+        ``Retry-After`` exceeds ``DETAIL_MAX_RETRY_WAIT``. The backoff sleeps happen while
         holding the semaphore slot on purpose, so a rate limit throttles the
         whole swarm and not just this one job.
         """
@@ -306,7 +312,11 @@ class EightfoldScraper(BaseScraper):
                     return None
                 if attempt == MAX_RETRIES:
                     return None
-                await asyncio.sleep(_detail_retry_delay(response, attempt))
+                delay = _detail_retry_delay(response, attempt)
+                if delay > DETAIL_MAX_RETRY_WAIT:
+                    self._note_detail_blocked(response.status_code)
+                    return None
+                await asyncio.sleep(delay)
         return None
 
     def _note_detail_blocked(self, status: int) -> None:

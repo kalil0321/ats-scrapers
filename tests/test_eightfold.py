@@ -1153,6 +1153,50 @@ def test_detail_stops_swarm_on_block(
     assert len(_detail_requests(httpx_mock)) == 1
 
 
+def test_detail_stops_swarm_on_a_long_retry_after(
+    detail_retries, httpx_mock, monkeypatch
+) -> None:
+    """A 429 asking for an hour is not slept out once per job: the detail
+    calls stop for the run, and nothing sleeps."""
+    import ats_scrapers.scrapers.eightfold as ef
+
+    monkeypatch.setattr(ef, "DETAIL_CONCURRENCY", 1)
+    sleeps = _record_sleeps(monkeypatch)
+    _search_with_jobs(httpx_mock, ["100", "101", "102"])
+    httpx_mock.add_response(
+        url=DETAIL_URL,
+        status_code=429,
+        headers={"Retry-After": "3600"},
+        is_reusable=True,
+    )
+
+    jobs = EightfoldScraper("dolby").fetch()
+
+    assert [j.description for j in jobs] == [None, None, None]
+    assert len(_detail_requests(httpx_mock)) == 1
+    assert sleeps == []
+
+
+def test_detail_sleeps_a_retry_after_within_the_limit(
+    detail_retries, httpx_mock, monkeypatch
+) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+
+    sleeps = _record_sleeps(monkeypatch)
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(
+        url=DETAIL_URL,
+        status_code=429,
+        headers={"Retry-After": str(int(ef.DETAIL_MAX_RETRY_WAIT))},
+    )
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok())
+
+    jobs = EightfoldScraper("dolby").fetch()
+
+    assert jobs[0].description == "<p>Desc</p>"
+    assert sleeps == [ef.DETAIL_MAX_RETRY_WAIT]
+
+
 def test_detail_block_flag_resets_on_next_fetch(detail_retries, httpx_mock) -> None:
     scraper = EightfoldScraper("dolby")
     scraper._detail_blocked = True
