@@ -15,12 +15,14 @@ page/rendered page rather than a structured job payload.
 | `avature` | Yes | Yes | HTML | HTML |
 | `bamboohr` | Yes | Yes | HTML | API |
 | `breezy` | Yes | Yes | API | HTML |
+| `brightermonday` | Yes | No | HTML with embedded JSON | HTML with embedded JSON |
 | `builtin` | Yes | No | HTML | HTML |
 | `bundesagentur` | Yes | Yes | API | API |
 | `catsone` | Yes | Yes | HTML (embedded data) | HTML (embedded data) |
 | `clearcompany` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `cornerstone` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `eightfold` | Yes | Yes | API | API |
+| `emploitic` | Yes | No | HTML with embedded JSON | HTML with embedded JSON |
 | `feishu_hire` | Yes | No | API | API |
 | `eures` | Yes | Yes | API/feed | API/feed + detail API fallback |
 | `gem` | Yes | Yes | API/feed | API/feed |
@@ -35,6 +37,7 @@ page/rendered page rather than a structured job payload.
 | `jibe` | Yes | No | API | API |
 | `jazzhr` | Yes | Yes | HTML | HTML |
 | `jd` | Yes | No | API/feed | API/feed |
+| `jobberman` | Yes | No | HTML with embedded JSON | HTML with embedded JSON |
 | `jobsch` | Yes | Yes | API | HTML |
 | `join_com` | Yes | Yes | HTML | HTML |
 | `keka` | Yes | No | HTML bootstrap + API | API |

@@ -667,6 +667,7 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     # Hybrid jobboards
     "welcometothejungle": 3, "mercor": 3, "wantedly": 3,
     "seek": 4,
+    "brightermonday": 4, "emploitic": 4, "jobberman": 4,
     # Sourcing/matching layer that mirrors others
     "eightfold": 5,
     # National public-sector aggregators — government-curated but the
