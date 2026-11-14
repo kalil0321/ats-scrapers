@@ -7,6 +7,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Added
 
+- Feishu Hire career sites.
 - Zoho Recruit career sites.
 - Varbi employer RSS scraper with complete descriptions, public detail metadata,
   locale-independent tenant IDs, URL resolution, and a validated employer catalog.
@@ -20,6 +21,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
+- Pipeline: a few failed boards no longer hold back ADP, Jobvite, Keka, PageUp, Paycom or Varbi.
 - Lever, Gem, Recruitee: a board whose public page is closed is reported as not found.
 - Phenom: job links open the posting.
 - Oracle: job links open the posting.

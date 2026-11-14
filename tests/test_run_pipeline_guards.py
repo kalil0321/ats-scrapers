@@ -1574,3 +1574,18 @@ def test_fail_closed_tolerance_does_not_cover_omitted_shards(
 
     assert rc == 1
     assert not out_path.exists()
+
+
+def test_every_fail_closed_catalogue_tolerates_a_failed_board() -> None:
+    """One closed board among many must not freeze a whole source."""
+    root = Path(__file__).resolve().parents[1]
+    frozen_by_one_board = []
+    for name, cfg in runner.CONFIGS.items():
+        if not cfg.get("fail_closed_on_any_error") or not cfg.get("csv"):
+            continue
+        with (root / cfg["csv"]).open(newline="", encoding="utf-8") as handle:
+            # Count boards the way the runner does: records with a slug.
+            targets = sum(1 for row in csv.DictReader(handle) if cfg["slug"](row))
+        if targets > 1 and runner._tolerated_shard_failures(cfg, targets) < 1:
+            frozen_by_one_board.append(name)
+    assert frozen_by_one_board == []

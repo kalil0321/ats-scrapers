@@ -127,6 +127,8 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
 }
 
 # Full-URL tenants: the scraper's slug IS the careers URL.
+_FEISHU_HIRE_SUFFIX = ".jobs.feishu.cn"
+_FEISHU_HIRE_SITE_RE = re.compile(r"[A-Za-z0-9_-]+")
 _ZOHO_RECRUIT_HOST_RE = re.compile(
     r"^[a-z0-9][a-z0-9-]*\.zohorecruit\.(?:com|eu|in|jp|sa|ca|com\.au|com\.cn)$"
 )
@@ -536,6 +538,17 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         if parsed.path.rstrip("/") in ("", "/careers"):
             return ResolvedCareersUrl(ATSType.CATSONE, tenant)
         return None
+
+    if host.endswith(_FEISHU_HIRE_SUFFIX):
+        # A Feishu Hire tenant runs several career sites; the first path
+        # segment names the one this URL belongs to.
+        tenant = host.removesuffix(_FEISHU_HIRE_SUFFIX)
+        if not tenant or "." in tenant or not _SLUG_RE.match(tenant):
+            return None
+        site = next((part for part in parsed.path.split("/") if part), None)
+        if site and _FEISHU_HIRE_SITE_RE.fullmatch(site):
+            return ResolvedCareersUrl(ATSType.FEISHU_HIRE, f"https://{host}/{site}")
+        return ResolvedCareersUrl(ATSType.FEISHU_HIRE, tenant)
 
     for suffix, ats in _SUBDOMAIN_SUFFIXES.items():
         if host.endswith(suffix):
