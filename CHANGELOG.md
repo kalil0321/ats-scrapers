@@ -12,6 +12,10 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   Malformed feeds fail closed. With detail enrichment enabled, removed or expired
   detail pages are excluded and mismatched pages or unrecognized deadlines fail
   closed. Date-only application deadlines are preserved in `Job.raw`.
+- JD.com careers scraper: the openings of the whole group from the public
+  list of `zhaopin.jd.com`, with their text, business unit, place and
+  requisition number. The site has no page per opening, so each job links to
+  the list page.
 
 ### Fixed
 
