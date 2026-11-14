@@ -51,6 +51,7 @@ class ATSType(StrEnum):
     FEISHU_HIRE = "feishu_hire"
     GEM = "gem"
     GREENHOUSE = "greenhouse"
+    GREETING = "greeting"
     GUPY = "gupy"
     HERP = "herp"
     HIREOLOGY = "hireology"
