@@ -91,6 +91,28 @@ def test_a_row_that_lists_two_places_absorbs_one_row_per_place() -> None:
     assert _survivors(rows) == {"greenhouse": 1, "welcometothejungle": 1}
 
 
+def test_a_place_is_absorbed_once_however_many_places_the_row_lists() -> None:
+    """Two board rows in Paris cannot use the Paris and the Lyon slot of one ATS row."""
+    rows = [("greenhouse", 1, "Account Executive", "Acme", "Paris; Lyon")]
+    rows += [("welcometothejungle", 3, "Account Executive", "Acme", town)
+             for town in ("Paris, France", "Paris (HQ), France", "Lyon, France")]
+
+    assert _survivors(rows) == {"greenhouse": 1, "welcometothejungle": 1}
+
+
+def test_an_absorbed_row_hands_over_what_it_absorbed() -> None:
+    """A covers one opening. B is A (typo), and B had already absorbed one of
+    the two C rows: the second C row is an opening nobody else lists."""
+    rows = [
+        ("workday", 1, "Senior Backend Enginer", "Acme", "Berlin"),
+        ("eightfold", 5, "Senior Backend Engineer", "Acme", "Berlin, Germany"),
+        ("eures", 6, "Senior Backend Engineer (m/f/d)", "Acme", "Berlin, DE"),
+        ("eures", 6, "Senior Backend Engineer (m/f/d)", "Acme", "10115 Berlin"),
+    ]
+
+    assert _survivors(rows) == {"workday": 1, "eures": 1}
+
+
 def test_rows_of_one_source_are_never_compared() -> None:
     rows = _shops("workday", 1, ["Paris, France", "Paris, France"])
 
@@ -126,6 +148,16 @@ def test_two_cities_without_a_country_are_two_postings() -> None:
     ]
 
     assert _survivors(rows) == {"ashby": 1, "wellfound": 1}
+
+
+def test_a_short_city_name_in_another_script_is_a_city() -> None:
+    """``北京`` and ``上海`` are two characters and two cities, not "no city"."""
+    rows = [
+        ("beisen", 1, "Backend Engineer", "字节跳动", "北京"),
+        ("wanted", 3, "Backend Enginer", "字节跳动", "上海"),
+    ]
+
+    assert _survivors(rows) == {"beisen": 1, "wanted": 1}
 
 
 def test_the_structured_country_wins_over_the_location_text() -> None:
@@ -180,6 +212,9 @@ def test_what_pass_5_absorbed_still_counts_in_pass_6() -> None:
         ("Anywhere in the world", ()),
         ("Remote - UK", ()),
         ("United States", ()),
+        ("北京", ("北京",)),
+        ("서울", ("서울",)),
+        ("NY", ()),
         ("", ()),
         (None, ()),
     ],
@@ -225,6 +260,20 @@ def test_a_closing_bracket_is_a_tag_on_the_plain_title() -> None:
     ]
 
     assert sum(_survivors(rows).values()) == 2
+
+
+def test_a_title_is_matched_through_every_bracket() -> None:
+    """``X``, ``X (hours)`` and ``X (hours) (occupation)`` in one employer:
+    the last is the second, whatever group the plain ``X`` opens."""
+    rows = [
+        ("softgarden", 1, "Reinigungskraft - Teilzeit", "Pflege GmbH", "Bonn, Deutschland"),
+        ("softgarden", 1, "Reinigungskraft - Teilzeit (20 Std./Woche)", "Pflege GmbH",
+         "Bonn, Deutschland"),
+        ("eures", 6, "Reinigungskraft - Teilzeit (20 Std./Woche) (Helfer/in - Reinigung)",
+         "Pflege GmbH", "Köln, Deutschland"),
+    ]
+
+    assert _survivors(rows) == {"softgarden": 2}
 
 
 def test_two_different_brackets_are_two_jobs() -> None:
@@ -314,6 +363,8 @@ def test_a_placeholder_employer_matches_nobody() -> None:
         ("L'Oreal", "loreal"),
         ("Stripe, Inc.", "stripeinc"),
         ("株式会社メルカリ", "株式会社メルカリ"),
+        ("엔비디아", "엔비디아"),
+        ("がんばる株式会社", "がんばる株式会社"),
         ("Unknown", ""),
         ("Confidential", ""),
         ("", ""),

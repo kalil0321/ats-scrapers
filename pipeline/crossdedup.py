@@ -45,9 +45,15 @@ _OTHER_CITY = 1  # both name a city, they differ, the country is the same
 
 
 def _fold(text: str) -> str:
-    """Drop accents so ``Ébène`` and ``Ebene`` compare equal."""
-    return "".join(
-        ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch)
+    """Drop accents so ``Ébène`` and ``Ebene`` compare equal.
+
+    Only the Latin-style combining marks (U+0300 to U+036F) are removed and
+    the text is recomposed, so Hangul syllables and Japanese voiced kana
+    come back unchanged.
+    """
+    decomposed = unicodedata.normalize("NFKD", text)
+    return unicodedata.normalize(
+        "NFC", "".join(ch for ch in decomposed if not "\u0300" <= ch <= "\u036f")
     )
 
 
@@ -218,8 +224,10 @@ _COUNTRY_WORDS = frozenset(
 
 
 def _usable(piece: str) -> bool:
+    # Two ASCII letters are a state or country code ("ca", "uk"); two
+    # characters of another script are a city ("北京", "서울").
     return (
-        len(piece) >= 3
+        (len(piece) >= 3 or not piece.isascii())
         and piece not in _NOT_A_CITY
         and piece not in _COUNTRY_WORDS
         and any(ch.isalpha() for ch in piece)
@@ -285,21 +293,54 @@ class _Row:
     source: int  # rank of the source: lower wins
     country: str
     cities: frozenset[str]
-    capacity: int
+    # One slot per listed place: the city it names, or "" when it names none.
+    slots: tuple[str, ...]
     key: str
     base: str
-    group: str  # title group of pass 5
-    used: dict[int, int] = field(default_factory=dict)  # source rank -> rows absorbed
+    # source rank -> positions in ``slots`` taken by rows of that source
+    used: dict[int, set[int]] = field(default_factory=dict)
 
 
-def _place_agreement(row: _Row, kept: _Row, *, other_city_ok: bool) -> int:
+def _free_slot(row: _Row, kept: _Row, *, other_city_ok: bool) -> tuple[int, int]:
+    """Best free slot of ``kept`` for ``row``: ``(agreement, position)``, ``(0, -1)`` when none.
+
+    A slot is free when no row of ``row``'s source has taken it. A row in
+    Paris takes the Paris slot of a kept ``"Paris; Lyon"`` row, never the
+    Lyon one twice.
+    """
     if row.country and kept.country and row.country != kept.country:
-        return 0
-    if row.cities and kept.cities:
-        if not row.cities.isdisjoint(kept.cities):
-            return _SAME_CITY
-        return _OTHER_CITY if other_city_ok and row.country and kept.country else 0
-    return _CITY_UNKNOWN
+        return 0, -1
+    taken = kept.used.get(row.source, ())
+    best, best_position = 0, -1
+    for position, city in enumerate(kept.slots):
+        if position in taken:
+            continue
+        if city and row.cities:
+            if city in row.cities:
+                return _SAME_CITY, position
+            agreement = _OTHER_CITY if other_city_ok and row.country and kept.country else 0
+        else:
+            agreement = _CITY_UNKNOWN
+        if agreement > best:
+            best, best_position = agreement, position
+    return best, best_position
+
+
+def _has_room_for(kept: _Row, row: _Row) -> bool:
+    """Can ``kept`` also take over the rows ``row`` absorbed earlier?"""
+    return all(
+        len(kept.slots) - len(kept.used.get(source, ())) >= len(positions)
+        for source, positions in row.used.items()
+    )
+
+
+def _hand_over(row: _Row, kept: _Row) -> None:
+    """``row`` becomes ``kept``: what ``row`` absorbed now counts against ``kept``."""
+    for source, positions in row.used.items():
+        taken = kept.used.setdefault(source, set())
+        free = (position for position in range(len(kept.slots)) if position not in taken)
+        for _ in positions:
+            taken.add(next(free))
 
 
 def absorb(
@@ -311,30 +352,34 @@ def absorb(
     """Indexes to drop among ``rows`` (one employer, sorted by source rank then index).
 
     Each row is kept unless an already kept row of a *better* source has the
-    same title, an agreeing place and room left for this row's source. The
-    best agreeing place wins (same city, then unknown city, then another
-    city of the same country when ``other_city_ok``).
+    same title and a free slot whose place agrees. The best agreeing place
+    wins (same city, then unknown city, then another city of the same
+    country when ``other_city_ok``). A row that absorbed others in an
+    earlier pass hands them over, and is only absorbed where there is room
+    for them too: one kept row never stands for more postings of a source
+    than it lists places.
     """
     kept: list[_Row] = []
     dropped: list[int] = []
     for row in rows:
         best: _Row | None = None
-        best_agreement = 0
+        best_agreement, best_position = 0, -1
         for candidate in kept:
             if candidate.source == row.source:
                 continue
-            if candidate.used.get(row.source, 0) >= candidate.capacity:
+            agreement, position = _free_slot(row, candidate, other_city_ok=other_city_ok)
+            if agreement <= best_agreement:
                 continue
-            agreement = _place_agreement(row, candidate, other_city_ok=other_city_ok)
-            if agreement <= best_agreement or not same_title(row, candidate):
+            if not _has_room_for(candidate, row) or not same_title(row, candidate):
                 continue
-            best, best_agreement = candidate, agreement
+            best, best_agreement, best_position = candidate, agreement, position
             if agreement == _SAME_CITY:
                 break
         if best is None:
             kept.append(row)
         else:
-            best.used[row.source] = best.used.get(row.source, 0) + 1
+            best.used.setdefault(row.source, set()).add(best_position)
+            _hand_over(row, best)
             dropped.append(row.idx)
     return dropped
 
@@ -359,28 +404,26 @@ def _near_title(threshold: int) -> Callable[[_Row, _Row], bool]:
     return near
 
 
-_ROW_COLUMNS = (
-    "_orig_idx", "_source", "_country_iso", "_cities", "_capacity", "_tkey", "_tbase", "_tgroup",
-)  # fmt: skip
+_ROW_COLUMNS = ("_orig_idx", "_source", "_country_iso", "_cities", "_capacity", "_tkey", "_tbase")
 
 
 def _rows(frame: pl.DataFrame) -> list[_Row]:
     columns: Sequence[list] = [frame[name].to_list() for name in _ROW_COLUMNS]
-    return [
-        _Row(
-            idx=idx,
-            source=source,
-            country=country,
-            cities=frozenset(city_list.split("|")) if city_list else frozenset(),
-            capacity=capacity,
-            key=key,
-            base=base,
-            group=group,
+    rows: list[_Row] = []
+    for idx, source, country, city_list, capacity, key, base in zip(*columns, strict=True):
+        named = tuple(city_list.split("|")) if city_list else ()
+        rows.append(
+            _Row(
+                idx=idx,
+                source=source,
+                country=country,
+                cities=frozenset(named),
+                slots=named + ("",) * max(0, capacity - len(named)),
+                key=key,
+                base=base,
+            )
         )
-        for idx, source, country, city_list, capacity, key, base, group in zip(
-            *columns, strict=True
-        )
-    ]
+    return rows
 
 
 def _prepare(work: pl.DataFrame) -> pl.DataFrame:
@@ -431,17 +474,32 @@ def _prepare(work: pl.DataFrame) -> pl.DataFrame:
         .drop("title_raw", "location", "_priority")
         .filter(pl.col("_tkey") != "")
     )
-    # "X (tag)" joins the group of a plain "X" of the same employer. Without
-    # a plain "X", "X (a)" and "X (b)" stay in groups of their own.
-    plain = rows.select("_employer", pl.col("_tkey").alias("_tbase")).unique().with_columns(
-        pl.lit(True).alias("_plain_exists")
-    )
-    return rows.join(plain, on=["_employer", "_tbase"], how="left").with_columns(
-        pl.when(pl.col("_plain_exists").fill_null(False) & (pl.col("_tbase") != ""))
-        .then(pl.col("_tbase"))
-        .otherwise(pl.col("_tkey"))
-        .alias("_tgroup")
-    ).drop("_plain_exists")
+    return rows
+
+
+def _title_groups(members: list[_Row]) -> dict[str, list[_Row]]:
+    """Rows of one employer grouped for pass 5.
+
+    ``"X (tag)"`` joins the group of a plain ``"X"`` when the employer has
+    one, and so on through every bracket: ``"X (hours) (occupation)"``,
+    ``"X (hours)"`` and ``"X"`` share a group. :func:`_same_title` then
+    decides pair by pair. Without a plain ``"X"``, ``"X (a)"`` and
+    ``"X (b)"`` stay in groups of their own.
+    """
+    keys = {row.key for row in members}
+    plain_of: dict[str, str] = {}
+    for row in members:
+        if row.base and row.base != row.key and row.base in keys:
+            known = plain_of.get(row.key)
+            if known is None or len(row.base) < len(known):
+                plain_of[row.key] = row.base
+    groups: dict[str, list[_Row]] = {}
+    for row in members:
+        root = row.key
+        while root in plain_of:  # a base is always shorter than its key
+            root = plain_of[root]
+        groups.setdefault(root, []).append(row)
+    return groups
 
 
 def _employer_drops(
@@ -459,10 +517,7 @@ def _employer_drops(
     dropped: set[int] = set()
 
     # ---- Pass 5: same title -------------------------------------------------
-    groups: dict[str, list[_Row]] = {}
-    for row in members:
-        groups.setdefault(row.group, []).append(row)
-    for group in groups.values():
+    for group in _title_groups(members).values():
         if len({row.source for row in group}) > 1:
             dropped.update(absorb(group, _same_title, other_city_ok=True))
 
