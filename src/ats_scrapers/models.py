@@ -63,6 +63,7 @@ class ATSType(StrEnum):
     JOIN_COM = "join_com"
     KEKA = "keka"
     LEVER = "lever"
+    MANATAL = "manatal"
     MERCOR = "mercor"
     MOKA = "moka"
     NINEHIRE = "ninehire"

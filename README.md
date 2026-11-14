@@ -124,6 +124,7 @@ Scraper adapters include:
 - ClearCompany hosted career sites.
 - Feishu Hire career sites.
 - Greeting career sites.
+- Manatal career pages.
 - Ninehire career sites.
 - PeopleAdmin applicant portals.
 - Talentio recruitment homes (Japan).
