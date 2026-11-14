@@ -219,15 +219,65 @@ def test_posting_closed_between_listing_and_detail_is_skipped(httpx_mock) -> Non
     assert [job.ats_id for job in AshbyScraper("acme").fetch()] == ["p2"]
 
 
-def test_posting_page_without_a_posting_fails_closed(httpx_mock) -> None:
+def test_unreadable_posting_page_keeps_the_job_without_description(httpx_mock) -> None:
+    """The listing says the opening exists. A posting page we cannot read
+    costs that job its description, not the employer all of its jobs."""
+    httpx_mock.add_response(url=API, status_code=404)
+    httpx_mock.add_response(url=BOARD, text=_board(_posting("p1"), _posting("p2")))
+    httpx_mock.add_response(url=f"{BOARD}/p1", text=_page({"posting": None}))
+    httpx_mock.add_response(url=f"{BOARD}/p2", text="<html><body>Jobs</body></html>")
+
+    jobs = AshbyScraper("acme").fetch()
+
+    assert [job.ats_id for job in jobs] == ["p1", "p2"]
+    assert [job.description for job in jobs] == [None, None]
+    assert jobs[0].location == "San Francisco, CA"
+
+
+@pytest.mark.parametrize(
+    "board",
+    [
+        {"teams": []},  # no jobPostings field
+        {"jobPostings": None},
+        {"jobPostings": {"p1": {}}},
+        {"jobPostings": [{"title": "No id"}]},
+        {"jobPostings": [{"id": "p1"}]},
+        {"jobPostings": ["p1"]},
+    ],
+)
+def test_unreadable_listing_fails_closed(httpx_mock, board) -> None:
+    """A listing we cannot read is an error, never an empty or partial board."""
     from ats_scrapers.exceptions import ScraperError
 
     httpx_mock.add_response(url=API, status_code=404)
-    httpx_mock.add_response(url=BOARD, text=_board(_posting("p1")))
-    httpx_mock.add_response(url=f"{BOARD}/p1", text=_page({"posting": None}))
+    httpx_mock.add_response(url=BOARD, text=_page({"jobBoard": board}))
 
-    with pytest.raises(ScraperError):
+    with pytest.raises(ScraperError) as excinfo:
         AshbyScraper("acme").fetch()
+    assert not isinstance(excinfo.value, CompanyNotFoundError)
+
+
+def test_get_description_reads_the_posting_page_of_a_hosted_job(httpx_mock) -> None:
+    httpx_mock.add_response(url=API, status_code=404)
+    httpx_mock.add_response(url=BOARD, text=_board(_posting("p1")))
+    scraper = AshbyScraper("acme", include_descriptions=False)
+    (job,) = scraper.fetch()
+    assert job.description is None
+
+    httpx_mock.add_response(url=f"{BOARD}/p1", text=_detail("p1"))
+    assert scraper.get_description(job) == "<p>Sell things.</p>"
+
+    httpx_mock.add_response(url=f"{BOARD}/p1", text=_detail("p1"))
+    (enriched,) = scraper.enrich_descriptions([job])
+    assert enriched.description == "<p>Sell things.</p>"
+
+
+def test_get_description_of_an_api_job_makes_no_request(httpx_mock) -> None:
+    httpx_mock.add_response(url=API, json={"jobs": [_job()]})
+    scraper = AshbyScraper("acme")
+    (job,) = scraper.fetch()
+
+    assert scraper.get_description(job) == job.description
 
 
 def test_hosted_board_of_a_slug_with_a_space(httpx_mock) -> None:

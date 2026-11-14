@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import quote
@@ -29,6 +30,8 @@ if TYPE_CHECKING:
     from typing import Any
 
     from ats_scrapers.fetch import Fetcher
+
+logger = logging.getLogger(__name__)
 
 API_TEMPLATE = "https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true"
 BOARD_TEMPLATE = "https://jobs.ashbyhq.com/{slug}"
@@ -81,6 +84,21 @@ class AshbyScraper(BaseScraper):
                 items = payload.get("jobs", [])
         return [self._parse_job(item) for item in items]
 
+    def get_description(self, job: Job) -> str | None:
+        """Description of one job, read from its posting page when the job
+        came from a hosted board fetched with descriptions off."""
+        if job.description or (job.raw or {}).get("source") != "hosted_board":
+            return job.description
+        job_url = str(job.url)
+
+        async def run() -> str | None:
+            async with self.make_fetcher() as fetch:
+                detail = await _posting_detail(fetch, job_url)
+            description = (detail or {}).get("descriptionHtml")
+            return description if isinstance(description, str) and description else None
+
+        return self._run_sync(run())
+
     async def _hosted_board_items(self, fetch: Fetcher) -> list[dict[str, Any]]:
         """Openings of the hosted board, shaped like the API's ``jobs`` entries."""
         board_url = BOARD_TEMPLATE.format(slug=quote(self.company_slug, safe="%"))
@@ -89,11 +107,16 @@ class AshbyScraper(BaseScraper):
             raise CompanyNotFoundError(
                 f"Ashby ({self.company_slug}) has no public job board"
             )
-        postings = [
-            posting
-            for posting in board.get("jobPostings") or []
-            if isinstance(posting, dict) and posting.get("id") and posting.get("title")
-        ]
+        postings = board.get("jobPostings")
+        # An empty list is a board without openings. Anything else we cannot
+        # read is an error: a changed page must not look like an empty board.
+        if not isinstance(postings, list) or not all(
+            isinstance(posting, dict) and posting.get("id") and posting.get("title")
+            for posting in postings
+        ):
+            raise ScraperError(
+                f"Ashby ({self.company_slug}) hosted board has an unreadable listing"
+            )
         teams = {
             team["id"]: team
             for team in board.get("teams") or []
@@ -111,15 +134,17 @@ class AshbyScraper(BaseScraper):
             job_url = _posting_url(board_url, posting)
             async with gate:
                 try:
-                    page = await fetch.get_text(job_url)
+                    detail = await _posting_detail(fetch, job_url)
                 except CompanyNotFoundError:
                     return None  # closed between the listing and this request
-            detail = _app_data(page, job_url).get("posting")
-            if not isinstance(detail, dict):
-                raise ScraperError(f"Ashby posting page {job_url} carries no posting")
+                except ScraperError as exc:
+                    # The listing says the opening exists. One page we cannot
+                    # read costs its description, not the employer's jobs.
+                    logger.warning("Ashby posting page %s unreadable: %s", job_url, exc)
+                    detail = None
             return _hosted_item(posting, detail, job_url, teams)
 
-        items = await asyncio.gather(*(item_for(posting) for posting in postings))
+        items = await _gather_cancel_on_error(*(item_for(posting) for posting in postings))
         return [item for item in items if item is not None]
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
@@ -218,6 +243,27 @@ def _app_data(page: str, url: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ScraperError(f"Ashby page {url}: {APP_DATA_MARKER} is not an object")
     return data
+
+
+async def _gather_cancel_on_error(*coros: Any) -> list[Any]:
+    """``asyncio.gather`` that cancels and drains its siblings when one task
+    raises, so no request is still running when the fetcher closes."""
+    tasks = [asyncio.ensure_future(coro) for coro in coros]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
+async def _posting_detail(fetch: Fetcher, job_url: str) -> dict[str, Any]:
+    """The ``posting`` object of one hosted posting page."""
+    detail = _app_data(await fetch.get_text(job_url), job_url).get("posting")
+    if not isinstance(detail, dict):
+        raise ScraperError(f"Ashby posting page {job_url} carries no posting")
+    return detail
 
 
 def _posting_url(board_url: str, posting: dict[str, Any]) -> str:
