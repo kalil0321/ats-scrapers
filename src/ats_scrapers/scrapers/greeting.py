@@ -23,6 +23,7 @@ from pydantic import HttpUrl
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
+from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 from ats_scrapers.scrapers.ninehire import _location_geography
 
@@ -187,7 +188,9 @@ async def _opening_description(fetch: Fetcher, url: str) -> str | None:
         except ValueError:
             info = None
     detail = info.get("detail") if isinstance(info, dict) else None
-    return detail.strip() or None if isinstance(detail, str) else None
+    if not isinstance(detail, str) or not detail.strip():
+        return None
+    return parse_html(detail).lines().strip() or None
 
 
 def _tenant(company_slug: str) -> str:

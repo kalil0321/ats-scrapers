@@ -48,6 +48,7 @@ class ATSType(StrEnum):
     DARWINBOX = "darwinbox"
     DAYFORCE = "dayforce"
     EIGHTFOLD = "eightfold"
+    FEISHU_HIRE = "feishu_hire"
     GEM = "gem"
     GREENHOUSE = "greenhouse"
     GREETING = "greeting"

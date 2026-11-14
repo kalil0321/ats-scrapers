@@ -122,6 +122,7 @@ Scraper adapters include:
 - Career-site platforms on the employer's own domain: Radancy TalentBrew.
 - Oracle Taleo, both editions: Business Edition and Enterprise Edition.
 - ClearCompany hosted career sites.
+- Feishu Hire career sites.
 - Greeting career sites.
 - Ninehire career sites.
 - PeopleAdmin applicant portals.

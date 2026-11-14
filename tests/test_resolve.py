@@ -14,6 +14,7 @@ from ats_scrapers.scrapers import (
     BeisenScraper,
     DarwinboxScraper,
     DayforceScraper,
+    FeishuHireScraper,
     GreenhouseScraper,
     GupyScraper,
     HerpScraper,
@@ -263,6 +264,12 @@ RESOLVES = [
     ("https://nvidia.eightfold.ai/careers", ATSType.EIGHTFOLD, "nvidia"),
     ("https://petz.gupy.io/jobs/123", ATSType.GUPY, "petz"),
     ("https://kurly.career.greetinghr.com/o/188454", ATSType.GREETING, "kurly"),
+    (
+        "https://nio.jobs.feishu.cn/campus/position/7707592102096718121/detail",
+        ATSType.FEISHU_HIRE,
+        "https://nio.jobs.feishu.cn/campus",
+    ),
+    ("https://nio.jobs.feishu.cn", ATSType.FEISHU_HIRE, "nio"),
     (
         "https://day1company.ninehire.site/job_posting/7a0UlD8L",
         ATSType.NINEHIRE,
@@ -520,6 +527,10 @@ def test_get_scraper_for_url_builds_scraper() -> None:
         ),
         NinehireScraper,
     )
+    feishu = get_scraper_for_url("https://bambulab.jobs.feishu.cn/campus")
+    assert isinstance(feishu, FeishuHireScraper)
+    assert feishu.company_slug == "bambulab"
+    assert feishu.sites == ("campus",)
     assert isinstance(
         get_scraper_for_url(
             "https://dfmc.hotjob.cn/SU61d501d92f9d24431f65f608"

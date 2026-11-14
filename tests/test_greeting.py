@@ -61,7 +61,7 @@ def _home(openings: object, workspace: str | None = "에이크미") -> str:
     return _page(queries)
 
 
-def _detail(detail: str | None = "<p>업무 내용</p>") -> str:
+def _detail(detail: str | None = "<p>업무 내용</p><ul><li>파이썬</li></ul>") -> str:
     info = {"openingId": 1001, "status": "OPEN", "detail": detail}
     return _page([{
         "queryKey": ["career", "getOpeningById", {"openingId": 1001}],
@@ -92,7 +92,7 @@ def test_parses_an_opening(httpx_mock) -> None:
     assert job.employment_type == "FULL_TIME"
     assert job.posted_at == datetime(2026, 1, 8, 9, 35, 57, tzinfo=UTC)
     assert job.application_deadline == datetime(2026, 12, 31, 14, 59, 59, tzinfo=UTC)
-    assert job.description == "<p>업무 내용</p>"
+    assert job.description == "업무 내용\n파이썬"
     assert job.raw == {
         "career_types": ["EXPERIENCED"],
         "employment_types": ["FULL_TIME_WORKER"],
@@ -135,7 +135,7 @@ def test_an_opening_whose_page_cannot_be_read_is_kept(httpx_mock) -> None:
 
     assert [(job.ats_id, job.description) for job in jobs] == [
         ("1001", None),
-        ("1002", "<p>두번째</p>"),
+        ("1002", "두번째"),
     ]
 
 
@@ -145,7 +145,7 @@ def test_get_description_reads_the_opening_page(httpx_mock) -> None:
     scraper = GreetingScraper("acme", include_descriptions=False)
     [job] = scraper.fetch()
 
-    assert scraper.get_description(job) == "<p>업무 내용</p>"
+    assert scraper.get_description(job) == "업무 내용\n파이썬"
 
 
 def test_several_places_and_remote_work(httpx_mock) -> None:

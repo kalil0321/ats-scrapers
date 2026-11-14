@@ -31,6 +31,7 @@ from ats_scrapers.scrapers.darwinbox import DarwinboxScraper
 from ats_scrapers.scrapers.dayforce import DayforceScraper
 from ats_scrapers.scrapers.eightfold import EightfoldScraper
 from ats_scrapers.scrapers.eures import EuresScraper
+from ats_scrapers.scrapers.feishu_hire import FeishuHireScraper
 from ats_scrapers.scrapers.gem import GemScraper
 from ats_scrapers.scrapers.getonbrd import GetOnBrdScraper
 from ats_scrapers.scrapers.google import GoogleScraper
@@ -122,6 +123,7 @@ __all__ = [
     "DayforceScraper",
     "EightfoldScraper",
     "EuresScraper",
+    "FeishuHireScraper",
     "GemScraper",
     "GetOnBrdScraper",
     "GoogleScraper",

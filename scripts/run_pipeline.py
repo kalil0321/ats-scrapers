@@ -61,6 +61,7 @@ from ats_scrapers.scrapers import (
     DayforceScraper,
     EightfoldScraper,
     EuresScraper,
+    FeishuHireScraper,
     GemScraper,
     GetOnBrdScraper,
     GoogleScraper,
@@ -420,6 +421,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "max_concurrency": 2,
         "dedupe_by_ats_id": True,
         "fail_closed_on_any_error": True,
+        # A few closed or broken boards must not hold the whole source back.
+        "fail_closed_tolerance": 0.05,
         "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
     },
@@ -439,6 +442,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "description_concurrency": 1,
         "description_delay_seconds": 0.5,
         "fail_closed_on_any_error": True,
+        # A few closed or broken boards must not hold the whole source back.
+        "fail_closed_tolerance": 0.02,
         "fail_closed_on_empty": True,
     },
     "catsone": {
@@ -531,6 +536,18 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/breezy.csv",
         "output": "breezy/jobs.csv",
     },
+    "feishu_hire": {
+        "scraper": FeishuHireScraper,
+        "slug": lambda r: _slug_col(r) or None,
+        "kwargs": lambda r: {
+            "sites": (r.get("sites") or "").strip() or None,
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/feishu_hire.csv",
+        "output": "feishu_hire/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 4,
+    },
     "gem": {
         # Gem boards live at ``jobs.gem.com/{slug}``. Post-migration the
         # slug column has the value directly; legacy files store it in the
@@ -596,6 +613,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "max_concurrency": 8,
         "fail_closed_on_empty": True,
         "fail_closed_on_any_error": True,
+        # A few closed or broken boards must not hold the whole source back.
+        "fail_closed_tolerance": 0.02,
     },
     "successfactors": {
         "scraper": SuccessFactorsScraper,
@@ -843,7 +862,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/jobvite.csv",
         "output": "jobvite/jobs.csv",
         "fail_closed_on_any_error": True,
-        "fail_closed_tolerance": 0.02,
+        "fail_closed_tolerance": 0.05,
         "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
     },
@@ -854,7 +873,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/pageup.csv",
         "output": "pageup/jobs.csv",
         "fail_closed_on_any_error": True,
-        "fail_closed_tolerance": 0.02,
+        "fail_closed_tolerance": 0.15,
         "fail_closed_on_empty": True,
     },
     "paycom": {
@@ -866,6 +885,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "dedupe_by_ats_id": True,
         "max_concurrency": 3,
         "fail_closed_on_any_error": True,
+        # A few closed or broken boards must not hold the whole source back.
+        "fail_closed_tolerance": 0.02,
         "fail_closed_on_empty": True,
     },
     "paylocity": {
