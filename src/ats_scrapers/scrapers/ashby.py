@@ -52,6 +52,9 @@ EMBED_QUERY = "?embed=js"
 APP_DATA_MARKER = "window.__appData"
 # Posting pages read at once on the hosted-board path (one request per opening).
 HOSTED_DETAIL_CONCURRENCY = 4
+# With descriptions off, postings tried in a row before a listing whose
+# posting pages all answer 404 is taken for unopenable.
+HOSTED_OPENABLE_PROBES = 3
 
 _INTERVAL_MAP = {
     "HOURLY": "HOUR",
@@ -147,13 +150,10 @@ class AshbyScraper(BaseScraper):
             if isinstance(team, dict) and team.get("id")
         }
         if not self.include_descriptions:
-            # The listing alone, plus one posting page: a board can list
-            # postings whose pages answer nowhere (Personio, 14 Nov 2026),
-            # and a job nobody can open is not published.
-            if postings and not await _posting_answers(
-                fetch, _posting_url(board_url, postings[0]) + EMBED_QUERY
-            ):
-                return []
+            # The listing alone, plus one posting page that answers: a
+            # board can list postings whose pages answer nowhere (Personio,
+            # 14 Nov 2026), and a job nobody can open is not published.
+            postings = await _openable(fetch, board_url, postings)
             return [
                 _hosted_item(posting, None, _posting_url(board_url, posting), teams)
                 for posting in postings
@@ -298,6 +298,21 @@ async def _posting_answers(fetch: Fetcher, job_url: str) -> bool:
     except CompanyNotFoundError:
         return False
     return True
+
+
+async def _openable(
+    fetch: Fetcher, board_url: str, postings: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The postings of a listing, from the first one whose page answers.
+
+    A posting that just closed answers 404 and is dropped, like on the
+    descriptions-on path. When ``HOSTED_OPENABLE_PROBES`` postings in a row
+    answer 404, none of the listing can be opened and nothing is returned.
+    """
+    for position, posting in enumerate(postings[:HOSTED_OPENABLE_PROBES]):
+        if await _posting_answers(fetch, _posting_url(board_url, posting) + EMBED_QUERY):
+            return postings[position:]
+    return []
 
 
 def _with_embed_query(url: str) -> str:

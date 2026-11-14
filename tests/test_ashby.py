@@ -192,10 +192,30 @@ def test_listing_whose_postings_cannot_be_opened_is_empty(httpx_mock) -> None:
     """Personio's embed view listed 77 postings on 14 Nov 2026 and every
     posting page answered 404. A job nobody can open is not published."""
     httpx_mock.add_response(url=API, status_code=404)
-    httpx_mock.add_response(url=EMBED_BOARD, text=_board(_posting("p1"), _posting("p2")))
-    httpx_mock.add_response(url=f"{BOARD}/p1?embed=js", status_code=404)
+    httpx_mock.add_response(
+        url=EMBED_BOARD,
+        text=_board(*(_posting(f"p{number}") for number in range(1, 6))),
+    )
+    for number in (1, 2, 3):  # three in a row, then no more requests
+        httpx_mock.add_response(url=f"{BOARD}/p{number}?embed=js", status_code=404)
 
     assert AshbyScraper("acme", include_descriptions=False).fetch() == []
+
+
+def test_one_closed_posting_does_not_empty_the_listing(httpx_mock) -> None:
+    """The first posting closed after the listing was read: it is dropped,
+    the others stay."""
+    _hosted_pages(httpx_mock)
+    httpx_mock.add_response(url=API, status_code=404)
+    httpx_mock.add_response(
+        url=EMBED_BOARD, text=_board(_posting("p1"), _posting("p2"), _posting("p3"))
+    )
+    httpx_mock.add_response(url=f"{BOARD}/p1?embed=js", status_code=404)
+    httpx_mock.add_response(url=f"{BOARD}/p2?embed=js", text=_detail("p2"))
+
+    jobs = AshbyScraper("acme", include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["p2", "p3"]
 
 
 # --- hosted pages closed: the jobs show on the employer's own site ----------
