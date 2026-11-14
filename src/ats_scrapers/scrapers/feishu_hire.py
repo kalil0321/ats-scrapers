@@ -153,11 +153,20 @@ class FeishuHireScraper(BaseScraper):
                 raise ScraperError(
                     f"Feishu Hire ({self.company_slug}/{site}) omitted job_post_list"
                 )
+            total = data.get("count")
+            if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+                raise ScraperError(
+                    f"Feishu Hire ({self.company_slug}/{site}) gave no usable count"
+                )
             postings.extend(item for item in page if isinstance(item, dict))
             offset += len(page)
-            total = data.get("count")
-            if not page or not isinstance(total, int) or offset >= total:
+            if offset >= total:
                 return postings
+            if not page:
+                raise ScraperError(
+                    f"Feishu Hire ({self.company_slug}/{site}) stopped at "
+                    f"{offset} of {total} postings"
+                )
 
     def _parse_job(self, item: dict[str, Any], site: str) -> Job | None:
         ats_id = str(item.get("id") or "").strip()

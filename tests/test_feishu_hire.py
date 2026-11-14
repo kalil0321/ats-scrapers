@@ -185,6 +185,27 @@ def test_a_response_without_a_list_is_reported(httpx_mock) -> None:
         FeishuHireScraper("acme").fetch()
 
 
+@pytest.mark.parametrize("count", [None, "3", -1, True])
+def test_a_page_without_a_usable_count_is_reported(httpx_mock, count: object) -> None:
+    page = {"code": 0, "data": {"count": count, "job_post_list": [_posting()]}}
+    _site(httpx_mock, "index", page)
+
+    with pytest.raises(ScraperError, match="gave no usable count"):
+        FeishuHireScraper("acme").fetch()
+
+
+def test_paging_that_stops_early_is_reported(httpx_mock) -> None:
+    _site(
+        httpx_mock,
+        "index",
+        _page([_posting("1"), _posting("2")], count=5),
+        _page([], count=5),
+    )
+
+    with pytest.raises(ScraperError, match="stopped at 2 of 5 postings"):
+        FeishuHireScraper("acme").fetch()
+
+
 def test_rows_without_an_id_or_a_title_are_dropped(httpx_mock) -> None:
     _site(
         httpx_mock,
