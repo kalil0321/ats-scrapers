@@ -4,20 +4,40 @@ Ashby exposes a public JSON board at:
     https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true
 
 The compensation field, when present, is rich (range + currency + interval).
+
+Some employers switch that API off while their hosted board stays public:
+``https://jobs.ashbyhq.com/whatnot`` listed 137 openings on 14 Nov 2026 and the
+API answered 404 for the same slug. When the API says the board does not exist,
+the scraper therefore reads the hosted page, which carries the same listing in
+its ``window.__appData`` object, and each posting's own page for the
+description. A board that is gone answers 404 on both.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.fetch import Fetcher
+
+logger = logging.getLogger(__name__)
+
 API_TEMPLATE = "https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true"
+BOARD_TEMPLATE = "https://jobs.ashbyhq.com/{slug}"
+APP_DATA_MARKER = "window.__appData"
+# Posting pages read at once on the hosted-board path (one request per opening).
+HOSTED_DETAIL_CONCURRENCY = 4
 
 _INTERVAL_MAP = {
     "HOURLY": "HOUR",
@@ -53,8 +73,79 @@ class AshbyScraper(BaseScraper):
     async def afetch(self) -> list[Job]:
         url = API_TEMPLATE.format(slug=self.company_slug)
         async with self.make_fetcher() as fetch:
-            payload = await fetch.get_json(url)
-        return [self._parse_job(item) for item in payload.get("jobs", [])]
+            try:
+                payload = await fetch.get_json(url)
+            except CompanyNotFoundError:
+                # The API is off for this board, or the board is gone. The
+                # hosted page tells which: it answers 404 for a board that
+                # no longer exists.
+                items = await self._hosted_board_items(fetch)
+            else:
+                items = payload.get("jobs", [])
+        return [self._parse_job(item) for item in items]
+
+    def get_description(self, job: Job) -> str | None:
+        """Description of one job, read from its posting page when the job
+        came from a hosted board fetched with descriptions off."""
+        if job.description or (job.raw or {}).get("source") != "hosted_board":
+            return job.description
+        job_url = str(job.url)
+
+        async def run() -> str | None:
+            async with self.make_fetcher() as fetch:
+                detail = await _posting_detail(fetch, job_url)
+            description = (detail or {}).get("descriptionHtml")
+            return description if isinstance(description, str) and description else None
+
+        return self._run_sync(run())
+
+    async def _hosted_board_items(self, fetch: Fetcher) -> list[dict[str, Any]]:
+        """Openings of the hosted board, shaped like the API's ``jobs`` entries."""
+        board_url = BOARD_TEMPLATE.format(slug=quote(self.company_slug, safe="%"))
+        board = _app_data(await fetch.get_text(board_url), board_url).get("jobBoard")
+        if not isinstance(board, dict):
+            raise CompanyNotFoundError(
+                f"Ashby ({self.company_slug}) has no public job board"
+            )
+        postings = board.get("jobPostings")
+        # An empty list is a board without openings. Anything else we cannot
+        # read is an error: a changed page must not look like an empty board.
+        if not isinstance(postings, list) or not all(
+            isinstance(posting, dict) and posting.get("id") and posting.get("title")
+            for posting in postings
+        ):
+            raise ScraperError(
+                f"Ashby ({self.company_slug}) hosted board has an unreadable listing"
+            )
+        teams = {
+            team["id"]: team
+            for team in board.get("teams") or []
+            if isinstance(team, dict) and team.get("id")
+        }
+        if not self.include_descriptions:
+            # The listing alone: one request for the whole board.
+            return [
+                _hosted_item(posting, None, _posting_url(board_url, posting), teams)
+                for posting in postings
+            ]
+        gate = asyncio.Semaphore(HOSTED_DETAIL_CONCURRENCY)
+
+        async def item_for(posting: dict[str, Any]) -> dict[str, Any] | None:
+            job_url = _posting_url(board_url, posting)
+            async with gate:
+                try:
+                    detail = await _posting_detail(fetch, job_url)
+                except CompanyNotFoundError:
+                    return None  # closed between the listing and this request
+                except ScraperError as exc:
+                    # The listing says the opening exists. One page we cannot
+                    # read costs its description, not the employer's jobs.
+                    logger.warning("Ashby posting page %s unreadable: %s", job_url, exc)
+                    detail = None
+            return _hosted_item(posting, detail, job_url, teams)
+
+        items = await _gather_cancel_on_error(*(item_for(posting) for posting in postings))
+        return [item for item in items if item is not None]
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
         comp = item.get("compensation") or {}
@@ -95,6 +186,8 @@ class AshbyScraper(BaseScraper):
         secondary_locations = item.get("secondaryLocations") or []
 
         raw: dict[str, Any] = {}
+        if item.get("_hosted_board"):
+            raw["source"] = "hosted_board"
         if item.get("department"):
             raw["department"] = item["department"]
         if item.get("team"):
@@ -135,6 +228,106 @@ class AshbyScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _app_data(page: str, url: str) -> dict[str, Any]:
+    """The ``window.__appData`` object Ashby's hosted pages embed."""
+    marker = page.find(APP_DATA_MARKER)
+    start = page.find("{", marker) if marker >= 0 else -1
+    if start < 0:
+        raise ScraperError(f"Ashby page {url} carries no {APP_DATA_MARKER} object")
+    try:
+        data, _ = json.JSONDecoder().raw_decode(page, start)
+    except ValueError as exc:
+        raise ScraperError(f"Ashby page {url}: unreadable {APP_DATA_MARKER} object") from exc
+    if not isinstance(data, dict):
+        raise ScraperError(f"Ashby page {url}: {APP_DATA_MARKER} is not an object")
+    return data
+
+
+async def _gather_cancel_on_error(*coros: Any) -> list[Any]:
+    """``asyncio.gather`` that cancels and drains its siblings when one task
+    raises, so no request is still running when the fetcher closes."""
+    tasks = [asyncio.ensure_future(coro) for coro in coros]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
+async def _posting_detail(fetch: Fetcher, job_url: str) -> dict[str, Any]:
+    """The ``posting`` object of one hosted posting page."""
+    detail = _app_data(await fetch.get_text(job_url), job_url).get("posting")
+    if not isinstance(detail, dict):
+        raise ScraperError(f"Ashby posting page {job_url} carries no posting")
+    return detail
+
+
+def _posting_url(board_url: str, posting: dict[str, Any]) -> str:
+    return f"{board_url}/{quote(str(posting['id']), safe='')}"
+
+
+def _team_names(team_id: object, teams: dict[str, dict[str, Any]]) -> list[str]:
+    """Names from the top department down to the posting's own team."""
+    names: list[str] = []
+    seen: set[object] = set()
+    while team_id in teams and team_id not in seen:
+        seen.add(team_id)
+        team = teams[team_id]
+        if isinstance(team.get("name"), str):
+            names.append(team["name"])
+        team_id = team.get("parentTeamId")
+    return names[::-1]
+
+
+def _hosted_item(
+    posting: dict[str, Any],
+    detail: dict[str, Any] | None,
+    job_url: str,
+    teams: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """One hosted-board opening in the shape of an API ``jobs`` entry.
+
+    The listing gives id, title, place, type and team; the posting page
+    (``detail``, absent when descriptions are off) adds the description and
+    the pay summary. Neither carries a publication date.
+    """
+    detail = detail or {}
+    team_names = [name for name in detail.get("teamNames") or [] if isinstance(name, str)]
+    if not team_names:
+        team_names = _team_names(posting.get("teamId"), teams)
+    secondary = detail.get("secondaryLocationNames")
+    if not isinstance(secondary, list):
+        secondary = [
+            place.get("locationName")
+            for place in posting.get("secondaryLocations") or []
+            if isinstance(place, dict)
+        ]
+    item: dict[str, Any] = {
+        "_hosted_board": True,
+        "id": posting["id"],
+        "title": detail.get("title") or posting["title"],
+        "location": detail.get("locationName") or posting.get("locationName"),
+        "secondaryLocations": [{"location": name} for name in secondary if name],
+        "employmentType": detail.get("employmentType") or posting.get("employmentType"),
+        "workplaceType": detail.get("workplaceType") or posting.get("workplaceType"),
+        "department": detail.get("departmentName") or (team_names[0] if team_names else None),
+        "team": team_names[-1] if team_names else None,
+        "descriptionHtml": detail.get("descriptionHtml"),
+        "jobUrl": job_url,
+        "applyUrl": f"{job_url}/application",
+    }
+    summary = detail.get("compensationTierSummary") or posting.get("compensationTierSummary")
+    scrapeable = detail.get("scrapeableCompensationSalarySummary")
+    if summary or scrapeable:
+        item["compensation"] = {
+            "compensationTierSummary": summary,
+            "scrapeableCompensationSalarySummary": scrapeable,
+        }
+    return item
 
 
 def _parse_comp(

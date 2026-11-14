@@ -665,6 +665,23 @@ company's slug as written in its page address (capitals included) and
 - Review cross-source overlap with public employment services before claiming
   that the direct-source vacancies are net-new jobs.
 
+### Ashby
+
+- The scraper reads the public API
+  (`api.ashbyhq.com/posting-api/job-board/{slug}`). Some employers switch that
+  API off while their hosted board `jobs.ashbyhq.com/{slug}` stays public; the
+  scraper then reads the page and each posting's own page. Validate a candidate
+  with the scraper, never with the HTTP status of one surface alone.
+- A 404 from the API alone does not mean the board is gone. Before removing a
+  row, check the hosted page: it answers 404 for a board that no longer exists.
+  Whatnot was removed on 13 Nov 2026 on the API's 404 while its page listed 137
+  openings.
+- An empty hosted board whose page data sets `customJobsPageUrl` can belong to
+  an employer that lists its openings only on its own careers site (Deel). The
+  Ashby row brings nothing there; such a site needs a scraper of its own.
+- Slugs are stored lowercased and percent-encoded (`marathon%20fusion`).
+  Compare decoded slugs when checking whether a board is already listed.
+
 ## Automation Hints
 
 An automated discovery agent should keep separate stages:
