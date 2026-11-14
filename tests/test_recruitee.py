@@ -79,3 +79,32 @@ def test_non_json_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=API, text="<html>nope</html>")
     with pytest.raises(ScraperError):
         RecruiteeScraper("acme").fetch()
+
+
+def test_country_iso_from_offer_country_code(httpx_mock) -> None:
+    httpx_mock.add_response(url=API, json={"offers": [_offer()]})
+    assert RecruiteeScraper("acme").fetch()[0].country_iso == "DE"
+
+
+@pytest.mark.parametrize(
+    ("offer_code", "location_codes", "expected"),
+    [
+        ("NL", ["nl", "NL"], "NL"),
+        ("NL", ["NL", None], "NL"),
+        ("NL", ["NL", "DE"], None),
+        (None, ["NL", "DE"], None),
+        (None, ["nl", "NL"], "NL"),
+        ("DE", [None], "DE"),
+        ("USA", [], None),
+        ("", [], None),
+    ],
+)
+def test_country_iso_from_locations(httpx_mock, offer_code, location_codes, expected) -> None:
+    """The offers API also lists places under ``locations``: the one code the
+    entries share wins, differing codes leave ``country_iso`` unset, and the
+    offer-level code is used only when no entry carries one."""
+    offer = _offer()
+    offer["country_code"] = offer_code
+    offer["locations"] = [{"city": "X", "country_code": code} for code in location_codes]
+    httpx_mock.add_response(url=API, json={"offers": [offer]})
+    assert RecruiteeScraper("acme").fetch()[0].country_iso == expected

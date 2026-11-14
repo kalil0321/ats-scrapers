@@ -16,10 +16,9 @@ from datetime import UTC, datetime
 from typing import ClassVar
 from urllib.parse import quote, urlparse
 
-from bs4 import BeautifulSoup
-
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
+from ats_scrapers.scrapers._bs4 import bs4_soup
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 _HOST_RE = re.compile(
@@ -448,7 +447,7 @@ def _clean_fragment(value: str | None) -> str | None:
     # The parser decodes entities itself. Decoding them first would turn
     # escaped text such as ``&lt;hr@example.org&gt;`` into a tag, which the
     # parser then drops.
-    text = BeautifulSoup(value, "html.parser").get_text("\n", strip=True)
+    text = bs4_soup(value, scraper="AppliTrack").get_text("\n", strip=True)
     text = "\n".join(
         _SPACE_RE.sub(" ", line).strip()
         for line in text.splitlines()

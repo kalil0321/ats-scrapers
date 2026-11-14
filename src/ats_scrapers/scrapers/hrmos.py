@@ -15,15 +15,16 @@ from __future__ import annotations
 import math
 import re
 from datetime import UTC, datetime
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urljoin, urlparse
-
-from bs4 import BeautifulSoup, Tag
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
 from ats_scrapers.scrapers._slug import require_host_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
+
+if TYPE_CHECKING:
+    from bs4 import BeautifulSoup, Tag
 
 BASE_URL = "https://hrmos.co/pages/{tenant}/jobs"
 PAGE_SIZE = 100
@@ -103,7 +104,7 @@ class HrmosScraper(BaseScraper):
         return jobs
 
     def _parse_page(self, html: str) -> _Page:
-        soup = BeautifulSoup(html, "html.parser")
+        soup = _parse_html(html)
         company_node = soup.select_one(".sg-corporate-name")
         count_node = soup.select_one(".pg-count")
         if company_node is None or count_node is None:
@@ -244,6 +245,17 @@ def _trusted_job_url(value: object, *, tenant: str) -> tuple[str, str]:
         raise ScraperError(f"HRMOS ({tenant}) returned an untrusted job URL")
     job_id = segments[3]
     return job_id, f"https://hrmos.co/pages/{tenant}/jobs/{job_id}"
+
+
+def _parse_html(html: str) -> BeautifulSoup:
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError as exc:
+        raise ScraperError(
+            "HRMOS scraper requires beautifulsoup4; "
+            "install `ats-scrapers[scrapers]`"
+        ) from exc
+    return BeautifulSoup(html, "html.parser")
 
 
 def _company_options(soup: BeautifulSoup) -> set[str]:

@@ -21,14 +21,14 @@ import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from bs4 import BeautifulSoup
-
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._slug import require_host_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
+    from bs4 import BeautifulSoup
+
     from ats_scrapers.fetch import Fetcher
 
 BASE_URL = "https://herp.careers/v1/{slug}"
@@ -152,7 +152,7 @@ class HerpScraper(BaseScraper):
         return self._run_sync(run())
 
     def _parse_listing(self, html: str) -> list[Job]:
-        soup = BeautifulSoup(html, "html.parser")
+        soup = _parse_html(html)
         if soup.select_one(".requisition-list") is None:
             raise ScraperError(f"HERP ({self.company_slug}) returned an unrecognized careers page")
 
@@ -232,8 +232,19 @@ class HerpScraper(BaseScraper):
             _apply_detail(job, detail)
 
 
+def _parse_html(html: str) -> BeautifulSoup:
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError as exc:
+        raise ScraperError(
+            "HERP scraper requires beautifulsoup4; "
+            "install `ats-scrapers[scrapers]`"
+        ) from exc
+    return BeautifulSoup(html, "html.parser")
+
+
 def _job_posting_json_ld(html: str) -> dict[str, Any] | None:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _parse_html(html)
     for script in soup.select('script[type="application/ld+json"]'):
         try:
             payload = json.loads(script.get_text())

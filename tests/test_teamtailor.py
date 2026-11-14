@@ -48,8 +48,20 @@ def _item(
     country: str = "Germany",
     department: str = "Engineering",
     role: str | None = None,
+    locations: list[tuple[str, str]] | None = None,
 ) -> str:
     role_tag = f"<tt:role>{role}</tt:role>" if role else ""
+    location_tags = "".join(
+        f"""
+        <tt:location>
+          <tt:name>HQ</tt:name>
+          <tt:address/>
+          <tt:zip/>
+          <tt:city>{loc_city}</tt:city>
+          <tt:country>{loc_country}</tt:country>
+        </tt:location>"""
+        for loc_city, loc_country in ([(city, country)] if locations is None else locations)
+    )
     return f"""
     <item>
       <title>{title}</title>
@@ -58,14 +70,7 @@ def _item(
       <remoteStatus>{remote_status}</remoteStatus>
       <guid>{guid}</guid>
       <description>{description}</description>
-      <tt:locations>
-        <tt:location>
-          <tt:name>HQ</tt:name>
-          <tt:address/>
-          <tt:zip/>
-          <tt:city>{city}</tt:city>
-          <tt:country>{country}</tt:country>
-        </tt:location>
+      <tt:locations>{location_tags}
       </tt:locations>
       <tt:department>{department}</tt:department>
       {role_tag}
@@ -223,6 +228,56 @@ def test_location_falls_back_to_name_when_city_country_empty(httpx_mock) -> None
     """]))
     jobs = TeamtailorScraper("acme").fetch()
     assert jobs[0].location == "EMEA Region"
+
+
+def test_location_joins_every_location(httpx_mock) -> None:
+    """A posting open in several offices lists one `<tt:location>` per
+    office. Keep all of them, not only the first."""
+    httpx_mock.add_response(url=RSS_URL, text=_rss([
+        _item(locations=[("Berlin", "Germany"), ("Amsterdam", "Netherlands")]),
+    ]))
+    jobs = TeamtailorScraper("acme").fetch()
+    assert jobs[0].location == "Berlin, Germany; Amsterdam, Netherlands"
+
+
+def test_location_mixes_city_country_and_name_fallback(httpx_mock) -> None:
+    httpx_mock.add_response(url=RSS_URL, text=_rss(["""
+    <item>
+      <title>X</title>
+      <link>https://acme.teamtailor.com/jobs/1-x</link>
+      <guid>g</guid>
+      <description></description>
+      <tt:locations>
+        <tt:location>
+          <tt:name>EMEA Region</tt:name>
+        </tt:location>
+        <tt:location>
+          <tt:name>HQ</tt:name>
+          <tt:city>Paris</tt:city>
+          <tt:country>France</tt:country>
+        </tt:location>
+        <tt:location/>
+      </tt:locations>
+    </item>
+    """]))
+    jobs = TeamtailorScraper("acme").fetch()
+    assert jobs[0].location == "EMEA Region; Paris, France"
+
+
+def test_location_dedupes_repeated_locations(httpx_mock) -> None:
+    httpx_mock.add_response(url=RSS_URL, text=_rss([
+        _item(locations=[("Berlin", "Germany"), ("Berlin", "Germany")]),
+    ]))
+    jobs = TeamtailorScraper("acme").fetch()
+    assert jobs[0].location == "Berlin, Germany"
+
+
+def test_location_none_when_locations_is_empty(httpx_mock) -> None:
+    """An empty `<tt:locations>` is not the same as a missing one in the
+    helper: no office listed means no location, not the default office."""
+    httpx_mock.add_response(url=RSS_URL, text=_rss([_item(locations=[])]))
+    jobs = TeamtailorScraper("acme").fetch()
+    assert jobs[0].location is None
 
 
 def test_location_none_when_missing(httpx_mock) -> None:

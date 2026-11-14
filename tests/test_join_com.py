@@ -97,6 +97,73 @@ def test_join_com_lists_jobs_via_graphql(httpx_mock) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("workplace_type", "expected"),
+    [
+        ("REMOTE", True),
+        ("ONSITE", False),
+        ("HYBRID", None),
+        (" remote ", True),
+        ("OnSite", False),
+        ("SOMETHING_NEW", None),
+        ("", None),
+        (None, None),
+        (1, None),
+        (["REMOTE"], None),
+    ],
+)
+def test_join_com_workplace_type_sets_is_remote(
+    httpx_mock, workplace_type: object, expected: bool | None
+) -> None:
+    """The listing's ``workplaceType``: REMOTE and ONSITE set ``is_remote``;
+    HYBRID, an unknown label and a value that is not text leave it unknown."""
+    _company_page(httpx_mock)
+    item = _item(1)
+    item["workplaceType"] = workplace_type
+    httpx_mock.add_response(method="POST", url=GRAPHQL, json=_listing([item]))
+
+    [job] = _scraper().fetch()
+
+    assert job.is_remote is expected
+
+
+@pytest.mark.parametrize(
+    ("workplace_type", "expected"),
+    [
+        ("ONSITE", False),  # the listing's own label is not overridden
+        ("REMOTE", True),
+        (None, True),  # nothing on the listing: the detail page fills it
+        ("SOMETHING_NEW", True),
+    ],
+)
+def test_join_com_detail_page_only_fills_an_unknown_is_remote(
+    httpx_mock, workplace_type: str | None, expected: bool
+) -> None:
+    """With detail pages on, a ``TELECOMMUTE`` JSON-LD marker sets
+    ``is_remote`` only where the listing left it unknown."""
+    _company_page(httpx_mock)
+    item = _item(1)
+    item["workplaceType"] = workplace_type
+    httpx_mock.add_response(method="POST", url=GRAPHQL, json=_listing([item]))
+    posting = {
+        "@type": "JobPosting",
+        "description": "&lt;p&gt;Design things.&lt;/p&gt;",
+        "jobLocationType": "TELECOMMUTE",
+    }
+    httpx_mock.add_response(
+        url="https://join.com/companies/acme/jobs/1-designer",
+        text=(
+            '<html><script type="application/ld+json">'
+            f"{json.dumps(posting)}</script></html>"
+        ),
+    )
+
+    [job] = JoinComScraper("acme").fetch()
+
+    assert job.description == "Design things."
+    assert job.is_remote is expected
+
+
 def test_join_com_follows_page_count_and_dedupes(httpx_mock) -> None:
     _company_page(httpx_mock)
     httpx_mock.add_response(

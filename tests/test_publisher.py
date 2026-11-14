@@ -350,6 +350,65 @@ def test_manifest_patch_handles_corrupt_existing_manifest(
     assert manifest["version"] == "2.0"
 
 
+# --- Retired sources ----------------------------------------------------------
+
+
+def test_jobs_file_of_a_retired_source_is_not_published(ats_csv_dir, fake_r2) -> None:
+    """SEEK left the scheduled run. A jobs file an earlier run wrote is
+    still on the operator's disk and must not be published again."""
+    seek_dir = ats_csv_dir / "seek"
+    seek_dir.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "url": "https://www.seek.com.au/job/1",
+                "title": "Stale job",
+                "company": "Old Co",
+                "location": "Sydney",
+                "ats_id": "1",
+            }
+        ]
+    ).to_csv(seek_dir / "jobs.csv", index=False)
+
+    result = DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
+
+    manifest = json.loads(fake_r2.uploads["jobhive/v1/manifest.json"]["data"])
+    assert "seek" not in manifest["by_ats"]
+    assert not any("/seek/" in key for key in fake_r2.uploads)
+    assert result.total_jobs == 9
+    assert result.ats_count == 3
+
+
+@pytest.mark.parametrize("content", ["", "url,title,company,location,ats_id\n"])
+def test_empty_jobs_file_of_a_retired_source_does_not_block_the_publish(
+    ats_csv_dir, fake_r2, content: str
+) -> None:
+    """The manifest still records SEEK from an earlier run. An empty file
+    left on disk would look like a provider that lost its jobs, and no
+    scheduled run would ever refresh it."""
+    fake_r2.upload_bytes(
+        json.dumps(
+            {
+                "by_ats": {"seek": {"rows": 120}},
+                "by_ats_companies": {"seek": {"rows": 9}},
+            }
+        ).encode(),
+        "jobhive/v1/manifest.json",
+    )
+    seek_dir = ats_csv_dir / "seek"
+    seek_dir.mkdir()
+    (seek_dir / "jobs.csv").write_text(content, encoding="utf-8")
+
+    result = DatasetPublisher(fake_r2, write_parquet=True).publish_from_directory(
+        ats_csv_dir
+    )
+
+    assert result.total_jobs == 9
+    assert not any("/seek/jobs" in key for key in fake_r2.uploads)
+
+
 # --- README badges ----------------------------------------------------------
 
 

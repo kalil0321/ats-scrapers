@@ -14,10 +14,9 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 from urllib.parse import quote, unquote, urlparse
 
-from bs4 import BeautifulSoup
-
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
+from ats_scrapers.scrapers._bs4 import bs4_soup
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 CAREERS_URL = "https://careers.hireology.com/{tenant}/"
@@ -185,7 +184,7 @@ class HireologyScraper(BaseScraper):
             )
         except ScraperError:
             return None
-        soup = BeautifulSoup(page, "html.parser")
+        soup = bs4_soup(page, scraper="Hireology")
         title = soup.title.get_text(" ", strip=True) if soup.title else ""
         return _clean_text(title.removeprefix("Jobs for "))
 
@@ -447,7 +446,7 @@ def _html_text(value: object) -> str | None:
     cleaned = _clean_text(value)
     if not cleaned:
         return None
-    return BeautifulSoup(cleaned, "html.parser").get_text("\n", strip=True)
+    return bs4_soup(cleaned, scraper="Hireology").get_text("\n", strip=True)
 
 
 def _location(

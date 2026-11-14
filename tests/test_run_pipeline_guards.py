@@ -12,6 +12,11 @@ from ats_scrapers.exceptions import CompanyNotFoundError
 from ats_scrapers.models import ATSType, Job
 
 
+def test_seek_is_not_scheduled_for_pipeline_ingestion() -> None:
+    assert "seek" not in runner.CONFIGS
+    assert "jobbankca" in runner.CONFIGS
+
+
 def test_bamboohr_pipeline_fails_closed_on_empty() -> None:
     assert runner.CONFIGS["bamboohr"]["fail_closed_on_empty"] is True
 

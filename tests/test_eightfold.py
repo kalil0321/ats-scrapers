@@ -17,6 +17,7 @@ These tests pin four contracts:
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -32,7 +33,15 @@ from ats_scrapers.scrapers import (
     ScraperRegistry,
     get_scraper,
 )
-from ats_scrapers.scrapers.eightfold import _extract_remote, _format_location, _parse_ts
+from ats_scrapers.scrapers.eightfold import (
+    PAGE_SIZE,
+    _detail_retry_delay,
+    _extract_remote,
+    _format_location,
+    _is_retryable_status,
+    _parse_ts,
+    _retry_after_seconds,
+)
 
 # Detail enrichment fires per-job ``position_details`` GET calls after
 # the search pass; tests that don't care about description ignore them.
@@ -579,12 +588,13 @@ def test_format_location_prefers_standardized_over_locations() -> None:
     ) == "Standardized City"
 
 
-def test_format_location_string_list_returns_first_stripped() -> None:
+def test_format_location_string_list_strips_entries() -> None:
     assert _format_location({"locations": ["  Berlin  "]}) == "Berlin"
 
 
-def test_format_location_dict_list_uses_city() -> None:
-    assert _format_location({"locations": [{"city": "Paris", "country": "FR"}]}) == "Paris"
+def test_format_location_dict_list_uses_city_and_country() -> None:
+    assert _format_location({"locations": [{"city": "Paris", "country": "FR"}]}) == "Paris, FR"
+    assert _format_location({"locations": [{"city": "Paris"}]}) == "Paris"
 
 
 def test_format_location_dict_list_falls_back_to_country() -> None:
@@ -621,6 +631,66 @@ def test_format_location_empty_list_falls_through() -> None:
     assert _format_location(
         {"standardizedLocations": [], "locations": ["Berlin"]}
     ) == "Berlin"
+
+
+def test_format_location_keeps_every_listed_location() -> None:
+    """Multi-location postings list each office; entries already carry
+    commas, so they are joined with "; "."""
+    assert _format_location(
+        {"locations": ["Toronto, ON, Canada", "Berlin, Germany", "Toronto, ON, Canada"]}
+    ) == "Toronto, ON, Canada; Berlin, Germany"
+
+
+def test_format_location_dict_list_keeps_every_location() -> None:
+    assert _format_location(
+        {"locations": [{"city": "Paris", "country": "FR"}, {"city": "Lyon"}, {}]}
+    ) == "Paris, FR; Lyon"
+
+
+def test_format_location_dict_list_keeps_same_named_cities_apart() -> None:
+    """Deduping on the city alone would drop one of two offices."""
+    assert _format_location(
+        {"locations": [
+            {"city": "London", "country": "CA"},
+            {"city": "London", "country": "GB"},
+            {"city": "London", "country": "GB"},
+        ]}
+    ) == "London, CA; London, GB"
+
+
+def test_format_location_dict_blank_fields_do_not_block_the_fallback() -> None:
+    assert _format_location({"locations": [{"city": " ", "country": "FR"}]}) == "FR"
+    assert _format_location(
+        {"locations": [{"city": "", "country": None, "name": " EMEA "}]}
+    ) == "EMEA"
+    assert _format_location(
+        {"locations": [{"city": 7, "country": ["FR"]}], "primaryLocation": "Lyon"}
+    ) == "Lyon"
+
+
+def test_format_location_skips_blank_entries_in_list() -> None:
+    assert _format_location(
+        {"standardizedLocations": ["  ", "Austin, TX, US"], "locations": ["Austin"]}
+    ) == "Austin, TX, US"
+
+
+def test_multi_location_posting_keeps_all_locations(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page(
+            [
+                {
+                    "displayJobId": "M1",
+                    "name": "Engineer",
+                    "positionUrl": "/careers/job/M1",
+                    "locations": ["Berlin, Germany", "Munich, Germany"],
+                }
+            ],
+            count=1,
+        ),
+    )
+    jobs = EightfoldScraper("dolby", include_descriptions=False).fetch()
+    assert jobs[0].location == "Berlin, Germany; Munich, Germany"
 
 
 # --- _parse_ts: timestamp helper ---------------------------------------------
@@ -991,3 +1061,345 @@ def test_httpcloak_non_200_raises(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "httpcloak", fake_httpcloak)
     with pytest.raises(ScraperError, match=r"Dolby.*503"):
         EightfoldScraper("dolby", client_kind="httpcloak").fetch()
+
+
+# --- Detail enrichment: backoff and block handling --------------------------
+
+DETAIL_URL = re.compile(r"https://dolby\.eightfold\.ai/api/pcsx/position_details\?.*")
+
+
+def _detail_requests(httpx_mock) -> list[httpx.Request]:
+    return [r for r in httpx_mock.get_requests() if r.url.path.endswith("/position_details")]
+
+
+def _search_with_jobs(httpx_mock, ids: list[str]) -> None:
+    """Mock a two-page listing (count=11). Detail enrichment only runs on the
+    multi-page path, so a single-page mock would never reach it."""
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page(
+            [
+                _position(job_id=i, position_url=f"/careers/job/{i}", location=None)
+                for i in ids
+            ],
+            count=PAGE_SIZE + 1,
+        ),
+    )
+    httpx_mock.add_response(url=_mock_url(PAGE_SIZE), json=_page([], count=PAGE_SIZE + 1))
+
+
+def _detail_ok(description: str = "<p>Desc</p>") -> dict[str, Any]:
+    return {"data": {"jobDescription": description}}
+
+
+@pytest.fixture
+def detail_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+    monkeypatch.setattr(ef, "MAX_RETRIES", 3)
+    monkeypatch.setattr(ef, "RETRY_BASE_DELAY", 0)
+
+
+def test_detail_retries_on_429_then_succeeds(detail_retries, httpx_mock) -> None:
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(
+        url=DETAIL_URL, status_code=429, headers={"Retry-After": "0"}
+    )
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok())
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].description == "<p>Desc</p>"
+    assert len(_detail_requests(httpx_mock)) == 2
+
+
+def test_detail_gives_up_after_max_retries_on_429(detail_retries, httpx_mock) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(
+        url=DETAIL_URL,
+        status_code=429,
+        headers={"Retry-After": "0"},
+        is_reusable=True,
+    )
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].description is None
+    assert len(_detail_requests(httpx_mock)) == ef.MAX_RETRIES
+
+
+def test_detail_retries_on_5xx(detail_retries, httpx_mock) -> None:
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(url=DETAIL_URL, status_code=502)
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok())
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].description == "<p>Desc</p>"
+    assert len(_detail_requests(httpx_mock)) == 2
+
+
+@pytest.mark.parametrize("status", [403, 405])
+def test_detail_stops_swarm_on_block(
+    detail_retries, httpx_mock, monkeypatch, status: int
+) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+
+    # Serialise the swarm so the outcome doesn't depend on task scheduling.
+    monkeypatch.setattr(ef, "DETAIL_CONCURRENCY", 1)
+    _search_with_jobs(httpx_mock, ["100", "101", "102"])
+    httpx_mock.add_response(url=DETAIL_URL, status_code=status, is_reusable=True)
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert [j.description for j in jobs] == [None, None, None]
+    assert len(_detail_requests(httpx_mock)) == 1
+
+
+def test_detail_stops_swarm_on_a_long_retry_after(
+    detail_retries, httpx_mock, monkeypatch
+) -> None:
+    """A 429 asking for an hour is not slept out once per job: the detail
+    calls stop for the run, and nothing sleeps."""
+    import ats_scrapers.scrapers.eightfold as ef
+
+    monkeypatch.setattr(ef, "DETAIL_CONCURRENCY", 1)
+    sleeps = _record_sleeps(monkeypatch)
+    _search_with_jobs(httpx_mock, ["100", "101", "102"])
+    httpx_mock.add_response(
+        url=DETAIL_URL,
+        status_code=429,
+        headers={"Retry-After": "3600"},
+        is_reusable=True,
+    )
+
+    jobs = EightfoldScraper("dolby").fetch()
+
+    assert [j.description for j in jobs] == [None, None, None]
+    assert len(_detail_requests(httpx_mock)) == 1
+    assert sleeps == []
+
+
+def test_detail_stops_swarm_on_a_long_retry_after_on_the_last_attempt(
+    detail_retries, httpx_mock, monkeypatch
+) -> None:
+    """Two 502s use up the earlier attempts; the hour-long cooldown then
+    arrives on the final one and must still stop the other jobs."""
+    import ats_scrapers.scrapers.eightfold as ef
+
+    monkeypatch.setattr(ef, "DETAIL_CONCURRENCY", 1)
+    _record_sleeps(monkeypatch)
+    _search_with_jobs(httpx_mock, ["100", "101", "102"])
+    httpx_mock.add_response(url=DETAIL_URL, status_code=502)
+    httpx_mock.add_response(url=DETAIL_URL, status_code=502)
+    httpx_mock.add_response(
+        url=DETAIL_URL, status_code=429, headers={"Retry-After": "3600"}
+    )
+
+    scraper = EightfoldScraper("dolby")
+    jobs = scraper.fetch()
+
+    assert [j.description for j in jobs] == [None, None, None]
+    assert len(_detail_requests(httpx_mock)) == ef.MAX_RETRIES
+    assert scraper._detail_blocked is True
+
+
+def test_detail_sleeps_a_retry_after_within_the_limit(
+    detail_retries, httpx_mock, monkeypatch
+) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+
+    sleeps = _record_sleeps(monkeypatch)
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(
+        url=DETAIL_URL,
+        status_code=429,
+        headers={"Retry-After": str(int(ef.DETAIL_MAX_RETRY_WAIT))},
+    )
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok())
+
+    jobs = EightfoldScraper("dolby").fetch()
+
+    assert jobs[0].description == "<p>Desc</p>"
+    assert sleeps == [ef.DETAIL_MAX_RETRY_WAIT]
+
+
+def test_detail_block_flag_resets_on_next_fetch(detail_retries, httpx_mock) -> None:
+    scraper = EightfoldScraper("dolby")
+    scraper._detail_blocked = True
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok())
+
+    jobs = scraper.fetch()
+    assert jobs[0].description == "<p>Desc</p>"
+
+
+def test_detail_404_is_not_retried(detail_retries, httpx_mock) -> None:
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(url=DETAIL_URL, status_code=404)
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].description is None
+    assert len(_detail_requests(httpx_mock)) == 1
+
+
+def test_get_description_retries_on_429(detail_retries, httpx_mock) -> None:
+    from ats_scrapers.models import Job
+
+    httpx_mock.add_response(
+        url=DETAIL_URL, status_code=429, headers={"Retry-After": "0"}
+    )
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok("<p>Solo</p>"))
+
+    job = Job(
+        url="https://dolby.eightfold.ai/careers/job/100",
+        title="Engineer",
+        company="Dolby",
+        ats_type=ATSType.EIGHTFOLD,
+        ats_id="100",
+        fetched_at=datetime.now(UTC),
+    )
+    assert EightfoldScraper("dolby").get_description(job) == "<p>Solo</p>"
+    assert len(_detail_requests(httpx_mock)) == 2
+
+
+# --- Retry helpers: delay shapes ---------------------------------------------
+
+
+@pytest.fixture
+def real_delay(monkeypatch: pytest.MonkeyPatch) -> float:
+    """The autouse fixture zeroes RETRY_BASE_DELAY, which would make every
+    delay assertion trivially 0. Restore the production value (1.5 s)."""
+    import ats_scrapers.scrapers.eightfold as ef
+    monkeypatch.setattr(ef, "RETRY_BASE_DELAY", 1.5)
+    return 1.5
+
+
+def test_retry_after_seconds_honours_numeric_header(real_delay) -> None:
+    resp = httpx.Response(429, headers={"Retry-After": "7"})
+    assert _retry_after_seconds(resp, 1) == 7.0
+
+
+@pytest.mark.parametrize("attempt", [1, 2, 3])
+def test_retry_after_seconds_falls_back_to_exponential(real_delay, attempt: int) -> None:
+    resp = httpx.Response(429)
+    assert _retry_after_seconds(resp, attempt) == real_delay * (2 ** attempt)
+
+
+def test_retry_after_seconds_ignores_http_date(real_delay) -> None:
+    """Only numeric Retry-After is parsed; an HTTP-date uses the fallback."""
+    resp = httpx.Response(429, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"})
+    assert _retry_after_seconds(resp, 1) == real_delay * 2
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (429, True),
+        (500, True),
+        (503, True),
+        (599, True),
+        (404, False),
+        (403, False),
+        (405, False),
+        (200, False),
+        (600, False),
+    ],
+)
+def test_is_retryable_status(status: int, expected: bool) -> None:
+    assert _is_retryable_status(status) is expected
+
+
+def test_detail_retry_delay_shapes(real_delay) -> None:
+    assert _detail_retry_delay(httpx.Response(429), 2) == real_delay * 4
+    assert _detail_retry_delay(httpx.Response(502), 2) == real_delay * 2
+    assert _detail_retry_delay(httpx.Response(429, headers={"Retry-After": "3"}), 2) == 3.0
+
+
+def _record_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Replace ``asyncio.sleep`` (the module does ``import asyncio``, so a
+    global patch is what the code under test sees) with a recorder."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    return sleeps
+
+
+def test_detail_429_backoff_is_exponential(
+    real_delay, detail_retries, monkeypatch, httpx_mock
+) -> None:
+    """Two 429s without Retry-After: delays are base * 2**attempt."""
+    import ats_scrapers.scrapers.eightfold as ef
+    # ``detail_retries`` zeroes the delay; re-apply the production value.
+    monkeypatch.setattr(ef, "RETRY_BASE_DELAY", real_delay)
+    sleeps = _record_sleeps(monkeypatch)
+
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(url=DETAIL_URL, status_code=429)
+    httpx_mock.add_response(url=DETAIL_URL, status_code=429)
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok())
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].description == "<p>Desc</p>"
+    assert sleeps == [real_delay * 2, real_delay * 4]
+
+
+def test_detail_5xx_backoff_is_linear(
+    real_delay, detail_retries, monkeypatch, httpx_mock
+) -> None:
+    """502 then 503: delays are base * attempt."""
+    import ats_scrapers.scrapers.eightfold as ef
+    monkeypatch.setattr(ef, "RETRY_BASE_DELAY", real_delay)
+    sleeps = _record_sleeps(monkeypatch)
+
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(url=DETAIL_URL, status_code=502)
+    httpx_mock.add_response(url=DETAIL_URL, status_code=503)
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok())
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].description == "<p>Desc</p>"
+    assert sleeps == [real_delay * 1, real_delay * 2]
+
+
+def test_detail_retries_on_transport_error_then_succeeds(
+    detail_retries, httpx_mock
+) -> None:
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_exception(httpx.ConnectError("boom"), url=DETAIL_URL)
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok())
+
+    jobs = EightfoldScraper("dolby").fetch()
+    assert jobs[0].description == "<p>Desc</p>"
+    assert len(_detail_requests(httpx_mock)) == 2
+
+
+def test_get_description_runs_after_block_in_earlier_fetch(
+    detail_retries, httpx_mock, monkeypatch
+) -> None:
+    """A 403/405 block seen during fetch() must not silence a later
+    standalone get_description() call on the same instance."""
+    import ats_scrapers.scrapers.eightfold as ef
+    from ats_scrapers.models import Job
+
+    monkeypatch.setattr(ef, "DETAIL_CONCURRENCY", 1)
+    scraper = EightfoldScraper("dolby")
+
+    _search_with_jobs(httpx_mock, ["100"])
+    httpx_mock.add_response(url=DETAIL_URL, status_code=405)
+    scraper.fetch()
+    assert scraper._detail_blocked is True
+    assert len(_detail_requests(httpx_mock)) == 1
+
+    httpx_mock.add_response(url=DETAIL_URL, json=_detail_ok("<p>Later</p>"))
+    job = Job(
+        url="https://dolby.eightfold.ai/careers/job/200",
+        title="Engineer",
+        company="Dolby",
+        ats_type=ATSType.EIGHTFOLD,
+        ats_id="200",
+        fetched_at=datetime.now(UTC),
+    )
+    assert scraper.get_description(job) == "<p>Later</p>"
+    assert len(_detail_requests(httpx_mock)) == 2
+
