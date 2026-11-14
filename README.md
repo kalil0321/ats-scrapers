@@ -116,7 +116,7 @@ Scraper adapters include:
   HERP Hire, HRMOS, Keka, Paycom,
   Softgarden, Workable, Personio,
   and more.
-- First-party company APIs: Amazon, Apple, Google, TikTok, and Uber.
+- First-party company APIs: Amazon, Apple, Google, JD.com, TikTok, and Uber.
 - Public and regional sources: EURES, Bundesagentur, Arbetsformedlingen,
   Welcome to the Jungle, and others.
 - Career-site platforms on the employer's own domain: Radancy TalentBrew.

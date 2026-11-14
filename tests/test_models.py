@@ -28,7 +28,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "successfactors", "talentio", "ukg", "workable", "workable_marketplace", "workday",
         "wintalent",
         # Big-tech custom careers systems
-        "amazon", "apple", "bytedance", "google", "meta",
+        "amazon", "apple", "bytedance", "google", "jd", "meta",
         "tesla", "tiktok", "uber", "usajobs",
         # National / supranational public-sector aggregators
         "bundesagentur", "arbetsformedlingen", "eures",
