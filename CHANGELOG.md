@@ -15,6 +15,13 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
+- Ashby: when the public API answers 404, the scraper reads the hosted board
+  page (`jobs.ashbyhq.com/{slug}`) and each posting's page instead of reporting
+  the employer as gone. Eleven employers with 298 openings on 14 Nov 2026 have
+  the API off and the page public (Whatnot, EvenUp, Lime, Chainlink Labs). A
+  board that answers 404 on both is still reported as not found. The catalogue
+  gains those eleven and four more boards the API serves (monday.com, plancraft,
+  Marathon Fusion, source.dev): 439 openings in all.
 - Cross-source dedup, title passes (`pipeline/crossdedup.py`). A kept row now
   absorbs at most one row per other source and per place it lists, and the
   better source keeps all of its rows: one title advertised for 200 shops stays
