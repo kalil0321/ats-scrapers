@@ -19,6 +19,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
+- Pipeline: a few failed boards no longer hold back ADP, Jobvite, Keka, PageUp, Paycom or Varbi.
 - Phenom: job links open the posting.
 - Oracle: job links open the posting.
 - Amazon: job links open the posting.
