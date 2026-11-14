@@ -12,7 +12,7 @@ import re
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers._listings_board import (
@@ -24,6 +24,8 @@ from ats_scrapers.scrapers._listings_board import (
     _salary_summary,
     _text,
     _time,
+    read_job_page,
+    sitemap_locations,
 )
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -40,8 +42,6 @@ DETAIL_CONCURRENCY = 4
 MAX_UNREADABLE_SHARE = 0.1
 COUNTRY_NAMES = {"DZ": "Algeria"}
 
-_LOC_RE = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>")
-
 
 @ScraperRegistry.register(ATSType.EMPLOITIC)
 class EmploiticScraper(BaseScraper):
@@ -51,11 +51,8 @@ class EmploiticScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         async with self.make_fetcher() as fetch:
-            urls = list(dict.fromkeys(
-                url
-                for url in _LOC_RE.findall(await fetch.get_text(SITEMAP))
-                if _is_job_page(url)
-            ))
+            listed = sitemap_locations(await fetch.get_text(SITEMAP), SITEMAP, "urlset")
+            urls = list(dict.fromkeys(url for url in listed if _is_job_page(url)))
             if not urls:
                 raise ScraperError("Emploitic lists no job page")
             semaphore = asyncio.Semaphore(DETAIL_CONCURRENCY)
@@ -65,13 +62,13 @@ class EmploiticScraper(BaseScraper):
             async def read(url: str) -> None:
                 async with semaphore:
                     try:
-                        page = await fetch.get_text(url)
-                    except CompanyNotFoundError:
-                        return  # Closed since the sitemap was written.
+                        page = await read_job_page(fetch, url)
                     except ScraperError as exc:
                         logger.warning("%s could not be read: %s", url, exc)
                         unreadable.append(url)
                         return
+                if page is None:
+                    return  # Closed since the sitemap was written.
                 job = self._parse(page, url)
                 if job is None:
                     unreadable.append(url)

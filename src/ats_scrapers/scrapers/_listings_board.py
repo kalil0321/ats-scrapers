@@ -105,13 +105,13 @@ class ListingsBoardScraper(BaseScraper):
         async def read(url: str) -> None:
             async with semaphore:
                 try:
-                    page = await fetch.get_text(url)
-                except CompanyNotFoundError:
-                    return  # Closed since the sitemap was written.
+                    page = await read_job_page(fetch, url)
                 except ScraperError as exc:
                     logger.warning("%s could not be read: %s", url, exc)
                     unreadable.append(url)
                     return
+            if page is None:
+                return  # Closed since the sitemap was written.
             job = self._parse(page, url, code)
             if job is None:
                 unreadable.append(url)
@@ -199,16 +199,33 @@ async def _job_urls(fetch: Fetcher, host: str) -> list[str]:
         parsed = urlparse(url)
         return parsed.scheme == "https" and parsed.hostname == host
 
-    index = await fetch.get_text(f"https://{host}{SITEMAP_INDEX}")
-    sitemaps = [url for url in _LOC_RE.findall(index) if ours(url)]
+    index = f"https://{host}{SITEMAP_INDEX}"
+    listed = sitemap_locations(await fetch.get_text(index), index, "sitemapindex")
+    sitemaps = [url for url in listed if ours(url)]
     if not sitemaps:
         raise ScraperError(f"{host} lists no listings sitemap")
     urls: dict[str, None] = {}
     for sitemap in sitemaps:
-        for url in _LOC_RE.findall(await fetch.get_text(sitemap)):
+        for url in sitemap_locations(await fetch.get_text(sitemap), sitemap, "urlset"):
             if ours(url) and urlparse(url).path.startswith("/listings/"):
                 urls.setdefault(url)
     return list(urls)
+
+
+def sitemap_locations(body: str, url: str, root: str) -> list[str]:
+    """The addresses a sitemap lists. A page that is not a sitemap is an error."""
+    if f"<{root}" not in body:
+        raise ScraperError(f"{url} is not a sitemap")
+    return _LOC_RE.findall(body)
+
+
+async def read_job_page(fetch: Fetcher, url: str) -> str | None:
+    """A job page, or ``None`` when the job has closed (404 or 410)."""
+    try:
+        response = await fetch.request("GET", url, handled={410})
+    except CompanyNotFoundError:
+        return None
+    return None if response.status_code == 410 else response.text
 
 
 def _nodes(page: str) -> dict[str, dict[str, Any]]:

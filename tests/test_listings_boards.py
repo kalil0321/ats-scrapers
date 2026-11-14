@@ -177,6 +177,7 @@ def test_a_site_address_names_one_site(httpx_mock) -> None:
 def test_a_job_closed_since_the_sitemap_is_dropped(httpx_mock) -> None:
     pages = {f"{NG}/listings/{n}": {"text": _job_page(NG, n)} for n in range(1, 11)}
     pages[f"{NG}/listings/gone"] = {"status_code": 404}
+    pages[f"{NG}/listings/removed"] = {"status_code": 410}
     _site(httpx_mock, NG, pages)
 
     assert len(JobbermanScraper("ng").fetch()) == 10
@@ -197,6 +198,43 @@ def test_many_unreadable_pages_are_reported(httpx_mock) -> None:
 
     with pytest.raises(ScraperError, match="3 of 4 job pages could not be read"):
         JobbermanScraper("ng").fetch()
+
+
+def test_a_page_served_in_place_of_a_sitemap_is_reported(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=f"{NG}/sitemap-listings-index-en.xml", text=_index(NG, ["finance", "sales"])
+    )
+    httpx_mock.add_response(
+        url=f"{NG}/sitemap-listings-finance-en.xml", text=_sitemap([f"{NG}/listings/a"])
+    )
+    httpx_mock.add_response(
+        url=f"{NG}/sitemap-listings-sales-en.xml", text="<html>Be right back</html>"
+    )
+
+    with pytest.raises(ScraperError, match=r"sitemap-listings-sales-en\.xml is not a sitemap"):
+        JobbermanScraper("ng").fetch()
+
+
+def test_a_page_served_in_place_of_the_index_is_reported(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=f"{NG}/sitemap-listings-index-en.xml", text="<html>Be right back</html>"
+    )
+
+    with pytest.raises(ScraperError, match="is not a sitemap"):
+        JobbermanScraper("ng").fetch()
+
+
+def test_an_empty_sitemap_is_not_an_error(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=f"{NG}/sitemap-listings-index-en.xml", text=_index(NG, ["finance", "sales"])
+    )
+    httpx_mock.add_response(
+        url=f"{NG}/sitemap-listings-finance-en.xml", text=_sitemap([f"{NG}/listings/a"])
+    )
+    httpx_mock.add_response(url=f"{NG}/sitemap-listings-sales-en.xml", text=_sitemap([]))
+    httpx_mock.add_response(url=f"{NG}/listings/a", text=_job_page(NG))
+
+    assert len(JobbermanScraper("ng").fetch()) == 1
 
 
 def test_a_site_without_a_sitemap_is_reported(httpx_mock) -> None:

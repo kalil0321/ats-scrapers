@@ -116,12 +116,20 @@ def test_a_sitemap_without_job_pages_is_reported(httpx_mock) -> None:
         EmploiticScraper("emploitic").fetch()
 
 
+def test_a_page_served_in_place_of_the_sitemap_is_reported(httpx_mock) -> None:
+    httpx_mock.add_response(url=SITEMAP, text="<html>Be right back</html>")
+
+    with pytest.raises(ScraperError, match="is not a sitemap"):
+        EmploiticScraper("emploitic").fetch()
+
+
 def test_a_job_closed_since_the_sitemap_is_dropped(httpx_mock) -> None:
     pages = {
         f"{JOB}-{n}": {"text": _job_page(identifier={"value": f"id-{n}"})}
         for n in range(10)
     }
     pages[f"{JOB}-gone"] = {"status_code": 404}
+    pages[f"{JOB}-removed"] = {"status_code": 410}
     _site(httpx_mock, pages)
 
     assert len(EmploiticScraper("emploitic").fetch()) == 10
