@@ -9,7 +9,7 @@ from scripts.run_pipeline import CONFIGS, _bounded_concurrency
 
 # Companies that listed at least one project when the catalogue was built.
 # A catalogue cut short by accident fails here.
-EXPECTED_ROWS = 2143
+EXPECTED_ROWS = 2754
 
 
 def test_wantedly_pipeline_reads_the_company_catalogue() -> None:
