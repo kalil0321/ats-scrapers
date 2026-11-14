@@ -41,6 +41,8 @@ PAGE_SIZE = 100  # Phenom accepts up to 100 per page.
 MAX_CONCURRENCY = 8
 
 _CSRF_RE = re.compile(r'"csrfToken"\s*:\s*"([^"]+)"')
+_SITE_PATH_RE = re.compile(r"^/([a-z]{2,6})/([a-z]{2})(?:/|$)")
+_PAGE_BASE_URL_RE = re.compile(r'"baseUrl"\s*:\s*"(https?://[^"]+)"')
 
 _BASE_HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -110,6 +112,7 @@ class PhenomScraper(BaseScraper):
                 f"got {company_slug!r}"
             )
         self.base_url = company_slug.rstrip("/")
+        self._resolved_site_path: str | None = None
         self.locale = locale
         self.country = country
         host = urlparse(self.base_url).hostname or company_slug
@@ -162,6 +165,7 @@ class PhenomScraper(BaseScraper):
         ``x-csrf-token`` header."""
         search_url = self._search_results_url()
         response = await fetch.request("GET", search_url, headers=_BASE_HEADERS)
+        self._resolved_site_path = _site_path_of(response.text, self.base_url)
         # Cookie-based csrf is the canonical path; some tenants only embed
         # the token in the page HTML.
         for cookie in fetch.cookies.jar:
@@ -270,6 +274,15 @@ class PhenomScraper(BaseScraper):
                 return value
         return None
 
+    def _job_url(self, ats_id: str) -> str:
+        """Job page link, under the site's ``/{country}/{lang}`` path."""
+        return f"{self.base_url}{self._site_path()}/job/{ats_id}"
+
+    def _site_path(self) -> str:
+        if self._resolved_site_path:
+            return self._resolved_site_path
+        return f"/{self.country}/{self.locale.split('_', 1)[0]}"
+
     def _parse_job(self, item: dict[str, Any]) -> Job | None:
         ats_id = str(item.get("jobId") or item.get("id") or "")
         if not ats_id:
@@ -281,7 +294,7 @@ class PhenomScraper(BaseScraper):
         )
         url = item.get("jobUrl") or item.get("url")
         if not url or not isinstance(url, str):
-            url = f"{self.base_url}/job/{ats_id}"
+            url = self._job_url(ats_id)
         elif not url.startswith(("http://", "https://")):
             url = f"{self.base_url}{url if url.startswith('/') else '/' + url}"
 
@@ -374,3 +387,14 @@ def _parse_iso(value: object) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _site_path_of(page: str, base_url: str) -> str | None:
+    """``/{country}/{lang}`` the site says it lives under, if the page tells."""
+    host = urlparse(base_url).hostname
+    for candidate in _PAGE_BASE_URL_RE.findall(page):
+        parsed = urlparse(candidate)
+        match = _SITE_PATH_RE.match(parsed.path)
+        if parsed.hostname == host and match:
+            return f"/{match.group(1)}/{match.group(2)}"
+    return None
