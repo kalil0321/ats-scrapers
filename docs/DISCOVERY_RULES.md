@@ -635,6 +635,14 @@ company's slug as written in its page address (capitals included) and
 - Ask slowly: the site answers 403 to a client that sends more than a few
   requests per second. Two companies at a time is enough.
 - A slug the site no longer knows answers 500 on every request: remove the row.
+- Count jobs, not projects. Employers republish one opening as several
+  projects, each under a new headline and often tagged with another
+  prefecture. The scraper returns projects with the same role label
+  (`looking_for`) and the same text as one job. When reporting what a
+  catalogue brings, give both figures.
+- A company that announces more than 1,000 projects cannot be read to the
+  end (100 pages of 10) and is refused. Those seen so far republish one
+  advert thousands of times; leave them out.
 - The listing also returns the names of staff members. Do not read or keep
   them.
 

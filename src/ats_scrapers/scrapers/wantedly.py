@@ -25,6 +25,13 @@ Without ``company_id`` the same endpoint lists 1,000 projects out of some
 190,000, which is why this scraper works company by company. The company
 slugs come from the site's sitemap.
 
+Employers republish one opening as several projects, each under a new
+headline and often tagged with another prefecture, while the role label
+(``looking_for``) and the text stay the same. Such projects are returned as
+one job: the most recently published project, with the places of all of them
+and the number of the others in ``raw["reposts"]``. ``collapse_reposts=False``
+returns every project.
+
 The API also returns the names of staff members of the employer. Nothing
 about a person is read or stored.
 """
@@ -58,6 +65,11 @@ PAGE_CONCURRENCY = 1
 # the list is refused.
 MAX_PASSES = 4
 MIN_COVERAGE = 0.9
+# Two projects of one company are the same opening when their role label and
+# their text are the same. A text shorter than this is too little to tell.
+MIN_REPOST_TEXT_CHARS = 200
+# How many ids of the other projects of an opening are kept in ``raw``.
+MAX_REPOST_IDS = 50
 MAX_DESCRIPTION_CHARS = 25_000
 
 # A company slug as it stands in the sitemap: ASCII letters, digits,
@@ -87,6 +99,7 @@ class WantedlyScraper(BaseScraper):
         include_descriptions: bool = True,
         proxy: str | None = None,
         company_name: str | None = None,
+        collapse_reposts: bool = True,
     ) -> None:
         super().__init__(
             company_slug,
@@ -95,6 +108,7 @@ class WantedlyScraper(BaseScraper):
             proxy=proxy,
         )
         self.company_slug = _parse_slug(company_slug)
+        self.collapse_reposts = collapse_reposts
         self.company_name = (
             company_name.strip() if company_name and company_name.strip() else None
         )
@@ -144,7 +158,10 @@ class WantedlyScraper(BaseScraper):
                 f"and listed {len(found)} in {MAX_PASSES} passes"
             )
         fetched_at = datetime.now(UTC)
-        return [self._parse_job(item, fetched_at) for item in found.values()]
+        return [
+            self._parse_opening(projects, fetched_at)
+            for projects in _openings(list(found.values()), self.collapse_reposts)
+        ]
 
     async def _page(self, fetch: Fetcher, page: int) -> dict[str, Any]:
         payload = await fetch.get_json(
@@ -160,6 +177,25 @@ class WantedlyScraper(BaseScraper):
                 f"Wantedly ({self.company_slug}) page {page} was not an object"
             )
         return payload
+
+    def _parse_opening(
+        self, projects: list[dict[str, Any]], fetched_at: datetime
+    ) -> Job:
+        """One job for the projects of one opening, most recent first."""
+        job = self._parse_job(projects[0], fetched_at)
+        if len(projects) == 1:
+            return job
+        places = [place for item in projects if (place := _location(item))]
+        job.location = "; ".join(dict.fromkeys(places)) or None
+        others = [
+            other for item in projects[1:] if (other := _project_id(item)) is not None
+        ]
+        job.raw = {
+            **(job.raw or {}),
+            "reposts": len(others),
+            "repost_ids": others[:MAX_REPOST_IDS],
+        }
+        return job
 
     def _parse_job(self, item: dict[str, Any], fetched_at: datetime) -> Job:
         project_id = _project_id(item)
@@ -210,6 +246,40 @@ def _parse_slug(value: str) -> str:
     if not _SLUG_RE.fullmatch(cleaned):
         raise ScraperError(f"WantedlyScraper: invalid company slug {value!r}")
     return cleaned
+
+
+def _openings(
+    projects: list[dict[str, Any]], collapse_reposts: bool
+) -> list[list[dict[str, Any]]]:
+    """The projects grouped by opening, each group most recent first.
+
+    Groups keep the order in which their first project was listed."""
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for index, item in enumerate(projects):
+        key = _repost_key(item) if collapse_reposts else None
+        groups.setdefault(key or ("", f"#{index}"), []).append(item)
+    return [sorted(group, key=_recency, reverse=True) for group in groups.values()]
+
+
+def _repost_key(item: dict[str, Any]) -> tuple[str, str] | None:
+    """What two projects of one opening share: the role label and the text.
+
+    The text is compared without its whitespace: the same text pasted again
+    often differs only in its line breaks."""
+    description = item.get("description")
+    text = "".join(description.split()) if isinstance(description, str) else ""
+    if len(text) < MIN_REPOST_TEXT_CHARS:
+        return None
+    return (_text(item.get("looking_for")) or "", text)
+
+
+def _recency(item: dict[str, Any]) -> tuple[datetime, int]:
+    published = _parse_datetime(item.get("published_at"))
+    project_id = _project_id(item)
+    return (
+        published or datetime.min.replace(tzinfo=UTC),
+        int(project_id) if project_id is not None else 0,
+    )
 
 
 def _listing_size(payload: dict[str, Any], slug: str) -> tuple[int, int]:

@@ -270,3 +270,152 @@ def test_missing_optional_fields_stay_empty(httpx_mock) -> None:
     assert job.location is None
     assert job.description is None
     assert job.posted_at is None
+
+
+# --- One opening republished as several projects ----------------------------
+
+LONG_TEXT = "家づくりを検討するお客様と住宅会社をつなぐ事業で、社内のシステムを一から整えます。" * 6
+
+
+def _repost(project_id: int, **overrides: object) -> dict[str, object]:
+    """A project whose text is long enough to recognise a republished opening."""
+    fields: dict[str, object] = {
+        "description": LONG_TEXT,
+        "looking_for": "社内SE・1人目社員",
+        "location": "愛知県名古屋市",
+        "location_suffix": None,
+    }
+    fields.update(overrides)
+    return _project(project_id, **fields)
+
+
+def test_republished_projects_are_one_job(httpx_mock) -> None:
+    """Same role label and same text under three headlines, two prefectures:
+    one job, the most recent project, with every place and the other ids."""
+    httpx_mock.add_response(
+        url=API,
+        json=_listing(
+            [
+                _repost(10, title="代表直下の社内SE", published_at="2026-08-01T10:00:00+09:00"),
+                _repost(
+                    30,
+                    title="1人目情シス",
+                    published_at="2026-10-30T10:00:00+09:00",
+                    location="岐阜県",
+                ),
+                _repost(20, title="社内のシステム構築", published_at="2026-09-15T10:00:00+09:00"),
+            ]
+        ),
+    )
+
+    (job,) = WantedlyScraper(SLUG).fetch()
+
+    assert job.ats_id == "30"
+    assert job.title == "1人目情シス"
+    assert str(job.url) == "https://www.wantedly.com/projects/30"
+    assert job.posted_at == datetime(2026, 10, 30, 1, 0, tzinfo=UTC)
+    assert job.location == "岐阜県; 愛知県名古屋市"
+    assert job.raw == {"company_slug": SLUG, "reposts": 2, "repost_ids": ["20", "10"]}
+
+
+def test_a_single_project_carries_no_repost_fields(httpx_mock) -> None:
+    httpx_mock.add_response(url=API, json=_listing([_repost(1)]))
+
+    (job,) = WantedlyScraper(SLUG).fetch()
+
+    assert job.location == "愛知県名古屋市"
+    assert job.raw == {"company_slug": SLUG}
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        {"description": LONG_TEXT + "勤務地は岐阜です。"},
+        {"looking_for": "フルスタックマーケター"},
+        {"looking_for": None},
+    ],
+    ids=["another-text", "another-role", "no-role"],
+)
+def test_projects_that_differ_stay_apart(httpx_mock, other: dict[str, object]) -> None:
+    httpx_mock.add_response(url=API, json=_listing([_repost(1), _repost(2, **other)]))
+
+    jobs = WantedlyScraper(SLUG).fetch()
+
+    assert [job.ats_id for job in jobs] == ["1", "2"]
+    assert all(job.raw == {"company_slug": SLUG} for job in jobs)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["詳細は面談でお話しします。", "", None, LONG_TEXT[:199]],
+    ids=["short", "empty", "missing", "just-under-the-limit"],
+)
+def test_a_short_or_missing_text_never_joins_projects(httpx_mock, text: object) -> None:
+    httpx_mock.add_response(
+        url=API,
+        json=_listing([_repost(1, description=text), _repost(2, description=text)]),
+    )
+
+    assert [job.ats_id for job in WantedlyScraper(SLUG).fetch()] == ["1", "2"]
+
+
+def test_republished_projects_can_be_kept_apart(httpx_mock) -> None:
+    httpx_mock.add_response(url=API, json=_listing([_repost(1), _repost(2)]))
+
+    jobs = WantedlyScraper(SLUG, collapse_reposts=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["1", "2"]
+    assert all(job.raw == {"company_slug": SLUG} for job in jobs)
+
+
+def test_republished_projects_are_joined_without_their_text(httpx_mock) -> None:
+    """``include_descriptions=False`` drops the text from the job, not from
+    the comparison: the listing carries it either way."""
+    httpx_mock.add_response(url=API, json=_listing([_repost(1), _repost(2)]))
+
+    (job,) = WantedlyScraper(SLUG, include_descriptions=False).fetch()
+
+    assert job.description is None
+    assert job.raw == {"company_slug": SLUG, "reposts": 1, "repost_ids": ["1"]}
+
+
+def test_whitespace_differences_do_not_split_an_opening(httpx_mock) -> None:
+    spaced = LONG_TEXT.replace("。", "。\r\n\r\n ")
+    httpx_mock.add_response(
+        url=API,
+        json=_listing(
+            [_repost(1), _repost(2, description=spaced, looking_for=" 社内SE・1人目社員 ")]
+        ),
+    )
+
+    assert len(WantedlyScraper(SLUG).fetch()) == 1
+
+
+def test_jobs_keep_the_order_their_opening_was_first_listed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=API,
+        json=_listing(
+            [
+                _repost(5, published_at="2026-01-01T00:00:00+09:00"),
+                _project(7),
+                _repost(9, published_at="2026-02-01T00:00:00+09:00"),
+                _project(3),
+            ]
+        ),
+    )
+
+    assert [job.ats_id for job in WantedlyScraper(SLUG).fetch()] == ["9", "7", "3"]
+
+
+def test_only_the_first_repost_ids_are_kept(httpx_mock, monkeypatch) -> None:
+    import ats_scrapers.scrapers.wantedly as wantedly
+
+    monkeypatch.setattr(wantedly, "MAX_REPOST_IDS", 2)
+    httpx_mock.add_response(
+        url=API, json=_listing([_repost(project_id) for project_id in (1, 2, 3, 4)])
+    )
+
+    (job,) = WantedlyScraper(SLUG).fetch()
+
+    assert job.ats_id == "4"
+    assert job.raw == {"company_slug": SLUG, "reposts": 3, "repost_ids": ["3", "2"]}
