@@ -218,6 +218,20 @@ def test_one_closed_posting_does_not_empty_the_listing(httpx_mock) -> None:
     assert [job.ats_id for job in jobs] == ["p2", "p3"]
 
 
+def test_a_failed_posting_probe_keeps_the_listing(httpx_mock) -> None:
+    """A server error on the probed posting says nothing about the board:
+    the listing just read is returned."""
+    _hosted_pages(httpx_mock)
+    httpx_mock.add_response(url=API, status_code=404)
+    httpx_mock.add_response(url=EMBED_BOARD, text=_board(_posting("p1"), _posting("p2")))
+    for _ in range(3):
+        httpx_mock.add_response(url=f"{BOARD}/p1?embed=js", status_code=503)
+
+    jobs = AshbyScraper("acme", include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["p1", "p2"]
+
+
 # --- hosted pages closed: the jobs show on the employer's own site ----------
 
 

@@ -293,10 +293,18 @@ async def _gather_cancel_on_error(*coros: Any) -> list[Any]:
 
 
 async def _posting_answers(fetch: Fetcher, job_url: str) -> bool:
+    """Does this posting page answer? Only a 404 says no.
+
+    A timeout, a block or a server error leaves the question open and counts
+    as an answer: an availability check must not cost an employer the jobs
+    its listing just returned.
+    """
     try:
         await fetch.get_text(job_url)
     except CompanyNotFoundError:
         return False
+    except ScraperError as exc:
+        logger.warning("Ashby posting page %s could not be checked: %s", job_url, exc)
     return True
 
 
