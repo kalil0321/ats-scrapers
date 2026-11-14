@@ -148,6 +148,30 @@ def test_api_404_reads_the_hosted_board(httpx_mock) -> None:
     assert jobs[1].title == "Designer"
 
 
+def test_hosted_board_without_descriptions_is_one_request(httpx_mock) -> None:
+    """Descriptions off: the listing is enough, no posting page is read. An
+    unexpected request to one would fail this test."""
+    teams = [
+        {"id": "t-dept", "name": "Go To Market", "parentTeamId": None},
+        {"id": "t-sales", "name": "Sales", "parentTeamId": "t-dept"},
+    ]
+    posting = {**_posting("p1"), "teamId": "t-sales", "compensationTierSummary": "$120K – $135K"}
+    httpx_mock.add_response(url=API, status_code=404)
+    httpx_mock.add_response(
+        url=BOARD,
+        text=_page({"jobBoard": {"teams": teams, "jobPostings": [posting]}}),
+    )
+
+    (job,) = AshbyScraper("acme", include_descriptions=False).fetch()
+
+    assert job.description is None
+    assert job.department == "Go To Market"
+    assert job.team == "Sales"
+    assert job.location == "San Francisco, CA"
+    assert job.salary_summary == "$120K – $135K"
+    assert job.raw["secondary_locations"] == ["New York, NY"]
+
+
 def test_api_jobs_never_touch_the_hosted_board(httpx_mock) -> None:
     """Only the API is called when it answers; an unexpected request to the
     page would fail this test."""

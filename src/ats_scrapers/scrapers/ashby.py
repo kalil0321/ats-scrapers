@@ -94,10 +94,21 @@ class AshbyScraper(BaseScraper):
             for posting in board.get("jobPostings") or []
             if isinstance(posting, dict) and posting.get("id") and posting.get("title")
         ]
+        teams = {
+            team["id"]: team
+            for team in board.get("teams") or []
+            if isinstance(team, dict) and team.get("id")
+        }
+        if not self.include_descriptions:
+            # The listing alone: one request for the whole board.
+            return [
+                _hosted_item(posting, None, _posting_url(board_url, posting), teams)
+                for posting in postings
+            ]
         gate = asyncio.Semaphore(HOSTED_DETAIL_CONCURRENCY)
 
         async def item_for(posting: dict[str, Any]) -> dict[str, Any] | None:
-            job_url = f"{board_url}/{quote(str(posting['id']), safe='')}"
+            job_url = _posting_url(board_url, posting)
             async with gate:
                 try:
                     page = await fetch.get_text(job_url)
@@ -106,7 +117,7 @@ class AshbyScraper(BaseScraper):
             detail = _app_data(page, job_url).get("posting")
             if not isinstance(detail, dict):
                 raise ScraperError(f"Ashby posting page {job_url} carries no posting")
-            return _hosted_item(posting, detail, job_url)
+            return _hosted_item(posting, detail, job_url, teams)
 
         items = await asyncio.gather(*(item_for(posting) for posting in postings))
         return [item for item in items if item is not None]
@@ -209,16 +220,39 @@ def _app_data(page: str, url: str) -> dict[str, Any]:
     return data
 
 
+def _posting_url(board_url: str, posting: dict[str, Any]) -> str:
+    return f"{board_url}/{quote(str(posting['id']), safe='')}"
+
+
+def _team_names(team_id: object, teams: dict[str, dict[str, Any]]) -> list[str]:
+    """Names from the top department down to the posting's own team."""
+    names: list[str] = []
+    seen: set[object] = set()
+    while team_id in teams and team_id not in seen:
+        seen.add(team_id)
+        team = teams[team_id]
+        if isinstance(team.get("name"), str):
+            names.append(team["name"])
+        team_id = team.get("parentTeamId")
+    return names[::-1]
+
+
 def _hosted_item(
-    posting: dict[str, Any], detail: dict[str, Any], job_url: str
+    posting: dict[str, Any],
+    detail: dict[str, Any] | None,
+    job_url: str,
+    teams: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     """One hosted-board opening in the shape of an API ``jobs`` entry.
 
-    The listing gives id, title, place and type; the posting page adds the
-    description, the department and team names and the pay summary. The page
-    carries no publication date.
+    The listing gives id, title, place, type and team; the posting page
+    (``detail``, absent when descriptions are off) adds the description and
+    the pay summary. Neither carries a publication date.
     """
+    detail = detail or {}
     team_names = [name for name in detail.get("teamNames") or [] if isinstance(name, str)]
+    if not team_names:
+        team_names = _team_names(posting.get("teamId"), teams)
     secondary = detail.get("secondaryLocationNames")
     if not isinstance(secondary, list):
         secondary = [
@@ -234,7 +268,7 @@ def _hosted_item(
         "secondaryLocations": [{"location": name} for name in secondary if name],
         "employmentType": detail.get("employmentType") or posting.get("employmentType"),
         "workplaceType": detail.get("workplaceType") or posting.get("workplaceType"),
-        "department": detail.get("departmentName"),
+        "department": detail.get("departmentName") or (team_names[0] if team_names else None),
         "team": team_names[-1] if team_names else None,
         "descriptionHtml": detail.get("descriptionHtml"),
         "jobUrl": job_url,
