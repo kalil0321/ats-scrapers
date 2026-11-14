@@ -1177,6 +1177,30 @@ def test_detail_stops_swarm_on_a_long_retry_after(
     assert sleeps == []
 
 
+def test_detail_stops_swarm_on_a_long_retry_after_on_the_last_attempt(
+    detail_retries, httpx_mock, monkeypatch
+) -> None:
+    """Two 502s use up the earlier attempts; the hour-long cooldown then
+    arrives on the final one and must still stop the other jobs."""
+    import ats_scrapers.scrapers.eightfold as ef
+
+    monkeypatch.setattr(ef, "DETAIL_CONCURRENCY", 1)
+    _record_sleeps(monkeypatch)
+    _search_with_jobs(httpx_mock, ["100", "101", "102"])
+    httpx_mock.add_response(url=DETAIL_URL, status_code=502)
+    httpx_mock.add_response(url=DETAIL_URL, status_code=502)
+    httpx_mock.add_response(
+        url=DETAIL_URL, status_code=429, headers={"Retry-After": "3600"}
+    )
+
+    scraper = EightfoldScraper("dolby")
+    jobs = scraper.fetch()
+
+    assert [j.description for j in jobs] == [None, None, None]
+    assert len(_detail_requests(httpx_mock)) == ef.MAX_RETRIES
+    assert scraper._detail_blocked is True
+
+
 def test_detail_sleeps_a_retry_after_within_the_limit(
     detail_retries, httpx_mock, monkeypatch
 ) -> None:

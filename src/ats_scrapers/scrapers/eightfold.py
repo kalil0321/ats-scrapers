@@ -310,11 +310,13 @@ class EightfoldScraper(BaseScraper):
                     return None
                 if not _is_retryable_status(response.status_code):
                     return None
-                if attempt == MAX_RETRIES:
-                    return None
                 delay = _detail_retry_delay(response, attempt)
+                # Checked before the last-attempt return: a long cooldown
+                # announced on the final attempt must stop the swarm too.
                 if delay > DETAIL_MAX_RETRY_WAIT:
                     self._note_detail_blocked(response.status_code)
+                    return None
+                if attempt == MAX_RETRIES:
                     return None
                 await asyncio.sleep(delay)
         return None
