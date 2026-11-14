@@ -107,6 +107,8 @@ class ATSType(StrEnum):
     WELCOMETOTHEJUNGLE = "welcometothejungle"
     GETONBRD = "getonbrd"
     WANTED = "wanted"
+    # Wantedly (Japan): employers publish their openings on their company page.
+    WANTEDLY = "wantedly"
     REMOTEOK = "remoteok"
     WEWORKREMOTELY = "weworkremotely"
     PROGRAMATHOR = "programathor"

@@ -33,7 +33,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         # National / supranational public-sector aggregators
         "bundesagentur", "arbetsformedlingen", "eures",
         # Hybrid jobboards (companies post directly)
-        "welcometothejungle", "getonbrd", "wanted", "remoteok",
+        "welcometothejungle", "getonbrd", "wanted", "wantedly", "remoteok",
         "weworkremotely", "programathor", "builtin", "jobsch",
         "jobs_cz", "manfred", "thehub", "ycombinator", "wellfound",
         "infojobs_es", "jobbankca", "seek",

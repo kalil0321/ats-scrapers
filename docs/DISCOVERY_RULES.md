@@ -619,6 +619,33 @@ Validation:
    consumed by the scraper.
 3. Reject case-normalized URLs that redirect or fetch a different tenant.
 
+### Wantedly
+
+Rows use `name,slug,url`: the employer's name as the site gives it, the
+company's slug as written in its page address (capitals included) and
+`https://www.wantedly.com/companies/{slug}`.
+
+- Slugs come from the site's sitemap
+  (`https://www.wantedly.com/sitemaps/sitemap.xml.gz`), which lists a
+  `/companies/{slug}/projects` page per company with the date it last changed.
+  A list unchanged for years shows no open project: start with the most
+  recently changed ones.
+- Run the scraper on each slug and add a company only when it lists at least
+  one project. Take `name` from the listing (`company.name`).
+- Ask slowly: the site answers 403 to a client that sends more than a few
+  requests per second. Two companies at a time is enough.
+- A slug the site no longer knows answers 500 on every request: remove the row.
+- Count jobs, not projects. Employers republish one opening as several
+  projects, each under a new headline and often tagged with another
+  prefecture. The scraper returns projects with the same role label
+  (`looking_for`) and the same text as one job. When reporting what a
+  catalogue brings, give both figures.
+- A company that announces more than 1,000 projects cannot be read to the
+  end (100 pages of 10) and is refused. Those seen so far republish one
+  advert thousands of times; leave them out.
+- The listing also returns the names of staff members. Do not read or keep
+  them.
+
 ### Varbi
 
 - Use `name,slug,url` with a single employer tenant and
@@ -637,6 +664,34 @@ Validation:
   in `raw.application_deadline_date`, not a fabricated midnight timestamp.
 - Review cross-source overlap with public employment services before claiming
   that the direct-source vacancies are net-new jobs.
+
+### Ashby
+
+An Ashby employer switches three public surfaces on and off separately: the
+API (`api.ashbyhq.com/posting-api/job-board/{slug}`), the hosted pages
+(`jobs.ashbyhq.com/{slug}` and one page per job) and the embed view of those
+pages (`?embed=js`), which answers whenever the board exists.
+
+- The scraper reads the API and, when the API answers 404, the embed view.
+  Validate a candidate with the scraper, never with the HTTP status of one
+  surface alone.
+- A 404 from the API alone does not mean the board is gone, and neither does a
+  404 from the hosted page: Whatnot has the API off (137 openings on its page,
+  removed by mistake on 13 Nov 2026) and Cursor has the hosted pages off (99
+  openings on the API). Before removing a row, check
+  `jobs.ashbyhq.com/{slug}?embed=js`: it answers 404 for a board that no
+  longer exists.
+- When the hosted pages are closed, the API's `jobUrl` shows "not found". The
+  scraper then links each job to the embed view of its posting
+  (`jobs.ashbyhq.com/{slug}/{id}?embed=js`) and records the employer's own
+  careers page in `raw["careers_page"]` when Ashby knows it.
+- A board can list postings whose pages answer nowhere (Personio). Those jobs
+  are not published.
+- An empty board whose page data sets `customJobsPageUrl` can belong to an
+  employer that has left Ashby (Deel now links to `jobs.deel.com`). The Ashby
+  row brings nothing there.
+- Slugs are stored lowercased and percent-encoded (`marathon%20fusion`).
+  Compare decoded slugs when checking whether a board is already listed.
 
 ## Automation Hints
 

@@ -186,7 +186,10 @@ class MokaScraper(BaseScraper):
         )
 
     def _job_url(self, job_id: str) -> str:
-        return f"{self._tenant_url()}/job/{job_id}"
+        # Moka's career site is a single page that routes on the fragment:
+        # ``{tenant}#/job/{id}`` opens the posting, ``{tenant}/job/{id}``
+        # answers 404 ("您访问的页面不存在").
+        return f"{self._tenant_url()}#/job/{job_id}"
 
     def _tenant_url(self) -> str:
         board = (

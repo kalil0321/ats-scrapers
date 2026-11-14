@@ -65,6 +65,7 @@ page/rendered page rather than a structured job payload.
 | `tiktok` | Yes | No | API/feed | API/feed |
 | `uber` | Yes | No | API/feed | API/feed |
 | `wanted` | Yes | Yes | API/feed | API/feed |
+| `wantedly` | Yes | No | API/feed | API/feed |
 | `wellfound` | Yes | Yes | HTML / Firecrawl | HTML / Firecrawl |
 | `weworkremotely` | Yes | No | API/feed (RSS/XML) | API/feed (RSS/XML) |
 | `workable` | Yes | Yes | API/feed | API/feed (Markdown) |
