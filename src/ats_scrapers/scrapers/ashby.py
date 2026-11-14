@@ -5,12 +5,23 @@ Ashby exposes a public JSON board at:
 
 The compensation field, when present, is rich (range + currency + interval).
 
-Some employers switch that API off while their hosted board stays public:
-``https://jobs.ashbyhq.com/whatnot`` listed 137 openings on 14 Nov 2026 and the
-API answered 404 for the same slug. When the API says the board does not exist,
-the scraper therefore reads the hosted page, which carries the same listing in
-its ``window.__appData`` object, and each posting's own page for the
-description. A board that is gone answers 404 on both.
+An Ashby employer can switch three public surfaces on and off separately:
+
+* the API above;
+* the hosted pages, ``https://jobs.ashbyhq.com/{slug}`` and one page per job;
+* the embed view of those same pages (``?embed=js``), which Ashby's embed
+  script loads into the employer's own careers site and which answers
+  whenever the board exists.
+
+So the scraper reads the API and, when the API says the board does not exist,
+the embed view, which carries the same listing in its ``window.__appData``
+object (``jobs.ashbyhq.com/whatnot`` listed 137 openings on 14 Nov 2026 while
+the API answered 404). A board that is gone answers 404 on both.
+
+It also checks, with one HEAD request, that the hosted pages are open. When
+they are not (Cursor, Supercell, PostHog: the jobs show on the employer's own
+site), the ``jobUrl`` the API returns leads to a "not found" page; the jobs
+then link to the embed view of each posting, which opens that posting.
 """
 
 from __future__ import annotations
@@ -35,9 +46,15 @@ logger = logging.getLogger(__name__)
 
 API_TEMPLATE = "https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true"
 BOARD_TEMPLATE = "https://jobs.ashbyhq.com/{slug}"
+# The view Ashby's embed script loads: it answers for every board that exists,
+# hosted pages open or not.
+EMBED_QUERY = "?embed=js"
 APP_DATA_MARKER = "window.__appData"
 # Posting pages read at once on the hosted-board path (one request per opening).
 HOSTED_DETAIL_CONCURRENCY = 4
+# With descriptions off, postings tried in a row before a listing whose
+# posting pages all answer 404 is taken for unopenable.
+HOSTED_OPENABLE_PROBES = 3
 
 _INTERVAL_MAP = {
     "HOURLY": "HOUR",
@@ -72,16 +89,26 @@ class AshbyScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         url = API_TEMPLATE.format(slug=self.company_slug)
+        board_url = BOARD_TEMPLATE.format(slug=quote(self.company_slug, safe="%"))
         async with self.make_fetcher() as fetch:
+            organization: dict[str, Any] | None = None
             try:
                 payload = await fetch.get_json(url)
             except CompanyNotFoundError:
                 # The API is off for this board, or the board is gone. The
-                # hosted page tells which: it answers 404 for a board that
-                # no longer exists.
-                items = await self._hosted_board_items(fetch)
+                # embed view tells which: it answers 404 for a board that no
+                # longer exists.
+                data = _app_data(await fetch.get_text(board_url + EMBED_QUERY), board_url)
+                organization = data.get("organization")
+                items = await self._hosted_board_items(fetch, board_url, data.get("jobBoard"))
             else:
                 items = payload.get("jobs", [])
+            if items and not await _hosted_pages_open(fetch, board_url):
+                if organization is None:
+                    organization = await _organization(fetch, board_url)
+                careers_page = (organization or {}).get("customJobsPageUrl")
+                for item in items:
+                    _link_to_embed_view(item, careers_page)
         return [self._parse_job(item) for item in items]
 
     def get_description(self, job: Job) -> str | None:
@@ -89,7 +116,7 @@ class AshbyScraper(BaseScraper):
         came from a hosted board fetched with descriptions off."""
         if job.description or (job.raw or {}).get("source") != "hosted_board":
             return job.description
-        job_url = str(job.url)
+        job_url = _with_embed_query(str(job.url))
 
         async def run() -> str | None:
             async with self.make_fetcher() as fetch:
@@ -99,10 +126,10 @@ class AshbyScraper(BaseScraper):
 
         return self._run_sync(run())
 
-    async def _hosted_board_items(self, fetch: Fetcher) -> list[dict[str, Any]]:
-        """Openings of the hosted board, shaped like the API's ``jobs`` entries."""
-        board_url = BOARD_TEMPLATE.format(slug=quote(self.company_slug, safe="%"))
-        board = _app_data(await fetch.get_text(board_url), board_url).get("jobBoard")
+    async def _hosted_board_items(
+        self, fetch: Fetcher, board_url: str, board: object
+    ) -> list[dict[str, Any]]:
+        """Openings of the board's embed view, shaped like the API's ``jobs`` entries."""
         if not isinstance(board, dict):
             raise CompanyNotFoundError(
                 f"Ashby ({self.company_slug}) has no public job board"
@@ -123,7 +150,10 @@ class AshbyScraper(BaseScraper):
             if isinstance(team, dict) and team.get("id")
         }
         if not self.include_descriptions:
-            # The listing alone: one request for the whole board.
+            # The listing alone, plus one posting page that answers: a
+            # board can list postings whose pages answer nowhere (Personio,
+            # 14 Nov 2026), and a job nobody can open is not published.
+            postings = await _openable(fetch, board_url, postings)
             return [
                 _hosted_item(posting, None, _posting_url(board_url, posting), teams)
                 for posting in postings
@@ -134,7 +164,7 @@ class AshbyScraper(BaseScraper):
             job_url = _posting_url(board_url, posting)
             async with gate:
                 try:
-                    detail = await _posting_detail(fetch, job_url)
+                    detail = await _posting_detail(fetch, job_url + EMBED_QUERY)
                 except CompanyNotFoundError:
                     return None  # closed between the listing and this request
                 except ScraperError as exc:
@@ -188,6 +218,10 @@ class AshbyScraper(BaseScraper):
         raw: dict[str, Any] = {}
         if item.get("_hosted_board"):
             raw["source"] = "hosted_board"
+        if item.get("_hosted_pages_closed"):
+            raw["hosted_pages"] = "closed"
+            if item.get("_careers_page"):
+                raw["careers_page"] = item["_careers_page"]
         if item.get("department"):
             raw["department"] = item["department"]
         if item.get("team"):
@@ -256,6 +290,83 @@ async def _gather_cancel_on_error(*coros: Any) -> list[Any]:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
+
+
+async def _posting_answers(fetch: Fetcher, job_url: str) -> bool:
+    """Does this posting page answer? Only a 404 says no.
+
+    A timeout, a block or a server error leaves the question open and counts
+    as an answer: an availability check must not cost an employer the jobs
+    its listing just returned.
+    """
+    try:
+        await fetch.get_text(job_url)
+    except CompanyNotFoundError:
+        return False
+    except ScraperError as exc:
+        logger.warning("Ashby posting page %s could not be checked: %s", job_url, exc)
+    return True
+
+
+async def _openable(
+    fetch: Fetcher, board_url: str, postings: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The postings of a listing, from the first one whose page answers.
+
+    A posting that just closed answers 404 and is dropped, like on the
+    descriptions-on path. When ``HOSTED_OPENABLE_PROBES`` postings in a row
+    answer 404, none of the listing can be opened and nothing is returned.
+    """
+    for position, posting in enumerate(postings[:HOSTED_OPENABLE_PROBES]):
+        if await _posting_answers(fetch, _posting_url(board_url, posting) + EMBED_QUERY):
+            return postings[position:]
+    return []
+
+
+def _with_embed_query(url: str) -> str:
+    return url if "?" in url else url + EMBED_QUERY
+
+
+async def _hosted_pages_open(fetch: Fetcher, board_url: str) -> bool:
+    """Do the board's hosted pages answer? One HEAD request.
+
+    Only a 404 says they are closed. Any other failure leaves the question
+    open, and the links as the API gave them: a link check must not cost an
+    employer its jobs.
+    """
+    try:
+        response = await fetch.request("HEAD", board_url, handled={404})
+    except ScraperError as exc:
+        logger.warning("Ashby hosted page %s could not be checked: %s", board_url, exc)
+        return True
+    return response.status_code != 404
+
+
+async def _organization(fetch: Fetcher, board_url: str) -> dict[str, Any] | None:
+    """The organisation block of the board's embed view, or ``None`` when unreadable."""
+    try:
+        organization = _app_data(
+            await fetch.get_text(board_url + EMBED_QUERY), board_url
+        ).get("organization")
+    except ScraperError as exc:
+        logger.warning("Ashby embed view of %s unreadable: %s", board_url, exc)
+        return None
+    return organization if isinstance(organization, dict) else None
+
+
+def _link_to_embed_view(item: dict[str, Any], careers_page: object) -> None:
+    """Point a job at the embed view of its posting.
+
+    The hosted pages of this board are closed, so ``jobUrl`` and ``applyUrl``
+    as given lead to "not found". The embed view of the same two pages opens
+    the posting and its application form.
+    """
+    item["_hosted_pages_closed"] = True
+    if isinstance(careers_page, str) and careers_page.startswith(("http://", "https://")):
+        item["_careers_page"] = careers_page
+    for key in ("jobUrl", "applyUrl"):
+        if isinstance(item.get(key), str) and item[key]:
+            item[key] = _with_embed_query(item[key])
 
 
 async def _posting_detail(fetch: Fetcher, job_url: str) -> dict[str, Any]:

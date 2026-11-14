@@ -667,18 +667,29 @@ company's slug as written in its page address (capitals included) and
 
 ### Ashby
 
-- The scraper reads the public API
-  (`api.ashbyhq.com/posting-api/job-board/{slug}`). Some employers switch that
-  API off while their hosted board `jobs.ashbyhq.com/{slug}` stays public; the
-  scraper then reads the page and each posting's own page. Validate a candidate
-  with the scraper, never with the HTTP status of one surface alone.
-- A 404 from the API alone does not mean the board is gone. Before removing a
-  row, check the hosted page: it answers 404 for a board that no longer exists.
-  Whatnot was removed on 13 Nov 2026 on the API's 404 while its page listed 137
-  openings.
-- An empty hosted board whose page data sets `customJobsPageUrl` can belong to
-  an employer that lists its openings only on its own careers site (Deel). The
-  Ashby row brings nothing there; such a site needs a scraper of its own.
+An Ashby employer switches three public surfaces on and off separately: the
+API (`api.ashbyhq.com/posting-api/job-board/{slug}`), the hosted pages
+(`jobs.ashbyhq.com/{slug}` and one page per job) and the embed view of those
+pages (`?embed=js`), which answers whenever the board exists.
+
+- The scraper reads the API and, when the API answers 404, the embed view.
+  Validate a candidate with the scraper, never with the HTTP status of one
+  surface alone.
+- A 404 from the API alone does not mean the board is gone, and neither does a
+  404 from the hosted page: Whatnot has the API off (137 openings on its page,
+  removed by mistake on 13 Nov 2026) and Cursor has the hosted pages off (99
+  openings on the API). Before removing a row, check
+  `jobs.ashbyhq.com/{slug}?embed=js`: it answers 404 for a board that no
+  longer exists.
+- When the hosted pages are closed, the API's `jobUrl` shows "not found". The
+  scraper then links each job to the embed view of its posting
+  (`jobs.ashbyhq.com/{slug}/{id}?embed=js`) and records the employer's own
+  careers page in `raw["careers_page"]` when Ashby knows it.
+- A board can list postings whose pages answer nowhere (Personio). Those jobs
+  are not published.
+- An empty board whose page data sets `customJobsPageUrl` can belong to an
+  employer that has left Ashby (Deel now links to `jobs.deel.com`). The Ashby
+  row brings nothing there.
 - Slugs are stored lowercased and percent-encoded (`marathon%20fusion`).
   Compare decoded slugs when checking whether a board is already listed.
 

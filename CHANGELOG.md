@@ -19,6 +19,15 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   `{tenant}/job/{id}`, which answers 404 on Moka's career sites; the posting
   lives at `{tenant}#/job/{id}`. Every Moka job published so far carried the
   dead form (32,610 rows in the 12 Nov 2026 snapshot).
+- Ashby: jobs of employers whose hosted pages are closed no longer carry a
+  link that shows "not found". 23 employers (Saronic, Form Energy, Cursor,
+  Lemonade, Supercell, PostHog) list their openings on their own site; the
+  API's `jobUrl` answered 404 for their 897 jobs on 14 Nov 2026. The scraper
+  checks the hosted page with one HEAD request and, when it is closed, links
+  each job to the embed view of its posting, which opens that posting, and
+  records the employer's careers page in `raw["careers_page"]`. With the API
+  off the scraper now reads the embed view, which also answers when the
+  hosted pages are closed.
 - Ashby: when the public API answers 404, the scraper reads the hosted board
   page (`jobs.ashbyhq.com/{slug}`) and each posting's page instead of reporting
   the employer as gone. Eleven employers with 298 openings on 14 Nov 2026 have
