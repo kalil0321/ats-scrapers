@@ -8,7 +8,7 @@ Two rows of different sources can be the same posting when
 * the employer is the same (:func:`company_key`),
 * the title is the same or nearly so (:func:`title_key`, :func:`title_base`),
 * the places do not contradict each other: the same country when both rows
-  give one, the same city when both name one (:func:`cities`).
+  give one, the same city when both name one (:func:`place_slots`).
 
 Rows of one source are never compared with each other, and the source with
 the better priority keeps all of its rows. The limit counts what the title
@@ -267,33 +267,32 @@ def _places(location: str) -> list[str]:
     return [part for part in _PLACE_SPLIT_RE.split(location) if part.strip()]
 
 
-def cities(location: object) -> tuple[str, ...]:
-    """Cities a location names, one per listed place.
+def place_slots(location: object) -> tuple[str, ...]:
+    """One slot per place a row lists: the city it names, or ``""``.
 
     Only the first usable piece of each place is read (``"san francisco,
     ca"`` gives ``san francisco``), so a region, a postcode or a country
-    after it never makes two spellings of one city look different. Returns
-    ``()`` when the location names no city we can compare: empty, a country
-    alone, "remote", a EURES region code.
+    after it never makes two spellings of one city look different.
+
+    A city listed twice (``"Paris; Paris, France"``) is one slot. A place
+    without a city we can compare (``"Remote"``, a country, a EURES region
+    code) is an unnamed slot, which agrees with any city. Always at least
+    one slot.
     """
     if not isinstance(location, str) or not location.strip():
-        return ()
+        return ("",)
     lowered = location.lower()
     if _NUTS_RE.match(lowered):
-        return ()
-    found: list[str] = []
+        return ("",)
+    named: list[str] = []
+    unnamed = 0
     for place in _places(lowered):
         city = _city_of(place)
-        if city and city not in found:
-            found.append(city)
-    return tuple(found)
-
-
-def place_count(location: object) -> int:
-    """How many places a row lists (``"; "`` or ``" | "`` separated), at least one."""
-    if not isinstance(location, str):
-        return 1
-    return max(1, len(_places(location)))
+        if not city:
+            unnamed += 1
+        elif city not in named:
+            named.append(city)
+    return (*named, *[""] * unnamed) or ("",)
 
 
 # --- matching ----------------------------------------------------------------
@@ -391,6 +390,17 @@ def _hand_over_plan(row: _Row, kept: _Row) -> list[tuple[int, int, _Row]] | None
     return plan
 
 
+def _is_full(kept: _Row, source: int) -> bool:
+    return len(kept.used.get(source, ())) >= len(kept.slots)
+
+
+def _has_free_city(kept: _Row, source: int, city: str) -> bool:
+    taken = kept.used.get(source, ())
+    return any(
+        name == city and position not in taken for position, name in enumerate(kept.slots)
+    )
+
+
 def absorb(
     rows: Iterable[_Row],
     same_title: Callable[[_Row, _Row], bool],
@@ -406,22 +416,72 @@ def absorb(
     earlier pass hands them over, each to a slot that agrees with its own
     place, and is only absorbed where they all fit: one kept row never
     stands for more postings of a source than it lists places.
+
+    Candidates are indexed per source in hand: by the cities they still have
+    a free slot for, and as a list of those not yet full. A shop chain with
+    thousands of rows per source is then matched city by city instead of
+    scanning every kept row for every incoming one.
     """
     kept: list[_Row] = []  # rows of the sources already gone through
     current: list[_Row] = []  # kept rows of the source in hand: never candidates for it
-    current_source: int | None = None
+    source: int | None = None
+    by_city: dict[str, dict[int, _Row]] = {}
+    not_full: dict[int, _Row] = {}
     dropped: list[int] = []
+
+    def take(row: _Row, candidate: _Row, positions: list[int], plan: list) -> None:
+        for position in positions:
+            candidate.used.setdefault(row.source, {})[position] = row
+        for other, position, earlier in plan:
+            candidate.used.setdefault(other, {})[position] = earlier
+        row.used = {}
+        dropped.append(row.idx)
+
     for row in rows:
-        if row.source != current_source:
+        if row.source != source:
             kept.extend(current)
-            current, current_source = [], row.source
+            current, source = [], row.source
+            not_full = {id(c): c for c in kept if not _is_full(c, source)}
+            by_city = {}
+            for candidate in not_full.values():
+                for city in candidate.cities:
+                    if _has_free_city(candidate, source, city):
+                        by_city.setdefault(city, {})[id(candidate)] = candidate
+
+        matched = False
+        # Same city first: nothing agrees better, so the first hit is the match.
+        for city in row.cities:
+            for ident, candidate in list(by_city.get(city, {}).items()):
+                if not _has_free_city(candidate, source, city):
+                    del by_city[city][ident]
+                    continue
+                agreement, positions = _claim(
+                    row, candidate, candidate.used.get(source, ()), other_city_ok=other_city_ok
+                )
+                if agreement != _SAME_CITY or not same_title(row, candidate):
+                    continue
+                plan = _hand_over_plan(row, candidate)
+                if plan is None:
+                    continue
+                take(row, candidate, positions, plan)
+                matched = True
+                break
+            if matched:
+                break
+        if matched:
+            continue
+
+        # No slot in the same city: an unnamed slot, or another city of the same country.
         best: _Row | None = None
         best_agreement = 0
         best_positions: list[int] = []
         best_plan: list[tuple[int, int, _Row]] = []
-        for candidate in kept:
+        for ident, candidate in list(not_full.items()):
+            if _is_full(candidate, source):
+                del not_full[ident]
+                continue
             agreement, positions = _claim(
-                row, candidate, candidate.used.get(row.source, ()), other_city_ok=other_city_ok
+                row, candidate, candidate.used.get(source, ()), other_city_ok=other_city_ok
             )
             if agreement <= best_agreement or not same_title(row, candidate):
                 continue
@@ -429,17 +489,12 @@ def absorb(
             if plan is None:
                 continue
             best, best_agreement, best_positions, best_plan = candidate, agreement, positions, plan
-            if agreement == _SAME_CITY:
-                break
+            if agreement == _CITY_UNKNOWN:
+                break  # the best this scan can find
         if best is None:
             current.append(row)
-            continue
-        for position in best_positions:
-            best.used.setdefault(row.source, {})[position] = row
-        for source, position, earlier in best_plan:
-            best.used.setdefault(source, {})[position] = earlier
-        row.used = {}
-        dropped.append(row.idx)
+        else:
+            take(row, best, best_positions, best_plan)
     return dropped
 
 
@@ -463,21 +518,21 @@ def _near_title(threshold: int) -> Callable[[_Row, _Row], bool]:
     return near
 
 
-_ROW_COLUMNS = ("_orig_idx", "_source", "_country_iso", "_cities", "_capacity", "_tkey", "_tbase")
+_ROW_COLUMNS = ("_orig_idx", "_source", "_country_iso", "_slots", "_tkey", "_tbase")
 
 
 def _rows(frame: pl.DataFrame) -> list[_Row]:
     columns: Sequence[list] = [frame[name].to_list() for name in _ROW_COLUMNS]
     rows: list[_Row] = []
-    for idx, source, country, city_list, capacity, key, base in zip(*columns, strict=True):
-        named = tuple(city_list.split("|")) if city_list else ()
+    for idx, source, country, slot_list, key, base in zip(*columns, strict=True):
+        slots = tuple(slot_list.split("|"))
         rows.append(
             _Row(
                 idx=idx,
                 source=source,
                 country=country,
-                cities=frozenset(named),
-                slots=named + ("",) * max(0, capacity - len(named)),
+                cities=frozenset(city for city in slots if city),
+                slots=slots,
                 key=key,
                 base=base,
             )
@@ -520,9 +575,8 @@ def _prepare(work: pl.DataFrame) -> pl.DataFrame:
     )
     locations = rows.select("location").unique().with_columns(
         pl.col("location")
-        .map_elements(lambda value: "|".join(cities(value)), return_dtype=pl.String)
-        .alias("_cities"),
-        pl.col("location").map_elements(place_count, return_dtype=pl.Int32).alias("_capacity"),
+        .map_elements(lambda value: "|".join(place_slots(value)), return_dtype=pl.String)
+        .alias("_slots"),
     )
     rows = (
         rows.join(titles, on="title_raw", how="left")

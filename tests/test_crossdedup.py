@@ -10,7 +10,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from pipeline.crossdedup import cities, company_key, place_count, title_base, title_key
+from pipeline.crossdedup import company_key, place_slots, title_base, title_key
 from pipeline.publisher import _decide_dedup_survivors_polars
 
 # --- helpers -----------------------------------------------------------------
@@ -139,12 +139,14 @@ def test_a_handed_over_row_keeps_its_place() -> None:
 
 
 def test_a_large_group_of_one_title_is_handled() -> None:
-    """3,000 shops on the ATS and their 3,000 copies on a board."""
-    towns = [f"Ville{number:04d}" for number in range(3000)]
+    """4,000 shops on the ATS, their 4,000 copies on a board, and 4,000
+    region-code rows of a third source: matched city by city."""
+    towns = [f"Ville{number:04d}" for number in range(4000)]
     rows = _shops("workday", 1, [f"{town}, FR" for town in towns])
     rows += _shops("welcometothejungle", 3, [f"{town}, France" for town in towns])
+    rows += _shops("eures", 6, ["FR (FRK26)"] * 4000)
 
-    assert _survivors(rows) == {"workday": 3000}
+    assert _survivors(rows) == {"workday": 4000}
 
 
 def test_rows_of_one_source_are_never_compared() -> None:
@@ -242,27 +244,42 @@ def test_what_pass_5_absorbed_still_counts_in_pass_6() -> None:
         ("Ébène, Mauritius", ("ebene",)),
         ("Remote - California; Remote - Colorado", ("california", "colorado")),
         ("Zürich | Bern", ("zurich", "bern")),
-        ("DE (DEC04)", ()),
-        ("Anywhere in the world", ()),
-        ("Remote - UK", ()),
-        ("United States", ()),
+        ("DE (DEC04)", ("",)),
+        ("Anywhere in the world", ("",)),
+        ("Remote - UK", ("",)),
+        ("United States", ("",)),
         ("北京", ("北京",)),
         ("서울", ("서울",)),
-        ("NY", ()),
-        ("", ()),
-        (None, ()),
+        ("NY", ("",)),
+        ("", ("",)),
+        (None, ("",)),
     ],
 )
-def test_cities(location, expected) -> None:
-    assert cities(location) == expected
+def test_the_city_of_a_place(location, expected) -> None:
+    assert place_slots(location) == expected
 
 
-def test_place_count() -> None:
-    assert place_count("Paris; Lyon; Nice") == 3
-    assert place_count("Zürich | Bern") == 2
-    assert place_count("Paris, France") == 1
-    assert place_count("") == 1
-    assert place_count(None) == 1
+def test_place_slots() -> None:
+    assert place_slots("Paris; Lyon; Nice") == ("paris", "lyon", "nice")
+    assert place_slots("Zürich | Bern") == ("zurich", "bern")
+    assert place_slots("Paris, France") == ("paris",)
+    # A city listed twice is one slot; a place without a city is an unnamed one.
+    assert place_slots("Paris; Paris, France") == ("paris",)
+    assert place_slots("Paris; Remote") == ("paris", "")
+    assert place_slots("DE (DEA22)") == ("",)
+    assert place_slots("") == ("",)
+    assert place_slots(None) == ("",)
+
+
+def test_a_city_listed_twice_is_one_place() -> None:
+    """``"Paris; Paris, France"`` names Paris only: a near-title row in Nice
+    has no slot to take."""
+    rows = [
+        ("workday", 1, "Senior Backend Engineer", "Acme", "Paris; Paris, France"),
+        ("eightfold", 5, "Senior Backend Enginer", "Acme", "Nice, France"),
+    ]
+
+    assert _survivors(rows) == {"workday": 1, "eightfold": 1}
 
 
 # --- titles ------------------------------------------------------------------
