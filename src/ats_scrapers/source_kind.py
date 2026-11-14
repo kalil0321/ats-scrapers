@@ -8,9 +8,11 @@ The dataset mixes four kinds of sources:
 - ``gov_board``: a public employment service that republishes postings
   from many employers (EURES, Bundesagentur, Job Bank, ...).
 - ``job_board``: a commercial job board or marketplace where employers
-  post (Welcome to the Jungle, Wellfound, Remote OK, ...). Mercor and Gem
-  are here too: the publisher's dedup priorities already treat both as
-  hybrid job boards, and Mercor is one feed for many employers.
+  post (Welcome to the Jungle, Wellfound, Remote OK, ...). Mercor is here
+  too: it is one feed for many employers.
+
+Gem is an ``ats``: Gem ATS hosts one board per employer at
+``jobs.gem.com/{slug}``, and the catalogue lists those employers one by one.
 
 The headline job count covers ``ats`` and ``company_site`` only: those
 postings come straight from the employer's hiring system.
@@ -38,9 +40,9 @@ GOV_BOARDS: Final[frozenset[str]] = frozenset({
 })
 
 JOB_BOARDS: Final[frozenset[str]] = frozenset({
-    "builtin", "gem", "getonbrd", "infojobs_es", "jobs_cz", "jobsch",
-    "manfred", "mercor", "programathor", "remoteok", "seek", "thehub",
-    "wanted", "wantedly", "wellfound", "welcometothejungle", "weworkremotely",
+    "builtin", "getonbrd", "infojobs_es", "jobs_cz", "jobsch", "manfred",
+    "mercor", "programathor", "remoteok", "seek", "thehub", "wanted",
+    "wantedly", "wellfound", "welcometothejungle", "weworkremotely",
     "ycombinator",
 })
 
