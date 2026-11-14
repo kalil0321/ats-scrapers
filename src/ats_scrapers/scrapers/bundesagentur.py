@@ -58,6 +58,14 @@ API_KEY = "jobboerse-jobsuche"  # Public key shared by the official frontend.
 PAGE_SIZE = 100
 PAGE_LIMIT = 100  # size × page caps at 10,000 → max page=100 at size=100.
 PAGINATION_CAP = PAGE_SIZE * PAGE_LIMIT
+
+# ``angebotsart`` bucket codes, measured live on the v6 facet (the API uses
+# numeric codes, NOT the labels its own frontend displays):
+#   1  = ARBEIT (regular employment)
+#   2  = SELBSTAENDIGKEIT (self-employment)
+#   34 = PRAKTIKUM_TRAINEE (internships & trainee programs)
+#   4  = AUSBILDUNG (vocational training)
+ANGEBOTSART_PRAKTIKUM_TRAINEE = "34"
 # The recursive fan-out issues 10k+ requests for a full scrape. The
 # arbeitsagentur API has an Akamai-style WAF that returns 403 under
 # burst load. A shared global semaphore at 2 + sequential page fan-out
@@ -128,6 +136,31 @@ class BundesagenturScraper(BaseScraper):
     ``company_slug`` is unused."""
 
     ats = ATSType.BUNDESAGENTUR
+
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
+        angebotsart: str | None = None,
+    ) -> None:
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
+        # Optional ``angebotsart`` facet filter, opt-in. The v6 API exposes
+        # the facet with NUMERIC bucket codes, not labels (measured live):
+        #   {"1": ARBEIT, "2": SELBSTAENDIGKEIT, "34": PRAKTIKUM_TRAINEE,
+        #    "4": AUSBILDUNG}
+        # Passing the label (e.g. ``angebotsart=Praktikum``) returns 0
+        # results; the item field ``stellenangebotsart`` carries the enum
+        # name. ``None`` (default) sends no filter — full catalogue, zero
+        # behaviour change.
+        self.angebotsart = angebotsart
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -240,8 +273,13 @@ class BundesagenturScraper(BaseScraper):
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
+            base_params: dict[str, Any] = {}
+            if self.angebotsart:
+                # Opt-in facet filter (see ``__init__``): restricts the
+                # whole recursive fan-out to one ``angebotsart`` bucket.
+                base_params["angebotsart"] = self.angebotsart
             await self._exhaust_query(
-                client, sem, base_params={}, depth=0, absorb=absorb,
+                client, sem, base_params=base_params, depth=0, absorb=absorb,
             )
         return all_jobs
 

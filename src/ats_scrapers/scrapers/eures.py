@@ -121,6 +121,25 @@ def _empty_search_body(rpp: int = PAGE_SIZE, page: int = 1) -> dict[str, Any]:
     }
 
 
+# The ``keywords`` body field expects a list of objects, not plain strings
+# (a list of strings is rejected with 400 "invalid-json" — measured live):
+#     "keywords": [{"keyword": "Praktikum", "specificSearchCode": "..."}]
+# ``specificSearchCode`` values observed in the official frontend bundle:
+# EVERYWHERE (title+description+employer), TITLE, DESCRIPTION, EMPLOYER.
+# Measured in DE for "Praktikum": EVERYWHERE 35,486 · TITLE 299 ·
+# DESCRIPTION 3,706 · EMPLOYER 1. Multiple entries are ANDed by the API
+# (Praktikum+internship+trainee together → 79 rows), so pass a single
+# keyword per query unless an intersection is intended.
+KEYWORD_SEARCH_CODE = "EVERYWHERE"
+
+
+def _keyword_entries(keywords: list[str]) -> list[dict[str, Any]]:
+    return [
+        {"keyword": keyword, "specificSearchCode": KEYWORD_SEARCH_CODE}
+        for keyword in keywords
+    ]
+
+
 @ScraperRegistry.register(ATSType.EURES)
 class EuresScraper(BaseScraper):
     """EURES (EU public employment services) jobs API. Single-source —
@@ -132,6 +151,28 @@ class EuresScraper(BaseScraper):
         "Accept": "application/json",
         "User-Agent": "Mozilla/5.0",
     }
+
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        timeout: float = 30.0,
+        include_descriptions: bool = True,
+        proxy: str | None = None,
+        keywords: list[str] | None = None,
+    ) -> None:
+        super().__init__(
+            company_slug,
+            timeout=timeout,
+            include_descriptions=include_descriptions,
+            proxy=proxy,
+        )
+        # Optional keyword filter, opt-in. ``None`` (default) sends an empty
+        # ``keywords`` list — full catalogue, zero behaviour change. When
+        # set, each keyword becomes a ``{"keyword": ..., "specificSearchCode":
+        # "EVERYWHERE"}`` entry (see ``_keyword_entries`` for the measured
+        # shape and the AND semantics of multiple entries).
+        self.keywords = list(keywords) if keywords else None
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -404,6 +445,10 @@ class EuresScraper(BaseScraper):
     ) -> dict[str, Any]:
         body = _empty_search_body(PAGE_SIZE, page)
         body.update(base)
+        # Opt-in keyword filter (see ``__init__``): overrides the empty
+        # ``keywords`` default with the API's object shape.
+        if self.keywords:
+            body["keywords"] = _keyword_entries(self.keywords)
         # Network errors and 429/5xx are retried inside the shared
         # Fetcher. Two provider quirks stay here via ``handled``:
         #
