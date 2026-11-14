@@ -127,6 +127,9 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
 }
 
 # Full-URL tenants: the scraper's slug IS the careers URL.
+_ZOHO_RECRUIT_HOST_RE = re.compile(
+    r"^[a-z0-9][a-z0-9-]*\.zohorecruit\.(?:com|eu|in|jp|sa|ca|com\.au|com\.cn)$"
+)
 _WORKDAY_HOST_RE = re.compile(r"^[^.]+\.wd\d+\.myworkdayjobs\.com$")
 _TALEO_HOST_RE = re.compile(r"^[^.]+\.tbe\.taleo\.net$")
 # Taleo Enterprise: one label before taleo.net ({zone}.taleo.net), with the
@@ -540,6 +543,15 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
             if slug and "." not in slug and _SLUG_RE.match(slug):
                 return ResolvedCareersUrl(ats, slug)
             return None
+
+    if _ZOHO_RECRUIT_HOST_RE.match(host):
+        # ZohoRecruitScraper wants the career site URL: host and portal.
+        segments = [part for part in parsed.path.split("/") if part]
+        if len(segments) >= 2 and segments[0].lower() == "jobs":
+            return ResolvedCareersUrl(
+                ATSType.ZOHO_RECRUIT, f"https://{host}/jobs/{segments[1]}"
+            )
+        return ResolvedCareersUrl(ATSType.ZOHO_RECRUIT, f"https://{host}")
 
     if _WORKDAY_HOST_RE.match(host):
         # WorkdayScraper wants the full careers URL (tenant, wdN

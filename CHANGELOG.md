@@ -7,6 +7,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Added
 
+- Zoho Recruit career sites.
 - Varbi employer RSS scraper with complete descriptions, public detail metadata,
   locale-independent tenant IDs, URL resolution, and a validated employer catalog.
   Malformed feeds fail closed. With detail enrichment enabled, removed or expired

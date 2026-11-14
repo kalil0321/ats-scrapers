@@ -70,4 +70,5 @@ page/rendered page rather than a structured job payload.
 | `weworkremotely` | Yes | No | API/feed (RSS/XML) | API/feed (RSS/XML) |
 | `workable` | Yes | Yes | API/feed | API/feed (Markdown) |
 | `workday` | Yes | Yes | API/feed | API/feed |
+| `zoho_recruit` | Yes | No | HTML with embedded JSON | HTML with embedded JSON |
 | `ycombinator` | Yes | No | API/feed | API/feed |

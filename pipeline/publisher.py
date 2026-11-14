@@ -658,6 +658,7 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "workable": 1,
     "wintalent": 1,
     "workday": 1,
+    "zoho_recruit": 1,
     # Big-tech bespoke careers — also priority 1 (single-tenant, canonical)
     "amazon": 1, "apple": 1, "bytedance": 1, "google": 1, "jd": 1, "meta": 1,
     "tesla": 1, "tiktok": 1, "uber": 1,
