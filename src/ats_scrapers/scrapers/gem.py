@@ -23,7 +23,7 @@ from urllib.parse import quote
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
-from ats_scrapers.scrapers._public_page import page_is_gone
+from ats_scrapers.scrapers._public_page import PAGE_CHECK_ATTEMPTS, page_is_gone
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -146,9 +146,7 @@ class GemScraper(BaseScraper):
     async def afetch(self) -> list[Job]:
         async with self.make_fetcher() as fetch:
             postings = await self._fetch_list(fetch)
-            if postings and await page_is_gone(
-                fetch, f"{BASE_URL}/{quote(self.company_slug, safe='')}"
-            ):
+            if postings and await self._board_page_is_gone():
                 raise CompanyNotFoundError(
                     f"Gem still lists postings for {self.company_slug!r}, "
                     f"but its board page is closed"
@@ -157,6 +155,11 @@ class GemScraper(BaseScraper):
             if self.include_descriptions and jobs:
                 await self._enrich_with_details(fetch, jobs, postings)
             return jobs
+
+    async def _board_page_is_gone(self) -> bool:
+        board_url = f"{BASE_URL}/{quote(self.company_slug, safe='')}"
+        async with self.make_fetcher(retries=PAGE_CHECK_ATTEMPTS) as probe:
+            return await page_is_gone(probe, board_url)
 
     async def _fetch_list(self, fetch: Fetcher) -> list[dict[str, Any]]:
         payload = [

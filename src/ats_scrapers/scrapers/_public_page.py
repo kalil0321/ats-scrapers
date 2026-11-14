@@ -15,13 +15,17 @@ from ats_scrapers.fetch import Fetcher, FetchResponse
 logger = logging.getLogger(__name__)
 
 REDIRECTS = frozenset({301, 302, 303, 307, 308})
+# The check is best effort: one attempt, so a slow or rate-limited page
+# cannot hold up postings the API has already returned.
+PAGE_CHECK_ATTEMPTS = 1
 
 
 async def page_is_gone(fetch: Fetcher, url: str) -> bool:
     """True only when ``url`` answers 404. One HEAD request.
 
     Any other failure is inconclusive and counts as "still there": a page
-    check must not cost an employer its jobs.
+    check must not cost an employer its jobs. Build ``fetch`` with
+    ``retries=PAGE_CHECK_ATTEMPTS``.
     """
     response = await _head(fetch, url, handled={404})
     return response is not None and response.status_code == 404

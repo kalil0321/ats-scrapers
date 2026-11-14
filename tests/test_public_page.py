@@ -74,6 +74,19 @@ def test_lever_keeps_postings_when_the_page_check_is_inconclusive(httpx_mock) ->
     assert len(LeverScraper("acme").fetch()) == 1
 
 
+def test_lever_page_check_is_a_single_attempt(httpx_mock) -> None:
+    httpx_mock.add_response(url=LEVER_API, json=[_lever_job()])
+    httpx_mock.add_response(
+        method="HEAD",
+        url=LEVER_BOARD,
+        status_code=429,
+        headers={"Retry-After": "3600"},
+    )
+
+    assert len(LeverScraper("acme").fetch()) == 1
+    assert [r.method for r in httpx_mock.get_requests()] == ["GET", "HEAD"]
+
+
 def test_lever_empty_board_is_not_checked(httpx_mock) -> None:
     httpx_mock.add_response(url=LEVER_API, json=[])
 

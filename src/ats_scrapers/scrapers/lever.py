@@ -30,7 +30,7 @@ from urllib.parse import quote, unquote, urlparse
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
-from ats_scrapers.scrapers._public_page import page_is_gone
+from ats_scrapers.scrapers._public_page import PAGE_CHECK_ATTEMPTS, page_is_gone
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -126,12 +126,16 @@ class LeverScraper(BaseScraper):
                     f"{exc} (no such board in Lever's US region; a board on "
                     f"jobs.eu.lever.co needs region='eu')"
                 ) from exc
-            if payload and await page_is_gone(fetch, self._board_url()):
-                raise CompanyNotFoundError(
-                    f"Lever still lists postings for {self.tenant!r}, "
-                    f"but its board page is closed"
-                )
+        if payload and await self._board_page_is_gone():
+            raise CompanyNotFoundError(
+                f"Lever still lists postings for {self.tenant!r}, "
+                f"but its board page is closed"
+            )
         return [self._parse_job(item) for item in payload]
+
+    async def _board_page_is_gone(self) -> bool:
+        async with self.make_fetcher(retries=PAGE_CHECK_ATTEMPTS) as probe:
+            return await page_is_gone(probe, self._board_url())
 
     def _board_url(self) -> str:
         host = next(h for h, region in BOARD_HOSTS.items() if region == self.region)

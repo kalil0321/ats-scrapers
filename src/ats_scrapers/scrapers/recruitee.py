@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
-from ats_scrapers.scrapers._public_page import redirect_target
+from ats_scrapers.scrapers._public_page import PAGE_CHECK_ATTEMPTS, redirect_target
 from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -81,7 +81,9 @@ class RecruiteeScraper(BaseScraper):
     async def _site_is_closed(self, api_url: str) -> bool:
         """Recruitee sends a closed careers site to its own "not hosted" page."""
         site_url = api_url.removesuffix("/api/offers") + "/"
-        async with self.make_fetcher(follow_redirects=False) as fetch:
+        async with self.make_fetcher(
+            follow_redirects=False, retries=PAGE_CHECK_ATTEMPTS
+        ) as fetch:
             target = await redirect_target(fetch, site_url)
         return target is not None and CLOSED_SITE_MARKER in target
 
