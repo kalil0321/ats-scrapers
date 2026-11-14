@@ -78,7 +78,7 @@ def test_full_url_site_id_used_in_api_request(httpx_mock) -> None:
     assert body["careerSiteId"] == 4
     assert body["careerSitePageId"] == 4
     assert str(jobs[0].url) == (
-        "https://thekids.csod.com/ux/ats/careersite/4/job/100?c=thekids"
+        "https://thekids.csod.com/ux/ats/careersite/4/home/requisition/100?c=thekids"
     )
 
 
@@ -445,7 +445,7 @@ def test_url_uses_career_origin(httpx_mock) -> None:
     httpx_mock.add_response(url=API_URL, json=_search_response([_req(req_id="X")], total=1))
     jobs = CornerstoneScraper("acme").fetch()
     assert str(jobs[0].url) == (
-        "https://acme.csod.com/ux/ats/careersite/1/job/X?c=acme"
+        "https://acme.csod.com/ux/ats/careersite/1/home/requisition/X?c=acme"
     )
 
 

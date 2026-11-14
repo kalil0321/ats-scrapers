@@ -273,7 +273,10 @@ class CornerstoneScraper(BaseScraper):
             return None
         title = (item.get("displayJobTitle") or "").strip() or "Untitled"
         career_origin = f"https://{urlparse(self.career_url).hostname}"
-        url = f"{career_origin}/ux/ats/careersite/{self.site_id}/job/{ats_id}?c={self.slug}"
+        url = (
+            f"{career_origin}/ux/ats/careersite/{self.site_id}"
+            f"/home/requisition/{ats_id}?c={self.slug}"
+        )
 
         raw: dict[str, Any] = {}
         for k in ("jobType", "schedule", "shift", "department",
