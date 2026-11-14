@@ -12,9 +12,33 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   Malformed feeds fail closed. With detail enrichment enabled, removed or expired
   detail pages are excluded and mismatched pages or unrecognized deadlines fail
   closed. Date-only application deadlines are preserved in `Job.raw`.
+- JD.com careers scraper: the openings of the whole group from the public
+  list of `zhaopin.jd.com`, with their text, business unit, place and
+  requisition number. The site has no page per opening, so each job links to
+  the list page.
 
 ### Fixed
 
+- Moka: job links open the posting. The scraper built
+  `{tenant}/job/{id}`, which answers 404 on Moka's career sites; the posting
+  lives at `{tenant}#/job/{id}`. Every Moka job published so far carried the
+  dead form (32,610 rows in the 12 Nov 2026 snapshot).
+- Ashby: jobs of employers whose hosted pages are closed no longer carry a
+  link that shows "not found". 23 employers (Saronic, Form Energy, Cursor,
+  Lemonade, Supercell, PostHog) list their openings on their own site; the
+  API's `jobUrl` answered 404 for their 897 jobs on 14 Nov 2026. The scraper
+  checks the hosted page with one HEAD request and, when it is closed, links
+  each job to the embed view of its posting, which opens that posting, and
+  records the employer's careers page in `raw["careers_page"]`. With the API
+  off the scraper now reads the embed view, which also answers when the
+  hosted pages are closed.
+- Ashby: when the public API answers 404, the scraper reads the hosted board
+  page (`jobs.ashbyhq.com/{slug}`) and each posting's page instead of reporting
+  the employer as gone. Eleven employers with 298 openings on 14 Nov 2026 have
+  the API off and the page public (Whatnot, EvenUp, Lime, Chainlink Labs). A
+  board that answers 404 on both is still reported as not found. The catalogue
+  gains those eleven and four more boards the API serves (monday.com, plancraft,
+  Marathon Fusion, source.dev): 439 openings in all.
 - Cross-source dedup, title passes (`pipeline/crossdedup.py`). A kept row now
   absorbs at most one row per other source and per place it lists, and the
   better source keeps all of its rows: one title advertised for 200 shops stays

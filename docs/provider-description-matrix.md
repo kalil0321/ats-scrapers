@@ -32,6 +32,7 @@ page/rendered page rather than a structured job payload.
 | `icims` | Yes | Yes | HTML | HTML |
 | `jibe` | Yes | No | API | API |
 | `jazzhr` | Yes | Yes | HTML | HTML |
+| `jd` | Yes | No | API/feed | API/feed |
 | `jobsch` | Yes | Yes | API | HTML |
 | `join_com` | Yes | Yes | HTML | HTML |
 | `keka` | Yes | No | HTML bootstrap + API | API |

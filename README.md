@@ -165,8 +165,8 @@ Workday.
 **Regional hiring platforms:** Beisen, Beisen (legacy), Darwinbox, Gupy,
 HERP Hire, HRMOS, Keka, Moka, Ninehire, Talentio, Wanted, Wantedly, WinTalent.
 
-**Company career APIs:** Amazon, Apple, ByteDance, Google, Meta, Tesla,
-TikTok, Uber.
+**Company career APIs:** Amazon, Apple, ByteDance, Google, JD.com, Meta,
+Tesla, TikTok, Uber.
 
 **Public employment services:** Arbetsförmedlingen, Bundesagentur für Arbeit,
 EURES, Job Bank Canada, USAJOBS.

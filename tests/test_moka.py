@@ -122,7 +122,7 @@ def test_parses_plaintext_envelope_end_to_end(httpx_mock) -> None:
     assert result.description == "Build distributed systems."
     assert result.posted_at is not None and result.posted_at.tzinfo is not None
     assert str(result.url) == (
-        "https://app.mokahr.com/social-recruitment/fixturecorp/12345/job/job-1"
+        "https://app.mokahr.com/social-recruitment/fixturecorp/12345#/job/job-1"
     )
     assert result.raw == {
         "slug": "fixturecorp",

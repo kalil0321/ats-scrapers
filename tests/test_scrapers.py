@@ -312,6 +312,7 @@ ASHBY_SAMPLE = {
 
 
 def test_ashby_parses_jobs_with_compensation(httpx_mock) -> None:
+    httpx_mock.add_response(method="HEAD", url="https://jobs.ashbyhq.com/ramp")
     httpx_mock.add_response(
         url="https://api.ashbyhq.com/posting-api/job-board/ramp?includeCompensation=true",
         json=ASHBY_SAMPLE,
@@ -337,6 +338,8 @@ def test_ashby_404(httpx_mock) -> None:
         url="https://api.ashbyhq.com/posting-api/job-board/missing?includeCompensation=true",
         status_code=404,
     )
+    # The embed view is asked too: only a 404 on both means the board is gone.
+    httpx_mock.add_response(url="https://jobs.ashbyhq.com/missing?embed=js", status_code=404)
     with pytest.raises(CompanyNotFoundError):
         AshbyScraper("missing").fetch()
 
@@ -379,6 +382,7 @@ def test_ashby_interval_mapping(httpx_mock, interval: str, expected: str) -> Non
             }
         ]
     }
+    httpx_mock.add_response(method="HEAD", url="https://jobs.ashbyhq.com/co")
     httpx_mock.add_response(
         url="https://api.ashbyhq.com/posting-api/job-board/co?includeCompensation=true",
         json=payload,
@@ -401,6 +405,7 @@ def test_ashby_handles_compensation_without_tiers(httpx_mock) -> None:
             }
         ]
     }
+    httpx_mock.add_response(method="HEAD", url="https://jobs.ashbyhq.com/co")
     httpx_mock.add_response(
         url="https://api.ashbyhq.com/posting-api/job-board/co?includeCompensation=true",
         json=payload,
