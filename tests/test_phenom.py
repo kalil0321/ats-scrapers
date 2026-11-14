@@ -316,7 +316,46 @@ def test_url_is_synthesized_when_missing(httpx_mock) -> None:
         json=_search_response([{"jobId": "X", "title": "Eng"}], 1),
     )
     jobs = PhenomScraper(BASE).fetch()
-    assert str(jobs[0].url) == f"{BASE}/job/X"
+    assert str(jobs[0].url) == f"{BASE}/us/en/job/X"
+
+
+def test_synthesized_url_uses_configured_country_and_language(httpx_mock) -> None:
+    bell = "https://jobs.bell.ca"
+    httpx_mock.add_response(url=f"{bell}/ca/fr/search-results", text=_csrf_page())
+    httpx_mock.add_response(
+        url=f"{bell}/widgets",
+        json=_search_response([{"jobId": "X", "title": "Eng"}], 1),
+    )
+    jobs = PhenomScraper(bell, locale="fr_ca", country="ca").fetch()
+    assert str(jobs[0].url) == f"{bell}/ca/fr/job/X"
+
+
+def test_synthesized_url_follows_the_path_the_site_reports(httpx_mock) -> None:
+    page = (
+        '<html><script>window.config = {"csrfToken":"tok",'
+        f'"baseUrl":"{BASE}/global/en/"' + "};</script></html>"
+    )
+    httpx_mock.add_response(url=SEARCH_URL, text=page)
+    httpx_mock.add_response(
+        url=WIDGETS_URL,
+        json=_search_response([{"jobId": "X", "title": "Eng"}], 1),
+    )
+    jobs = PhenomScraper(BASE).fetch()
+    assert str(jobs[0].url) == f"{BASE}/global/en/job/X"
+
+
+def test_synthesized_url_ignores_a_reported_path_on_another_host(httpx_mock) -> None:
+    page = (
+        '<html><script>window.config = {"csrfToken":"tok",'
+        '"baseUrl":"https://elsewhere.example/global/en/"};</script></html>'
+    )
+    httpx_mock.add_response(url=SEARCH_URL, text=page)
+    httpx_mock.add_response(
+        url=WIDGETS_URL,
+        json=_search_response([{"jobId": "X", "title": "Eng"}], 1),
+    )
+    jobs = PhenomScraper(BASE).fetch()
+    assert str(jobs[0].url) == f"{BASE}/us/en/job/X"
 
 
 # --- Error handling --------------------------------------------------------
