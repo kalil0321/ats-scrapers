@@ -6,8 +6,9 @@
 </p>
 
 <p align="center">
-  Live job postings from ATS platforms, company career APIs and public job services,
-  normalized into one schema and published as a free dataset. Part of <a href="https://stapply.ai">Stapply</a>.
+  One Python library for job postings from as many sources as possible: ATS platforms,
+  company career APIs and public job services. We keep the scrapers working and publish
+  everything they collect as a free dataset. Part of <a href="https://stapply.ai">Stapply</a>.
 </p>
 
 <p align="center">
@@ -33,35 +34,16 @@
 
 ## Why ats-scrapers
 
-- **From the source.** Jobs come from the ATS platforms and career APIs that
-  companies publish to, plus public employment services such as EURES. Each
-  row keeps the original apply link, and duplicates across sources are removed.
-- **One schema.** Every source maps to the same typed `Job`: title, company,
-  location, remote, salary, posted date and apply URL. See the
+- **As many sources as possible.** Workday, Greenhouse, Lever, Ashby,
+  SmartRecruiters, iCIMS and dozens of other ATS platforms, plus company career
+  APIs and public employment services. New sources are added regularly.
+- **Maintained for you.** Career sites change their APIs without notice. The
+  scrapers get fixed here, so your code doesn't have to chase every change.
+- **One `Job` model.** Every source returns the same fields, and
+  provider-specific extras stay in `raw`. See the
   [job schema](https://github.com/kalil0321/ats-scrapers/blob/main/docs/JOB_SCHEMA.md).
-- **Free and open.** The hosted snapshot needs no API key or account, and the
-  library is MIT.
-
-## Get the data
-
-**Browse it** at [data.stapply.ai](https://data.stapply.ai), no setup needed.
-
-**Query it with [DuckDB](https://duckdb.org)** without downloading the
-snapshot. DuckDB fetches only the parts of the hosted Parquet file that the
-query needs:
-
-```bash
-duckdb -c "SELECT company, title, location, apply_url
-  FROM 'https://storage.stapply.ai/jobhive/v1/all.parquet'
-  WHERE title ILIKE '%machine learning%' AND location ILIKE '%paris%'
-  LIMIT 20"
-```
-
-**Download it.** The [manifest](https://storage.stapply.ai/jobhive/v1/manifest.json)
-lists the full snapshot and every per-source slice as Parquet and CSV, with
-row counts, sizes and checksums.
-
-**Use it from Python** with the package below.
+- **Free and open.** The library is MIT, and the hosted dataset needs no API
+  key or account.
 
 ## Install
 
@@ -78,35 +60,7 @@ pip install "ats-scrapers[scrapers]"  # run the scraper library
 pip install "ats-scrapers[all]"       # install every runtime extra
 ```
 
-## Query the dataset from Python
-
-```python
-from ats_scrapers import search
-
-# Per-source searches work with the base install.
-jobs = search(
-    query="machine learning engineer",
-    location="Paris",
-    ats="greenhouse",
-    limit=100,
-)
-
-# The result is a pandas DataFrame.
-print(jobs[["company", "title", "location", "apply_url"]])
-```
-
-Without `ats=`, `search()` downloads the full snapshot and loads it into
-memory: over 2 GB with the `parquet` extra, and the much larger CSV without
-it. For one-off questions across every source, the DuckDB query above is
-faster.
-
-```python
-from ats_scrapers import search
-
-jobs = search(query="data engineer", remote=True, salary_min=80_000)
-```
-
-## Scrape a company
+## Scrape any careers page
 
 You don't need to know which ATS a company uses. Paste its careers URL:
 
@@ -139,6 +93,53 @@ jobs = GreenhouseScraper("anthropic").fetch()
 Scrapers are async-first. In async code, or for concurrency, use
 `await scraper.afetch()`. The sync `fetch()` also works inside a running event
 loop (Jupyter, FastAPI) by running on a worker thread.
+
+## Search the jobs we already scraped
+
+```python
+from ats_scrapers import search
+
+# Per-source searches work with the base install.
+jobs = search(
+    query="machine learning engineer",
+    location="Paris",
+    ats="greenhouse",
+    limit=100,
+)
+
+# The result is a pandas DataFrame.
+print(jobs[["company", "title", "location", "apply_url"]])
+```
+
+Without `ats=`, `search()` downloads the full snapshot and loads it into
+memory: over 2 GB with the `parquet` extra, and the much larger CSV without
+it. For one-off questions across every source, the DuckDB query below is
+faster.
+
+```python
+from ats_scrapers import search
+
+jobs = search(query="data engineer", remote=True, salary_min=80_000)
+```
+
+## Other ways to get the data
+
+**Browse it** at [data.stapply.ai](https://data.stapply.ai), no setup needed.
+
+**Query it with [DuckDB](https://duckdb.org)** without downloading the
+snapshot. DuckDB fetches only the parts of the hosted Parquet file that the
+query needs:
+
+```bash
+duckdb -c "SELECT company, title, location, apply_url
+  FROM 'https://storage.stapply.ai/jobhive/v1/all.parquet'
+  WHERE title ILIKE '%machine learning%' AND location ILIKE '%paris%'
+  LIMIT 20"
+```
+
+**Download it.** The [manifest](https://storage.stapply.ai/jobhive/v1/manifest.json)
+lists the full snapshot and every per-source slice as Parquet and CSV, with
+row counts, sizes and checksums.
 
 ## Sources
 
