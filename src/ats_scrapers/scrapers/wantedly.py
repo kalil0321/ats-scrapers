@@ -123,6 +123,11 @@ class WantedlyScraper(BaseScraper):
                 async with semaphore:
                     return await self._page(fetch, page)
 
+            # Projects are collected across the passes on purpose. One pass
+            # of a moving ranking is never the whole list, so a pass cannot
+            # stand alone. The price is small: a project closed between two
+            # passes is still returned, a minute old at most, and is gone
+            # at the next run.
             for _ in range(MAX_PASSES):
                 first = await read(1)
                 total, pages = _listing_size(first, self.company_slug)
