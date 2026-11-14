@@ -12,6 +12,7 @@ import json
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
+from urllib.parse import quote
 
 from pydantic import HttpUrl
 
@@ -257,8 +258,14 @@ class BeisenScraper(BaseScraper):
                 _clean_html(item.get("Require")),
                 separator="\n\n",
             )
+        internal_id = _clean_text(item.get("Id"))
+        job_url = (
+            f"{self.base_url}/portal/detail?jobAdId={quote(internal_id, safe='')}"
+            if internal_id
+            else f"{self.base_url}/portal/jobs/{ats_id}"
+        )
         return Job(
-            url=HttpUrl(f"{self.base_url}/portal/jobs/{ats_id}"),
+            url=HttpUrl(job_url),
             title=title,
             company=self.company_name or self.tenant_name or self.slug,
             ats_type=ATSType.BEISEN,
