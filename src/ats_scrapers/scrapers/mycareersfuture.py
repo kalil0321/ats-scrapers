@@ -68,9 +68,12 @@ class MyCareersFutureScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         jobs: dict[str, Job] = {}
+        # Every posting read, kept or not: what the feed's total is checked against.
+        fetched: set[str] = set()
 
         def absorb(items: list[dict[str, Any]]) -> None:
             for item in items:
+                fetched.add(str(item.get("uuid") or id(item)))
                 job = self._parse(item)
                 if job is not None and job.ats_id:
                     jobs.setdefault(job.ats_id, job)
@@ -100,9 +103,9 @@ class MyCareersFutureScraper(BaseScraper):
                 absorb(items)
                 number += 1
 
-        if len(jobs) < total * MIN_COMPLETE:
+        if len(fetched) < total * MIN_COMPLETE:
             raise ScraperError(
-                f"MyCareersFuture returned {len(jobs)} of {total} postings"
+                f"MyCareersFuture returned {len(fetched)} of {total} postings"
             )
         return list(jobs.values())
 
@@ -159,7 +162,7 @@ class MyCareersFutureScraper(BaseScraper):
             commitment=", ".join(labels) or None,
             description=description[:25_000] or None,
             posted_at=_date(metadata.get("newPostingDate")),
-            application_deadline=_date(metadata.get("expiryDate")),
+            application_deadline=_deadline(metadata.get("expiryDate")),
             language="en",
             raw=raw or None,
         )
@@ -252,9 +255,20 @@ def _employment_type(labels: list[str]) -> EmploymentType | None:
 
 
 def _date(value: object) -> datetime | None:
+    """A posting day, as the start of that day in UTC."""
     if not isinstance(value, str):
         return None
     try:
         return datetime.strptime(value[:10], "%Y-%m-%d").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _deadline(value: object) -> datetime | None:
+    """A closing day stays a day: no time zone is added to a bare date."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.strip())
     except ValueError:
         return None

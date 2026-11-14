@@ -97,7 +97,8 @@ def test_parses_a_posting(httpx_mock) -> None:
     assert job.requisition_id == "MCF-2026-0000001"
     assert job.description == "About the role\nPython"
     assert job.posted_at == datetime(2026, 11, 15, tzinfo=UTC)
-    assert job.application_deadline == datetime(2026, 12, 15, tzinfo=UTC)
+    assert job.application_deadline == datetime(2026, 12, 15)
+    assert job.application_deadline.tzinfo is None
     assert job.language == "en"
     assert job.raw == {
         "position_levels": ["Senior Executive"],
@@ -204,6 +205,15 @@ def test_postings_without_an_employer_an_id_or_a_title_are_dropped(httpx_mock) -
     )
 
     assert [job.ats_id for job in MyCareersFutureScraper("all").fetch()] == [f"{1:032x}"]
+
+
+def test_dropped_postings_still_count_as_read(httpx_mock) -> None:
+    page = [_posting(number) for number in range(1, 11)]
+    for posting in page[:5]:
+        posting["metadata"]["isHideEmployerName"] = True
+    _feed(httpx_mock, [page, []])
+
+    assert len(MyCareersFutureScraper("all").fetch()) == 5
 
 
 def test_a_hidden_salary_is_left_out(httpx_mock) -> None:
