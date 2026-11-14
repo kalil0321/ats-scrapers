@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
@@ -9,6 +11,17 @@ from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import RecruiteeScraper, ScraperRegistry
 
 API = "https://acme.recruitee.com/api/offers"
+
+
+@pytest.fixture(autouse=True)
+def _careers_site_open(httpx_mock) -> None:
+    """The careers site answers, so offers are kept."""
+    httpx_mock.add_response(
+        method="HEAD",
+        url=re.compile(r"https://[^/]+/$"),
+        is_optional=True,
+        is_reusable=True,
+    )
 
 
 def _offer(oid: int = 1, title: str = "Senior Engineer",
