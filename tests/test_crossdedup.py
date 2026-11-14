@@ -113,6 +113,28 @@ def test_an_absorbed_row_hands_over_what_it_absorbed() -> None:
     assert _survivors(rows) == {"workday": 1, "eures": 1}
 
 
+def test_a_handed_over_row_keeps_its_place() -> None:
+    """B (Lyon) had absorbed a Lyon row of C. When A ("Paris; Lyon") absorbs
+    B, that row fills A's Lyon slot, so the second Lyon row of C stays."""
+    rows = [
+        ("workday", 1, "Senior Backend Enginer", "Acme", "Paris; Lyon"),
+        ("eightfold", 5, "Senior Backend Engineer", "Acme", "Lyon"),
+        ("eures", 6, "Senior Backend Engineer (m/f/d)", "Acme", "Lyon, FR"),
+        ("eures", 6, "Senior Backend Engineeer", "Acme", "Lyon, France"),
+    ]
+
+    assert _survivors(rows) == {"workday": 1, "eures": 1}
+
+
+def test_a_large_group_of_one_title_is_handled() -> None:
+    """3,000 shops on the ATS and their 3,000 copies on a board."""
+    towns = [f"Ville{number:04d}" for number in range(3000)]
+    rows = _shops("workday", 1, [f"{town}, FR" for town in towns])
+    rows += _shops("welcometothejungle", 3, [f"{town}, France" for town in towns])
+
+    assert _survivors(rows) == {"workday": 3000}
+
+
 def test_rows_of_one_source_are_never_compared() -> None:
     rows = _shops("workday", 1, ["Paris, France", "Paris, France"])
 

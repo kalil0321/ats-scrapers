@@ -297,20 +297,25 @@ class _Row:
     slots: tuple[str, ...]
     key: str
     base: str
-    # source rank -> positions in ``slots`` taken by rows of that source
-    used: dict[int, set[int]] = field(default_factory=dict)
+    # source rank -> {position in ``slots``: the row of that source it stands for}
+    used: dict[int, dict[int, _Row]] = field(default_factory=dict)
 
 
-def _free_slot(row: _Row, kept: _Row, *, other_city_ok: bool) -> tuple[int, int]:
-    """Best free slot of ``kept`` for ``row``: ``(agreement, position)``, ``(0, -1)`` when none.
+def _free_slot(
+    row: _Row,
+    kept: _Row,
+    taken: dict[int, _Row] | set[int],
+    *,
+    other_city_ok: bool,
+) -> tuple[int, int]:
+    """Best slot of ``kept`` for ``row`` outside ``taken``: ``(agreement, position)``.
 
-    A slot is free when no row of ``row``'s source has taken it. A row in
-    Paris takes the Paris slot of a kept ``"Paris; Lyon"`` row, never the
-    Lyon one twice.
+    ``taken`` holds the positions rows of ``row``'s source already fill.
+    Returns ``(0, -1)`` when no free slot agrees. A row in Paris takes the
+    Paris slot of a kept ``"Paris; Lyon"`` row, never the Lyon one twice.
     """
     if row.country and kept.country and row.country != kept.country:
         return 0, -1
-    taken = kept.used.get(row.source, ())
     best, best_position = 0, -1
     for position, city in enumerate(kept.slots):
         if position in taken:
@@ -326,21 +331,24 @@ def _free_slot(row: _Row, kept: _Row, *, other_city_ok: bool) -> tuple[int, int]
     return best, best_position
 
 
-def _has_room_for(kept: _Row, row: _Row) -> bool:
-    """Can ``kept`` also take over the rows ``row`` absorbed earlier?"""
-    return all(
-        len(kept.slots) - len(kept.used.get(source, ())) >= len(positions)
-        for source, positions in row.used.items()
-    )
+def _hand_over_plan(row: _Row, kept: _Row) -> list[tuple[int, int, _Row]] | None:
+    """Where the rows ``row`` stands for would go if ``kept`` absorbed it.
 
-
-def _hand_over(row: _Row, kept: _Row) -> None:
-    """``row`` becomes ``kept``: what ``row`` absorbed now counts against ``kept``."""
-    for source, positions in row.used.items():
-        taken = kept.used.setdefault(source, set())
-        free = (position for position in range(len(kept.slots)) if position not in taken)
-        for _ in positions:
-            taken.add(next(free))
+    Each of them needs a free slot of ``kept`` whose place agrees with its
+    own, exactly as if ``kept`` had met it directly. Returns
+    ``(source, position, row)`` triples, or ``None`` when one of them finds
+    no slot: ``kept`` then cannot stand for ``row``.
+    """
+    plan: list[tuple[int, int, _Row]] = []
+    for source, absorbed in row.used.items():
+        taken = set(kept.used.get(source, ()))
+        for earlier in absorbed.values():
+            agreement, position = _free_slot(earlier, kept, taken, other_city_ok=True)
+            if not agreement:
+                return None
+            taken.add(position)
+            plan.append((source, position, earlier))
+    return plan
 
 
 def absorb(
@@ -355,32 +363,41 @@ def absorb(
     same title and a free slot whose place agrees. The best agreeing place
     wins (same city, then unknown city, then another city of the same
     country when ``other_city_ok``). A row that absorbed others in an
-    earlier pass hands them over, and is only absorbed where there is room
-    for them too: one kept row never stands for more postings of a source
-    than it lists places.
+    earlier pass hands them over, each to a slot that agrees with its own
+    place, and is only absorbed where they all fit: one kept row never
+    stands for more postings of a source than it lists places.
     """
-    kept: list[_Row] = []
+    kept: list[_Row] = []  # rows of the sources already gone through
+    current: list[_Row] = []  # kept rows of the source in hand: never candidates for it
+    current_source: int | None = None
     dropped: list[int] = []
     for row in rows:
+        if row.source != current_source:
+            kept.extend(current)
+            current, current_source = [], row.source
         best: _Row | None = None
         best_agreement, best_position = 0, -1
+        best_plan: list[tuple[int, int, _Row]] = []
         for candidate in kept:
-            if candidate.source == row.source:
+            agreement, position = _free_slot(
+                row, candidate, candidate.used.get(row.source, ()), other_city_ok=other_city_ok
+            )
+            if agreement <= best_agreement or not same_title(row, candidate):
                 continue
-            agreement, position = _free_slot(row, candidate, other_city_ok=other_city_ok)
-            if agreement <= best_agreement:
+            plan = _hand_over_plan(row, candidate)
+            if plan is None:
                 continue
-            if not _has_room_for(candidate, row) or not same_title(row, candidate):
-                continue
-            best, best_agreement, best_position = candidate, agreement, position
+            best, best_agreement, best_position, best_plan = candidate, agreement, position, plan
             if agreement == _SAME_CITY:
                 break
         if best is None:
-            kept.append(row)
-        else:
-            best.used.setdefault(row.source, set()).add(best_position)
-            _hand_over(row, best)
-            dropped.append(row.idx)
+            current.append(row)
+            continue
+        best.used.setdefault(row.source, {})[best_position] = row
+        for source, position, earlier in best_plan:
+            best.used.setdefault(source, {})[position] = earlier
+        row.used = {}
+        dropped.append(row.idx)
     return dropped
 
 
