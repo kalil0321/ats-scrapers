@@ -118,12 +118,14 @@ Scraper adapters include:
   and more.
 - First-party company APIs: Amazon, Apple, Google, JD.com, TikTok, and Uber.
 - Public and regional sources: EURES, Bundesagentur, Arbetsformedlingen,
-  Welcome to the Jungle, Jobberman, BrighterMonday, Emploitic, and others.
+  MyCareersFuture, Welcome to the Jungle, Jobberman, BrighterMonday, Emploitic,
+  and others.
 - Career-site platforms on the employer's own domain: Radancy TalentBrew.
 - Oracle Taleo, both editions: Business Edition and Enterprise Edition.
 - ClearCompany hosted career sites.
 - Feishu Hire career sites.
 - Greeting career sites.
+- Manatal career pages.
 - Ninehire career sites.
 - PeopleAdmin applicant portals.
 - Talentio recruitment homes (Japan).

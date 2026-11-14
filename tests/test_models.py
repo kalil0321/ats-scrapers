@@ -22,7 +22,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "darwinbox", "dayforce", "eightfold", "feishu_hire", "gem", "greenhouse", "greeting",
         "gupy", "herp", "hrmos",
         "hireology",
-        "icims", "jibe", "join_com", "jobvite", "keka", "lever", "mercor", "moka", "oracle", "pageup", "paycom", "paylocity",
+        "icims", "jibe", "join_com", "jobvite", "keka", "lever", "manatal", "mercor", "moka", "oracle", "pageup", "paycom", "paylocity",
         "peopleadmin", "personio", "phenom",
         "applicantpro",
         "pinpoint", "recruiterbox", "rippling", "smartrecruiters", "softgarden",
@@ -37,7 +37,8 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "welcometothejungle", "getonbrd", "wanted", "wantedly", "remoteok",
         "weworkremotely", "programathor", "builtin", "jobsch",
         "jobs_cz", "manfred", "thehub", "ycombinator", "wellfound",
-        "infojobs_es", "jobbankca", "seek", "jobberman", "brightermonday", "emploitic",
+        "infojobs_es", "jobbankca", "seek", "mycareersfuture",
+        "jobberman", "brightermonday", "emploitic",
         # Additional multi-tenant ATSes
         "ninehire",
         "bamboohr", "breezy", "jazzhr",

@@ -63,6 +63,7 @@ class ATSType(StrEnum):
     JOIN_COM = "join_com"
     KEKA = "keka"
     LEVER = "lever"
+    MANATAL = "manatal"
     MERCOR = "mercor"
     MOKA = "moka"
     NINEHIRE = "ninehire"
@@ -127,6 +128,7 @@ class ATSType(StrEnum):
     WELLFOUND = "wellfound"
     INFOJOBSES = "infojobs_es"
     JOBBANKCA = "jobbankca"
+    MYCAREERSFUTURE = "mycareersfuture"
     SEEK = "seek"
     # Additional multi-tenant ATSes (post-0.1)
     BAMBOOHR = "bamboohr"

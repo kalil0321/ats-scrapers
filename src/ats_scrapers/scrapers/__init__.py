@@ -56,10 +56,12 @@ from ats_scrapers.scrapers.jobvite import JobviteScraper
 from ats_scrapers.scrapers.join_com import JoinComScraper
 from ats_scrapers.scrapers.keka import KekaScraper
 from ats_scrapers.scrapers.lever import LeverScraper
+from ats_scrapers.scrapers.manatal import ManatalScraper
 from ats_scrapers.scrapers.manfred import ManfredScraper
 from ats_scrapers.scrapers.mercor import MercorScraper
 from ats_scrapers.scrapers.meta import MetaScraper
 from ats_scrapers.scrapers.moka import MokaScraper
+from ats_scrapers.scrapers.mycareersfuture import MyCareersFutureScraper
 from ats_scrapers.scrapers.ninehire import NinehireScraper
 from ats_scrapers.scrapers.oracle import OracleScraper
 from ats_scrapers.scrapers.pageup import PageUpScraper
@@ -151,10 +153,12 @@ __all__ = [
     "JoinComScraper",
     "KekaScraper",
     "LeverScraper",
+    "ManatalScraper",
     "ManfredScraper",
     "MercorScraper",
     "MetaScraper",
     "MokaScraper",
+    "MyCareersFutureScraper",
     "NinehireScraper",
     "OracleScraper",
     "PageUpScraper",
