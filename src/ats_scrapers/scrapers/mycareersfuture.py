@@ -79,6 +79,8 @@ class MyCareersFutureScraper(BaseScraper):
             first, total = await _page(fetch, 0)
             absorb(first)
             if not first:
+                if total:
+                    raise ScraperError(f"MyCareersFuture returned 0 of {total} postings")
                 return []
             last = min(-(-total // PAGE_SIZE), MAX_PAGES)
             semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
@@ -130,7 +132,7 @@ class MyCareersFutureScraper(BaseScraper):
                 ("position_levels", _labels(item.get("positionLevels"), "position")),
                 ("categories", categories),
                 ("vacancies", item.get("numberOfVacancies")),
-                ("posted_by", _posted_by(item, company)),
+                ("posted_by", _posted_by(item, metadata, company)),
             )
             if value
         }
@@ -199,7 +201,12 @@ def _employer(item: dict[str, Any], metadata: dict[str, Any]) -> str:
     return _name(item.get("postedCompany"))
 
 
-def _posted_by(item: dict[str, Any], company: str) -> str | None:
+def _posted_by(
+    item: dict[str, Any], metadata: dict[str, Any], company: str
+) -> str | None:
+    """The company that posted for the employer, unless it asked not to be named."""
+    if metadata.get("isHideEmployerName"):
+        return None
     posted = _name(item.get("postedCompany"))
     return posted if posted and posted != company else None
 
@@ -210,9 +217,12 @@ def _place(
     country = str(address.get("overseasCountry") or "").strip()
     if address.get("isOverseas") and country and country.lower() != "singapore":
         return country, None, None, None
-    districts = _labels(address.get("districts"), "location")
-    area = _DISTRICT_CODE_RE.sub("", districts[0]) if districts else ""
-    location = f"{area}, Singapore" if area and area.lower() != "islandwide" else "Singapore"
+    areas = list(dict.fromkeys(
+        area
+        for district in _labels(address.get("districts"), "location")
+        if (area := _DISTRICT_CODE_RE.sub("", district)) and area.lower() != "islandwide"
+    ))
+    location = "; ".join(f"{area}, Singapore" for area in areas) or "Singapore"
     lat, lon = _number(address.get("lat")), _number(address.get("lng"))
     if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
         lat = lon = None

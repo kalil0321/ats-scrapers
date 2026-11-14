@@ -130,6 +130,13 @@ def test_an_empty_feed(httpx_mock) -> None:
     assert MyCareersFutureScraper("all").fetch() == []
 
 
+def test_an_empty_first_page_of_a_feed_with_postings_is_reported(httpx_mock) -> None:
+    _feed(httpx_mock, [[]], total=40)
+
+    with pytest.raises(ScraperError, match="returned 0 of 40 postings"):
+        MyCareersFutureScraper("all").fetch()
+
+
 def test_a_short_read_is_reported(httpx_mock) -> None:
     _feed(httpx_mock, [[_posting(1)], []], total=40)
 
@@ -176,6 +183,17 @@ def test_a_hidden_hiring_employer_falls_back_to_the_poster(httpx_mock) -> None:
     assert "posted_by" not in (job.raw or {})
 
 
+def test_a_poster_that_is_not_to_be_named_is_left_out(httpx_mock) -> None:
+    posting = _posting(hiringCompany={"name": "CLIENT PTE. LTD."})
+    posting["metadata"]["isHideEmployerName"] = True
+    _feed(httpx_mock, [[posting], []])
+
+    [job] = MyCareersFutureScraper("all").fetch()
+
+    assert job.company == "CLIENT PTE. LTD."
+    assert "posted_by" not in (job.raw or {})
+
+
 def test_postings_without_an_employer_an_id_or_a_title_are_dropped(httpx_mock) -> None:
     hidden = _posting(2)
     hidden["metadata"]["isHideEmployerName"] = True
@@ -219,6 +237,15 @@ def test_a_single_salary_amount(httpx_mock) -> None:
         ([], "Singapore"),
         ([{"location": "D01 Cecil, Marina"}], "Cecil, Marina, Singapore"),
         ([{"location": "Central"}], "Central, Singapore"),
+        (
+            [
+                {"location": "D01 Cecil, Marina"},
+                {"location": "D18 Pasir Ris, Tampines"},
+                {"location": "D01 Cecil, Marina"},
+            ],
+            "Cecil, Marina, Singapore; Pasir Ris, Tampines, Singapore",
+        ),
+        ([{"location": "Islandwide"}, {"location": "D09 Orchard"}], "Orchard, Singapore"),
     ],
 )
 def test_places(httpx_mock, districts: list[dict], expected: str) -> None:
