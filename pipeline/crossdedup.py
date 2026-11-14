@@ -448,9 +448,11 @@ def absorb(
                     if _has_free_city(candidate, source, city):
                         by_city.setdefault(city, {})[id(candidate)] = candidate
 
-        matched = False
-        # Same city first: nothing agrees better, so the first hit is the match.
-        for city in row.cities:
+        # Same city first: nothing agrees better. Among the row's cities (in
+        # the order it lists them) the earliest kept row wins, so the result
+        # does not depend on how a set happens to be ordered.
+        same_city: tuple[tuple[int, int], _Row, list[int], list] | None = None
+        for city in dict.fromkeys(name for name in row.slots if name):
             for ident, candidate in list(by_city.get(city, {}).items()):
                 if not _has_free_city(candidate, source, city):
                     del by_city[city][ident]
@@ -463,12 +465,12 @@ def absorb(
                 plan = _hand_over_plan(row, candidate)
                 if plan is None:
                     continue
-                take(row, candidate, positions, plan)
-                matched = True
-                break
-            if matched:
-                break
-        if matched:
+                rank = (candidate.source, candidate.idx)
+                if same_city is None or rank < same_city[0]:
+                    same_city = (rank, candidate, positions, plan)
+                break  # the earliest fitting row for this city
+        if same_city is not None:
+            take(row, same_city[1], same_city[2], same_city[3])
             continue
 
         # No slot in the same city: an unnamed slot, or another city of the same country.

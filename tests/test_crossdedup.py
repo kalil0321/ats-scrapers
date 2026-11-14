@@ -125,6 +125,20 @@ def test_a_board_row_that_lists_two_places_fills_both() -> None:
     assert _survivors(rows) == {"greenhouse": 1, "welcometothejungle": 1}
 
 
+def test_the_earliest_kept_row_wins_among_the_cities_of_a_row() -> None:
+    """A row at "Paris; Lyon" meets a Paris row and a Lyon row of a better
+    source: it is the earlier of the two, whatever order a set yields."""
+    rows = [
+        ("workday", 1, "Senior Backend Engineer", "Acme", "Paris"),
+        ("workday", 1, "Senior Backend Engineer", "Acme", "Lyon"),
+        ("eightfold", 5, "Senior Backend Enginer", "Acme", "Lyon; Paris"),
+        ("eightfold", 5, "Senior Backend Enginer", "Acme", "Paris (HQ)"),
+    ]
+
+    for _ in range(5):
+        assert _survivors(rows) == {"workday": 2, "eightfold": 1}
+
+
 def test_a_handed_over_row_keeps_its_place() -> None:
     """B (Lyon) had absorbed a Lyon row of C. When A ("Paris; Lyon") absorbs
     B, that row fills A's Lyon slot, so the second Lyon row of C stays."""
