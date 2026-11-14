@@ -41,8 +41,9 @@ PAGE_PAUSE_SECONDS = 0.5
 REFUSAL_WAIT_SECONDS = 45.0
 MAX_REFUSALS = 4
 MAX_PAGES = 2_000
+MISSING_ALLOWED = 2
 
-_SLUG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~-]*|-[A-Za-z0-9._~-]+")
+_SLUG_RE = re.compile(r"-?[A-Za-z0-9][A-Za-z0-9._~-]*")
 
 
 @ScraperRegistry.register(ATSType.MANATAL)
@@ -78,6 +79,8 @@ class ManatalScraper(BaseScraper):
         async with self.make_fetcher() as fetch:
             company = self.company_name or await self._organisation_name(fetch)
             jobs: dict[str, Job] = {}
+            unusable = 0
+            announced = 0
             url: str | None = f"{self._api_url}/jobs/?page_size={PAGE_SIZE}"
             for _ in range(MAX_PAGES):
                 if url is None:
@@ -88,9 +91,14 @@ class ManatalScraper(BaseScraper):
                     raise ScraperError(
                         f"Manatal ({self.company_slug}) returned no list of jobs"
                     )
+                count = body.get("count")
+                if isinstance(count, int) and not isinstance(count, bool):
+                    announced = max(announced, count)
                 for item in results:
                     job = self._parse_job(item, company) if isinstance(item, dict) else None
-                    if job is not None and job.ats_id not in jobs:
+                    if job is None:
+                        unusable += 1
+                    elif job.ats_id not in jobs:
                         jobs[job.ats_id] = job  # type: ignore[index]
                 url = _next_page(body.get("next"))
                 if url is not None:
@@ -99,6 +107,14 @@ class ManatalScraper(BaseScraper):
                 raise ScraperError(
                     f"Manatal ({self.company_slug}) has more than {MAX_PAGES} pages"
                 )
+        # Jobs open and close while the pages are read; more than a few
+        # missing means pages shifted and jobs were skipped.
+        missing = announced - len(jobs) - unusable
+        if missing > max(MISSING_ALLOWED, announced // 20):
+            raise ScraperError(
+                f"Manatal ({self.company_slug}) returned {len(jobs)} of "
+                f"{announced} jobs"
+            )
         return list(jobs.values())
 
     async def _organisation_name(self, fetch: Fetcher) -> str:

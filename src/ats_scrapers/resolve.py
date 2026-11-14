@@ -99,8 +99,6 @@ _PATH_HOSTS: dict[str, ATSType] = {
     "careers.smartrecruiters.com": ATSType.SMARTRECRUITERS,
     "jobs.smartrecruiters.com": ATSType.SMARTRECRUITERS,
     "jobs.gem.com": ATSType.GEM,
-    "www.careers-page.com": ATSType.MANATAL,
-    "careers-page.com": ATSType.MANATAL,
     "ats.rippling.com": ATSType.RIPPLING,
     "apply.clearcompany.com": ATSType.CLEARCOMPANY,
 }
@@ -130,6 +128,7 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
 }
 
 # Full-URL tenants: the scraper's slug IS the careers URL.
+_MANATAL_SLUG_RE = re.compile(r"-?[A-Za-z0-9][A-Za-z0-9._~-]*")
 _FEISHU_HIRE_SUFFIX = ".jobs.feishu.cn"
 _FEISHU_HIRE_SITE_RE = re.compile(r"[A-Za-z0-9_-]+")
 _WORKDAY_HOST_RE = re.compile(r"^[^.]+\.wd\d+\.myworkdayjobs\.com$")
@@ -238,6 +237,13 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         slug = _first_path_segment(parsed)
         if slug and _SLUG_RE.match(slug):
             return ResolvedCareersUrl(_PATH_HOSTS[host], slug)
+        return None
+
+    if host in ("www.careers-page.com", "careers-page.com"):
+        # Manatal page names may start with a hyphen.
+        slug = _first_path_segment(parsed)
+        if slug and _MANATAL_SLUG_RE.fullmatch(slug):
+            return ResolvedCareersUrl(ATSType.MANATAL, slug)
         return None
 
     if host == "herp.careers":

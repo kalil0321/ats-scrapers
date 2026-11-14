@@ -87,6 +87,23 @@ def test_reads_every_page_and_keeps_a_job_once(httpx_mock) -> None:
     assert [job.ats_id for job in jobs] == ["A", "B", "C"]
 
 
+def test_a_read_that_skipped_jobs_is_reported(httpx_mock) -> None:
+    page = _page([_job("A")])
+    page["count"] = 40
+    httpx_mock.add_response(url=JOBS, json=page)
+
+    with pytest.raises(ScraperError, match="returned 1 of 40 jobs"):
+        ManatalScraper("acme", company_name="Acme").fetch()
+
+
+def test_a_few_jobs_closed_during_the_read_are_tolerated(httpx_mock) -> None:
+    page = _page([_job("A")])
+    page["count"] = 3
+    httpx_mock.add_response(url=JOBS, json=page)
+
+    assert len(ManatalScraper("acme", company_name="Acme").fetch()) == 1
+
+
 def test_a_next_page_on_another_host_is_not_followed(httpx_mock) -> None:
     httpx_mock.add_response(
         url=JOBS, json=_page([_job()], next_url="https://elsewhere.example/jobs/?page=2")

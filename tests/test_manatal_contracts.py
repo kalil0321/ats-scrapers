@@ -25,6 +25,9 @@ def test_manatal_pipeline_config() -> None:
     assert config["csv"] == "ats-companies/manatal.csv"
     assert config["output"] == "manatal/jobs.csv"
     assert _bounded_concurrency(config, 24) == 1
+    assert config["fail_closed_on_any_error"] is True
+    assert config["fail_closed_on_empty"] is True
+    assert config["fail_closed_tolerance"] == 0.05
 
 
 def test_manatal_is_an_employer_ats() -> None:
