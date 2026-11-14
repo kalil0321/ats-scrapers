@@ -739,7 +739,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
     },
     "zoho_recruit": {
         "scraper": ZohoRecruitScraper,
-        "slug": lambda r: (r.get("url") or "").strip() or None,
+        # The slug is the career-site URL.
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
         "kwargs": lambda r: {
             "company_name": (r.get("name") or "").strip() or None,
         },

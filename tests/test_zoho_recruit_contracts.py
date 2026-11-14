@@ -17,11 +17,13 @@ URL_RE = re.compile(
 
 def test_zoho_recruit_pipeline_config() -> None:
     config = CONFIGS["zoho_recruit"]
-    row = {"name": "Acme", "url": "https://acme.zohorecruit.com/jobs/Careers"}
+    url = "https://acme.zohorecruit.com/jobs/Careers"
+    row = {"name": "Acme", "slug": url, "url": url}
 
     assert config["scraper"] is ZohoRecruitScraper
-    assert config["slug"](row) == "https://acme.zohorecruit.com/jobs/Careers"
-    assert config["slug"]({"name": "Acme", "url": " "}) is None
+    assert config["slug"](row) == url
+    assert config["slug"]({"name": "Acme", "url": url}) == url
+    assert config["slug"]({"name": "Acme", "slug": "", "url": " "}) is None
     assert config["kwargs"](row) == {"company_name": "Acme"}
     assert config["csv"] == "ats-companies/zoho_recruit.csv"
     assert config["output"] == "zoho_recruit/jobs.csv"
@@ -45,4 +47,5 @@ def test_zoho_recruit_catalogue_is_well_formed() -> None:
     for row in rows:
         assert row["name"].strip()
         assert URL_RE.fullmatch(row["url"])
-        ZohoRecruitScraper(row["url"])
+        assert row["slug"] == row["url"]
+        assert ZohoRecruitScraper(row["slug"]).portal_url == row["url"]
