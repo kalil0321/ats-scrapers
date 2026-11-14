@@ -674,6 +674,7 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "bundesagentur": 6,
     "arbetsformedlingen": 6,
     "jobbankca": 6,
+    "mycareersfuture": 6,
     "usajobs": 6,
 }
 

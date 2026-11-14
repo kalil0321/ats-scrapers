@@ -40,6 +40,7 @@ page/rendered page rather than a structured job payload.
 | `keka` | Yes | No | HTML bootstrap + API | API |
 | `lever` | Yes | No | API | API |
 | `manfred` | Yes | Yes | API/feed | API/feed |
+| `mycareersfuture` | Yes | No | API | API |
 | `mercor` | Yes | No | API/feed | API/feed |
 | `meta` | Yes | Yes | HTML / browser | HTML |
 | `oracle` | Yes | Yes | API/feed | API/feed |
