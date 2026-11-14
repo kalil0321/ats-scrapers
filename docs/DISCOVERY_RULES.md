@@ -619,6 +619,33 @@ Validation:
    consumed by the scraper.
 3. Reject case-normalized URLs that redirect or fetch a different tenant.
 
+### Wantedly
+
+Rows use `name,slug,url`: the employer's name as the site gives it, the
+company's slug as written in its page address (capitals included) and
+`https://www.wantedly.com/companies/{slug}`.
+
+- Slugs come from the site's sitemap
+  (`https://www.wantedly.com/sitemaps/sitemap.xml.gz`), which lists a
+  `/companies/{slug}/projects` page per company with the date it last changed.
+  A list unchanged for years shows no open project: start with the most
+  recently changed ones.
+- Run the scraper on each slug and add a company only when it lists at least
+  one project. Take `name` from the listing (`company.name`).
+- Ask slowly: the site answers 403 to a client that sends more than a few
+  requests per second. Two companies at a time is enough.
+- A slug the site no longer knows answers 500 on every request: remove the row.
+- Count jobs, not projects. Employers republish one opening as several
+  projects, each under a new headline and often tagged with another
+  prefecture. The scraper returns projects with the same role label
+  (`looking_for`) and the same text as one job. When reporting what a
+  catalogue brings, give both figures.
+- A company that announces more than 1,000 projects cannot be read to the
+  end (100 pages of 10) and is refused. Those seen so far republish one
+  advert thousands of times; leave them out.
+- The listing also returns the names of staff members. Do not read or keep
+  them.
+
 ### Varbi
 
 - Use `name,slug,url` with a single employer tenant and

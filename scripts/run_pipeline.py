@@ -112,6 +112,7 @@ from ats_scrapers.scrapers import (
     UberScraper,
     UKGProScraper,
     VarbiScraper,
+    WantedlyScraper,
     WantedScraper,
     WellfoundScraper,
     WeWorkRemotelyScraper,
@@ -1212,6 +1213,30 @@ CONFIGS: dict[str, dict[str, Any]] = {
         # Wanted — Korea + Japan tech roles. ~10k live.
         "scraper": WantedScraper, "singleton": True,
         "output": "wanted/jobs.csv",
+    },
+    "wantedly": {
+        # Wantedly (Japan). One row per employer; the slug is the company's
+        # slug in its page address, capitals included.
+        "scraper": WantedlyScraper,
+        "slug": lambda r: _slug_col(r) or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/wantedly.csv",
+        "output": "wantedly/jobs.csv",
+        # A project has one id on the whole site.
+        "dedupe_by_ats_id": True,
+        # The site refuses a client that asks faster (HTTP 403). One listing
+        # reads its pages one after the other, so two employers at once is
+        # two requests in flight.
+        "max_concurrency": 2,
+        # A slug the site no longer knows answers 500, which counts as a
+        # failed employer. Up to one employer in fifty may fail before the
+        # previous dataset is kept.
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_not_found": True,
+        "fail_closed_on_empty": True,
+        "fail_closed_tolerance": 0.02,
     },
     "wellfound": {
         # Wellfound (was AngelList Talent) — US startups. ~700 live;

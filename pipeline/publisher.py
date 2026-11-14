@@ -660,7 +660,7 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "amazon": 1, "apple": 1, "bytedance": 1, "google": 1, "meta": 1,
     "tesla": 1, "tiktok": 1, "uber": 1,
     # Hybrid jobboards
-    "welcometothejungle": 3, "mercor": 3, "gem": 3,
+    "welcometothejungle": 3, "mercor": 3, "gem": 3, "wantedly": 3,
     "seek": 4,
     # Sourcing/matching layer that mirrors others
     "eightfold": 5,

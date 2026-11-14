@@ -126,6 +126,7 @@ Scraper adapters include:
 - PeopleAdmin applicant portals.
 - Talentio recruitment homes (Japan).
 - Varbi employer boards.
+- Wantedly company pages (Japan).
 - Cegid Talentsoft career sites.
 - CATS careers portals.
 - Hireology career sites.

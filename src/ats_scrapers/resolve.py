@@ -62,6 +62,9 @@ class ResolvedCareersUrl(NamedTuple):
     slug: str
 
 
+_WANTEDLY_COMPANY_PATH_RE = re.compile(
+    r"^/companies/([A-Za-z0-9][A-Za-z0-9_-]{0,63})(?:/.*)?$"
+)
 _HIREOLOGY_UNSAFE_RE = re.compile(r"[\\?#\x00-\x1f\x7f]")
 
 
@@ -207,6 +210,14 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
                 ATSType.LEVER, f"https://jobs.eu.lever.co/{quote(slug, safe='')}"
             )
         return ResolvedCareersUrl(ATSType.LEVER, slug)
+
+    if host == "wantedly.com":
+        # ``host`` has lost its ``www.``. Only a company address names an
+        # employer; a project address (``/projects/{id}``) does not.
+        match = _WANTEDLY_COMPANY_PATH_RE.match(parsed.path)
+        if match:
+            return ResolvedCareersUrl(ATSType.WANTEDLY, match.group(1))
+        return None
 
     if host == "careers.hireology.com":
         # The tenant is the first path segment, percent-decoded. It can hold
