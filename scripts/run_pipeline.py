@@ -51,6 +51,7 @@ from ats_scrapers.scrapers import (
     BeisenLegacyScraper,
     BeisenScraper,
     BreezyScraper,
+    BrighterMondayScraper,
     BuiltInScraper,
     BundesagenturScraper,
     BytedanceScraper,
@@ -60,6 +61,7 @@ from ats_scrapers.scrapers import (
     DarwinboxScraper,
     DayforceScraper,
     EightfoldScraper,
+    EmploiticScraper,
     EuresScraper,
     FeishuHireScraper,
     GemScraper,
@@ -76,6 +78,7 @@ from ats_scrapers.scrapers import (
     JibeScraper,
     JDScraper,
     JobBankCAScraper,
+    JobbermanScraper,
     JobsChScraper,
     JobsCzScraper,
     JobviteScraper,
@@ -1243,6 +1246,24 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "jobbankca": {
         "scraper": JobBankCAScraper, "singleton": True,
         "output": "jobbankca/jobs.csv",
+        "fail_closed_on_empty": True,
+    },
+    "jobberman": {
+        # Nigeria and Ghana, read in one go.
+        "scraper": JobbermanScraper, "singleton": True,
+        "output": "jobberman/jobs.csv",
+        "fail_closed_on_empty": True,
+    },
+    "brightermonday": {
+        # Kenya and Uganda, read in one go.
+        "scraper": BrighterMondayScraper, "singleton": True,
+        "output": "brightermonday/jobs.csv",
+        "fail_closed_on_empty": True,
+    },
+    "emploitic": {
+        # Algeria.
+        "scraper": EmploiticScraper, "singleton": True,
+        "output": "emploitic/jobs.csv",
         "fail_closed_on_empty": True,
     },
     "mycareersfuture": {

@@ -12,6 +12,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - Zoho Recruit career sites.
 - MyCareersFuture, the public job portal of Singapore.
 - Manatal career pages.
+- Jobberman (Nigeria, Ghana), BrighterMonday (Kenya, Uganda) and Emploitic
+  (Algeria) job boards.
 - Varbi employer RSS scraper with complete descriptions, public detail metadata,
   locale-independent tenant IDs, URL resolution, and a validated employer catalog.
   Malformed feeds fail closed. With detail enrichment enabled, removed or expired

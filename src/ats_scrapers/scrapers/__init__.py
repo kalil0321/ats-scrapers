@@ -21,6 +21,7 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry, get_scraper
 from ats_scrapers.scrapers.beisen import BeisenScraper
 from ats_scrapers.scrapers.beisen_legacy import BeisenLegacyScraper
 from ats_scrapers.scrapers.breezy import BreezyScraper
+from ats_scrapers.scrapers.brightermonday import BrighterMondayScraper
 from ats_scrapers.scrapers.builtin import BuiltInScraper
 from ats_scrapers.scrapers.bundesagentur import BundesagenturScraper
 from ats_scrapers.scrapers.bytedance import BytedanceScraper
@@ -30,6 +31,7 @@ from ats_scrapers.scrapers.cornerstone import CornerstoneScraper
 from ats_scrapers.scrapers.darwinbox import DarwinboxScraper
 from ats_scrapers.scrapers.dayforce import DayforceScraper
 from ats_scrapers.scrapers.eightfold import EightfoldScraper
+from ats_scrapers.scrapers.emploitic import EmploiticScraper
 from ats_scrapers.scrapers.eures import EuresScraper
 from ats_scrapers.scrapers.feishu_hire import FeishuHireScraper
 from ats_scrapers.scrapers.gem import GemScraper
@@ -47,6 +49,7 @@ from ats_scrapers.scrapers.jazzhr import JazzHRScraper
 from ats_scrapers.scrapers.jd import JDScraper
 from ats_scrapers.scrapers.jibe import JibeScraper
 from ats_scrapers.scrapers.jobbankca import JobBankCAScraper
+from ats_scrapers.scrapers.jobberman import JobbermanScraper
 from ats_scrapers.scrapers.jobs_cz import JobsCzScraper
 from ats_scrapers.scrapers.jobsch import JobsChScraper
 from ats_scrapers.scrapers.jobvite import JobviteScraper
@@ -116,6 +119,7 @@ __all__ = [
     "BeisenLegacyScraper",
     "BeisenScraper",
     "BreezyScraper",
+    "BrighterMondayScraper",
     "BuiltInScraper",
     "BundesagenturScraper",
     "BytedanceScraper",
@@ -125,6 +129,7 @@ __all__ = [
     "DarwinboxScraper",
     "DayforceScraper",
     "EightfoldScraper",
+    "EmploiticScraper",
     "EuresScraper",
     "FeishuHireScraper",
     "GemScraper",
@@ -141,6 +146,7 @@ __all__ = [
     "JazzHRScraper",
     "JibeScraper",
     "JobBankCAScraper",
+    "JobbermanScraper",
     "JobsChScraper",
     "JobsCzScraper",
     "JobviteScraper",
