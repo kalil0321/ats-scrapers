@@ -35,6 +35,7 @@ from ats_scrapers.scrapers.gem import GemScraper
 from ats_scrapers.scrapers.getonbrd import GetOnBrdScraper
 from ats_scrapers.scrapers.google import GoogleScraper
 from ats_scrapers.scrapers.greenhouse import GreenhouseScraper
+from ats_scrapers.scrapers.greeting import GreetingScraper
 from ats_scrapers.scrapers.gupy import GupyScraper
 from ats_scrapers.scrapers.herp import HerpScraper
 from ats_scrapers.scrapers.hireology import HireologyScraper
@@ -125,6 +126,7 @@ __all__ = [
     "GetOnBrdScraper",
     "GoogleScraper",
     "GreenhouseScraper",
+    "GreetingScraper",
     "GupyScraper",
     "HerpScraper",
     "HireologyScraper",

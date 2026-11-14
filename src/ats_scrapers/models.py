@@ -50,6 +50,7 @@ class ATSType(StrEnum):
     EIGHTFOLD = "eightfold"
     GEM = "gem"
     GREENHOUSE = "greenhouse"
+    GREETING = "greeting"
     GUPY = "gupy"
     HERP = "herp"
     HIREOLOGY = "hireology"

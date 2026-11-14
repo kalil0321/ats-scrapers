@@ -26,6 +26,7 @@ page/rendered page rather than a structured job payload.
 | `getonbrd` | Yes | No | API/feed | API/feed |
 | `google` | Yes | Yes | HTML | HTML |
 | `greenhouse` | Yes | No | API/feed | API/feed |
+| `greeting` | Yes | Yes | HTML with embedded JSON | HTML with embedded JSON |
 | `herp` | Yes | Yes | HTML | HTML (JSON-LD) |
 | `hireology` | Yes | No | API/feed | API/feed |
 | `hrmos` | Yes | No | HTML | HTML |
