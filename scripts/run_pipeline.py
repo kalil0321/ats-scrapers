@@ -124,6 +124,7 @@ from ats_scrapers.scrapers import (
     WorkableScraper,
     WorkdayScraper,
     YCombinatorScraper,
+    ZohoRecruitScraper,
     iCIMSScraper,
 )
 from ats_scrapers.scrapers.base import BaseScraper
@@ -736,6 +737,17 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: _slug_col(r) or r.get("name") or r.get("url"),
         "csv": "ats-companies/recruiterbox.csv",
         "output": "recruiterbox/jobs.csv",
+    },
+    "zoho_recruit": {
+        "scraper": ZohoRecruitScraper,
+        # The slug is the career-site URL.
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/zoho_recruit.csv",
+        "output": "zoho_recruit/jobs.csv",
+        "max_concurrency": 4,
     },
     "workday": {
         # Workday's slug is the FULL careers URL (the scraper parses the

@@ -271,6 +271,12 @@ RESOLVES = [
     ),
     ("https://nio.jobs.feishu.cn", ATSType.FEISHU_HIRE, "nio"),
     (
+        "https://acme.zohorecruit.com/jobs/Careers/9001/Site-Engineer?source=CareerSite",
+        ATSType.ZOHO_RECRUIT,
+        "https://acme.zohorecruit.com/jobs/Careers",
+    ),
+    ("https://acme.zohorecruit.eu", ATSType.ZOHO_RECRUIT, "https://acme.zohorecruit.eu"),
+    (
         "https://day1company.ninehire.site/job_posting/7a0UlD8L",
         ATSType.NINEHIRE,
         "day1company",
