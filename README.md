@@ -31,7 +31,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/kalil0321/ats-scrapers/main/assets/demo-dark.gif">
-    <img src="https://raw.githubusercontent.com/kalil0321/ats-scrapers/main/assets/demo.gif" alt="The sources ats-scrapers covers, get_scraper_for_url on eight real careers pages, and search() over the hosted dataset">
+    <img src="https://raw.githubusercontent.com/kalil0321/ats-scrapers/main/assets/demo.gif" alt="The sources ats-scrapers covers, get_scraper_for_url on eight real careers pages, and search() for engineering jobs in Zurich">
   </picture>
 </p>
 
