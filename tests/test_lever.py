@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 
 import pytest
@@ -11,6 +12,17 @@ from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import LeverScraper, ScraperRegistry
 
 API = "https://api.lever.co/v0/postings/acme?mode=json"
+
+
+@pytest.fixture(autouse=True)
+def _board_page_open(httpx_mock) -> None:
+    """The public board page answers, so postings are kept."""
+    httpx_mock.add_response(
+        method="HEAD",
+        url=re.compile(r"https://jobs\.(eu\.)?lever\.co/[^/?]+$"),
+        is_optional=True,
+        is_reusable=True,
+    )
 
 
 # Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture
@@ -125,7 +137,10 @@ def test_eu_region_reads_the_eu_api(httpx_mock) -> None:
     assert [job.ats_id for job in jobs] == ["e1"]
     assert jobs[0].company == "acme"
     assert str(jobs[0].url) == "https://jobs.eu.lever.co/acme/e1"
-    assert [str(r.url) for r in httpx_mock.get_requests()] == [EU_API]
+    assert [str(r.url) for r in httpx_mock.get_requests()] == [
+        EU_API,
+        "https://jobs.eu.lever.co/acme",
+    ]
 
 
 @pytest.mark.parametrize(

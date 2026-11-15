@@ -165,21 +165,15 @@ class AmazonScraper(BaseScraper):
             item.get("icimsJobId") or item.get("id_icims")
             or item.get("jobCode") or item.get("id") or hit.get("id", "")
         )
-        path = (
-            item.get("urlNextStep") or item.get("url_next_step")
-            or item.get("job_path") or item.get("jobUrl") or ""
+        # ``job_path`` is the public job page; ``url_next_step`` is the
+        # apply flow, which asks the reader to sign in first.
+        next_step = _absolute(item.get("urlNextStep") or item.get("url_next_step"))
+        url = (
+            _absolute(item.get("job_path") or item.get("jobUrl"))
+            or next_step
+            or f"https://www.amazon.jobs/en/jobs/{req_id}"
         )
-        if path and not path.startswith("http"):
-            url = f"https://www.amazon.jobs{path}"
-        elif path:
-            url = path
-        else:
-            url = f"https://www.amazon.jobs/en/jobs/{req_id}"
-
-        # Apply URL — usually the same as ``url_next_step``, but
-        # ``account.amazon.jobs/jobs/{id}/apply`` form when Amazon promotes
-        # internal apply flow. Use whichever is more specific.
-        apply_url = item.get("urlNextStepApply") or url
+        apply_url = _absolute(item.get("urlNextStepApply")) or next_step or url
 
         # Description: ``description_short`` is a 200-300 char teaser;
         # ``description`` is the full posting body. Keep the long one when
@@ -268,6 +262,12 @@ class AmazonScraper(BaseScraper):
                 raw=raw or None,
             ))
         return rows
+
+
+def _absolute(path: object) -> str | None:
+    if not isinstance(path, str) or not path:
+        return None
+    return path if path.startswith("http") else f"https://www.amazon.jobs{path}"
 
 
 def _extract_facet_values(facets: list[dict[str, Any]], field: str) -> list[tuple[str, int]]:

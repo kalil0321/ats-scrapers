@@ -51,6 +51,7 @@ from ats_scrapers.scrapers import (
     BeisenLegacyScraper,
     BeisenScraper,
     BreezyScraper,
+    BrighterMondayScraper,
     BuiltInScraper,
     BundesagenturScraper,
     BytedanceScraper,
@@ -60,11 +61,14 @@ from ats_scrapers.scrapers import (
     DarwinboxScraper,
     DayforceScraper,
     EightfoldScraper,
+    EmploiticScraper,
     EuresScraper,
+    FeishuHireScraper,
     GemScraper,
     GetOnBrdScraper,
     GoogleScraper,
     GreenhouseScraper,
+    GreetingScraper,
     GupyScraper,
     HerpScraper,
     HireologyScraper,
@@ -74,6 +78,7 @@ from ats_scrapers.scrapers import (
     JibeScraper,
     JDScraper,
     JobBankCAScraper,
+    JobbermanScraper,
     JobsChScraper,
     JobsCzScraper,
     JobviteScraper,
@@ -81,6 +86,8 @@ from ats_scrapers.scrapers import (
     KekaScraper,
     LeverScraper,
     ManfredScraper,
+    ManatalScraper,
+    MyCareersFutureScraper,
     MercorScraper,
     MetaScraper,
     MokaScraper,
@@ -122,6 +129,7 @@ from ats_scrapers.scrapers import (
     WorkableScraper,
     WorkdayScraper,
     YCombinatorScraper,
+    ZohoRecruitScraper,
     iCIMSScraper,
 )
 from ats_scrapers.scrapers.base import BaseScraper
@@ -419,6 +427,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "max_concurrency": 2,
         "dedupe_by_ats_id": True,
         "fail_closed_on_any_error": True,
+        # A few closed or broken boards must not hold the whole source back.
+        "fail_closed_tolerance": 0.05,
         "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
     },
@@ -438,6 +448,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "description_concurrency": 1,
         "description_delay_seconds": 0.5,
         "fail_closed_on_any_error": True,
+        # A few closed or broken boards must not hold the whole source back.
+        "fail_closed_tolerance": 0.02,
         "fail_closed_on_empty": True,
     },
     "catsone": {
@@ -530,6 +542,18 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/breezy.csv",
         "output": "breezy/jobs.csv",
     },
+    "feishu_hire": {
+        "scraper": FeishuHireScraper,
+        "slug": lambda r: _slug_col(r) or None,
+        "kwargs": lambda r: {
+            "sites": (r.get("sites") or "").strip() or None,
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/feishu_hire.csv",
+        "output": "feishu_hire/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 4,
+    },
     "gem": {
         # Gem boards live at ``jobs.gem.com/{slug}``. Post-migration the
         # slug column has the value directly; legacy files store it in the
@@ -595,6 +619,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "max_concurrency": 8,
         "fail_closed_on_empty": True,
         "fail_closed_on_any_error": True,
+        # A few closed or broken boards must not hold the whole source back.
+        "fail_closed_tolerance": 0.02,
     },
     "successfactors": {
         "scraper": SuccessFactorsScraper,
@@ -716,6 +742,17 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "slug": lambda r: _slug_col(r) or r.get("name") or r.get("url"),
         "csv": "ats-companies/recruiterbox.csv",
         "output": "recruiterbox/jobs.csv",
+    },
+    "zoho_recruit": {
+        "scraper": ZohoRecruitScraper,
+        # The slug is the career-site URL.
+        "slug": lambda r: _slug_col(r) or (r.get("url") or "").strip() or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/zoho_recruit.csv",
+        "output": "zoho_recruit/jobs.csv",
+        "max_concurrency": 4,
     },
     "workday": {
         # Workday's slug is the FULL careers URL (the scraper parses the
@@ -842,7 +879,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/jobvite.csv",
         "output": "jobvite/jobs.csv",
         "fail_closed_on_any_error": True,
-        "fail_closed_tolerance": 0.02,
+        "fail_closed_tolerance": 0.05,
         "fail_closed_on_not_found": True,
         "fail_closed_on_empty": True,
     },
@@ -853,7 +890,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/pageup.csv",
         "output": "pageup/jobs.csv",
         "fail_closed_on_any_error": True,
-        "fail_closed_tolerance": 0.02,
+        "fail_closed_tolerance": 0.15,
         "fail_closed_on_empty": True,
     },
     "paycom": {
@@ -865,6 +902,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "dedupe_by_ats_id": True,
         "max_concurrency": 3,
         "fail_closed_on_any_error": True,
+        # A few closed or broken boards must not hold the whole source back.
+        "fail_closed_tolerance": 0.02,
         "fail_closed_on_empty": True,
     },
     "paylocity": {
@@ -931,6 +970,17 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "kwargs": lambda r: {"company_name": (r.get("name") or "").strip() or None},
         "csv": "ats-companies/greenhouse.csv",
         "output": "greenhouse/jobs.csv",
+    },
+    "greeting": {
+        "scraper": GreetingScraper,
+        "slug": lambda r: _slug_col(r) or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/greeting.csv",
+        "output": "greeting/jobs.csv",
+        "dedupe_by_ats_id": True,
+        "max_concurrency": 4,
     },
     "gupy": {
         "scraper": GupyScraper,
@@ -1070,6 +1120,21 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "csv": "ats-companies/join_com.csv",
         "output": "join_com/jobs.csv",
     },
+    "manatal": {
+        "scraper": ManatalScraper,
+        "slug": lambda r: _slug_col(r) or None,
+        "kwargs": lambda r: {
+            "company_name": (r.get("name") or "").strip() or None,
+        },
+        "csv": "ats-companies/manatal.csv",
+        "output": "manatal/jobs.csv",
+        # The API refuses for a while when asked too fast: one page at a time.
+        "max_concurrency": 1,
+        # A run the API mostly refused must not replace the previous one.
+        "fail_closed_on_any_error": True,
+        "fail_closed_on_empty": True,
+        "fail_closed_tolerance": 0.05,
+    },
     "mercor": {
         "scraper": MercorScraper,
         # Mercor is a single-tenant scraper — slug is ignored.
@@ -1181,6 +1246,29 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "jobbankca": {
         "scraper": JobBankCAScraper, "singleton": True,
         "output": "jobbankca/jobs.csv",
+        "fail_closed_on_empty": True,
+    },
+    "jobberman": {
+        # Nigeria and Ghana, read in one go.
+        "scraper": JobbermanScraper, "singleton": True,
+        "output": "jobberman/jobs.csv",
+        "fail_closed_on_empty": True,
+    },
+    "brightermonday": {
+        # Kenya and Uganda, read in one go.
+        "scraper": BrighterMondayScraper, "singleton": True,
+        "output": "brightermonday/jobs.csv",
+        "fail_closed_on_empty": True,
+    },
+    "emploitic": {
+        # Algeria.
+        "scraper": EmploiticScraper, "singleton": True,
+        "output": "emploitic/jobs.csv",
+        "fail_closed_on_empty": True,
+    },
+    "mycareersfuture": {
+        "scraper": MyCareersFutureScraper, "singleton": True,
+        "output": "mycareersfuture/jobs.csv",
         "fail_closed_on_empty": True,
     },
     "jobs_cz": {

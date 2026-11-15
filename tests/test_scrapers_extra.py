@@ -321,6 +321,7 @@ def test_gem_parses_jobpostings(httpx_mock) -> None:
             }
         ],
     )
+    httpx_mock.add_response(method="HEAD", url="https://jobs.gem.com/acme")
     jobs = GemScraper("acme").fetch()
     assert jobs[0].title == "ML Engineer"
     assert jobs[0].location == "San Francisco, USA"
@@ -1110,6 +1111,40 @@ def test_oracle_keeps_short_description_without_enrichment(httpx_mock) -> None:
     [job] = OracleScraper(base, include_descriptions=False).fetch()
 
     assert job.description == "One-line summary."
+
+
+def test_oracle_job_url_is_the_job_page(httpx_mock) -> None:
+    base = "https://acme.fa.us2.oraclecloud.com"
+    api = f"{base}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
+    httpx_mock.add_response(
+        url=(
+            f"{api}?onlyData=true"
+            f"&finder=findReqs%3BsiteNumber%3DCX_45002%2Climit%3D200%2Coffset%3D0"
+            f"&expand=requisitionList"
+        ),
+        json={
+            "items": [{
+                "TotalJobsCount": 2,
+                "requisitionList": [
+                    {"Id": "001", "Title": "DBA"},
+                    {
+                        "Id": "002",
+                        "Title": "SRE",
+                        "ExternalURL": "https://careers.acme.example/jobs/002",
+                    },
+                ],
+            }]
+        },
+    )
+
+    jobs = OracleScraper(
+        f"{base}?site_number=CX_45002", include_descriptions=False
+    ).fetch()
+
+    assert [str(job.url) for job in jobs] == [
+        f"{base}/hcmUI/CandidateExperience/en/sites/CX_45002/job/001",
+        "https://careers.acme.example/jobs/002",
+    ]
 
 
 def test_oracle_extracts_site_number_from_query(httpx_mock) -> None:

@@ -14,6 +14,7 @@ from ats_scrapers.scrapers import (
     BeisenScraper,
     DarwinboxScraper,
     DayforceScraper,
+    FeishuHireScraper,
     GreenhouseScraper,
     GupyScraper,
     HerpScraper,
@@ -262,6 +263,25 @@ RESOLVES = [
     ("https://bloomberg.avature.net/careers", ATSType.AVATURE, "bloomberg"),
     ("https://nvidia.eightfold.ai/careers", ATSType.EIGHTFOLD, "nvidia"),
     ("https://petz.gupy.io/jobs/123", ATSType.GUPY, "petz"),
+    ("https://www.careers-page.com/acme/job/939W9Y76", ATSType.MANATAL, "acme"),
+    (
+        "https://www.careers-page.com/-black-pen-recruitment",
+        ATSType.MANATAL,
+        "-black-pen-recruitment",
+    ),
+    ("https://kurly.career.greetinghr.com/o/188454", ATSType.GREETING, "kurly"),
+    (
+        "https://nio.jobs.feishu.cn/campus/position/7707592102096718121/detail",
+        ATSType.FEISHU_HIRE,
+        "https://nio.jobs.feishu.cn/campus",
+    ),
+    ("https://nio.jobs.feishu.cn", ATSType.FEISHU_HIRE, "nio"),
+    (
+        "https://acme.zohorecruit.com/jobs/Careers/9001/Site-Engineer?source=CareerSite",
+        ATSType.ZOHO_RECRUIT,
+        "https://acme.zohorecruit.com/jobs/Careers",
+    ),
+    ("https://acme.zohorecruit.eu", ATSType.ZOHO_RECRUIT, "https://acme.zohorecruit.eu"),
     (
         "https://day1company.ninehire.site/job_posting/7a0UlD8L",
         ATSType.NINEHIRE,
@@ -519,6 +539,10 @@ def test_get_scraper_for_url_builds_scraper() -> None:
         ),
         NinehireScraper,
     )
+    feishu = get_scraper_for_url("https://bambulab.jobs.feishu.cn/campus")
+    assert isinstance(feishu, FeishuHireScraper)
+    assert feishu.company_slug == "bambulab"
+    assert feishu.sites == ("campus",)
     assert isinstance(
         get_scraper_for_url(
             "https://dfmc.hotjob.cn/SU61d501d92f9d24431f65f608"

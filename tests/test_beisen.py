@@ -77,6 +77,19 @@ def test_rejects_invalid_business_type() -> None:
         BeisenScraper("fixturecorp", business_type=3)
 
 
+def test_job_url_falls_back_to_the_listing_id_without_an_internal_id(
+    httpx_mock,
+) -> None:
+    add_register(httpx_mock)
+    item = listing()
+    del item["Id"]
+    httpx_mock.add_response(url=SEARCH_URL, json=payload([item]))
+
+    [result] = BeisenScraper("FixtureCorp").fetch()
+
+    assert str(result.url) == "https://fixturecorp.zhiye.com/portal/jobs/123"
+
+
 def test_parses_nested_config_and_current_listing(httpx_mock) -> None:
     add_register(httpx_mock)
     httpx_mock.add_response(url=SEARCH_URL, json=payload([listing()]))
@@ -96,7 +109,9 @@ def test_parses_nested_config_and_current_listing(httpx_mock) -> None:
     assert result.department == "研发中心"
     assert result.posted_at is not None and result.posted_at.tzinfo is UTC
     assert result.fetched_at.tzinfo is UTC
-    assert str(result.url) == "https://fixturecorp.zhiye.com/portal/jobs/123"
+    assert str(result.url) == (
+        "https://fixturecorp.zhiye.com/portal/detail?jobAdId=internal-123"
+    )
     assert result.raw == {
         "tenant": "fixturecorp",
         "portal_id": "portal-123",

@@ -15,17 +15,21 @@ page/rendered page rather than a structured job payload.
 | `avature` | Yes | Yes | HTML | HTML |
 | `bamboohr` | Yes | Yes | HTML | API |
 | `breezy` | Yes | Yes | API | HTML |
+| `brightermonday` | Yes | No | HTML with embedded JSON | HTML with embedded JSON |
 | `builtin` | Yes | No | HTML | HTML |
 | `bundesagentur` | Yes | Yes | API | API |
 | `catsone` | Yes | Yes | HTML (embedded data) | HTML (embedded data) |
 | `clearcompany` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `cornerstone` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `eightfold` | Yes | Yes | API | API |
+| `emploitic` | Yes | No | HTML with embedded JSON | HTML with embedded JSON |
+| `feishu_hire` | Yes | No | API | API |
 | `eures` | Yes | Yes | API/feed | API/feed + detail API fallback |
 | `gem` | Yes | Yes | API/feed | API/feed |
 | `getonbrd` | Yes | No | API/feed | API/feed |
 | `google` | Yes | Yes | HTML | HTML |
 | `greenhouse` | Yes | No | API/feed | API/feed |
+| `greeting` | Yes | Yes | HTML with embedded JSON | HTML with embedded JSON |
 | `herp` | Yes | Yes | HTML | HTML (JSON-LD) |
 | `hireology` | Yes | No | API/feed | API/feed |
 | `hrmos` | Yes | No | HTML | HTML |
@@ -33,11 +37,14 @@ page/rendered page rather than a structured job payload.
 | `jibe` | Yes | No | API | API |
 | `jazzhr` | Yes | Yes | HTML | HTML |
 | `jd` | Yes | No | API/feed | API/feed |
+| `jobberman` | Yes | No | HTML with embedded JSON | HTML with embedded JSON |
 | `jobsch` | Yes | Yes | API | HTML |
 | `join_com` | Yes | Yes | HTML | HTML |
 | `keka` | Yes | No | HTML bootstrap + API | API |
 | `lever` | Yes | No | API | API |
+| `manatal` | Yes | No | API | API |
 | `manfred` | Yes | Yes | API/feed | API/feed |
+| `mycareersfuture` | Yes | No | API | API |
 | `mercor` | Yes | No | API/feed | API/feed |
 | `meta` | Yes | Yes | HTML / browser | HTML |
 | `oracle` | Yes | Yes | API/feed | API/feed |
@@ -70,4 +77,5 @@ page/rendered page rather than a structured job payload.
 | `weworkremotely` | Yes | No | API/feed (RSS/XML) | API/feed (RSS/XML) |
 | `workable` | Yes | Yes | API/feed | API/feed (Markdown) |
 | `workday` | Yes | Yes | API/feed | API/feed |
+| `zoho_recruit` | Yes | Yes, when missing from the listing | HTML with embedded JSON | HTML with embedded JSON (listing or job page) |
 | `ycombinator` | Yes | No | API/feed | API/feed |

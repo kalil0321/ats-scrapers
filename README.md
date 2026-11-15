@@ -156,24 +156,26 @@ more, plus company career APIs and public employment services.
 **ATS platforms:** ADP Workforce Now, ApplicantPro, Ashby, Avature, BambooHR,
 Breezy HR, CATS, Cegid Talentsoft, ClearCompany, Cornerstone, Dayforce,
 Eightfold, Frontline AppliTrack, Gem, Greenhouse, Hireology, iCIMS, iCIMS Jibe,
-JazzHR, Jobvite, JOIN, Lever, Oracle Recruiting, PageUp, Paycom, Paylocity,
-PeopleAdmin, Personio, Phenom, Pinpoint, Radancy TalentBrew, Recruitee,
-Recruiterbox, Rippling, SmartRecruiters, Softgarden, SuccessFactors, Taleo
-Business Edition, Taleo Enterprise, Teamtailor, UKG Pro, Varbi, Workable,
-Workday.
+JazzHR, Jobvite, JOIN, Lever, Manatal, Oracle Recruiting, PageUp, Paycom,
+Paylocity, PeopleAdmin, Personio, Phenom, Pinpoint, Radancy TalentBrew,
+Recruitee, Recruiterbox, Rippling, SmartRecruiters, Softgarden, SuccessFactors,
+Taleo Business Edition, Taleo Enterprise, Teamtailor, UKG Pro, Varbi, Workable,
+Workday, Zoho Recruit.
 
-**Regional hiring platforms:** Beisen, Beisen (legacy), Darwinbox, Gupy,
-HERP Hire, HRMOS, Keka, Moka, Ninehire, Talentio, Wanted, Wantedly, WinTalent.
+**Regional hiring platforms:** Beisen, Beisen (legacy), Darwinbox, Feishu Hire,
+Greeting, Gupy, HERP Hire, HRMOS, Keka, Moka, Ninehire, Talentio, Wanted,
+Wantedly, WinTalent.
 
 **Company career APIs:** Amazon, Apple, ByteDance, Google, JD.com, Meta,
 Tesla, TikTok, Uber.
 
 **Public employment services:** Arbetsförmedlingen, Bundesagentur für Arbeit,
-EURES, Job Bank Canada, USAJOBS.
+EURES, Job Bank Canada, MyCareersFuture, USAJOBS.
 
-**Job boards:** Built In, Get on Board, InfoJobs, jobs.ch, Jobs.cz, Manfred,
-Mercor, ProgramaThor, Remote OK, SEEK, The Hub, We Work Remotely, Welcome to
-the Jungle, Wellfound, Workable Jobs, Y Combinator.
+**Job boards:** BrighterMonday, Built In, Emploitic, Get on Board, InfoJobs,
+Jobberman, jobs.ch, Jobs.cz, Manfred, Mercor, ProgramaThor, Remote OK, SEEK,
+The Hub, We Work Remotely, Welcome to the Jungle, Wellfound, Workable Jobs,
+Y Combinator.
 
 </details>
 

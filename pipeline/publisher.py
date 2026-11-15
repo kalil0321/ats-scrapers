@@ -643,11 +643,14 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "applicantpro": 1,
     "breezy": 1, "catsone": 1, "clearcompany": 1, "cornerstone": 1,
     "darwinbox": 1, "dayforce": 1,
+    "feishu_hire": 1,
     "gem": 1,
+    "greeting": 1,
     "greenhouse": 1, "gupy": 1, "herp": 1, "hrmos": 1, "icims": 1, "jazzhr": 1,
     "hireology": 1,
     "jibe": 1, "join_com": 1, "jobvite": 1, "keka": 1,
     "lever": 1,
+    "manatal": 1,
     "ninehire": 1,
     "moka": 1, "oracle": 1, "pageup": 1, "paycom": 1, "paylocity": 1, "peopleadmin": 1, "personio": 1, "phenom": 1, "pinpoint": 1,
     "recruitee": 1,
@@ -658,12 +661,14 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "workable": 1,
     "wintalent": 1,
     "workday": 1,
+    "zoho_recruit": 1,
     # Big-tech bespoke careers — also priority 1 (single-tenant, canonical)
     "amazon": 1, "apple": 1, "bytedance": 1, "google": 1, "jd": 1, "meta": 1,
     "tesla": 1, "tiktok": 1, "uber": 1,
     # Hybrid jobboards
     "welcometothejungle": 3, "mercor": 3, "wantedly": 3,
     "seek": 4,
+    "brightermonday": 4, "emploitic": 4, "jobberman": 4,
     # Sourcing/matching layer that mirrors others
     "eightfold": 5,
     # National public-sector aggregators — government-curated but the
@@ -671,6 +676,7 @@ ATS_DEDUP_PRIORITY: dict[str, int] = {
     "bundesagentur": 6,
     "arbetsformedlingen": 6,
     "jobbankca": 6,
+    "mycareersfuture": 6,
     "usajobs": 6,
 }
 

@@ -7,6 +7,13 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Added
 
+- Greeting career sites.
+- Feishu Hire career sites.
+- Zoho Recruit career sites.
+- MyCareersFuture, the public job portal of Singapore.
+- Manatal career pages.
+- Jobberman (Nigeria, Ghana), BrighterMonday (Kenya, Uganda) and Emploitic
+  (Algeria) job boards.
 - Varbi employer RSS scraper with complete descriptions, public detail metadata,
   locale-independent tenant IDs, URL resolution, and a validated employer catalog.
   Malformed feeds fail closed. With detail enrichment enabled, removed or expired
@@ -19,6 +26,13 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
+- Pipeline: a few failed boards no longer hold back ADP, Jobvite, Keka, PageUp, Paycom or Varbi.
+- Lever, Gem, Recruitee: a board whose public page is closed is reported as not found.
+- Phenom: job links open the posting.
+- Oracle: job links open the posting.
+- Amazon: job links open the posting.
+- Beisen: job links open the posting.
+- Cornerstone: job links open the posting.
 - Moka: job links open the posting. The scraper built
   `{tenant}/job/{id}`, which answers 404 on Moka's career sites; the posting
   lives at `{tenant}#/job/{id}`. Every Moka job published so far carried the

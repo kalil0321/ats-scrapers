@@ -19,14 +19,15 @@ def test_ats_type_includes_every_supported_platform() -> None:
         # Multi-tenant ATS systems
         "adp", "applitrack", "ashby", "avature", "beisen", "beisen_legacy", "catsone",
         "clearcompany", "cornerstone",
-        "darwinbox", "dayforce", "eightfold", "gem", "greenhouse", "gupy", "herp", "hrmos",
+        "darwinbox", "dayforce", "eightfold", "feishu_hire", "gem", "greenhouse", "greeting",
+        "gupy", "herp", "hrmos",
         "hireology",
-        "icims", "jibe", "join_com", "jobvite", "keka", "lever", "mercor", "moka", "oracle", "pageup", "paycom", "paylocity",
+        "icims", "jibe", "join_com", "jobvite", "keka", "lever", "manatal", "mercor", "moka", "oracle", "pageup", "paycom", "paylocity",
         "peopleadmin", "personio", "phenom",
         "applicantpro",
         "pinpoint", "recruiterbox", "rippling", "smartrecruiters", "softgarden",
         "successfactors", "talentio", "ukg", "workable", "workable_marketplace", "workday",
-        "wintalent",
+        "wintalent", "zoho_recruit",
         # Big-tech custom careers systems
         "amazon", "apple", "bytedance", "google", "jd", "meta",
         "tesla", "tiktok", "uber", "usajobs",
@@ -36,7 +37,8 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "welcometothejungle", "getonbrd", "wanted", "wantedly", "remoteok",
         "weworkremotely", "programathor", "builtin", "jobsch",
         "jobs_cz", "manfred", "thehub", "ycombinator", "wellfound",
-        "infojobs_es", "jobbankca", "seek",
+        "infojobs_es", "jobbankca", "seek", "mycareersfuture",
+        "jobberman", "brightermonday", "emploitic",
         # Additional multi-tenant ATSes
         "ninehire",
         "bamboohr", "breezy", "jazzhr",

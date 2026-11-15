@@ -237,6 +237,7 @@ def test_lever_parses_jobs(httpx_mock) -> None:
         url="https://api.lever.co/v0/postings/acme?mode=json",
         json=LEVER_SAMPLE,
     )
+    httpx_mock.add_response(method="HEAD", url="https://jobs.lever.co/acme")
     jobs = LeverScraper("acme").fetch()
     assert len(jobs) == 2
     assert jobs[0].title == "Backend Engineer"

@@ -36,11 +36,14 @@ COMPANY_SITES: Final[frozenset[str]] = frozenset({
 })
 
 GOV_BOARDS: Final[frozenset[str]] = frozenset({
-    "arbetsformedlingen", "bundesagentur", "eures", "jobbankca", "usajobs",
+    "arbetsformedlingen", "bundesagentur", "eures", "jobbankca",
+    "mycareersfuture", "usajobs",
 })
 
 JOB_BOARDS: Final[frozenset[str]] = frozenset({
-    "builtin", "getonbrd", "infojobs_es", "jobs_cz", "jobsch", "manfred",
+    "brightermonday", "builtin", "emploitic", "getonbrd", "infojobs_es",
+    "jobberman",
+    "jobs_cz", "jobsch", "manfred",
     "mercor", "programathor", "remoteok", "seek", "thehub", "wanted",
     "wantedly", "wellfound", "welcometothejungle", "weworkremotely",
     "ycombinator",
