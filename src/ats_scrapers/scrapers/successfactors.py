@@ -27,20 +27,30 @@ import re
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, ClassVar
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    pass
+    from ats_scrapers.fetch import Fetcher
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _TEMPLATE_TOKEN_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
 _INVALID_EMPTY_ELEMENT_RE = re.compile(r"<>\s*[^<]*?</>")
 _EMPTY_LEGACY_VALUES = {"", "n/a", "na", "none", "not applicable"}
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_MAX_REDIRECTS = 5
+# A retired site answers 410 at /deactivated-site/.
+_GONE_STATUSES = frozenset({410})
+# The legacy feed renders every posting in one response; large tenants take
+# close to a minute before the first byte.
+_LEGACY_FEED_TIMEOUT = 120.0
+# Legacy career pages answer an unknown or disabled company with this box.
+_LEGACY_ERROR_PAGE_RE = re.compile(r'class="[^"]*\bsysmsg error\b')
+_WORKDAY_NAMESPACE = "{http://www.workday.com/"
 # Job titles are often `"Title (City, State, Country)"` — extract location
 # from the trailing parens when no other source is available.
 _TITLE_LOCATION_RE = re.compile(r"^(?P<title>.+?)\s*\((?P<loc>[^()]+)\)\s*$")
@@ -133,15 +143,57 @@ class SuccessFactorsScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         feed_url, legacy_company_id = self._resolve_feed_target()
-        async with self.make_fetcher() as fetch:
-            xml_text = await fetch.get_text(feed_url)
         if legacy_company_id is not None:
+            async with self.make_fetcher(
+                timeout=max(self.timeout, _LEGACY_FEED_TIMEOUT)
+            ) as fetch:
+                xml_text = await fetch.get_text(feed_url)
             return self._parse_legacy_feed(
                 xml_text,
                 feed_url=feed_url,
                 company_id=legacy_company_id,
             )
+        async with self.make_fetcher(
+            follow_redirects=False,
+            missing_host_not_found=True,
+        ) as fetch:
+            xml_text = await self._get_feed(fetch, feed_url)
         return self._parse_feed(xml_text)
+
+    async def _get_feed(self, fetch: Fetcher, url: str) -> str:
+        """Follow redirects that keep pointing at a feed.
+
+        A retired site redirects its feed to ``/deactivated-site/``, to the
+        employer's homepage, or to another ATS.
+        """
+        for _ in range(_MAX_REDIRECTS + 1):
+            response = await fetch.request(
+                "GET", url, handled=_REDIRECT_STATUSES | _GONE_STATUSES
+            )
+            if response.status_code in _GONE_STATUSES:
+                raise CompanyNotFoundError(
+                    f"SuccessFactors site {self.company_slug} is deactivated"
+                )
+            if response.status_code not in _REDIRECT_STATUSES:
+                return response.text
+            location = next(
+                (
+                    value
+                    for key, value in response.headers.items()
+                    if key.lower() == "location"
+                ),
+                "",
+            )
+            target = urljoin(url, location)
+            if not urlparse(target).path.lower().endswith("/sitemal.xml"):
+                raise CompanyNotFoundError(
+                    f"SuccessFactors feed of {self.company_slug} redirects "
+                    f"to {target}"
+                )
+            url = target
+        raise ScraperError(
+            f"SuccessFactors feed of {self.company_slug} redirects too many times"
+        )
 
     def _resolve_feed_target(self) -> tuple[str, str | None]:
         parsed = urlparse(self.company_slug)
@@ -198,10 +250,18 @@ class SuccessFactorsScraper(BaseScraper):
         try:
             root = _parse_xml(xml_text)
         except ET.ParseError as exc:
+            if _LEGACY_ERROR_PAGE_RE.search(xml_text):
+                raise CompanyNotFoundError(
+                    f"SuccessFactors company {company_id} not found"
+                ) from exc
             raise ScraperError(
                 f"SuccessFactors returned malformed XML: {exc}"
             ) from exc
         if root.tag != "Job-Listing":
+            if _LEGACY_ERROR_PAGE_RE.search(xml_text):
+                raise CompanyNotFoundError(
+                    f"SuccessFactors company {company_id} not found"
+                )
             raise ScraperError(
                 f"SuccessFactors returned non-job-listing XML for "
                 f"{self.company_slug} (root <{root.tag}>)"
@@ -276,6 +336,10 @@ class SuccessFactorsScraper(BaseScraper):
                 f"SuccessFactors returned malformed XML: {exc}"
             ) from exc
 
+        if root.tag.startswith(_WORKDAY_NAMESPACE):
+            raise CompanyNotFoundError(
+                f"{self.company_slug} now serves a Workday site"
+            )
         # Some tenants front the feed with an HTML error page that parses
         # as XML but isn't RSS. Catch that.
         if root.tag.lower() != "rss" and root.find(".//channel") is None:

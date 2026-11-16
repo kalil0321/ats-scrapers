@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import PaycomScraper
 from ats_scrapers.scrapers.base import ScraperRegistry
@@ -342,6 +342,29 @@ def test_single_value_salary_populates_both_bounds(httpx_mock) -> None:
     assert job.salary_min == 19.5
     assert job.salary_max == 19.5
     assert job.salary_period == "HOUR"
+
+
+def test_retired_portal_is_not_found(httpx_mock) -> None:
+    missing_url = (
+        "https://www.paycomonline.net/v4/ats/web.php/Jobs/JobsNotExist/"
+        "jobsNotExist"
+    )
+    httpx_mock.add_response(
+        url=PORTAL_URL,
+        status_code=302,
+        headers={"Location": "/v4/ats/web.php/Jobs/JobsNotExist/jobsNotExist"},
+    )
+    httpx_mock.add_response(
+        url=missing_url,
+        text=(
+            '<div style="text-align:center">\n'
+            '    <p style="padding-top: 140px; font-size: 22px;">'
+            "Job board does not exist.</p>\n</div>\n"
+        ),
+    )
+
+    with pytest.raises(CompanyNotFoundError):
+        PaycomScraper(TOKEN).fetch()
 
 
 def test_untrusted_bootstrap_service_is_rejected(httpx_mock) -> None:

@@ -17,13 +17,19 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 from urllib.parse import urlparse
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
 from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 FEED_URL = "https://{tenant}.career.softgarden.de/jobs.feed.json"
 HOST_SUFFIX = ".career.softgarden.de"
+# The feed answers 400 with one of these when the domain belongs to no
+# client, or to a client whose company was removed.
+_GONE_SITE_MESSAGES = (
+    "No such client for domain",
+    "Cannot read properties of null (reading 'companyId')",
+)
 _EMPLOYMENT_TYPE_MAP: dict[str, EmploymentType] = {
     "FULL_TIME": "FULL_TIME",
     "PART_TIME": "PART_TIME",
@@ -157,8 +163,16 @@ class SoftgardenScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         async with self.make_fetcher() as fetch:
-            payload = await fetch.get_json(self.feed_url)
-        return self._parse_feed(payload)
+            response = await fetch.request("GET", self.feed_url, handled={400})
+        if response.status_code == 400:
+            if any(message in response.text for message in _GONE_SITE_MESSAGES):
+                raise CompanyNotFoundError(
+                    f"Softgarden site {self.company_slug} does not exist"
+                )
+            raise ScraperError(
+                f"Softgarden ({self.company_slug}) feed returned 400"
+            )
+        return self._parse_feed(response.json())
 
     def _parse_feed(self, payload: object) -> list[Job]:
         if not isinstance(payload, dict):

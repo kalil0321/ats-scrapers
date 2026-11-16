@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -45,6 +45,9 @@ _CONFIG_RE = re.compile(
     r"var configsFromHost = (\{.*?\});\s*var Mountable",
     re.S,
 )
+# Retired portal tokens redirect to /Jobs/JobsNotExist/jobsNotExist, a 200
+# page carrying only this sentence.
+_MISSING_BOARD_RE = re.compile(r"Job board does not exist", re.I)
 _EMPLOYMENT_TYPE_MAP: dict[str, EmploymentType] = {
     "FULL_TIME": "FULL_TIME",
     "FULLTIME": "FULL_TIME",
@@ -393,6 +396,8 @@ def _normalize_portal_token(value: str) -> str:
 def _extract_config(html_text: str) -> dict[str, Any]:
     match = _CONFIG_RE.search(html_text)
     if match is None:
+        if _MISSING_BOARD_RE.search(html_text):
+            raise CompanyNotFoundError("Paycom job board does not exist")
         raise ScraperError("Paycom page omitted the public portal configuration")
     try:
         config = json.loads(match.group(1))

@@ -91,6 +91,27 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   exponential backoff, and retries 5xx responses with linear delays. It stops
   the per-job detail calls for the rest of the run after a 403 or 405 block,
   or after a 429 that asks to wait more than a minute.
+- Paycom: a retired portal ("Job board does not exist") is reported as not found.
+- SuccessFactors: a site is reported as not found when it is deactivated, when
+  its feed redirects away from a feed (to the employer's homepage or another
+  ATS), when its host now serves Workday, does not resolve or presents a
+  certificate for another name, and when a legacy career site does not know
+  the company.
+- SuccessFactors: legacy XML feeds of large employers, which take close to a
+  minute to start, no longer time out.
+- Catalogue: AkzoNobel, Bechtel and Viega move from SuccessFactors to Phenom,
+  Gateway Foundation's site is now Alpharus Health's, MANN+HUMMEL's row points
+  at `careers.mann-hummel.com`, and a duplicate Suntory Global Spirits row is
+  removed.
+- Cornerstone: a career site whose `{slug}.csod.com` host no longer resolves is
+  reported as not found.
+- Softgarden: a site whose domain belongs to no client, or to a removed
+  company, is reported as not found.
+- Phenom: requests name the client (`Mozilla/5.0 (compatible; ats-scrapers/1.0)`)
+  instead of a bare `Mozilla/5.0`, which Akamai held until timeout on
+  Electrolux's site. A site whose search page redirects to a page that is not
+  Phenom's (KBR, SEI, Morningstar), or whose host no longer resolves, is
+  reported as not found. The catalogue gains Trinzic.
 
 ## [0.3.0] — 2026-09-02
 
