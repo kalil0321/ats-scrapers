@@ -4,9 +4,12 @@ Scrapes every YC-portfolio company that is currently hiring. The
 ``ycombinator.com/jobs`` page only shows ~20 highlighted postings,
 but each YC company's ``/companies/{slug}`` page has the full job
 list embedded as JSON (entity-encoded inside the HTML). We discover
-the universe of currently-hiring companies through the public
-``api.ycombinator.com/v0.1/companies?isHiring=true`` paginated API,
-then fetch each company's page and pull its ``jobPostings`` JSON.
+the currently-hiring companies by walking the public
+``api.ycombinator.com/v0.1/companies`` list and keeping those with the
+``isHiring`` badge, then fetch each company's page and pull its
+``jobPostings`` JSON. The ``isHiring=true`` filter of that API stops at
+50 pages (1,000 companies) while about 1,500 are hiring; the unfiltered
+list has no such limit.
 
 Direct YC postings only — companies use Y Combinator's own platform
 (workatastartup), not LinkedIn / Indeed syndication.
@@ -19,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
@@ -38,6 +42,10 @@ COMPANY_PAGE_TEMPLATE = f"{WEB_HOST}/companies/{{slug}}"
 PER_PAGE = 25  # YC's company API ignores ``per_page``; pagination is
                 # always 25 / page so we just walk pages.
 MAX_CONCURRENCY = 4
+API_CONCURRENCY = 2  # The companies API answers 429 to four parallel walkers.
+HIRING_BADGE = "isHiring"
+
+log = logging.getLogger(__name__)
 
 
 @ScraperRegistry.register(ATSType.YCOMBINATOR)
@@ -48,8 +56,9 @@ class YCombinatorScraper(BaseScraper):
     ``""``).
 
     Knobs:
-    - ``max_company_pages`` — pagination cap on the hiring-companies
-      API (default 50, ~1,250 companies; current live count is ~260).
+    - ``max_company_pages`` — page cap on the companies API (default
+      1,000 pages of 25; the whole list is ~260 pages). Reaching it
+      logs a warning.
     """
 
     ats = ATSType.YCOMBINATOR
@@ -62,7 +71,7 @@ class YCombinatorScraper(BaseScraper):
         timeout: float = 30.0,
         include_descriptions: bool = True,
         proxy: str | None = None,
-        max_company_pages: int = 50,
+        max_company_pages: int = 1_000,
     ) -> None:
         super().__init__(
             company_slug,
@@ -87,7 +96,9 @@ class YCombinatorScraper(BaseScraper):
 
         async with self.make_fetcher() as fetch:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
-            slugs = await self._list_hiring_company_slugs(fetch, sem)
+            slugs = await self._list_hiring_company_slugs(
+                fetch, asyncio.Semaphore(API_CONCURRENCY)
+            )
 
             async def per_company(slug: str) -> None:
                 co_jobs = await self._fetch_company_jobs(fetch, sem, slug)
@@ -103,31 +114,50 @@ class YCombinatorScraper(BaseScraper):
         fetch: Fetcher,
         sem: asyncio.Semaphore,
     ) -> list[str]:
-        """Walk the YC public companies API with ``isHiring=true``,
-        return every distinct company slug across all pages."""
+        """Walk the YC public companies API and return the slug of every
+        company carrying the hiring badge."""
         slugs: list[str] = []
         seen_slugs: set[str] = set()
-        page = 1
-        while page <= self.max_company_pages:
-            params = {"isHiring": "true", "page": page}
-            payload = await self._request_json(fetch, sem, COMPANIES_API, params=params)
-            companies = payload.get("companies") or []
-            if not companies:
-                break
+
+        def absorb(payload: dict[str, Any]) -> int:
+            """Keep the hiring companies; return how many were new."""
             new = 0
-            for c in companies:
+            for c in payload.get("companies") or []:
                 slug = (c.get("slug") or "").strip()
-                if slug and slug not in seen_slugs:
-                    seen_slugs.add(slug)
+                if not slug or slug in seen_slugs:
+                    continue
+                seen_slugs.add(slug)
+                new += 1
+                if HIRING_BADGE in (c.get("badges") or []):
                     slugs.append(slug)
-                    new += 1
-            total_pages = int(payload.get("totalPages") or 0)
-            next_page_url = payload.get("nextPage")
-            # Fallback: stop when a page yields nothing new (the API
-            # doesn't always set totalPages / nextPage).
-            if not next_page_url and not total_pages and new == 0:
-                break
-            if total_pages and page >= total_pages:
+            return new
+
+        first = await self._request_json(fetch, sem, COMPANIES_API, params={"page": 1})
+        if not absorb(first):
+            return slugs
+        total_pages = int(first.get("totalPages") or 0)
+        if total_pages > self.max_company_pages:
+            log.warning(
+                "Y Combinator: the companies list has %d pages; reading the first %d",
+                total_pages, self.max_company_pages,
+            )
+        if total_pages:
+            payloads = await asyncio.gather(*(
+                self._request_json(fetch, sem, COMPANIES_API, params={"page": page})
+                for page in range(2, min(total_pages, self.max_company_pages) + 1)
+            ))
+            for payload in payloads:
+                absorb(payload)
+            return slugs
+
+        # The API does not always set totalPages: walk until a page adds
+        # no new company.
+        page = 2
+        while page <= self.max_company_pages:
+            payload = await self._request_json(
+                fetch, sem, COMPANIES_API, params={"page": page}
+            )
+            if not absorb(payload):
                 break
             page += 1
         return slugs
