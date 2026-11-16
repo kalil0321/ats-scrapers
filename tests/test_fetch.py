@@ -163,8 +163,10 @@ def _certificate_error(verify_code: int) -> ssl.SSLCertVerificationError:
     ],
 )
 async def test_missing_host_is_not_found_when_enabled(
-    httpx_mock, cause: BaseException, reason: str
+    httpx_mock, monkeypatch, cause: BaseException, reason: str
 ) -> None:
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
     httpx_mock.add_exception(_connect_error(cause), is_reusable=True)
     async with _fetcher(missing_host_not_found=True) as fetch:
         with pytest.raises(CompanyNotFoundError, match=reason):
@@ -193,6 +195,17 @@ async def test_failed_lookup_behind_a_proxy_is_not_a_missing_host(httpx_mock) ->
     error = _connect_error(socket.gaierror(socket.EAI_NONAME, "unknown"))
     httpx_mock.add_exception(error, is_reusable=True)
     async with _fetcher(missing_host_not_found=True, proxy="http://proxy.invalid:8080") as fetch:
+        with pytest.raises(RetryExhaustedError):
+            await fetch.get_text(URL)
+
+
+async def test_failed_lookup_behind_an_environment_proxy_is_not_a_missing_host(
+    httpx_mock, monkeypatch,
+) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:8080")
+    error = _connect_error(socket.gaierror(socket.EAI_NONAME, "unknown"))
+    httpx_mock.add_exception(error, is_reusable=True)
+    async with _fetcher(missing_host_not_found=True) as fetch:
         with pytest.raises(RetryExhaustedError):
             await fetch.get_text(URL)
 

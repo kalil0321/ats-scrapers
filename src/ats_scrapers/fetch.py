@@ -211,6 +211,14 @@ class Fetcher:
         self.missing_host_not_found = missing_host_not_found
         self._client: httpx.AsyncClient | None = None
 
+    def _uses_proxy(self) -> bool:
+        """Whether requests go through a proxy, ours or one httpx reads from
+        the standard environment variables."""
+        return bool(self.proxy) or any(
+            os.environ.get(name)
+            for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
+        )
+
     # --- lifecycle --------------------------------------------------------
 
     async def __aenter__(self) -> Self:
@@ -312,7 +320,7 @@ class Fetcher:
                 last_error = str(exc)
                 if attempt == retries:
                     reason = (
-                        _missing_host_reason(exc, via_proxy=bool(self.proxy))
+                        _missing_host_reason(exc, via_proxy=self._uses_proxy())
                         if self.missing_host_not_found
                         else None
                     )
