@@ -189,6 +189,14 @@ async def test_missing_host_is_retried_by_default(httpx_mock) -> None:
             await fetch.get_text(URL)
 
 
+async def test_failed_lookup_behind_a_proxy_is_not_a_missing_host(httpx_mock) -> None:
+    error = _connect_error(socket.gaierror(socket.EAI_NONAME, "unknown"))
+    httpx_mock.add_exception(error, is_reusable=True)
+    async with _fetcher(missing_host_not_found=True, proxy="http://proxy.invalid:8080") as fetch:
+        with pytest.raises(RetryExhaustedError):
+            await fetch.get_text(URL)
+
+
 async def test_expired_certificate_is_not_a_missing_host(httpx_mock) -> None:
     error = _connect_error(_certificate_error(10))
     for _ in range(3):

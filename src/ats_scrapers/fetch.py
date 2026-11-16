@@ -312,7 +312,7 @@ class Fetcher:
                 last_error = str(exc)
                 if attempt == retries:
                     reason = (
-                        _missing_host_reason(exc)
+                        _missing_host_reason(exc, via_proxy=bool(self.proxy))
                         if self.missing_host_not_found
                         else None
                     )
@@ -446,19 +446,21 @@ class Fetcher:
         )
 
 
-def _missing_host_reason(exc: BaseException) -> str | None:
+def _missing_host_reason(exc: BaseException, *, via_proxy: bool) -> str | None:
     """Why a connection error shows the host serves nothing under its name.
 
     Hosting platforms answer a domain they dropped with their default
     certificate, so a name mismatch means the same as a name that no
     longer resolves. An expired certificate is not treated as gone.
+    Through a proxy, a failed lookup may be the proxy's own name, so only
+    the certificate, which the tenant host presents end to end, counts.
     """
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if isinstance(current, socket.gaierror):
-            if current.errno == socket.EAI_NONAME:
+            if current.errno == socket.EAI_NONAME and not via_proxy:
                 return "does not resolve"
             return None
         if isinstance(current, ssl.SSLCertVerificationError):
