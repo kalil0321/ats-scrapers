@@ -497,6 +497,28 @@ def test_default_full_run_fails_at_safety_limit(
         JobBankCAScraper("any").fetch()
 
 
+def test_count_crossing_the_safety_limit_during_a_pass_fails(
+    httpx_mock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """200 results fill the 2-page limit; 201 announced on page 2 would need
+    a third page. The 200 collected meet the coverage threshold, but the
+    catalogue no longer fits and the scrape must not pass as complete."""
+    import ats_scrapers.scrapers.jobbankca as jobbank
+
+    monkeypatch.setattr(jobbank, "MAX_PAGES", 2)
+    monkeypatch.setattr(jobbank, "PAGE_SIZE", 100)
+    _serve_pages(
+        httpx_mock,
+        {
+            1: [_ids(*(str(1000 + i) for i in range(100)), total="200")],
+            2: [_ids(*(str(2000 + i) for i in range(100)), total="201")],
+        },
+    )
+
+    with pytest.raises(ScraperError, match="201 results, beyond its 2-page"):
+        JobBankCAScraper("any").fetch()
+
+
 def test_page_without_an_announced_count_raises(httpx_mock) -> None:
     html_text = _page([_article(job_id="1")]).replace(
         '>62,139<', '><'

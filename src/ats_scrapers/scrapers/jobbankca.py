@@ -211,11 +211,7 @@ class JobBankCAScraper(BaseScraper):
             # pass sets the pages it reads and the coverage it must reach.
             counts = [announced]
             for pass_number in range(1, MAX_PASSES + 1):
-                if self._full_catalogue and _page_count(announced) > MAX_PAGES:
-                    raise ScraperError(
-                        f"Job Bank announced {announced} results, beyond its "
-                        f"{MAX_PAGES}-page safety limit"
-                    )
+                self._check_page_limit(announced)
                 # The count can grow while a pass runs; the pages it adds
                 # belong to the same pass.
                 while pages:
@@ -227,6 +223,7 @@ class JobBankCAScraper(BaseScraper):
                         for job in page_jobs:
                             jobs.setdefault(job.ats_id, job)
                     announced = max(counts, default=announced)
+                    self._check_page_limit(announced)
                     last_page = min(_page_count(announced), self.max_pages)
                     pages = range(pages.stop, last_page + 1)
                 logger.info(
@@ -243,6 +240,13 @@ class JobBankCAScraper(BaseScraper):
             f"Job Bank collected {len(jobs)} of the {announced} announced "
             f"results after {MAX_PASSES} passes"
         )
+
+    def _check_page_limit(self, announced: int) -> None:
+        if self._full_catalogue and _page_count(announced) > MAX_PAGES:
+            raise ScraperError(
+                f"Job Bank announced {announced} results, beyond its "
+                f"{MAX_PAGES}-page safety limit"
+            )
 
     async def _read_pages(
         self,
