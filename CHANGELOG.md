@@ -23,6 +23,11 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   list of `zhaopin.jd.com`, with their text, business unit, place and
   requisition number. The site has no page per opening, so each job links to
   the list page.
+- Workable XML feed (`WorkableFeedScraper`): every job published on Jobs by
+  Workable from the one file Workable offers for bulk use, one job per
+  shortcode with all its locations and its URL unchanged. Workable shares the
+  feed address on request (`feed_url` or `ATS_SCRAPERS_WORKABLE_FEED_URL`) and
+  asks for at most one download per hour.
 
 ### Removed
 

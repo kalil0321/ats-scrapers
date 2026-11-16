@@ -100,6 +100,7 @@ from ats_scrapers.scrapers.wellfound import WellfoundScraper
 from ats_scrapers.scrapers.weworkremotely import WeWorkRemotelyScraper
 from ats_scrapers.scrapers.wintalent import WinTalentScraper
 from ats_scrapers.scrapers.workable import WorkableScraper
+from ats_scrapers.scrapers.workable_feed import WorkableFeedScraper
 from ats_scrapers.scrapers.workable_marketplace import WorkableMarketplaceScraper
 from ats_scrapers.scrapers.workday import WorkdayScraper
 from ats_scrapers.scrapers.ycombinator import YCombinatorScraper
@@ -197,6 +198,7 @@ __all__ = [
     "WeWorkRemotelyScraper",
     "WellfoundScraper",
     "WinTalentScraper",
+    "WorkableFeedScraper",
     "WorkableMarketplaceScraper",
     "WorkableScraper",
     "WorkdayScraper",
