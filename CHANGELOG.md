@@ -49,6 +49,11 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   listed under `beisen`.
 - Moka: a board is read up to 50,000 jobs instead of 10,000, and a board past that
   raises instead of returning a cut list.
+- Workday: a board above the 2,000-job search cap is also split by the country and
+  city facets Workday nests under `locationMainGroup`, and no longer by the
+  `distance` facet, which never splits it. A facet that leaves jobs without a value
+  is used only when no other one covers them all, and a search that still cannot be
+  split below the cap is logged.
 - TalentBrew: a site above 10,000 postings is read newest first and then oldest
   first, so up to 20,000 postings are collected instead of the first 10,000.
 - Recruitee: a board whose careers site is closed, whose public API is disabled, or
