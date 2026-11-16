@@ -1885,6 +1885,66 @@ def _job_to_row(job: Job) -> dict[str, Any]:
     }
 
 
+# A run that writes far fewer jobs than the previous one is usually a block
+# or a rate limit, not a market change: keep the previous jobs.csv. The same
+# drop on a third run in a row is accepted, so a real shrink still lands.
+DROP_GUARD_MIN_RATIO = 0.8
+DROP_GUARD_MIN_ROWS = 1000
+DROP_GUARD_MAX_BLOCKS = 2
+RUN_ROWS_FILENAME = ".last_run.json"
+
+
+def _previous_rows(output_path: Path) -> tuple[int | None, int]:
+    """Rows of the current jobs.csv and how many drops were already blocked."""
+    state = output_path.parent / RUN_ROWS_FILENAME
+    try:
+        data = json.loads(state.read_text())
+        return int(data["rows"]), int(data.get("blocked", 0))
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    if not output_path.exists():
+        return None, 0
+    try:
+        import polars as pl
+
+        rows = pl.scan_csv(output_path, infer_schema_length=0).select(pl.len()).collect().item()
+        return int(rows), 0
+    except Exception:  # pragma: no cover - no polars or unreadable file
+        return None, 0
+
+
+def _write_run_rows(output_path: Path, rows: int, blocked: int = 0) -> None:
+    state = output_path.parent / RUN_ROWS_FILENAME
+    tmp = state.with_name(state.name + ".tmp")
+    tmp.write_text(json.dumps({"rows": rows, "blocked": blocked}))
+    tmp.replace(state)
+
+
+def _drop_guard(ats: str, cfg: dict[str, Any], output_path: Path, rows: int) -> str | None:
+    """Return the keep_previous message when this run must not replace jobs.csv."""
+    previous, blocked = _previous_rows(output_path)
+    ratio = float(cfg.get("min_kept_ratio", DROP_GUARD_MIN_RATIO))
+    if (
+        previous is None
+        or previous < DROP_GUARD_MIN_ROWS
+        or rows >= ratio * previous
+        or os.environ.get("ATS_SCRAPERS_ACCEPT_DROP") == "1"
+    ):
+        return None
+    if blocked >= DROP_GUARD_MAX_BLOCKS:
+        print(
+            f"[{ats}] WARN: accepting {rows:,} jobs after {blocked} blocked runs "
+            f"below {ratio:.0%} of {previous:,}"
+        )
+        return None
+    _write_run_rows(output_path, previous, blocked + 1)
+    return (
+        f"[{ats}] ACTION keep_previous: {rows:,} jobs is below {ratio:.0%} of the "
+        f"previous {previous:,} (blocked run {blocked + 1}/{DROP_GUARD_MAX_BLOCKS}); "
+        f"preserved {output_path}. ATS_SCRAPERS_ACCEPT_DROP=1 accepts it."
+    )
+
+
 TENANT_STATUS_FILENAME = "tenant_status.csv"
 TENANT_STATUS_FIELDS = [
     "ats",
@@ -2408,7 +2468,14 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                 )
             return 1
 
+        drop = _drop_guard(ats, cfg, output_path, counts["jobs"])
+        if drop is not None:
+            tmp_output_path.unlink(missing_ok=True)
+            print(drop)
+            return 1
+
         tmp_output_path.replace(output_path)
+        _write_run_rows(output_path, counts["jobs"])
 
         # Post-scrape description normalization. Most scrapers now emit
         # HTML in the description column (lever, ashby, greenhouse, the

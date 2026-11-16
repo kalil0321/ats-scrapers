@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import json
 
 import pytest
 
@@ -140,3 +141,46 @@ def test_streaming_run_records_its_outcome(
     assert rows["stream"]["status"] == status
     assert rows["stream"]["jobs"] == "1"
     assert rows["stream"]["error"] == error
+
+
+def _write_previous(path, rows: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = "url,title,company,ats_type,ats_id\n"
+    body = "".join(f"https://example.com/{i},T,Acme,custom,{i}\n" for i in range(rows))
+    path.write_text(header + body, encoding="utf-8")
+
+
+def test_large_drop_keeps_previous_until_third_run(fake_ats, monkeypatch) -> None:
+    jobs_csv = fake_ats.parent / "jobs.csv"
+    _write_previous(jobs_csv, 2000)
+    monkeypatch.setattr(runner, "DROP_GUARD_MIN_ROWS", 10)
+
+    for attempt in (1, 2):
+        rc = asyncio.run(runner.run("fake", concurrency=2, max_tenants=None, timeout=1))
+        assert rc == 1, attempt
+        assert jobs_csv.read_text(encoding="utf-8").count("\n") == 2001
+
+    rc = asyncio.run(runner.run("fake", concurrency=2, max_tenants=None, timeout=1))
+    assert jobs_csv.read_text(encoding="utf-8").count("\n") == 3  # header + 2 jobs
+    state = json.loads((fake_ats.parent / runner.RUN_ROWS_FILENAME).read_text())
+    assert state == {"rows": 2, "blocked": 0}
+
+
+def test_drop_accepted_with_override(fake_ats, monkeypatch) -> None:
+    jobs_csv = fake_ats.parent / "jobs.csv"
+    _write_previous(jobs_csv, 2000)
+    monkeypatch.setattr(runner, "DROP_GUARD_MIN_ROWS", 10)
+    monkeypatch.setenv("ATS_SCRAPERS_ACCEPT_DROP", "1")
+
+    asyncio.run(runner.run("fake", concurrency=2, max_tenants=None, timeout=1))
+
+    assert jobs_csv.read_text(encoding="utf-8").count("\n") == 3
+
+
+def test_small_previous_output_is_not_guarded(fake_ats) -> None:
+    jobs_csv = fake_ats.parent / "jobs.csv"
+    _write_previous(jobs_csv, 50)
+
+    asyncio.run(runner.run("fake", concurrency=2, max_tenants=None, timeout=1))
+
+    assert jobs_csv.read_text(encoding="utf-8").count("\n") == 3
