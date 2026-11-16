@@ -128,3 +128,6 @@ workday_discovery_*.csv
 **/companies/
 **/processed_companies.txt
 **/last_run.txt
+
+# Banner and demo sources, kept local
+assets/src/
