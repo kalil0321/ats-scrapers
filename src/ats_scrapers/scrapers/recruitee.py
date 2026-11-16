@@ -18,6 +18,7 @@ import html as html_mod
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
+from urllib.parse import urlparse
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -65,7 +66,16 @@ class RecruiteeScraper(BaseScraper):
     async def afetch(self) -> list[Job]:
         api_url = self._resolve_api_url()
         async with self.make_fetcher() as fetch:
-            response = await fetch.request("GET", api_url)
+            response = await fetch.request("GET", api_url, handled={403})
+        if response.status_code == 403:
+            await self._raise_if_site_gone(api_url)
+            if API_DISABLED_MARKER in response.text:
+                raise CompanyNotFoundError(
+                    f"Recruitee board {self.company_slug!r} has its public API disabled"
+                )
+            raise ScraperError(
+                f"RecruiteeScraper({self.company_slug!r}): {api_url} returned 403"
+            )
         try:
             payload = response.json()
         except ValueError as exc:
@@ -78,14 +88,44 @@ class RecruiteeScraper(BaseScraper):
             )
         return [self._parse_offer(o) for o in offers if isinstance(o, dict)]
 
-    async def _site_is_closed(self, api_url: str) -> bool:
-        """Recruitee sends a closed careers site to its own "not hosted" page."""
+    async def _site_redirect(self, api_url: str) -> tuple[str, str | None]:
         site_url = api_url.removesuffix("/api/offers") + "/"
         async with self.make_fetcher(
             follow_redirects=False, retries=PAGE_CHECK_ATTEMPTS
         ) as fetch:
-            target = await redirect_target(fetch, site_url)
+            return site_url, await redirect_target(fetch, site_url)
+
+    async def _site_is_closed(self, api_url: str) -> bool:
+        """Recruitee sends a closed careers site to its own "not hosted" page."""
+        _, target = await self._site_redirect(api_url)
         return target is not None and CLOSED_SITE_MARKER in target
+
+    async def _raise_if_site_gone(self, api_url: str) -> None:
+        """Explain a 403 by a careers site that no longer exists.
+
+        Either Recruitee closed it, or the employer's own careers domain now
+        sends readers to another job site. A ``*.recruitee.com`` board that
+        redirects to the employer's domain is normal, so only custom domains
+        count as moved.
+        """
+        site_url, target = await self._site_redirect(api_url)
+        if target is None:
+            return
+        if CLOSED_SITE_MARKER in target:
+            raise CompanyNotFoundError(
+                f"Recruitee careers site of {self.company_slug!r} is closed"
+            )
+        site_host = urlparse(site_url).hostname or ""
+        moved_to = urlparse(target).hostname
+        if (
+            not _is_recruitee_host(site_host)
+            and moved_to
+            and moved_to != site_host
+            and not _is_recruitee_host(moved_to)
+        ):
+            raise CompanyNotFoundError(
+                f"Recruitee careers site {site_url} now redirects to {moved_to}"
+            )
 
     def _resolve_api_url(self) -> str:
         slug = self.company_slug.strip().rstrip("/")
@@ -144,6 +184,8 @@ class RecruiteeScraper(BaseScraper):
 
 # Where Recruitee sends visitors of a careers site that is no longer hosted.
 CLOSED_SITE_MARKER = "recruitee.com/careers_not_hosted"
+# What /api/offers answers (403) when the employer turned the public feed off.
+API_DISABLED_MARKER = "Public API disabled"
 
 _EMPLOYMENT_MAP = {
     "permanent": "FULL_TIME",
@@ -170,6 +212,10 @@ _EMPLOYMENT_MAP = {
 }
 
 _TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _is_recruitee_host(host: str) -> bool:
+    return host == "recruitee.com" or host.endswith(".recruitee.com")
 
 
 def _map_employment_type(value: object) -> str | None:

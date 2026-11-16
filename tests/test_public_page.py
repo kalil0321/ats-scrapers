@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from ats_scrapers.exceptions import CompanyNotFoundError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.scrapers import GemScraper, LeverScraper, RecruiteeScraper
 
 LEVER_API = "https://api.lever.co/v0/postings/acme?mode=json"
@@ -143,3 +143,68 @@ def test_recruitee_without_offers_is_not_checked(httpx_mock) -> None:
     httpx_mock.add_response(url=RECRUITEE_API, json={"offers": []})
 
     assert RecruiteeScraper("acme").fetch() == []
+
+
+def test_recruitee_closed_site_with_disabled_api_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=RECRUITEE_API, status_code=403, json={"error": "Public API disabled"}
+    )
+    httpx_mock.add_response(
+        method="HEAD",
+        url=RECRUITEE_SITE,
+        status_code=301,
+        headers={"Location": "https://recruitee.com/careers_not_hosted"},
+    )
+
+    with pytest.raises(CompanyNotFoundError, match=r"careers site .* is closed"):
+        RecruiteeScraper("acme").fetch()
+
+
+def test_recruitee_open_site_with_disabled_api_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=RECRUITEE_API, status_code=403, json={"error": "Public API disabled"}
+    )
+    httpx_mock.add_response(method="HEAD", url=RECRUITEE_SITE)
+
+    with pytest.raises(CompanyNotFoundError, match="public API disabled"):
+        RecruiteeScraper("acme").fetch()
+
+
+def test_recruitee_custom_domain_moved_to_another_job_site_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(url="https://jobs.acme.example/api/offers", status_code=403)
+    httpx_mock.add_response(
+        method="HEAD",
+        url="https://jobs.acme.example/",
+        status_code=301,
+        headers={"Location": "https://www.otherboard.example/companies/acme/jobs/"},
+    )
+
+    with pytest.raises(CompanyNotFoundError, match=r"now redirects to www\.otherboard\.example"):
+        RecruiteeScraper("https://jobs.acme.example").fetch()
+
+
+def test_recruitee_403_on_an_open_site_stays_an_error(httpx_mock) -> None:
+    httpx_mock.add_response(url=RECRUITEE_API, status_code=403, text="blocked")
+    httpx_mock.add_response(
+        method="HEAD",
+        url=RECRUITEE_SITE,
+        status_code=302,
+        headers={"Location": "https://careers.acme.example/"},
+    )
+
+    with pytest.raises(ScraperError, match="returned 403"):
+        RecruiteeScraper("acme").fetch()
+
+
+def test_recruitee_hosted_board_given_as_url_is_not_a_custom_domain(httpx_mock) -> None:
+    httpx_mock.add_response(url=RECRUITEE_API, status_code=403, text="blocked")
+    httpx_mock.add_response(
+        method="HEAD",
+        url=RECRUITEE_SITE,
+        status_code=302,
+        headers={"Location": "https://careers.acme.example/"},
+    )
+
+    with pytest.raises(ScraperError, match="returned 403") as raised:
+        RecruiteeScraper("https://acme.recruitee.com").fetch()
+    assert not isinstance(raised.value, CompanyNotFoundError)

@@ -31,6 +31,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
+- Recruitee: a board whose careers site is closed, whose public API is disabled, or
+  whose custom domain now sends readers to another job site is reported as not found.
 - Meta, Tesla: `cloakbrowser` is pinned to 0.6.5, the last release that
   launches without a license key, with `playwright<1.65`.
 - Meta: reads the renamed `job_search_with_featured_jobs_v2` field.
