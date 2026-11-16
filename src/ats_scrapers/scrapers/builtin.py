@@ -38,13 +38,14 @@ if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
 
 API_ROOT = "https://builtin.com"
-DEFAULT_MAX_PAGES = 200
+DEFAULT_MAX_PAGES = 1000  # The listing serves no page past 1,000.
 MAX_CONCURRENCY_LISTING = 4
-# Retry knobs for the httpcloak fallback path only — the plain-httpx
-# path now goes through the shared Fetcher, which owns its own retry
-# policy (ats_scrapers.fetch.DEFAULT_RETRIES).
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.5
+# Cloudflare answers a burst of about 50 pages with a 429 challenge that
+# lifts after a few seconds. Both request paths wait it out (5, 10, 20, 40,
+# 60 s) instead of ending the walk early.
+MAX_RETRIES = 6
+RETRY_BASE_DELAY = 5.0
+MAX_RETRY_DELAY = 60.0
 
 # Built In serves the JSON-LD with `&#x2B;` instead of '+' in the type
 # attribute. Match either; one regex per page payload.
@@ -62,8 +63,8 @@ class BuiltInScraper(BaseScraper):
     Single-source: ``company_slug`` is ignored.
 
     Knobs:
-    - ``max_pages`` — pagination cap (default 200, ~3,000-6,000 jobs
-      depending on the listing density on each page).
+    - ``max_pages`` — pagination cap (default 1,000, the last page the
+      listing serves; 10 to 25 jobs per page).
     """
 
     ats = ATSType.BUILTIN
@@ -109,7 +110,11 @@ class BuiltInScraper(BaseScraper):
                     seen.add(j.ats_id)
                     jobs.append(j)
 
-        async with self.make_fetcher() as fetcher:
+        async with self.make_fetcher(
+            retries=MAX_RETRIES,
+            retry_base_delay=RETRY_BASE_DELAY,
+            max_retry_delay=MAX_RETRY_DELAY,
+        ) as fetcher:
             sem = asyncio.Semaphore(MAX_CONCURRENCY_LISTING)
             consecutive_empty = 0
             page = 1
@@ -229,8 +234,8 @@ class BuiltInScraper(BaseScraper):
         the direct httpx user-agent. Verified live 2026-05-09: 200 with
         full ~390 KB HTML where direct returns 403/919 B.
 
-        Cloudflare also rate-limits deep pagination via httpcloak — the
-        first 403 here is treated as transient (retry with backoff) and
+        Cloudflare also rate-limits deep pagination via httpcloak — a
+        403 or 429 here is treated as transient (retry with backoff) and
         only escalates to a hard ``ScraperError`` if it survives every
         retry. The caller in :meth:`afetch` then keeps the jobs
         collected so far rather than throwing them away.
@@ -251,9 +256,11 @@ class BuiltInScraper(BaseScraper):
             # ``_httpcloak_get_sync`` returned the int status on non-200
             # so we can decide here whether to retry or escalate.
             last_status = text
-            if last_status != 403 or attempt == MAX_RETRIES:
+            if last_status not in (403, 429) or attempt == MAX_RETRIES:
                 break
-            await asyncio.sleep(RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+            await asyncio.sleep(
+                min(RETRY_BASE_DELAY * (2 ** (attempt - 1)), MAX_RETRY_DELAY)
+            )
         raise ScraperError(
             f"Built In httpcloak fallback returned {last_status} for "
             f"{url} after {MAX_RETRIES} retries"

@@ -68,6 +68,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - The Hub: every market is listed; the unfiltered list holds only remote jobs.
 - jobs.cz: asks for the classic listing, since the beta site some visitors are sent to
   has no listings in its HTML and returned no jobs.
+- Built In: waits out Cloudflare's short rate-limit challenge instead of ending the
+  walk, and reads up to the listing's last page (1,000) instead of 200.
 - Recruitee: a board whose careers site is closed, whose public API is disabled, or
   whose custom domain now sends readers to another job site is reported as not found.
 - Wanted: requests are no longer rejected with 403 by the site's firewall, and
