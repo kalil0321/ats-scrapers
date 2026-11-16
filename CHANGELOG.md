@@ -50,6 +50,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   Jobvite's demo tenant `piedpiper`.
 - Keka: a tenant that no longer exists or has switched its careers portal off
   is reported as not found.
+- HRMOS: a board that says it has no published jobs is empty instead of failing.
 - Phenom: job links open the posting.
 - Oracle: job links open the posting.
 - Amazon: job links open the posting.

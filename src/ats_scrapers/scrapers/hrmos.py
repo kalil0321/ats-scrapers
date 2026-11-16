@@ -107,6 +107,16 @@ class HrmosScraper(BaseScraper):
         soup = _parse_html(html)
         company_node = soup.select_one(".sg-corporate-name")
         count_node = soup.select_one(".pg-count")
+        if (
+            company_node is not None
+            and count_node is None
+            and not soup.select(".pg-list-cassette")
+            and _says_no_jobs(soup)
+        ):
+            company = _COMPANY_SUFFIX_RE.sub(
+                "", company_node.get_text(" ", strip=True),
+            ).strip()
+            return _Page(company=company, total=0, jobs=[])
         if company_node is None or count_node is None:
             raise ScraperError(
                 f"HRMOS ({self.company_slug}) returned an unrecognized careers page"
@@ -256,6 +266,14 @@ def _parse_html(html: str) -> BeautifulSoup:
             "install `ats-scrapers[scrapers]`"
         ) from exc
     return BeautifulSoup(html, "html.parser")
+
+
+def _says_no_jobs(soup: BeautifulSoup) -> bool:
+    """True for the notice "公開されている {company} の求人はありません。"."""
+    notifier = soup.select_one(".sg-unavailable-notifier")
+    return notifier is not None and "求人はありません" in notifier.get_text(
+        " ", strip=True,
+    )
 
 
 def _company_options(soup: BeautifulSoup) -> set[str]:
