@@ -93,6 +93,11 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   reported as not found.
 - Softgarden: a site whose domain belongs to no client, or to a removed
   company, is reported as not found.
+- Phenom: requests name the client (`Mozilla/5.0 (compatible; ats-scrapers/1.0)`)
+  instead of a bare `Mozilla/5.0`, which Akamai held until timeout on
+  Electrolux's site. A site whose search page redirects to a page that is not
+  Phenom's (KBR, SEI, Morningstar), or whose host no longer resolves, is
+  reported as not found. The catalogue gains Trinzic.
 
 ## [0.3.0] — 2026-09-02
 

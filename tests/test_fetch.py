@@ -333,6 +333,15 @@ def test_fetch_response_json_parses_text() -> None:
     assert response.json() == {"a": 1}
 
 
+async def test_response_reports_the_url_that_answered(httpx_mock) -> None:
+    moved = "https://www.example.com/careers"
+    httpx_mock.add_response(url=URL, status_code=301, headers={"Location": moved})
+    httpx_mock.add_response(url=moved, text="ok")
+    async with _fetcher() as fetch:
+        response = await fetch.request("GET", URL)
+    assert response.url == moved
+
+
 # --- sync wrapper on BaseScraper -------------------------------------------
 
 

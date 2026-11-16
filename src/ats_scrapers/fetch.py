@@ -122,9 +122,12 @@ class FetchResponse:
     ``JSONDecodeError``) on malformed bodies, so a 200 that turns out
     to be a WAF/maintenance HTML page stays inside the scraper
     exception hierarchy callers are documented to handle.
+
+    ``url`` is the address that answered, after redirects, when the
+    engine reports it.
     """
 
-    __slots__ = ("_context", "headers", "status_code", "text")
+    __slots__ = ("_context", "headers", "status_code", "text", "url")
 
     def __init__(
         self,
@@ -132,9 +135,11 @@ class FetchResponse:
         text: str,
         headers: dict[str, str],
         context: str | None = None,
+        url: str | None = None,
     ) -> None:
         self.status_code = status_code
         self.text = text
+        self.url = url
         self.headers = headers
         self._context = context
 
@@ -401,6 +406,7 @@ class Fetcher:
             response.text,
             dict(response.headers),
             context=f"{self.label}: {url}",
+            url=str(response.url),
         )
 
     def _cloak_request_sync(
@@ -430,11 +436,13 @@ class Fetcher:
             raise ScraperError(
                 f"{self.label}: cloak engine does not support {method}"
             )
+        final_url = getattr(response, "url", None)
         return FetchResponse(
             response.status_code,
             response.text,
             dict(getattr(response, "headers", {}) or {}),
             context=f"{self.label}: {url}",
+            url=str(final_url) if final_url else None,
         )
 
 
