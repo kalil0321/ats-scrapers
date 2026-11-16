@@ -1180,3 +1180,57 @@ def test_oracle_accepts_candidate_experience_site_url(httpx_mock) -> None:
 def test_oracle_requires_full_url() -> None:
     with pytest.raises(ScraperError, match="full URL"):
         OracleScraper("eeho").fetch()
+
+
+def _oracle_index(httpx_mock, monkeypatch, recent: int, older: int, window: int) -> None:
+    """Serve ``recent + older`` jobs like Oracle: no rows past ``window``,
+    and the posting-date facet splits them."""
+    import re
+
+    import httpx
+
+    from ats_scrapers.scrapers import oracle
+
+    monkeypatch.setattr(oracle, "PAGE_LIMIT", 2)
+    monkeypatch.setattr(oracle, "RESULT_WINDOW", window)
+    ids = [f"r{i}" for i in range(recent)] + [f"o{i}" for i in range(older)]
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        finder = request.url.params["finder"]
+        offset = int(re.search(r"offset=(\d+)", finder).group(1))
+        limit = int(re.search(r"limit=(\d+)", finder).group(1))
+        part = re.search(r"selectedPostingDatesFacet=(\d+)", finder)
+        hits = ids
+        if part:
+            hits = [i for i in ids if i.startswith("r" if part.group(1) == "30" else "o")]
+        rows = hits[offset:offset + limit] if offset + limit <= window else []
+        return httpx.Response(200, json={"items": [{
+            "TotalJobsCount": len(hits),
+            "requisitionList": [{"Id": i, "Title": "T"} for i in rows],
+        }]})
+
+    httpx_mock.add_callback(reply, is_reusable=True)
+
+
+def test_oracle_site_past_the_result_window_is_split_by_posting_date(
+    httpx_mock, monkeypatch
+) -> None:
+    _oracle_index(httpx_mock, monkeypatch, recent=3, older=4, window=4)
+
+    jobs = OracleScraper(
+        "https://acme.fa.us2.oraclecloud.com", include_descriptions=False
+    ).fetch()
+
+    assert len(jobs) == 7
+
+
+def test_oracle_shortfall_is_logged(httpx_mock, monkeypatch, caplog) -> None:
+    _oracle_index(httpx_mock, monkeypatch, recent=1, older=7, window=4)
+
+    with caplog.at_level("WARNING", logger="ats_scrapers.scrapers.oracle"):
+        jobs = OracleScraper(
+            "https://acme.fa.us2.oraclecloud.com", include_descriptions=False
+        ).fetch()
+
+    assert len(jobs) == 5
+    assert "announced 8 jobs, collected 5" in caplog.text
