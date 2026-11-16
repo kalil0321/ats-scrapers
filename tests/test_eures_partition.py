@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from ats_scrapers.scrapers import eures
-from ats_scrapers.scrapers.eures import EuresScraper, _plan_split
+from ats_scrapers.scrapers.eures import EuresScraper, _plan_split, _rereads
 
 _API = re.compile(r"^https://europa\.eu/eures/api/jv-searchengine/public/jv-search/search")
 _ISCO = "http://data.europa.eu/esco/isco/C"
@@ -185,6 +185,38 @@ def test_falls_back_to_the_isco_tree_down_to_unit_groups() -> None:
     assert _plan_split({}, {"occupationUris": [f"{_ISCO}2512"]}, 12_000) is None
 
 
+def _rows(*rows: tuple[str, int]) -> list[dict]:
+    return [{"id": i, "lastModificationDate": stamp} for i, stamp in rows]
+
+
+def test_a_short_tied_run_around_a_repeat_is_read_in_one_window() -> None:
+    # Positions 47-49 and 50-51 share a timestamp; t3 came back on both pages.
+    page_1 = _rows(*((f"p{i}", 100 - i) for i in range(47)),
+                   ("t1", 5), ("t2", 5), ("t3", 5))
+    page_2 = _rows(("t3", 5), ("t4", 5),
+                   *((f"q{i}", 4 - i) for i in range(48)))
+
+    # Page 6 of 9 results holds positions 45-53.
+    assert _rereads({1: page_1, 2: page_2}) == [(6, 9)]
+
+
+def test_a_tied_run_longer_than_a_page_gets_its_pages_read_again() -> None:
+    page_1 = _rows(*((f"p{i}", 100 - i) for i in range(20)),
+                   *((f"t{i}", 5) for i in range(30)))
+    page_2 = _rows(("t29", 5), *((f"u{i}", 5) for i in range(30)),
+                   *((f"q{i}", 4 - i) for i in range(19)))
+    page_3 = _rows(*((f"r{i}", 1) for i in range(50)))
+
+    assert _rereads({1: page_1, 2: page_2, 3: page_3}) == [(1, None), (2, None)]
+
+
+def test_nothing_is_read_again_without_a_repeat() -> None:
+    page_1 = _rows(*((f"p{i}", 5) for i in range(50)))
+    page_2 = _rows(*((f"q{i}", 5) for i in range(10)))
+
+    assert _rereads({1: page_1, 2: page_2}) == []
+
+
 # --- end to end against a fake portal ------------------------------------------
 
 
@@ -197,6 +229,7 @@ class _Vacancy:
     schedules: tuple[str, ...] = ("fulltime",)
     occupations: tuple[str, ...] = ()
     languages: tuple[str, ...] = ("NS",)
+    modified: int = 0
 
 
 _FILTERS = {
@@ -218,12 +251,16 @@ _FACET_LANGUAGES = ("de", "en", "nl", "NS")
 class _FakePortal:
     """In-memory search API with the portal's semantics: values of one
     filter are ORed, filters are ANDed, each facet ignores its own filter,
-    and pages past ``page_limit`` are rejected."""
+    and a page ending past ``max_results`` is rejected. With
+    ``shuffle_ties``, vacancies sharing ``modified`` swap order on every
+    other read of a page number."""
 
     vacancies: list[_Vacancy]
-    page_limit: int
+    max_results: int
     rejected: set[str] = field(default_factory=set)
+    shuffle_ties: bool = False
     bodies: list[dict] = field(default_factory=list)
+    reads: dict[int, int] = field(default_factory=dict)
 
     def _matching(self, body: dict, skip: str | None = None) -> list[_Vacancy]:
         out = []
@@ -239,14 +276,19 @@ class _FakePortal:
     def __call__(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.read())
         self.bodies.append(body)
-        if body["page"] > self.page_limit or any(
+        if body["page"] * body["resultsPerPage"] > self.max_results or any(
             value in self.rejected for values in body.values()
             if isinstance(values, list) for value in values if isinstance(value, str)
         ):
             return httpx.Response(400, json={"error": "bad request"})
-        hits = self._matching(body)
+        hits = sorted(self._matching(body), key=lambda v: -v.modified)
+        number = body["page"]
+        self.reads[number] = self.reads.get(number, 0) + 1
+        if self.shuffle_ties and (number + self.reads[number]) % 2:
+            position = {v.id: i for i, v in enumerate(hits)}
+            hits.sort(key=lambda v: (-v.modified, -position[v.id]))
         size = body["resultsPerPage"]
-        page = hits[(body["page"] - 1) * size: body["page"] * size]
+        page = hits[(number - 1) * size: number * size]
 
         def counts(key: str, values, listed=None) -> dict:
             out: dict[str, int] = dict.fromkeys(listed or (), 0)
@@ -265,7 +307,12 @@ class _FakePortal:
         return httpx.Response(200, json={
             "numberRecords": len(hits),
             "jvs": [
-                {"id": v.id, "title": f"Job {v.id}", "locationMap": {}}
+                {
+                    "id": v.id,
+                    "title": f"Job {v.id}",
+                    "locationMap": {},
+                    "lastModificationDate": v.modified,
+                }
                 for v in page
             ],
             "facets": {
@@ -318,7 +365,7 @@ def test_collects_every_vacancy_through_nested_splits(
         ),
         *(_Vacancy(f"dx{i}", "de", "de-NS") for i in range(2)),
     ]
-    portal = _FakePortal(vacancies, page_limit=2)
+    portal = _FakePortal(vacancies, max_results=4)
     _serve(httpx_mock, portal)
 
     with caplog.at_level(logging.WARNING):
@@ -331,6 +378,26 @@ def test_collects_every_vacancy_through_nested_splits(
     assert any(len(b["locationCodes"]) > 1 for b in portal.bodies)
 
 
+def test_tied_vacancies_skipped_between_pages_are_read_in_one_window(
+    httpx_mock, monkeypatch,
+) -> None:
+    monkeypatch.setattr(eures, "PAGE_SIZE", 3)
+    monkeypatch.setattr(eures, "PAGE_LIMIT", 2)
+    monkeypatch.setattr(eures, "PAGINATION_CAP", 6)
+    # c and d share a timestamp across the page 1|2 boundary.
+    vacancies = [
+        _Vacancy(v, "mt", "mt001", modified=stamp)
+        for v, stamp in (("a", 9), ("b", 8), ("c", 5), ("d", 5), ("e", 2), ("f", 1))
+    ]
+    portal = _FakePortal(vacancies, max_results=6, shuffle_ties=True)
+    _serve(httpx_mock, portal)
+
+    jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {"a", "b", "c", "d", "e", "f"}
+    assert any(b["resultsPerPage"] == 2 for b in portal.bodies)
+
+
 def test_language_split_reaches_vacancies_in_languages_the_facet_omits(
     httpx_mock, small_pages, caplog,
 ) -> None:
@@ -341,7 +408,7 @@ def test_language_split_reaches_vacancies_in_languages_the_facet_omits(
         _Vacancy("ru", "nl", "nl36", languages=("ru",)),
         _Vacancy("lb", "nl", "nl36", languages=("lb", "de")),
     ]
-    portal = _FakePortal(vacancies, page_limit=2)
+    portal = _FakePortal(vacancies, max_results=4)
     _serve(httpx_mock, portal)
 
     with caplog.at_level(logging.WARNING):
@@ -365,7 +432,7 @@ def test_vacancies_outside_every_occupation_are_reported_and_read_from_the_slice
         _Vacancy("a2", "nl", "nl36", occupations=("2512",)),
         *(_Vacancy(f"b{i}", "nl", "nl36", occupations=("5223",)) for i in range(3)),
     ]
-    _serve(httpx_mock, _FakePortal(vacancies, page_limit=2))
+    _serve(httpx_mock, _FakePortal(vacancies, max_results=4))
 
     with caplog.at_level(logging.WARNING):
         jobs = EuresScraper("eures").fetch()
@@ -382,7 +449,7 @@ def test_warns_when_a_slice_cannot_be_split_below_the_cap(
     httpx_mock, small_pages, caplog,
 ) -> None:
     vacancies = [_Vacancy(f"x{i}", "mt", "mt001", occupations=("9112",)) for i in range(6)]
-    _serve(httpx_mock, _FakePortal(vacancies, page_limit=2))
+    _serve(httpx_mock, _FakePortal(vacancies, max_results=4))
 
     with caplog.at_level(logging.WARNING):
         jobs = EuresScraper("eures").fetch()
@@ -403,7 +470,7 @@ def test_rejected_filter_value_is_reported_instead_of_read_as_empty(
         *(_Vacancy(f"d{i}", "de", "de1") for i in range(3)),
         *(_Vacancy(f"e{i}", "de", "de2") for i in range(3)),
     ]
-    _serve(httpx_mock, _FakePortal(vacancies, page_limit=2, rejected={"de2"}))
+    _serve(httpx_mock, _FakePortal(vacancies, max_results=4, rejected={"de2"}))
 
     with caplog.at_level(logging.WARNING):
         jobs = EuresScraper("eures").fetch()

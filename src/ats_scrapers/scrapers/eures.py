@@ -74,9 +74,11 @@ DETAIL_API_URL_FMT = (
     "https://europa.eu/eures/api/jv-searchengine/public/jv/id/{jv_id}?lang=en"
 )
 PAGE_SIZE = 50  # API caps `resultsPerPage` at 50 (>50 returns 400).
-PAGE_LIMIT = 200  # `page` caps at 200 (page>200 returns 400).
+# ``page`` x ``resultsPerPage`` above 10,000 returns 400, whatever the size.
+PAGE_LIMIT = 200
 PAGINATION_CAP = PAGE_SIZE * PAGE_LIMIT  # 10,000 jobs per query.
 MAX_CONCURRENCY = 6  # The portal is generous but we stay polite.
+_REREAD_ROUNDS = 3  # See ``_rereads``.
 
 
 @dataclass(frozen=True)
@@ -410,6 +412,7 @@ class EuresScraper(BaseScraper):
         if total <= PAGINATION_CAP:
             await self._fan_out_pages(
                 fetcher, sem, base=base, total=total, absorb=absorb,
+                first_page=first.get("jvs") or [],
             )
             return
 
@@ -474,21 +477,67 @@ class EuresScraper(BaseScraper):
         *,
         base: dict[str, Any],
         total: int,
-        absorb,
+        absorb: Callable[[list[dict[str, Any]]], Awaitable[None]],
+        first_page: list[dict[str, Any]] | None = None,
     ) -> None:
-        # Page 1 is already absorbed by the caller.
+        """Read pages 2.. of a slice whose page 1 the caller absorbed.
+
+        With ``first_page``, a slice that comes back short is checked for
+        vacancies repeated across pages, and the runs of tied vacancies
+        around them are read again (``_rereads``).
+        """
         page_count = min((total + PAGE_SIZE - 1) // PAGE_SIZE, PAGE_LIMIT)
-        if page_count <= 1:
-            return
+        # Only ids and timestamps: many slices are read at once, and full
+        # rows (descriptions included) would defeat streaming.
+        pages: dict[int, list[dict[str, Any]]] = {}
+        seen: set[str] = set()
 
-        async def one(page: int) -> None:
-            payload = await self._search(fetcher, sem, base=base, page=page)
-            await absorb(payload.get("jvs") or [])
+        def keep(page: int | None, items: list[dict[str, Any]]) -> None:
+            slim = [
+                {"id": str(item.get("id")),
+                 "lastModificationDate": item.get("lastModificationDate")}
+                for item in items
+            ]
+            if page is not None:
+                pages[page] = slim
+            seen.update(item["id"] for item in slim)
 
+        async def one(page: int, size: int | None = None) -> None:
+            payload = await self._search(
+                fetcher, sem, base=base, page=page, size=size,
+            )
+            items = payload.get("jvs") or []
+            keep(page if size is None else None, items)
+            await absorb(items)
+
+        if first_page is not None:
+            keep(1, first_page)
         await _gather_tolerant(
-            (one(p) for p in range(2, page_count + 1)),
-            label="page",
+            (one(p) for p in range(2, page_count + 1)), label="page",
         )
+        if first_page is None:
+            return
+        windows_read: set[tuple[int, int | None]] = set()
+        for _ in range(_REREAD_ROUNDS):
+            if len(seen) >= total:
+                return
+            # A window returns its run whole, so once is enough; pages of
+            # a longer run are worth reading again in the next round.
+            todo = [
+                r for r in _rereads(pages)
+                if r[1] is None or r not in windows_read
+            ]
+            if not todo:
+                break
+            windows_read.update(todo)
+            await _gather_tolerant(
+                (one(page, size) for page, size in todo), label="page",
+            )
+        if len(seen) < total:
+            log.info(
+                "EURES slice %s returned %d of %d vacancies",
+                _describe(base), len(seen), total,
+            )
 
     async def _search(
         self,
@@ -497,8 +546,9 @@ class EuresScraper(BaseScraper):
         *,
         base: dict[str, Any],
         page: int,
+        size: int | None = None,
     ) -> dict[str, Any]:
-        body = _empty_search_body(PAGE_SIZE, page)
+        body = _empty_search_body(size or PAGE_SIZE, page)
         body.update(base)
         # Opt-in keyword filter (see ``__init__``): overrides the empty
         # ``keywords`` default with the API's object shape.
@@ -822,6 +872,49 @@ async def _gather_tolerant(
     for r in results:
         if isinstance(r, BaseException):
             log.warning("EURES %s subtask failed: %s", label, r)
+
+
+def _rereads(pages: dict[int, list[dict[str, Any]]]) -> list[tuple[int, int | None]]:
+    """``(page, size)`` requests for each run of vacancies sharing a
+    ``lastModificationDate`` around a vacancy seen on two pages.
+
+    Results are ordered by that date, and the order inside a run changes
+    over time, so pages read moments apart can repeat one vacancy of a run
+    and skip another. A run that fits in one page is read again in a
+    single request of a custom size; a longer run gets its regular pages
+    (``size`` None) read again.
+    """
+    stamps: dict[int, Any] = {}
+    found_at: dict[str, list[int]] = {}
+    for page, items in pages.items():
+        for index, item in enumerate(items):
+            position = (page - 1) * PAGE_SIZE + index
+            stamps[position] = item.get("lastModificationDate")
+            found_at.setdefault(str(item.get("id")), []).append(position)
+    runs: set[tuple[int, int]] = set()
+    for positions in found_at.values():
+        if len(positions) < 2:
+            continue
+        stamp = stamps[positions[0]]
+        start, end = min(positions), max(positions)
+        while start - 1 in stamps and stamps[start - 1] == stamp:
+            start -= 1
+        while end + 1 in stamps and stamps[end + 1] == stamp:
+            end += 1
+        runs.add((start, end))
+    requests: set[tuple[int, int | None]] = set()
+    for start, end in runs:
+        for size in range(end - start + 1, PAGE_SIZE + 1):
+            index = start // size
+            if index == end // size and (index + 1) * size <= PAGINATION_CAP:
+                requests.add((index + 1, size))
+                break
+        else:
+            requests.update(
+                (page, None)
+                for page in range(start // PAGE_SIZE + 1, end // PAGE_SIZE + 2)
+            )
+    return sorted(requests, key=lambda r: (r[0], r[1] or 0))
 
 
 def _plan_split(

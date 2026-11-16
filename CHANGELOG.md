@@ -75,11 +75,12 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   has no listings in its HTML and returned no jobs.
 - Built In: waits out Cloudflare's short rate-limit challenge instead of ending the
   walk, and reads up to the listing's last page (1,000) instead of 200.
-- EURES: collects about a quarter more vacancies. Queries above the 10,000-result cap
-  are split by every filter the portal accepts (location, contract type, experience,
-  education, EURES flag, sector, schedule, languages, benefits, then ISCO occupations) instead
-  of four fixed levels, each split is checked against its parent total, and
-  vacancies left out are logged as warnings.
+- EURES: slices above the 10,000-result cap no longer lose vacancies. Queries are
+  split by every filter the portal accepts (location, contract type, experience,
+  education, EURES flag, sector, schedule, languages, benefits, then ISCO
+  occupations), each split is checked against its parent total, and vacancies left
+  out are logged as warnings. Vacancies skipped because the portal reorders results
+  with the same timestamp between pages are read again.
 - Recruitee: a board whose careers site is closed, whose public API is disabled, or
   whose custom domain now sends readers to another job site is reported as not found.
 - Wanted: requests are no longer rejected with 403 by the site's firewall, and
