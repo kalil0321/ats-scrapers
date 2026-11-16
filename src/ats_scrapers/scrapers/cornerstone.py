@@ -116,8 +116,11 @@ class CornerstoneScraper(BaseScraper):
     default_headers: ClassVar[dict[str, str]] = {"User-Agent": "Mozilla/5.0"}
 
     async def afetch(self) -> list[Job]:
+        # The career page lives on the tenant's own host, the search on a
+        # shared regional API host.
+        async with self.make_fetcher(missing_host_not_found=True) as page_fetch:
+            token, api_host, culture = await self._init_session(page_fetch)
         async with self.make_fetcher() as fetch:
-            token, api_host, culture = await self._init_session(fetch)
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             items = await self._list(
                 fetch, sem, token=token, api_host=api_host, culture=culture

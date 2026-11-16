@@ -89,6 +89,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - Catalogue: AkzoNobel, Bechtel and Viega move from SuccessFactors to Phenom,
   Gateway Foundation's site is now Alpharus Health's, and a duplicate Suntory
   Global Spirits row is removed.
+- Cornerstone: a career site whose `{slug}.csod.com` host no longer resolves is
+  reported as not found.
 
 ## [0.3.0] — 2026-09-02
 
