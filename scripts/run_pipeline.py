@@ -1934,7 +1934,7 @@ def _drop_guard(ats: str, cfg: dict[str, Any], output_path: Path, rows: int) -> 
     ):
         return None
     previous, blocked = state["rows"], state["blocked_rows"]
-    if len(blocked) >= DROP_GUARD_MAX_BLOCKS and rows >= DROP_GUARD_STABLE_RATIO * min(blocked):
+    if len(blocked) >= DROP_GUARD_MAX_BLOCKS and rows >= DROP_GUARD_STABLE_RATIO * max(blocked):
         print(
             f"[{ats}] WARN: accepting {rows:,} jobs: the drop below {ratio:.0%} of "
             f"{previous:,} held for {len(blocked)} blocked runs ({', '.join(f'{r:,}' for r in blocked)})"

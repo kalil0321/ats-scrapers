@@ -170,8 +170,8 @@ def test_worse_third_drop_stays_blocked(fake_ats, monkeypatch) -> None:
     jobs_csv = fake_ats.parent / "jobs.csv"
     _write_previous(jobs_csv, 2000)
     monkeypatch.setattr(runner, "DROP_GUARD_MIN_ROWS", 10)
-    # Two blocked runs at 900 rows, then a run with 2 rows: not the same drop.
-    runner._write_run_rows(jobs_csv, 2000, [900, 900])
+    # Blocked runs at 900 and 2 rows, then a run with 2 rows: not a stable drop.
+    runner._write_run_rows(jobs_csv, 2000, [900, 2])
 
     rc = asyncio.run(runner.run("fake", concurrency=2, max_tenants=None, timeout=1))
 
