@@ -40,6 +40,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   another host is read to the end instead of stopping after the first page.
 - Avature: job links of the form `JobDetail?jobId=N` are read, so portals such as
   Booz Allen no longer return no jobs.
+- iCIMS: a board is read past 200 pages (up to 2,000), and a board past that raises
+  instead of returning the first 4,000 jobs.
 - Zoho Recruit: a career site that lists 750 jobs, the most one page carries, is
   logged as a warning, since the site may have more.
 - Beisen legacy: a tenant that moved to the current Beisen portal raises instead of

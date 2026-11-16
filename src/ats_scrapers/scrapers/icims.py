@@ -55,7 +55,8 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
 
-MAX_PAGES = 200  # Safety bound; iCIMS tenants rarely exceed 5K jobs.
+# Runaway guard. The largest boards list 500+ pages of 20 jobs.
+MAX_PAGES = 2_000
 DETAIL_CONCURRENCY = 8  # per-tenant cap on detail-page fetches
 
 _EMPLOYMENT_TYPE_MAP = {
@@ -183,6 +184,12 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
                 for j in new:
                     seen.add(j.ats_id)
                 all_jobs.extend(new)
+            else:
+                raise ScraperError(
+                    f"iCIMS ({self.base_url}) still lists new jobs after "
+                    f"{MAX_PAGES} pages ({len(all_jobs)} jobs); refusing to "
+                    "return a partial list"
+                )
 
             # Detail enrichment: pull schema.org JSON-LD from each job's
             # iframe page. Best-effort — failures keep the listing-derived
