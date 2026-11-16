@@ -8,6 +8,8 @@ lat/lon + apply URL data.
 Public REST at ``https://thehub.io/api/v2/jobs`` with details from
 ``https://thehub.io/api/jobs/{id}`` — no auth, no key. Pagination via
 ``?page=N`` (15 docs per page; page count is in the response envelope).
+The list is split by market: without ``countryCode`` it returns only
+the remote jobs, so each market is listed separately.
 
 Single-source scraper: ``company_slug`` is informational and ignored.
 """
@@ -35,6 +37,9 @@ LIST_API_URL = "https://thehub.io/api/v2/jobs"
 DETAIL_API_URL_TEMPLATE = "https://thehub.io/api/jobs/{job_id}"
 JOB_URL_TEMPLATE = "https://thehub.io/jobs/{job_id}"
 PER_PAGE = 15  # Hard-coded by the API; ?limit=… is ignored.
+# ``countryCode`` values of the site's market picker ("EU" is "Other
+# Europe"); ``None`` lists the remote jobs.
+MARKETS: tuple[str | None, ...] = (None, "DK", "SE", "NO", "FI", "IS", "EU")
 MAX_CONCURRENCY = 4
 MAX_DETAIL_FAILURE_RATIO = 0.10
 
@@ -50,8 +55,8 @@ class TheHubScraper(BaseScraper):
     (``"any"``, ``""``).
 
     Knobs:
-    - ``max_pages`` — pagination cap (default 200, far above the
-      current active board).
+    - ``max_pages`` — pagination cap per market (default 200, far above
+      the current active board).
     """
 
     ats = ATSType.THEHUB
@@ -81,16 +86,10 @@ class TheHubScraper(BaseScraper):
         async with self.make_fetcher() as fetch:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
-            first = await self._fetch_page(fetch, sem, page=1)
-            pages_total = int(first.get("pages") or 1)
-            page_count = min(pages_total, self.max_pages)
-            remaining = await asyncio.gather(
-                *(self._fetch_page(fetch, sem, page=page) for page in range(2, page_count + 1))
+            listings = await asyncio.gather(
+                *(self._fetch_market(fetch, sem, market) for market in MARKETS)
             )
-
-            summaries = list(first.get("docs") or [])
-            for payload in remaining:
-                summaries.extend(payload.get("docs") or [])
+            summaries = [doc for docs in listings for doc in docs]
 
             job_ids: list[str] = []
             seen_ids: set[str] = set()
@@ -147,15 +146,36 @@ class TheHubScraper(BaseScraper):
             if isinstance(item, dict) and (job := self._parse(item)) is not None
         ]
 
+    async def _fetch_market(
+        self,
+        fetch: Fetcher,
+        sem: asyncio.Semaphore,
+        market: str | None,
+    ) -> list[dict[str, Any]]:
+        first = await self._fetch_page(fetch, sem, page=1, market=market)
+        page_count = min(int(first.get("pages") or 1), self.max_pages)
+        remaining = await asyncio.gather(*(
+            self._fetch_page(fetch, sem, page=page, market=market)
+            for page in range(2, page_count + 1)
+        ))
+        docs = list(first.get("docs") or [])
+        for payload in remaining:
+            docs.extend(payload.get("docs") or [])
+        return docs
+
     async def _fetch_page(
         self,
         fetch: Fetcher,
         sem: asyncio.Semaphore,
         *,
         page: int,
+        market: str | None = None,
     ) -> dict[str, Any]:
+        params: dict[str, Any] = {"page": page}
+        if market:
+            params["countryCode"] = market
         async with sem:
-            return await fetch.get_json(LIST_API_URL, params={"page": page})
+            return await fetch.get_json(LIST_API_URL, params=params)
 
     async def _fetch_detail(
         self,
