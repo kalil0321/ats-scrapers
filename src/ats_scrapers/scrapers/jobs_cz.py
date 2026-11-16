@@ -130,6 +130,11 @@ class JobsCzScraper(BaseScraper):
         "User-Agent": "Mozilla/5.0",
         "Accept-Language": "cs-CZ,cs;q=0.9,en;q=0.5",
         "Accept": "text/html,application/xhtml+xml",
+        # About one new visitor in three is put in bucket A and redirected
+        # to beta.jobs.cz, which renders no cards server-side; the bucket
+        # cookie sticks, so the whole run would read as an empty board.
+        # Bucket B keeps the classic listing.
+        "Cookie": "beta_bucket=5%3AB",
     }
 
     def __init__(

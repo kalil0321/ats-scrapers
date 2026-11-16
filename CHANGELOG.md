@@ -66,6 +66,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - Y Combinator: the hiring filter stops at 1,000 companies, so the full company list
   is walked and the hiring companies kept.
 - The Hub: every market is listed; the unfiltered list holds only remote jobs.
+- jobs.cz: asks for the classic listing, since the beta site some visitors are sent to
+  has no listings in its HTML and returned no jobs.
 - Recruitee: a board whose careers site is closed, whose public API is disabled, or
   whose custom domain now sends readers to another job site is reported as not found.
 - Wanted: requests are no longer rejected with 403 by the site's firewall, and
