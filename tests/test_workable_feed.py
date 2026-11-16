@@ -198,6 +198,48 @@ def test_missing_feed_address_says_how_to_get_one(monkeypatch: pytest.MonkeyPatc
         WorkableFeedScraper().fetch()
 
 
+def test_download_waits_for_retry_after(
+    httpx_mock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waits: list[float] = []
+
+    async def record(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr(workable_feed.asyncio, "sleep", record)
+    httpx_mock.add_response(url=FEED_URL, status_code=429, headers={"Retry-After": "45"})
+    httpx_mock.add_response(url=FEED_URL, content=FEED.encode())
+
+    assert len(WorkableFeedScraper(feed_url=FEED_URL).fetch()) == 3
+    assert 45.0 in waits
+
+
+def test_long_retry_after_fails_at_once(httpx_mock) -> None:
+    httpx_mock.add_response(url=FEED_URL, status_code=429, headers={"Retry-After": "3600"})
+    with pytest.raises(ScraperError, match="Retry-After 3600s"):
+        WorkableFeedScraper(feed_url=FEED_URL).fetch()
+
+
+def test_dates_do_not_depend_on_the_locale() -> None:
+    import locale
+
+    saved = locale.setlocale(locale.LC_TIME)
+    for name in ("fr_FR.UTF-8", "fr_FR.utf8", "de_DE.UTF-8", "de_DE.utf8"):
+        try:
+            locale.setlocale(locale.LC_TIME, name)
+            break
+        except locale.Error:
+            continue
+    else:
+        pytest.skip("no French or German locale installed")
+    try:
+        assert workable_feed._parse_date("Wed, 28 Jul 2021 10:24:17 UTC") == datetime(
+            2021, 7, 28, 10, 24, 17, tzinfo=UTC
+        )
+    finally:
+        locale.setlocale(locale.LC_TIME, saved)
+
+
 def test_download_refused(httpx_mock) -> None:
     httpx_mock.add_response(url=FEED_URL, status_code=403)
     with pytest.raises(ScraperError, match="HTTP 403"):

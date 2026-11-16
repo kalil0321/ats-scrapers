@@ -34,13 +34,13 @@ board).
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
 import tempfile
 import xml.etree.ElementTree as ET
 from collections.abc import AsyncGenerator, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -56,8 +56,9 @@ FEED_URL_ENV = "ATS_SCRAPERS_WORKABLE_FEED_URL"
 MAX_DESCRIPTION_LEN = 25_000
 DOWNLOAD_ATTEMPTS = 3
 RETRY_DELAY = 10.0
+# A longer Retry-After fails the run instead of holding it.
+MAX_RETRY_AFTER = 600.0
 _CHUNK = 1 << 20
-_DATE_FORMAT = "%a, %d %b %Y %H:%M:%S UTC"
 
 
 @dataclass
@@ -140,6 +141,7 @@ class WorkableFeedScraper(BaseScraper):
         proxy = self.proxy if self.proxy is not None else proxy_url_from_env()
         error = "no attempt"
         for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+            delay = RETRY_DELAY * attempt
             try:
                 async with httpx.AsyncClient(
                     timeout=self.timeout,
@@ -149,6 +151,14 @@ class WorkableFeedScraper(BaseScraper):
                 ) as client, client.stream("GET", self.feed_url) as response:
                     if response.status_code >= 500 or response.status_code == 429:
                         error = f"HTTP {response.status_code}"
+                        retry_after = response.headers.get("retry-after", "")
+                        if retry_after.isdigit():
+                            if float(retry_after) > MAX_RETRY_AFTER:
+                                raise ScraperError(
+                                    f"Workable feed returned {error} with "
+                                    f"Retry-After {retry_after}s"
+                                )
+                            delay = float(retry_after)
                     elif response.status_code != 200:
                         raise ScraperError(
                             f"Workable feed returned HTTP {response.status_code}"
@@ -172,7 +182,7 @@ class WorkableFeedScraper(BaseScraper):
             except httpx.HTTPError as exc:
                 error = f"{type(exc).__name__}: {exc}"
             if attempt < DOWNLOAD_ATTEMPTS:
-                await asyncio.sleep(RETRY_DELAY * attempt)
+                await asyncio.sleep(delay)
         raise ScraperError(f"Workable feed download failed: {error}")
 
 
@@ -270,8 +280,12 @@ def _job(entry: dict[str, str], found: _Locations, *, include_description: bool)
 
 
 def _parse_date(value: str | None) -> datetime | None:
+    # RFC 2822 dates ("Wed, 28 Jul 2021 10:24:17 UTC"), read without the
+    # process locale.
     if not value:
         return None
-    with contextlib.suppress(ValueError):
-        return datetime.strptime(value, _DATE_FORMAT).replace(tzinfo=UTC)
-    return None
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
