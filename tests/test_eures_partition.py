@@ -150,6 +150,27 @@ def test_education_groups_map_to_the_levels_the_filter_accepts() -> None:
     ]
 
 
+def test_language_split_adds_one_child_for_languages_the_facet_omits() -> None:
+    facets = {
+        "LANGUAGE_SKILLS": _entries({"nl": 7_000, "NS": 5_000, "en": 11, "de": 0}),
+    }
+
+    split = _plan_split(facets, {"locationCodes": ["nl36"]}, 12_000)
+
+    assert split is not None
+    assert split.dimension.field == "requiredLanguages"
+    listed, unlisted = split.children[:3], split.children[3]
+    assert [c.values for c in listed] == [
+        ({"isoCode": "nl", "level": "C2"},),
+        ({"isoCode": "NS", "level": "C2"},),
+        ({"isoCode": "en", "level": "C2"},),
+    ]
+    codes = {v["isoCode"] for v in unlisted.values}
+    assert {"ru", "lb", "uk"} <= codes
+    assert not codes & {"nl", "en", "de", "NS"}
+    assert unlisted.count is None
+
+
 def test_falls_back_to_the_isco_tree_down_to_unit_groups() -> None:
     split = _plan_split({}, {"locationCodes": ["nl36"]}, 12_000)
     assert split is not None
@@ -175,16 +196,22 @@ class _Vacancy:
     contract: str = "directhire"
     schedules: tuple[str, ...] = ("fulltime",)
     occupations: tuple[str, ...] = ()
+    languages: tuple[str, ...] = ("NS",)
 
 
 _FILTERS = {
     "locationCodes": lambda v, codes: v.country in codes or v.region in codes,
     "positionOfferingCodes": lambda v, codes: v.contract in codes,
     "positionScheduleCodes": lambda v, codes: bool(set(v.schedules) & set(codes)),
+    "requiredLanguages": lambda v, langs: bool(
+        set(v.languages) & {lang["isoCode"] for lang in langs}
+    ),
     "occupationUris": lambda v, uris: any(
         o.startswith(u.removeprefix(_ISCO)) for o in v.occupations for u in uris
     ),
 }
+# Like the portal, the language facet lists a fixed set of languages.
+_FACET_LANGUAGES = ("de", "en", "nl", "NS")
 
 
 @dataclass
@@ -214,18 +241,19 @@ class _FakePortal:
         self.bodies.append(body)
         if body["page"] > self.page_limit or any(
             value in self.rejected for values in body.values()
-            if isinstance(values, list) for value in values
+            if isinstance(values, list) for value in values if isinstance(value, str)
         ):
             return httpx.Response(400, json={"error": "bad request"})
         hits = self._matching(body)
         size = body["resultsPerPage"]
         page = hits[(body["page"] - 1) * size: body["page"] * size]
 
-        def counts(key: str, values) -> dict:
-            out: dict[str, int] = {}
+        def counts(key: str, values, listed=None) -> dict:
+            out: dict[str, int] = dict.fromkeys(listed or (), 0)
             for v in self._matching(body, skip=key):
                 for value in values(v):
-                    out[value] = out.get(value, 0) + 1
+                    if listed is None or value in listed:
+                        out[value] = out.get(value, 0) + 1
             return _entries(out)
 
         located = self._matching(body, skip="locationCodes")
@@ -247,6 +275,9 @@ class _FakePortal:
                 ),
                 "POSITION_SCHEDULE": counts(
                     "positionScheduleCodes", lambda v: v.schedules,
+                ),
+                "LANGUAGE_SKILLS": counts(
+                    "requiredLanguages", lambda v: v.languages, _FACET_LANGUAGES,
                 ),
             },
         })
@@ -298,6 +329,27 @@ def test_collects_every_vacancy_through_nested_splits(
     assert any(b["occupationUris"] for b in portal.bodies)
     # Each split was checked with one query ORing all of its children.
     assert any(len(b["locationCodes"]) > 1 for b in portal.bodies)
+
+
+def test_language_split_reaches_vacancies_in_languages_the_facet_omits(
+    httpx_mock, small_pages, caplog,
+) -> None:
+    vacancies = [
+        _Vacancy("f0", "fr", "fr10"),
+        *(_Vacancy(f"n{i}", "nl", "nl36", languages=("nl",)) for i in range(4)),
+        *(_Vacancy(f"x{i}", "nl", "nl36") for i in range(3)),
+        _Vacancy("ru", "nl", "nl36", languages=("ru",)),
+        _Vacancy("lb", "nl", "nl36", languages=("lb", "de")),
+    ]
+    portal = _FakePortal(vacancies, page_limit=2)
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.WARNING):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {v.id for v in vacancies}
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not any(b["occupationUris"] for b in portal.bodies)
 
 
 def test_vacancies_outside_every_occupation_are_reported_and_read_from_the_slice(

@@ -77,7 +77,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   walk, and reads up to the listing's last page (1,000) instead of 200.
 - EURES: collects about a quarter more vacancies. Queries above the 10,000-result cap
   are split by every filter the portal accepts (location, contract type, experience,
-  education, EURES flag, sector, schedule, benefits, then ISCO occupations) instead
+  education, EURES flag, sector, schedule, languages, benefits, then ISCO occupations) instead
   of four fixed levels, each split is checked against its parent total, and
   vacancies left out are logged as warnings.
 - Recruitee: a board whose careers site is closed, whose public API is disabled, or

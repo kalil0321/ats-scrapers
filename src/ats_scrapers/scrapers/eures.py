@@ -12,10 +12,11 @@ recursively, until every slice fits:
 
 - Each response carries a ``facets`` block with per-value counts for
   location, contract type, experience, education, EURES flag, sector,
-  schedule and benefits. Facets ignore their own filter and apply all
-  the others, so the counts describe the children of the current slice.
-  Every facet lists an ``NS`` (not specified) value, which the filters
-  accept, so no vacancy falls outside a facet.
+  schedule, required languages and benefits. Facets ignore their own
+  filter and apply all the others, so the counts describe the children
+  of the current slice. Every facet lists an ``NS`` (not specified)
+  value, which the filters accept, so no vacancy falls outside a facet
+  (languages need one more child, see ``_ISO_639_1``).
 - ``_plan_split`` picks the facet that leaves the fewest vacancies above
   the cap and repeats the fewest (a vacancy can carry several regions,
   sectors or schedules). Location is a tree: countries, then the NUTS
@@ -91,6 +92,7 @@ _EDUCATION = _Dimension(
     "EDUCATION_AND_QUALIFICATION_LEVEL",
     "educationAndQualificationLevelCodes",
 )
+_LANGUAGE = _Dimension("language", "LANGUAGE_SKILLS", "requiredLanguages")
 _OCCUPATION = _Dimension("occupation", None, "occupationUris")
 _FACET_DIMENSIONS = (
     _Dimension("contract", "POSITION_OFFERING", "positionOfferingCodes"),
@@ -99,7 +101,35 @@ _FACET_DIMENSIONS = (
     _Dimension("flag", "EURES_FLAG", "euresFlagCodes"),
     _Dimension("sector", "NACE_CODE", "sectorCodes"),
     _Dimension("schedule", "POSITION_SCHEDULE", "positionScheduleCodes"),
+    _LANGUAGE,
     _Dimension("benefit", "EXTRA_BENEFIT", "otherBenefitsCodes"),
+)
+
+# The language filter takes {isoCode, level} and matches vacancies that
+# require the language at or below that CEFR level, so C2 matches them all.
+# Any other level string fails with a server error.
+_LANGUAGE_ANY_LEVEL = "C2"
+
+# The language facet lists only the EU/EEA languages, but the filter takes
+# any ISO 639-1 code, and some vacancies require only others (Russian,
+# Luxembourgish, Ukrainian, ...). One extra child ORs every code the facet
+# does not list.
+_ISO_639_1 = (
+    "aa", "ab", "ae", "af", "ak", "am", "an", "ar", "as", "av", "ay", "az", "ba",
+    "be", "bg", "bh", "bi", "bm", "bn", "bo", "br", "bs", "ca", "ce", "ch", "co",
+    "cr", "cs", "cu", "cv", "cy", "da", "de", "dv", "dz", "ee", "el", "en", "eo",
+    "es", "et", "eu", "fa", "ff", "fi", "fj", "fo", "fr", "fy", "ga", "gd", "gl",
+    "gn", "gu", "gv", "ha", "he", "hi", "ho", "hr", "ht", "hu", "hy", "hz", "ia",
+    "id", "ie", "ig", "ii", "ik", "io", "is", "it", "iu", "ja", "jv", "ka", "kg",
+    "ki", "kj", "kk", "kl", "km", "kn", "ko", "kr", "ks", "ku", "kv", "kw", "ky",
+    "la", "lb", "lg", "li", "ln", "lo", "lt", "lu", "lv", "mg", "mh", "mi", "mk",
+    "ml", "mn", "mr", "ms", "mt", "my", "na", "nb", "nd", "ne", "ng", "nl", "nn",
+    "no", "nr", "nv", "ny", "oc", "oj", "om", "or", "os", "pa", "pi", "pl", "ps",
+    "pt", "qu", "rm", "rn", "ro", "ru", "rw", "sa", "sc", "sd", "se", "sg", "si",
+    "sk", "sl", "sm", "sn", "so", "sq", "sr", "ss", "st", "su", "sv", "sw", "ta",
+    "te", "tg", "th", "ti", "tk", "tl", "tn", "to", "tr", "ts", "tt", "tw", "ty",
+    "ug", "uk", "ur", "uz", "ve", "vi", "vo", "wa", "wo", "xh", "yi", "yo", "za",
+    "zh", "zu",
 )
 
 # The education facet reports groups, but the filter takes the ISCED and
@@ -124,7 +154,7 @@ _ISCO_UNIT_DIGITS = 4
 
 @dataclass(frozen=True)
 class _Child:
-    values: tuple[str, ...]
+    values: tuple[Any, ...]
     # Count announced by the parent's facet; None for occupations.
     count: int | None
 
@@ -134,7 +164,7 @@ class _Split:
     dimension: _Dimension
     children: tuple[_Child, ...]
 
-    def union_values(self) -> list[str]:
+    def union_values(self) -> list[Any]:
         return [value for child in self.children for value in child.values]
 
 # Many EURES rows ship with a placeholder employer — confirmed
@@ -824,6 +854,8 @@ def _plan_split(
             _Child(_filter_values(dimension, code), count)
             for code, count in counted
         )
+        if dimension is _LANGUAGE:
+            children += (_unlisted_languages(facets),)
         candidates.append((key, _Split(dimension, children)))
     if candidates:
         return min(candidates, key=lambda c: c[0])[1]
@@ -834,10 +866,24 @@ def _plan_split(
     return _Split(_OCCUPATION, tuple(_Child((uri,), None) for uri in uris))
 
 
-def _filter_values(dimension: _Dimension, code: str) -> tuple[str, ...]:
+def _filter_values(dimension: _Dimension, code: str) -> tuple[Any, ...]:
     if dimension is _EDUCATION:
         return _EDUCATION_FILTER_CODES.get(code, (code,))
+    if dimension is _LANGUAGE:
+        return ({"isoCode": code, "level": _LANGUAGE_ANY_LEVEL},)
     return (code,)
+
+
+def _unlisted_languages(facets: dict[str, Any]) -> _Child:
+    listed = {e.get("code") for e in _facet_entries(facets, _LANGUAGE.facet)}
+    return _Child(
+        tuple(
+            {"isoCode": code, "level": _LANGUAGE_ANY_LEVEL}
+            for code in _ISO_639_1
+            if code not in listed
+        ),
+        None,
+    )
 
 
 def _facet_entries(facets: dict[str, Any], name: str | None) -> list[dict[str, Any]]:
@@ -888,9 +934,18 @@ def _occupation_children(selected: list[str] | None) -> list[str]:
 
 
 def _describe(base: dict[str, Any]) -> str:
-    parts = [
-        f"{key}={','.join(str(v) for v in value)}"
-        for key, value in base.items()
-        if isinstance(value, list) and value
-    ]
+    parts = []
+    for key, value in base.items():
+        if not isinstance(value, list) or not value:
+            continue
+        labels = [_label(v) for v in value[:8]]
+        if len(value) > len(labels):
+            labels.append(f"+{len(value) - len(labels)}")
+        parts.append(f"{key}={','.join(labels)}")
     return " ".join(parts).replace(_ISCO_URI_PREFIX, "isco:") or "(all)"
+
+
+def _label(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("isoCode") or value)
+    return str(value)
