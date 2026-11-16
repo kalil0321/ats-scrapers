@@ -21,6 +21,7 @@ These tests pin:
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import httpx
@@ -28,7 +29,7 @@ import pytest
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
-from ats_scrapers.scrapers import PhenomScraper, ScraperRegistry
+from ats_scrapers.scrapers import PhenomScraper, ScraperRegistry, phenom
 
 # Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture in
 # conftest.py — the shared fetch layer replaced per-scraper retry constants.
@@ -472,3 +473,80 @@ def test_network_error_raises(httpx_mock) -> None:
     )
     with pytest.raises(ScraperError, match="DNS failed"):
         PhenomScraper(BASE).fetch()
+
+
+# --- Result window ----------------------------------------------------------
+
+
+def _phenom_index(httpx_mock, monkeypatch, jobs: list[dict[str, Any]], window: int) -> list[dict]:
+    """Serve ``jobs`` like Phenom: facet filters, aggregations, and no rows
+    past ``window``. Returns the request payloads it received."""
+    monkeypatch.setattr(phenom, "PAGE_SIZE", 2)
+    monkeypatch.setattr(phenom, "RESULT_WINDOW", window)
+    seen: list[dict] = []
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        hits = [
+            job for job in jobs
+            if all(job.get(field) in values for field, values in body["selected_fields"].items())
+        ]
+        start, size = body["from"], body["size"]
+        page = hits[start:start + size] if start + size <= window else []
+        aggregations = [
+            {"field": field, "value": {
+                value: sum(1 for job in hits if job.get(field) == value)
+                for value in sorted({job[field] for job in hits if job.get(field)})
+            }}
+            for field in ("category", "state", "city")
+        ]
+        return httpx.Response(200, json={"refineSearch": {"data": {
+            "jobs": page, "totalHits": len(hits), "aggregations": aggregations,
+        }}})
+
+    _seed_csrf(httpx_mock)
+    httpx_mock.add_callback(reply, url=WIDGETS_URL, method="POST", is_reusable=True)
+    return seen
+
+
+def test_search_past_the_result_window_is_split_by_facet(httpx_mock, monkeypatch) -> None:
+    jobs = [
+        {"jobId": str(i), "title": "T", "category": "Stores" if i < 9 else "Office",
+         "state": ["TX", "OH", "CA"][i % 3]}
+        for i in range(11)
+    ]
+    seen = _phenom_index(httpx_mock, monkeypatch, jobs, window=4)
+
+    found = PhenomScraper(BASE).fetch()
+
+    assert sorted(int(j.ats_id) for j in found) == list(range(11))
+    # "Stores" (9 jobs) is still too large, so it is split again by state.
+    assert {"category": ["Stores"], "state": ["TX"]} in [b["selected_fields"] for b in seen]
+
+
+def test_facet_that_leaves_jobs_out_is_not_used_to_split(httpx_mock, monkeypatch) -> None:
+    jobs = [
+        {"jobId": str(i), "title": "T", "category": "Stores" if i < 3 else None,
+         "state": ["TX", "OH", "CA"][i % 3]}
+        for i in range(9)
+    ]
+    seen = _phenom_index(httpx_mock, monkeypatch, jobs, window=4)
+
+    found = PhenomScraper(BASE).fetch()
+
+    assert len(found) == 9
+    assert all("category" not in b["selected_fields"] for b in seen)
+
+
+def test_window_is_read_and_shortfall_logged_when_no_facet_splits(
+    httpx_mock, monkeypatch, caplog
+) -> None:
+    jobs = [{"jobId": str(i), "title": "T", "state": "TX"} for i in range(7)]
+    _phenom_index(httpx_mock, monkeypatch, jobs, window=4)
+
+    with caplog.at_level("WARNING", logger="ats_scrapers.scrapers.phenom"):
+        found = PhenomScraper(BASE).fetch()
+
+    assert len(found) == 4
+    assert "announced 7 jobs, collected 4" in caplog.text

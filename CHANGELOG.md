@@ -31,6 +31,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
+- Phenom: a board with more than 9,900 jobs is split by category and state, so every
+  job is collected instead of the first 9,900.
 - Recruitee: a board whose careers site is closed, whose public API is disabled, or
   whose custom domain now sends readers to another job site is reported as not found.
 - Wanted: requests are no longer rejected with 403 by the site's firewall, and
