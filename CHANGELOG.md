@@ -33,7 +33,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 - Recruitee: a board whose careers site is closed, whose public API is disabled, or
   whose custom domain now sends readers to another job site is reported as not found.
-- Wanted: requests are no longer rejected with 403 by the site's firewall.
+- Wanted: requests are no longer rejected with 403 by the site's firewall, and
+  description requests are paced under its rate limit.
 - Wellfound: reads the job data embedded in every page of each role, descriptions
   included, without Firecrawl. Listings imported from an ATS are skipped unless
   `include_ats_imports=True`. `firecrawl_api_key` stays available; the
