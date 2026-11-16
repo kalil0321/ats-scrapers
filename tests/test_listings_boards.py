@@ -9,9 +9,6 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import BrighterMondayScraper, JobbermanScraper
 from ats_scrapers.scrapers.base import ScraperRegistry
-from ats_scrapers.source_kind import source_kind
-from pipeline.publisher import ATS_DEDUP_PRIORITY
-from scripts.run_pipeline import CONFIGS
 
 NG = "https://www.jobberman.com"
 GH = "https://www.jobberman.com.gh"
@@ -336,19 +333,3 @@ def test_a_page_without_a_title_or_an_employer_counts_as_unreadable(httpx_mock) 
     _site(httpx_mock, NG, pages)
 
     assert len(JobbermanScraper("ng").fetch()) == 20
-
-
-@pytest.mark.parametrize(
-    ("name", "scraper"),
-    [("jobberman", JobbermanScraper), ("brightermonday", BrighterMondayScraper)],
-)
-def test_the_boards_are_job_boards(name: str, scraper: type) -> None:
-    config = CONFIGS[name]
-
-    assert config["scraper"] is scraper
-    assert config["singleton"] is True
-    assert config["output"] == f"{name}/jobs.csv"
-    assert config["fail_closed_on_empty"] is True
-    assert source_kind(name) == "job_board"
-    assert ATS_DEDUP_PRIORITY[name] == ATS_DEDUP_PRIORITY["seek"]
-    assert scraper(name).codes == list(scraper.sites)

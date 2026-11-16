@@ -170,9 +170,8 @@ class LeverScraper(BaseScraper):
         # silently dropped 50–80% of each posting's body.
         #
         # Now we always concatenate the HTML intro with each lists section
-        # (prefixing the section's heading), and rely on the post-scrape
-        # markdownify step in scripts/normalize_descriptions.py to render
-        # the assembled HTML to clean markdown.
+        # (prefixing the section's heading) and leave the HTML for a
+        # markdownify step to render as clean markdown.
         intro_html = item.get("description") or ""
         if not isinstance(intro_html, str):
             intro_html = ""

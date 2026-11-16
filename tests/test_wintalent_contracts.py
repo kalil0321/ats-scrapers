@@ -4,37 +4,6 @@ import csv
 from pathlib import Path
 
 from ats_scrapers.scrapers import WinTalentScraper
-from pipeline.publisher import ATS_DEDUP_PRIORITY
-from scripts.run_pipeline import CONFIGS, _bounded_concurrency
-
-
-def test_wintalent_pipeline_is_fail_closed() -> None:
-    config = CONFIGS["wintalent"]
-    row = {
-        "name": "东风汽车集团有限公司",
-        "slug": "https://dfmc.hotjob.cn/SU61d501d92f9d24431f65f608",
-        "url": "https://dfmc.hotjob.cn/SU61d501d92f9d24431f65f608",
-    }
-
-    assert config["scraper"] is WinTalentScraper
-    assert config["slug"](row) == row["slug"]
-    assert config["kwargs"](row) == {"company_name": row["name"]}
-    assert config["csv"] == "ats-companies/wintalent.csv"
-    assert config["output"] == "wintalent/jobs.csv"
-    assert config["dedupe_by_ats_id"] is True
-    assert config["max_concurrency"] == 6
-    assert config["fail_closed_on_empty"] is True
-    assert config["fail_closed_on_any_error"] is True
-    assert config["fail_closed_on_not_found"] is True
-    assert config["fail_closed_tolerance"] == 0.05
-
-
-def test_wintalent_concurrency_cap_is_enforced() -> None:
-    assert _bounded_concurrency(CONFIGS["wintalent"], 24) == 6
-
-
-def test_wintalent_is_a_direct_employer_ats() -> None:
-    assert ATS_DEDUP_PRIORITY["wintalent"] == ATS_DEDUP_PRIORITY["workday"]
 
 
 def test_wintalent_catalog_contains_only_selected_unique_portals() -> None:

@@ -26,8 +26,8 @@ job detail references the ATS.
 
 1. Start from current `main` and check open draft and non-draft PRs for the same
    provider.
-2. Read the scraper and runner mapping before discovery. CSV columns must match
-   what `scripts/run_pipeline.py` passes into the scraper.
+2. Read the scraper before discovery. CSV columns must match the arguments the
+   scraper takes.
 3. Discover candidates with broad search, but validate with the provider's real
    listing API or listing page.
 4. Deduplicate by the provider's stable tenant identity, not just by URL string.

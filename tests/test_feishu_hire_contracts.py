@@ -5,34 +5,8 @@ import re
 from pathlib import Path
 
 from ats_scrapers.scrapers import FeishuHireScraper
-from ats_scrapers.source_kind import source_kind
-from pipeline.publisher import ATS_DEDUP_PRIORITY
-from scripts.run_pipeline import CONFIGS, _bounded_concurrency
 
 EXPECTED_ROWS = 291
-
-
-def test_feishu_hire_pipeline_config() -> None:
-    config = CONFIGS["feishu_hire"]
-    row = {
-        "name": "蔚来",
-        "slug": "nio",
-        "sites": "index;campus",
-        "url": "https://nio.jobs.feishu.cn",
-    }
-
-    assert config["scraper"] is FeishuHireScraper
-    assert config["slug"](row) == "nio"
-    assert config["kwargs"](row) == {"sites": "index;campus", "company_name": "蔚来"}
-    assert config["csv"] == "ats-companies/feishu_hire.csv"
-    assert config["output"] == "feishu_hire/jobs.csv"
-    assert config["dedupe_by_ats_id"] is True
-    assert _bounded_concurrency(config, 24) == 4
-
-
-def test_feishu_hire_is_an_employer_ats() -> None:
-    assert source_kind("feishu_hire") == "ats"
-    assert ATS_DEDUP_PRIORITY["feishu_hire"] == ATS_DEDUP_PRIORITY["workday"]
 
 
 def test_feishu_hire_catalogue_is_well_formed() -> None:

@@ -487,11 +487,3 @@ def test_fetch_stream_yields_same_jobs_as_legacy(monkeypatch) -> None:
 
     streamed = asyncio.run(collect_stream())
     assert sorted(j.ats_id for j in streamed) == sorted(f"R-{i}" for i in range(7))
-
-
-def test_pipeline_config_fails_closed_without_bulk_detail_requests() -> None:
-    from scripts.run_pipeline import CONFIGS
-
-    config = CONFIGS["bundesagentur"]
-    assert config["fail_closed_on_empty"] is True
-    assert config["skip_description_enrichment"] is True

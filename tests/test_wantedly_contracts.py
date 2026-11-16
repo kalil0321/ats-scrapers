@@ -4,39 +4,10 @@ import csv
 from pathlib import Path
 
 from ats_scrapers.scrapers import WantedlyScraper
-from pipeline.publisher import ATS_DEDUP_PRIORITY
-from scripts.run_pipeline import CONFIGS, _bounded_concurrency
 
 # Companies that listed at least one project when the catalogue was built.
 # A catalogue cut short by accident fails here.
 EXPECTED_ROWS = 3443
-
-
-def test_wantedly_pipeline_reads_the_company_catalogue() -> None:
-    config = CONFIGS["wantedly"]
-    row = {
-        "name": "Wantedly, Inc.",
-        "slug": "wantedly",
-        "url": "https://www.wantedly.com/companies/wantedly",
-    }
-
-    assert config["scraper"] is WantedlyScraper
-    assert config["slug"](row) == "wantedly"
-    assert config["kwargs"](row) == {"company_name": "Wantedly, Inc."}
-    assert config["csv"] == "ats-companies/wantedly.csv"
-    assert config["output"] == "wantedly/jobs.csv"
-    assert config["dedupe_by_ats_id"] is True
-    # The site answers 403 to a faster client.
-    assert config["max_concurrency"] == 2
-    assert _bounded_concurrency(config, 24) == 2
-    assert config["fail_closed_on_any_error"] is True
-    assert config["fail_closed_on_not_found"] is True
-    assert config["fail_closed_on_empty"] is True
-    assert config["fail_closed_tolerance"] == 0.02
-
-
-def test_wantedly_ranks_with_the_boards_where_employers_post() -> None:
-    assert ATS_DEDUP_PRIORITY["wantedly"] == ATS_DEDUP_PRIORITY["welcometothejungle"]
 
 
 def test_wantedly_is_a_job_board_outside_the_headline_count() -> None:

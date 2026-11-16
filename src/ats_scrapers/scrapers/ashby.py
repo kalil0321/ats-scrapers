@@ -203,9 +203,8 @@ class AshbyScraper(BaseScraper):
 
         # Description — prefer ``descriptionHtml`` over ``descriptionPlain``.
         # The HTML form retains paragraph breaks, bullet lists, and headings
-        # (the plain text concatenates them into a single block); the
-        # post-scrape markdownify step in scripts/normalize_descriptions.py
-        # then converts the HTML into clean markdown. Plain stays as a
+        # (the plain text concatenates them into a single block), so a
+        # markdownify step can turn it into clean markdown. Plain stays as a
         # last-ditch fallback.
         description = (
             item.get("descriptionHtml")

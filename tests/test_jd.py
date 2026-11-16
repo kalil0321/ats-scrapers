@@ -325,18 +325,3 @@ def test_descriptions_can_be_left_out(httpx_mock) -> None:
     _serve(httpx_mock, [_row(1)])
 
     assert JDScraper("jd", include_descriptions=False).fetch()[0].description is None
-
-
-def test_pipeline_config_fails_closed() -> None:
-    import sys
-    from pathlib import Path
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-    import run_pipeline
-
-    config = run_pipeline.CONFIGS["jd"]
-    assert config["scraper"] is JDScraper
-    assert config["singleton"] is True
-    assert config["output"] == "jd/jobs.csv"
-    assert config["fail_closed_on_any_error"] is True
-    assert config["fail_closed_on_empty"] is True
