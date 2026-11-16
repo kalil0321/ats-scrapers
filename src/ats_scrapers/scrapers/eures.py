@@ -429,6 +429,9 @@ class EuresScraper(BaseScraper):
             return
 
         dimension = split.dimension
+        # Vacancies without an occupation cannot be isolated. When an
+        # occupation split may leave some out, reading the slice itself
+        # keeps those in its first pages.
         read_slice = False
         # Values of one filter are ORed, so this counts the union of the
         # children. It also catches facet values the filter does not accept.
@@ -443,6 +446,7 @@ class EuresScraper(BaseScraper):
                 "EURES could not check the split of %s by %s: %s",
                 _describe(base), dimension.name, exc,
             )
+            read_slice = dimension is _OCCUPATION
         else:
             covered = int(union.get("numberRecords") or 0)
             if covered < total:
@@ -452,8 +456,6 @@ class EuresScraper(BaseScraper):
                     _describe(base), dimension.name, covered, total,
                     total - covered,
                 )
-                # Vacancies without an occupation cannot be isolated;
-                # reading the slice itself keeps those in its first pages.
                 read_slice = dimension is _OCCUPATION
 
         tasks = [

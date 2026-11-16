@@ -276,12 +276,14 @@ class _FakePortal:
     filter are ORed, filters are ANDed, each facet ignores its own filter,
     and a page ending past ``max_results`` is rejected. With
     ``shuffle_ties``, vacancies sharing ``modified`` swap order on every
-    other read of a page number."""
+    other read of a page number. ``failing_unions`` names a filter whose
+    multi-value queries fail."""
 
     vacancies: list[_Vacancy]
     max_results: int
     rejected: set[str] = field(default_factory=set)
     shuffle_ties: bool = False
+    failing_unions: str | None = None
     bodies: list[dict] = field(default_factory=list)
     reads: dict[int, int] = field(default_factory=dict)
 
@@ -303,6 +305,8 @@ class _FakePortal:
             value in self.rejected for values in body.values()
             if isinstance(values, list) for value in values if isinstance(value, str)
         ):
+            return httpx.Response(400, json={"error": "bad request"})
+        if self.failing_unions and len(body.get(self.failing_unions) or []) > 1:
             return httpx.Response(400, json={"error": "bad request"})
         hits = sorted(self._matching(body), key=lambda v: -v.modified)
         number = body["page"]
@@ -464,6 +468,33 @@ def test_vacancies_outside_every_occupation_are_reported_and_read_from_the_slice
     assert any(
         "split of locationCodes=nl36 by occupation covers 6 of 8" in r.getMessage()
         and "2 fall outside it" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_slice_is_read_when_the_occupation_coverage_check_fails(
+    httpx_mock, small_pages, caplog,
+) -> None:
+    unclassified = [_Vacancy(f"c{i}", "nl", "nl36") for i in range(2)]
+    vacancies = [
+        _Vacancy("f0", "fr", "fr10"),
+        _Vacancy("n0", "nl", "nl11"),
+        *(_Vacancy(f"a{i}", "nl", "nl36", occupations=("2512",)) for i in range(2)),
+        # Second page of the nl36 slice, so only the slice itself returns them.
+        *unclassified,
+        _Vacancy("a2", "nl", "nl36", occupations=("2512",)),
+        *(_Vacancy(f"b{i}", "nl", "nl36", occupations=("5223",)) for i in range(3)),
+    ]
+    portal = _FakePortal(vacancies, max_results=4, failing_unions="occupationUris")
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.WARNING):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {v.id for v in vacancies}
+    assert any(
+        "could not check the split of locationCodes=nl36 by occupation"
+        in r.getMessage()
         for r in caplog.records
     )
 
