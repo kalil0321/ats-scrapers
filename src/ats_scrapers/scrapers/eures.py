@@ -416,38 +416,57 @@ class EuresScraper(BaseScraper):
         if slices is None:
             slices = asyncio.Semaphore(MAX_ACTIVE_SLICES)
 
-        async def read(total: int, first_page: list[dict[str, Any]] | None = None) -> None:
+        async def read_capped() -> None:
             async with slices:
+                await self._fan_out_pages(
+                    fetcher, sem, base=base, total=PAGINATION_CAP, absorb=absorb,
+                )
+
+        async def read_whole() -> dict[str, Any] | None:
+            """Read a slice that fit under the cap when planned, starting
+            from a fresh page 1: while it waited for its turn, modified
+            vacancies moved to the top and the slice may have grown.
+            Returns that page 1 if the slice no longer fits."""
+            async with slices:
+                fresh = await self._search(fetcher, sem, base=base, page=1)
+                total = int(fresh.get("numberRecords") or 0)
+                items = fresh.get("jvs") or []
+                await absorb(items)
+                if total > PAGINATION_CAP:
+                    return fresh
+                first_page = _slim(items)
+                del fresh, items
                 await self._fan_out_pages(
                     fetcher, sem, base=base, total=total, absorb=absorb,
                     first_page=first_page,
                 )
+                return None
 
         payload = await self._search(fetcher, sem, base=base, page=1)
         total = int(payload.get("numberRecords") or 0)
         if total == 0:
             return
-        items = payload.get("jvs") or []
-        await absorb(items)
-        facets = payload.get("facets") or {}
-        first_page = _slim(items) if total <= PAGINATION_CAP else None
-        # Full rows would stay in memory for as long as this slice waits
-        # for its turn or for its children.
-        del payload, items
-
-        if first_page is not None:
-            await read(total, first_page)
+        await absorb(payload.get("jvs") or [])
+        if total <= PAGE_SIZE:
             return
+        if total <= PAGINATION_CAP:
+            # Full rows are not kept while the slice waits for its turn.
+            del payload
+            grown = await read_whole()
+            if grown is None:
+                return
+            payload, total = grown, int(grown.get("numberRecords") or 0)
 
-        split = _plan_split(facets, base, total)
-        del facets
+        split = _plan_split(payload.get("facets") or {}, base, total)
+        # Nor while its children are read.
+        del payload
         if split is None:
             log.warning(
                 "EURES slice %s holds %d vacancies and cannot be split "
                 "further; %d beyond the first %d are not reachable",
                 _describe(base), total, total - PAGINATION_CAP, PAGINATION_CAP,
             )
-            await read(PAGINATION_CAP)
+            await read_capped()
             return
 
         dimension = split.dimension
@@ -496,7 +515,7 @@ class EuresScraper(BaseScraper):
 
         tasks = [child_slice(child) for child in split.children]
         if read_slice:
-            tasks.append(read(PAGINATION_CAP))
+            tasks.append(read_capped())
         await _gather_tolerant(tasks, label=dimension.name)
 
     async def _fan_out_pages(

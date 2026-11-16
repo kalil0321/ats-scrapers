@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import httpx
@@ -312,6 +313,8 @@ class _FakePortal:
     phantoms: int = 0
     # Filter values whose queries fail with 503.
     unavailable: set[str] = field(default_factory=set)
+    # Runs once, right after the first page 1 is served.
+    after_first_page: Callable[[], None] | None = None
     bodies: list[dict] = field(default_factory=list)
     reads: dict[int, int] = field(default_factory=dict)
 
@@ -364,7 +367,7 @@ class _FakePortal:
             count, regions = tree.get(v.country, (0, {}))
             regions[v.region] = regions.get(v.region, 0) + 1
             tree[v.country] = (count + 1, regions)
-        return httpx.Response(200, json={
+        response = httpx.Response(200, json={
             "numberRecords": len(hits) + self.phantoms,
             "jvs": [
                 {
@@ -388,6 +391,10 @@ class _FakePortal:
                 ),
             },
         })
+        if number == 1 and self.after_first_page is not None:
+            changed, self.after_first_page = self.after_first_page, None
+            changed()
+        return response
 
 
 @pytest.fixture
@@ -441,13 +448,14 @@ def test_collects_every_vacancy_through_nested_splits(
 @pytest.fixture
 def six_per_page(monkeypatch):
     monkeypatch.setattr(eures, "PAGE_SIZE", 6)
-    monkeypatch.setattr(eures, "PAGE_LIMIT", 2)
-    monkeypatch.setattr(eures, "PAGINATION_CAP", 12)
+    monkeypatch.setattr(eures, "PAGE_LIMIT", 3)
+    monkeypatch.setattr(eures, "PAGINATION_CAP", 18)
 
 
 def _tied_slice() -> list[_Vacancy]:
-    # x and y share a timestamp across the page 1|2 boundary (positions 5, 6).
-    stamps = (("a", 20), ("b", 19), ("c", 18), ("d", 17), ("e", 16),
+    # x and y share a timestamp across the page 2|3 boundary (positions
+    # 11, 12); the regular pages return y twice and skip x.
+    stamps = (*((f"p{i}", 30 - i) for i in range(11)),
               ("x", 5), ("y", 5), ("f", 3), ("g", 2), ("h", 1))
     return [_Vacancy(v, "mt", "mt001", modified=stamp) for v, stamp in stamps]
 
@@ -455,36 +463,39 @@ def _tied_slice() -> list[_Vacancy]:
 def test_tied_vacancies_skipped_between_pages_are_read_in_one_window(
     httpx_mock, six_per_page,
 ) -> None:
-    portal = _FakePortal(_tied_slice(), max_results=12, shuffle_ties=True)
+    portal = _FakePortal(_tied_slice(), max_results=18, shuffle_ties=True)
     _serve(httpx_mock, portal)
 
     jobs = EuresScraper("eures").fetch()
 
     assert _ids(jobs) == {v.id for v in _tied_slice()}
-    # Positions 4-7: the run with one vacancy of margin on each side.
-    assert any(b["resultsPerPage"] == 4 and b["page"] == 2 for b in portal.bodies)
+    # Positions 10-14: the run with room on each side.
+    assert any(b["resultsPerPage"] == 5 and b["page"] == 3 for b in portal.bodies)
 
 
 def test_a_window_that_misses_a_shifted_run_falls_back_to_the_pages(
     httpx_mock, six_per_page, caplog,
 ) -> None:
-    arriving = [_Vacancy(v, "mt", "mt001", modified=stamp) for v, stamp in (("n1", 99), ("n2", 98))]
+    arriving = [
+        _Vacancy(v, "mt", "mt001", modified=stamp)
+        for v, stamp in (("n1", 99), ("n2", 98), ("n3", 97))
+    ]
     portal = _FakePortal(
-        _tied_slice(), max_results=12, shuffle_ties=True, arriving=arriving,
+        _tied_slice(), max_results=18, shuffle_ties=True, arriving=arriving,
     )
     _serve(httpx_mock, portal)
 
     with caplog.at_level(logging.WARNING):
         jobs = EuresScraper("eures").fetch()
 
-    assert "y" in _ids(jobs)
+    assert _ids(jobs) >= {v.id for v in _tied_slice()}
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 def test_a_slice_still_short_after_rereads_is_a_warning(
     httpx_mock, six_per_page, caplog,
 ) -> None:
-    portal = _FakePortal(_tied_slice()[:8], max_results=12, phantoms=1)
+    portal = _FakePortal(_tied_slice()[:8], max_results=18, phantoms=1)
     _serve(httpx_mock, portal)
 
     with caplog.at_level(logging.WARNING):
@@ -635,6 +646,46 @@ def test_rejected_filter_value_is_reported_instead_of_read_as_empty(
         and "rejected the query locationCodes=de2" in r.getMessage()
         for r in caplog.records
     )
+
+
+def test_vacancies_modified_after_planning_are_read_from_a_fresh_page_one(
+    httpx_mock, monkeypatch, caplog,
+) -> None:
+    monkeypatch.setattr(eures, "PAGE_SIZE", 2)
+    monkeypatch.setattr(eures, "PAGE_LIMIT", 3)
+    monkeypatch.setattr(eures, "PAGINATION_CAP", 6)
+    stamps = (("a", 9), ("b", 8), ("c", 7), ("d", 6), ("e", 5), ("f", 4))
+    vacancies = [_Vacancy(v, "mt", "mt001", modified=s) for v, s in stamps]
+
+    def modify() -> None:
+        # c and d move to the top, onto the page 1 read while planning.
+        vacancies[2].modified, vacancies[3].modified = 11, 10
+
+    _serve(httpx_mock, _FakePortal(vacancies, max_results=6, after_first_page=modify))
+
+    with caplog.at_level(logging.WARNING):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {"a", "b", "c", "d", "e", "f"}
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_a_slice_that_grew_past_the_cap_after_planning_is_split(
+    httpx_mock, small_pages,
+) -> None:
+    vacancies = [
+        *(_Vacancy(f"a{i}", "at", "at1") for i in range(3)),
+        _Vacancy("b0", "be", "be1"),
+    ]
+
+    def grow() -> None:
+        vacancies.extend(_Vacancy(f"b{i}", "be", "be1") for i in (1, 2))
+
+    _serve(httpx_mock, _FakePortal(vacancies, max_results=4, after_first_page=grow))
+
+    jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {"a0", "a1", "a2", "b0", "b1", "b2"}
 
 
 def test_a_failed_slice_is_named_with_its_announced_count(
