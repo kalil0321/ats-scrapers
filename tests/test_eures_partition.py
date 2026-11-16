@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from ats_scrapers.scrapers import eures
-from ats_scrapers.scrapers.eures import EuresScraper, _plan_split, _rereads
+from ats_scrapers.scrapers.eures import EuresScraper, _plan_split, _Reread, _rereads
 
 _API = re.compile(r"^https://europa\.eu/eures/api/jv-searchengine/public/jv-search/search")
 _ISCO = "http://data.europa.eu/esco/isco/C"
@@ -219,8 +219,11 @@ def test_a_short_tied_run_around_a_repeat_is_read_in_one_window() -> None:
     page_2 = _rows(("t3", 5), ("t4", 5),
                    *((f"q{i}", 4 - i) for i in range(48)))
 
-    # Page 6 of 9 results holds positions 45-53.
-    assert _rereads({1: page_1, 2: page_2}) == [(6, 9)]
+    # Page 2 of 33 results holds positions 33-65: the run with 14 positions
+    # of room on each side.
+    assert _rereads({1: page_1, 2: page_2}) == [
+        _Reread(page=2, size=33, stamp=5, rows=5, first=47, last=51),
+    ]
 
 
 def test_a_tied_run_longer_than_a_page_gets_its_pages_read_again() -> None:
@@ -230,7 +233,7 @@ def test_a_tied_run_longer_than_a_page_gets_its_pages_read_again() -> None:
                    *((f"q{i}", 4 - i) for i in range(19)))
     page_3 = _rows(*((f"r{i}", 1) for i in range(50)))
 
-    assert _rereads({1: page_1, 2: page_2, 3: page_3}) == [(1, None), (2, None)]
+    assert _rereads({1: page_1, 2: page_2, 3: page_3}) == [_Reread(1), _Reread(2)]
 
 
 def test_nothing_is_read_again_without_a_repeat() -> None:
@@ -238,6 +241,25 @@ def test_nothing_is_read_again_without_a_repeat() -> None:
     page_2 = _rows(*((f"q{i}", 5) for i in range(10)))
 
     assert _rereads({1: page_1, 2: page_2}) == []
+
+
+def test_a_repeat_around_other_timestamps_is_an_arrival_not_a_tie() -> None:
+    # p47 moved down two places after page 1 was read: nothing was skipped.
+    page_1 = _rows(*((f"p{i}", 100 - i) for i in range(50)))
+    page_2 = _rows(("p48", 52), ("p49", 51), ("p47", 53),
+                   *((f"q{i}", 40 - i) for i in range(47)))
+
+    assert _rereads({1: page_1, 2: page_2}) == []
+
+
+def test_a_window_holds_its_run_only_with_room_on_both_sides() -> None:
+    reread = _Reread(page=2, size=4, stamp=5, rows=2, first=5, last=6)
+
+    assert reread.holds_run(_rows(("e", 16), ("x", 5), ("y", 5), ("f", 3)))
+    # Shifted by arrivals: y fell out of the window.
+    assert not reread.holds_run(_rows(("c", 18), ("d", 17), ("e", 16), ("x", 5)))
+    # The run may go on past the window's last row.
+    assert not reread.holds_run(_rows(("d", 17), ("e", 16), ("x", 5), ("y", 5)))
 
 
 # --- end to end against a fake portal ------------------------------------------
@@ -284,6 +306,10 @@ class _FakePortal:
     rejected: set[str] = field(default_factory=set)
     shuffle_ties: bool = False
     failing_unions: str | None = None
+    # Vacancies that arrive when the first custom-size window is read.
+    arriving: list[_Vacancy] = field(default_factory=list)
+    # Counted in ``numberRecords`` but never returned.
+    phantoms: int = 0
     bodies: list[dict] = field(default_factory=list)
     reads: dict[int, int] = field(default_factory=dict)
 
@@ -308,6 +334,9 @@ class _FakePortal:
             return httpx.Response(400, json={"error": "bad request"})
         if self.failing_unions and len(body.get(self.failing_unions) or []) > 1:
             return httpx.Response(400, json={"error": "bad request"})
+        if self.arriving and body["resultsPerPage"] != eures.PAGE_SIZE:
+            self.vacancies.extend(self.arriving)
+            self.arriving = []
         hits = sorted(self._matching(body), key=lambda v: -v.modified)
         number = body["page"]
         self.reads[number] = self.reads.get(number, 0) + 1
@@ -332,7 +361,7 @@ class _FakePortal:
             regions[v.region] = regions.get(v.region, 0) + 1
             tree[v.country] = (count + 1, regions)
         return httpx.Response(200, json={
-            "numberRecords": len(hits),
+            "numberRecords": len(hits) + self.phantoms,
             "jvs": [
                 {
                     "id": v.id,
@@ -405,24 +434,63 @@ def test_collects_every_vacancy_through_nested_splits(
     assert any(len(b["locationCodes"]) > 1 for b in portal.bodies)
 
 
-def test_tied_vacancies_skipped_between_pages_are_read_in_one_window(
-    httpx_mock, monkeypatch,
-) -> None:
-    monkeypatch.setattr(eures, "PAGE_SIZE", 3)
+@pytest.fixture
+def six_per_page(monkeypatch):
+    monkeypatch.setattr(eures, "PAGE_SIZE", 6)
     monkeypatch.setattr(eures, "PAGE_LIMIT", 2)
-    monkeypatch.setattr(eures, "PAGINATION_CAP", 6)
-    # c and d share a timestamp across the page 1|2 boundary.
-    vacancies = [
-        _Vacancy(v, "mt", "mt001", modified=stamp)
-        for v, stamp in (("a", 9), ("b", 8), ("c", 5), ("d", 5), ("e", 2), ("f", 1))
-    ]
-    portal = _FakePortal(vacancies, max_results=6, shuffle_ties=True)
+    monkeypatch.setattr(eures, "PAGINATION_CAP", 12)
+
+
+def _tied_slice() -> list[_Vacancy]:
+    # x and y share a timestamp across the page 1|2 boundary (positions 5, 6).
+    stamps = (("a", 20), ("b", 19), ("c", 18), ("d", 17), ("e", 16),
+              ("x", 5), ("y", 5), ("f", 3), ("g", 2), ("h", 1))
+    return [_Vacancy(v, "mt", "mt001", modified=stamp) for v, stamp in stamps]
+
+
+def test_tied_vacancies_skipped_between_pages_are_read_in_one_window(
+    httpx_mock, six_per_page,
+) -> None:
+    portal = _FakePortal(_tied_slice(), max_results=12, shuffle_ties=True)
     _serve(httpx_mock, portal)
 
     jobs = EuresScraper("eures").fetch()
 
-    assert _ids(jobs) == {"a", "b", "c", "d", "e", "f"}
-    assert any(b["resultsPerPage"] == 2 for b in portal.bodies)
+    assert _ids(jobs) == {v.id for v in _tied_slice()}
+    # Positions 4-7: the run with one vacancy of margin on each side.
+    assert any(b["resultsPerPage"] == 4 and b["page"] == 2 for b in portal.bodies)
+
+
+def test_a_window_that_misses_a_shifted_run_falls_back_to_the_pages(
+    httpx_mock, six_per_page, caplog,
+) -> None:
+    arriving = [_Vacancy(v, "mt", "mt001", modified=stamp) for v, stamp in (("n1", 99), ("n2", 98))]
+    portal = _FakePortal(
+        _tied_slice(), max_results=12, shuffle_ties=True, arriving=arriving,
+    )
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.WARNING):
+        jobs = EuresScraper("eures").fetch()
+
+    assert "y" in _ids(jobs)
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_a_slice_still_short_after_rereads_is_a_warning(
+    httpx_mock, six_per_page, caplog,
+) -> None:
+    portal = _FakePortal(_tied_slice()[:8], max_results=12, phantoms=1)
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.WARNING):
+        EuresScraper("eures").fetch()
+
+    assert any(
+        r.levelno == logging.WARNING
+        and "slice (all) returned 8 of 9 vacancies" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 def test_language_split_reaches_vacancies_in_languages_the_facet_omits(

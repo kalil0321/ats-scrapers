@@ -83,7 +83,7 @@ MAX_CONCURRENCY = 6  # The portal is generous but we stay polite.
 # queue behind the pages of the other active slices; enough slices to keep
 # every request busy, few enough to bound that memory.
 MAX_ACTIVE_SLICES = 2 * MAX_CONCURRENCY
-_REREAD_ROUNDS = 3  # See ``_rereads``.
+_REREAD_ROUNDS = 4  # See ``_rereads``.
 
 
 @dataclass(frozen=True)
@@ -520,12 +520,10 @@ class EuresScraper(BaseScraper):
                 pages[page] = slim
             seen.update(item["id"] for item in slim)
 
-        async def one(page: int, size: int | None = None) -> None:
-            payload = await self._search(
-                fetcher, sem, base=base, page=page, size=size,
-            )
+        async def one(page: int) -> None:
+            payload = await self._search(fetcher, sem, base=base, page=page)
             items = payload.get("jvs") or []
-            keep(page if size is None else None, items)
+            keep(page, items)
             await absorb(items)
 
         if first_page is not None:
@@ -535,24 +533,41 @@ class EuresScraper(BaseScraper):
         )
         if first_page is None:
             return
-        windows_read: set[tuple[int, int | None]] = set()
+
+        windows_read: set[_Reread] = set()
+        refresh: set[int] = set()
+
+        async def window(reread: _Reread) -> None:
+            payload = await self._search(
+                fetcher, sem, base=base, page=reread.page, size=reread.size,
+            )
+            items = payload.get("jvs") or []
+            keep(None, items)
+            await absorb(items)
+            if not reread.holds_run(items):
+                refresh.update(_pages_around(reread.first, reread.last))
+
         for _ in range(_REREAD_ROUNDS):
             if len(seen) >= total:
                 return
-            # A window returns its run whole, so once is enough; pages of
-            # a longer run are worth reading again in the next round.
-            todo = [
-                r for r in _rereads(pages)
-                if r[1] is None or r not in windows_read
-            ]
-            if not todo:
+            # A window that held its run is not read twice. Pages are,
+            # since a run that moved shows up again in the fresh pages.
+            todo = [r for r in _rereads(pages) if r not in windows_read]
+            windows_read.update(r for r in todo if r.size)
+            regular = {r.page for r in todo if not r.size} | refresh
+            refresh = set()
+            regular &= set(range(1, page_count + 1))
+            if not todo and not regular:
                 break
-            windows_read.update(todo)
             await _gather_tolerant(
-                (one(page, size) for page, size in todo), label="page",
+                [
+                    *(window(r) for r in todo if r.size),
+                    *(one(page) for page in sorted(regular)),
+                ],
+                label="page",
             )
         if len(seen) < total:
-            log.info(
+            log.warning(
                 "EURES slice %s returned %d of %d vacancies",
                 _describe(base), len(seen), total,
             )
@@ -907,15 +922,55 @@ def _slim(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _rereads(pages: dict[int, list[dict[str, Any]]]) -> list[tuple[int, int | None]]:
-    """``(page, size)`` requests for each run of vacancies sharing a
-    ``lastModificationDate`` around a vacancy seen on two pages.
+@dataclass(frozen=True)
+class _Reread:
+    """A regular page (``size`` None) or a custom-size window that must
+    return the whole run of ``rows`` vacancies stamped ``stamp``, which
+    held positions ``first``..``last`` in the regular pages."""
+
+    page: int
+    size: int | None = None
+    stamp: Any = None
+    rows: int = 0
+    first: int = 0
+    last: int = 0
+
+    def holds_run(self, items: list[dict[str, Any]]) -> bool:
+        """Whether a window came back with its run whole. Vacancies that
+        arrived or left since the regular pages shift the run, so an edge
+        the window left room at must lie outside it."""
+        stamps = [item.get("lastModificationDate") for item in items]
+        if stamps.count(self.stamp) < self.rows:
+            return False
+        top = (self.page - 1) * (self.size or PAGE_SIZE)
+        if top < self.first and stamps and stamps[0] == self.stamp:
+            return False
+        bottom = top + (self.size or PAGE_SIZE) - 1
+        return not (
+            bottom > self.last
+            and len(stamps) == self.size
+            and stamps[-1] == self.stamp
+        )
+
+
+def _pages_around(first: int, last: int) -> range:
+    """The regular pages covering positions ``first``..``last`` and their
+    neighbours."""
+    low, high = max(0, first - 1), last + 1
+    return range(low // PAGE_SIZE + 1, high // PAGE_SIZE + 2)
+
+
+def _rereads(pages: dict[int, list[dict[str, Any]]]) -> list[_Reread]:
+    """Requests for each run of vacancies sharing a ``lastModificationDate``
+    around a vacancy seen on two pages.
 
     Results are ordered by that date, and the order inside a run changes
     over time, so pages read moments apart can repeat one vacancy of a run
     and skip another. A run that fits in one page is read again in a
-    single request of a custom size; a longer run gets its regular pages
-    (``size`` None) read again.
+    single window of a custom size, with room around it where possible;
+    a longer run gets its regular pages read again. A repeat with other
+    timestamps between its two places is a vacancy that arrived or left
+    meanwhile, which skips nothing.
     """
     stamps: dict[int, Any] = {}
     found_at: dict[str, list[int]] = {}
@@ -924,30 +979,43 @@ def _rereads(pages: dict[int, list[dict[str, Any]]]) -> list[tuple[int, int | No
             position = (page - 1) * PAGE_SIZE + index
             stamps[position] = item.get("lastModificationDate")
             found_at.setdefault(str(item.get("id")), []).append(position)
-    runs: set[tuple[int, int]] = set()
+    runs: set[tuple[Any, int, int]] = set()
     for positions in found_at.values():
         if len(positions) < 2:
             continue
         stamp = stamps[positions[0]]
         start, end = min(positions), max(positions)
+        if any(stamps.get(p, stamp) != stamp for p in range(start, end + 1)):
+            continue
         while start - 1 in stamps and stamps[start - 1] == stamp:
             start -= 1
         while end + 1 in stamps and stamps[end + 1] == stamp:
             end += 1
-        runs.add((start, end))
-    requests: set[tuple[int, int | None]] = set()
-    for start, end in runs:
-        for size in range(end - start + 1, PAGE_SIZE + 1):
-            index = start // size
-            if index == end // size and (index + 1) * size <= PAGINATION_CAP:
-                requests.add((index + 1, size))
-                break
+        runs.add((stamp, start, end))
+    requests: set[_Reread] = set()
+    for stamp, start, end in runs:
+        window = _window(start, end)
+        if window is None:
+            requests.update(_Reread(page) for page in _pages_around(start, end))
         else:
-            requests.update(
-                (page, None)
-                for page in range(start // PAGE_SIZE + 1, end // PAGE_SIZE + 2)
-            )
-    return sorted(requests, key=lambda r: (r[0], r[1] or 0))
+            page, size = window
+            requests.add(_Reread(page, size, stamp, end - start + 1, start, end))
+    return sorted(requests, key=lambda r: (r.page, r.size or 0))
+
+
+def _window(start: int, end: int) -> tuple[int, int] | None:
+    """``(page, size)`` of the window holding positions ``start``..``end``
+    with the most room on its tighter side."""
+    best: tuple[int, int, int] | None = None
+    for size in range(end - start + 1, PAGE_SIZE + 1):
+        index = start // size
+        if index != end // size or (index + 1) * size > PAGINATION_CAP:
+            continue
+        room = min(start - index * size if start else size,
+                   (index + 1) * size - 1 - end)
+        if best is None or room > best[0]:
+            best = (room, index + 1, size)
+    return None if best is None else best[1:]
 
 
 def _plan_split(
