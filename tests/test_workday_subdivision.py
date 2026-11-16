@@ -119,6 +119,30 @@ def test_capped_board_is_split_by_country_then_city(httpx_mock) -> None:
     )
 
 
+def test_board_root_split_skips_a_facet_that_misses_jobs(httpx_mock) -> None:
+    """The board reports the 2,000 cap; its countries cover only 1,500 jobs."""
+    facets = [_location_group({"in": 900, "us": 600}, {"blr": 1200, "nyc": 900, "pun": 700})]
+    applied: list[dict] = []
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        applied.append(body["appliedFacets"])
+        if not body["appliedFacets"]:
+            return httpx.Response(200, json={
+                "total": QUERY_TOTAL_CAP, "jobPostings": [], "facets": facets,
+            })
+        (value,) = next(iter(body["appliedFacets"].values()))
+        return httpx.Response(200, json={
+            "total": 1, "jobPostings": [_posting(value)], "facets": [],
+        })
+
+    httpx_mock.add_callback(reply, url=API, is_reusable=True)
+
+    WorkdayScraper(URL, include_descriptions=False).fetch()
+
+    assert {param for filters in applied for param in filters} == {"locations"}
+
+
 def test_capped_search_with_nothing_left_to_split_is_logged(httpx_mock, caplog) -> None:
     def reply(request: httpx.Request) -> httpx.Response:
         offset = json.loads(request.content)["offset"]

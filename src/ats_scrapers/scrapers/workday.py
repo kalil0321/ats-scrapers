@@ -393,12 +393,13 @@ class WorkdayScraper(BaseScraper):
             )
             return
 
-        # total is capped at 2000. Try to subdivide further.
+        # total is capped at 2000. Try to subdivide further. The capped total
+        # is a floor for the size when the parent gave none (the board root).
         facet = (
             _pick_subdivision_facet(
                 first.get("facets") or [],
                 already_applied=set(applied_facets.keys()),
-                size=size,
+                size=max(size or 0, total),
             )
             if depth < MAX_SUBDIVISION_DEPTH
             else None
