@@ -37,6 +37,9 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   every job is collected instead of the first 10,000.
 - Zoho Recruit: a career site that lists 750 jobs, the most one page carries, is
   logged as a warning, since the site may have more.
+- Beisen legacy: a tenant that moved to the current Beisen portal raises instead of
+  returning no jobs, and a closed tenant is reported as not found. Anmei Group is
+  listed under `beisen`.
 - Recruitee: a board whose careers site is closed, whose public API is disabled, or
   whose custom domain now sends readers to another job site is reported as not found.
 - Wanted: requests are no longer rejected with 403 by the site's firewall, and

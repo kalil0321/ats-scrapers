@@ -6,7 +6,7 @@ from datetime import UTC
 
 import pytest
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import BeisenLegacyScraper, ScraperRegistry
 from ats_scrapers.scrapers.beisen_legacy import _extract_last_page
@@ -362,6 +362,26 @@ def test_missing_listing_table_is_empty(httpx_mock) -> None:
         categories=("Social",),
         include_descriptions=False,
     ).fetch() == []
+
+
+def test_tenant_on_current_portal_is_not_reported_empty(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=SOCIAL_1,
+        text='<html><script>var BSGlobal = {"PortalId": "1"};</script></html>',
+    )
+    with pytest.raises(ScraperError, match="current Beisen portal"):
+        BeisenLegacyScraper("amer", include_descriptions=False).fetch()
+
+
+def test_closed_tenant_is_not_found(httpx_mock) -> None:
+    error_page = (
+        '<html><head><title>Not Found</title></head><body>'
+        '<div id="main" class="errorpage"><h2>Error!</h2></div></body></html>'
+    )
+    for url in (NEWHOPE_SOCIAL_1, NEWHOPE_CAMPUS_1, NEWHOPE_INTERN_1, NEWHOPE_INDEX_1):
+        httpx_mock.add_response(url=url, text=error_page)
+    with pytest.raises(CompanyNotFoundError):
+        BeisenLegacyScraper("newhope", include_descriptions=False).fetch()
 
 
 def test_raises_instead_of_silently_truncating_at_page_cap(httpx_mock) -> None:
