@@ -83,6 +83,27 @@ def test_zero_width_description_is_ignored() -> None:
     assert job.description is None
 
 
+def test_schedule_list_sets_employment_type_without_contract_type() -> None:
+    job = EuresScraper("eures")._parse(
+        _base_item(positionOfferingCode="NS",
+                   positionScheduleCodes=["flextime", "parttime"])
+    )
+
+    assert job is not None
+    assert job.employment_type == "PART_TIME"
+    assert job.raw["positionScheduleCodes"] == ["flextime", "parttime"]
+
+
+def test_contract_type_wins_over_schedule() -> None:
+    job = EuresScraper("eures")._parse(
+        _base_item(positionOfferingCode="temporary",
+                   positionScheduleCodes=["fulltime"])
+    )
+
+    assert job is not None
+    assert job.employment_type == "TEMPORARY"
+
+
 def test_get_description_fetches_detail_api(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://europa.eu/eures/api/jv-searchengine/public/jv/id/abc123?lang=en",

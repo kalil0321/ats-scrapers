@@ -646,19 +646,25 @@ class EuresScraper(BaseScraper):
                         employment_type = mapped
                         break
 
-        # ``positionScheduleCode`` (full-time / part-time) — used as a
-        # fallback when ``positionOfferingCode`` is missing/unspecific.
-        schedule = item.get("positionScheduleCode")
-        if isinstance(schedule, str) and schedule.strip() and not employment_type:
-            sched_norm = schedule.strip().lower()
+        # The schedule (full-time / part-time) is the fallback when the
+        # contract type is missing or unspecific. Search rows carry a
+        # ``positionScheduleCodes`` list.
+        schedules = item.get("positionScheduleCodes")
+        if not isinstance(schedules, list):
+            schedules = [item.get("positionScheduleCode")]
+        for schedule in schedules if not employment_type else ():
+            sched_norm = schedule.strip().lower() if isinstance(schedule, str) else ""
             if sched_norm in ("fulltime", "full-time", "full_time"):
                 employment_type = "FULL_TIME"
             elif sched_norm in ("parttime", "part-time", "part_time"):
                 employment_type = "PART_TIME"
+            if employment_type:
+                break
 
         raw: dict[str, Any] = {}
         for k in ("euresFlag", "numberOfPosts", "lastModificationDate",
-                  "positionOfferingCode", "positionScheduleCode"):
+                  "positionOfferingCode", "positionScheduleCodes",
+                  "positionScheduleCode"):
             v = item.get(k)
             if v not in (None, "", []):
                 raw[k] = v

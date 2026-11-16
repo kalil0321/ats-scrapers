@@ -81,6 +81,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   occupations), each split is checked against its parent total, and vacancies left
   out are logged as warnings. Vacancies skipped because the portal reorders results
   with the same timestamp between pages are read again.
+- EURES: reads the schedule list of each vacancy, so a vacancy without a contract type
+  still gets a full-time or part-time employment type.
 - Recruitee: a board whose careers site is closed, whose public API is disabled, or
   whose custom domain now sends readers to another job site is reported as not found.
 - Wanted: requests are no longer rejected with 403 by the site's firewall, and
