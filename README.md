@@ -19,10 +19,10 @@
 </p>
 
 <p align="center">
-  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.total_jobs&label=live%20jobs&color=3b82f6&cacheSeconds=300" alt="Live jobs"></a>
-  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.total_companies&label=companies&color=3b82f6&cacheSeconds=300" alt="Companies"></a>
-  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.ats_count&label=sources&color=3b82f6&cacheSeconds=300" alt="Sources"></a>
-  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.generated_at&label=snapshot&color=3b82f6&cacheSeconds=300" alt="Dataset snapshot"></a>
+  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fbadges.json&query=%24.jobs&label=live%20jobs&color=3b82f6&cacheSeconds=300" alt="Live jobs"></a>
+  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fbadges.json&query=%24.companies&label=companies&color=3b82f6&cacheSeconds=300" alt="Companies"></a>
+  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fbadges.json&query=%24.sources&label=sources&color=3b82f6&cacheSeconds=300" alt="Sources"></a>
+  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fbadges.json&query=%24.updated&label=updated&color=3b82f6&cacheSeconds=300" alt="Last update"></a>
   <a href="https://pypi.org/project/ats-scrapers/"><img src="https://img.shields.io/pypi/v/ats-scrapers?color=3b82f6" alt="PyPI version"></a>
   <a href="https://pypi.org/project/ats-scrapers/"><img src="https://img.shields.io/pypi/pyversions/ats-scrapers" alt="Python versions"></a>
   <a href="https://github.com/kalil0321/ats-scrapers/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>

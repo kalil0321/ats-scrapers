@@ -25,16 +25,14 @@ def _readme_prose(content: str) -> str:
     return "\n".join(lines)
 
 
-def test_readme_uses_live_manifest_for_mutable_dataset_stats() -> None:
+def test_readme_reads_mutable_dataset_stats_from_live_badges() -> None:
     content = README.read_text()
 
-    for query in (
-        "%24.stats.total_jobs",
-        "%24.stats.total_companies",
-        "%24.stats.ats_count",
-        "%24.generated_at",
-    ):
-        assert query in content
+    # badges.json is written by the publisher next to the manifest, with
+    # display-ready values ("6M", "2026-11-16").
+    assert "storage.stapply.ai%2Fjobhive%2Fv1%2Fbadges.json" in content
+    for query in ("%24.jobs", "%24.companies", "%24.sources", "%24.updated"):
+        assert f"query={query}&" in content
 
     assert _HARD_CODED_DATASET_STAT.search(_readme_prose(content)) is None
 
