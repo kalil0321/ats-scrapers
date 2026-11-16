@@ -172,23 +172,59 @@ def test_walks_every_page(httpx_mock) -> None:
     assert len(httpx_mock.get_requests()) == 2
 
 
-def test_stops_at_the_result_cap(httpx_mock) -> None:
-    """Above 10,000 postings the search returns nothing; the walk ends there."""
+def _sorted_site(total: int):
+    """A site whose search sorts by posting date and stops at RESULT_CAP rows."""
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        query = parse_qs(urlparse(str(request.url)).query, keep_blank_values=True)
+        page = int(query["CurrentPage"][0])
+        ids = list(range(1000, 1000 + total))
+        if query["SortCriteria"] == ["1"] and query["SortDirection"] == ["1"]:
+            ids.reverse()
+        first = (page - 1) * PAGE_SIZE
+        end = min(first + PAGE_SIZE, total, RESULT_CAP)
+        rows = [_row(str(i)) for i in ids[first:end]]
+        return httpx.Response(200, json=_fragment(rows, total, pages=-(-total // PAGE_SIZE)))
+
+    return reply
+
+
+def test_site_above_the_result_cap_is_read_from_both_ends(httpx_mock) -> None:
+    """Above 10,000 postings a search returns nothing, in either sort order."""
     total = RESULT_CAP + 857
+    httpx_mock.add_callback(_sorted_site(total), url=SEARCH, is_reusable=True)
+
+    jobs = TalentBrewScraper(HOST, include_descriptions=False).fetch()
+
+    assert len(jobs) == total
+    sorts = [
+        parse_qs(urlparse(str(r.url)).query, keep_blank_values=True)["SortDirection"][0]
+        for r in httpx_mock.get_requests()
+    ]
+    # The first page, the newest postings up to the cap, then the oldest
+    # postings until the walks meet.
     last = RESULT_CAP // PAGE_SIZE
+    oldest = -(-(total - RESULT_CAP) // PAGE_SIZE) + 1
+    assert sorts == ["0"] + ["1"] * last + ["0"] * oldest
+
+
+def test_site_that_ignores_the_sort_stops_at_the_result_cap(httpx_mock) -> None:
+    total = RESULT_CAP + 857
 
     def reply(request: httpx.Request) -> httpx.Response:
         page = int(parse_qs(urlparse(str(request.url)).query)["CurrentPage"][0])
         first = (page - 1) * PAGE_SIZE
-        rows = [_row(str(1000 + i)) for i in range(first, first + PAGE_SIZE)]
+        rows = [_row(str(1000 + i)) for i in range(first, min(first + PAGE_SIZE, RESULT_CAP))]
         return httpx.Response(200, json=_fragment(rows, total, pages=last + 2))
 
+    last = RESULT_CAP // PAGE_SIZE
     httpx_mock.add_callback(reply, url=SEARCH, is_reusable=True)
 
     jobs = TalentBrewScraper(HOST, include_descriptions=False).fetch()
 
     assert len(jobs) == RESULT_CAP
-    assert len(httpx_mock.get_requests()) == last
+    # The second walk ends on its first page: nothing it lists is new.
+    assert len(httpx_mock.get_requests()) == 1 + last + 1
 
 
 def test_site_with_its_own_page_size_is_walked_to_the_end(httpx_mock) -> None:
@@ -431,14 +467,11 @@ def test_coverage_floor_rounds_up(httpx_mock, returned: int, raises: bool) -> No
         assert len(scraper.fetch()) == 6
 
 
-def test_capped_site_logs_the_announced_total(httpx_mock, caplog) -> None:
-    pages = RESULT_CAP // PAGE_SIZE
-    for page in range(1, pages + 1):
-        rows = [_row(str(page * 1_000 + i)) for i in range(PAGE_SIZE)]
-        httpx_mock.add_response(url=SEARCH, json=_fragment(rows, 25_000, pages + 30))
+def test_site_above_both_walks_logs_the_announced_total(httpx_mock, caplog) -> None:
+    httpx_mock.add_callback(_sorted_site(25_000), url=SEARCH, is_reusable=True)
 
     with caplog.at_level("WARNING"):
         jobs = TalentBrewScraper(HOST, include_descriptions=False).fetch()
 
-    assert len(jobs) == RESULT_CAP
+    assert len(jobs) == 2 * RESULT_CAP
     assert "announces 25000 postings" in caplog.text

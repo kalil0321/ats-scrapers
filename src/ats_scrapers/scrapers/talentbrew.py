@@ -19,13 +19,15 @@ the same two public resources:
    block: description, posting date, employer, structured address,
    employment type and the ATS requisition id.
 
-A search stops returning rows after 10,000 postings, so on the few
-sites above that size the walk ends there and a warning is logged with
-the announced total. Coverage is measured on distinct postings: the
-scraper fails closed when a page repeats postings it already has
-without adding a new one, or when the walk collects far fewer distinct
-postings than the site announced (the announced total counts a posting
-once per location, so a complete walk can be somewhat short).
+A search stops returning rows after 10,000 postings in whatever order
+it is sorted, so a site above that size is read twice, newest postings
+first and then oldest first, until the two walks meet: up to 20,000
+postings. Above that a warning is logged with the announced total.
+Coverage is measured on distinct postings: the scraper fails closed
+when a page repeats postings its walk already read without adding a
+new one, or when the walks collect far fewer distinct postings than
+the site announced (the announced total counts a posting once per
+location, so a complete walk can be somewhat short).
 
 The result list only carries title, location and link. Everything else
 (description, posting date, country, employment type, requisition id)
@@ -62,6 +64,9 @@ logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 500
 RESULT_CAP = 10_000  # a search returns no rows past this many postings
+# The two ends of the posting-date order, for sites above RESULT_CAP.
+_NEWEST_FIRST = {"SortCriteria": "1", "SortDirection": "1"}
+_OLDEST_FIRST = {"SortCriteria": "1", "SortDirection": "0"}
 # The announced total counts a posting once per location while the list
 # shows it once, so a complete walk can hold fewer rows than announced.
 MIN_COVERAGE = 0.6
@@ -156,38 +161,26 @@ class TalentBrewScraper(BaseScraper):
             total, pages = _totals(fragment)
             if total == 0:
                 return []
-            self._absorb(fragment, jobs)
-            # Some sites ignore RecordsPerPage and keep their own page size,
-            # so follow the page count the site reports, not ours.
-            for page in range(2, pages + 1):
-                if len(jobs) >= RESULT_CAP:
-                    break
-                rows, added = self._absorb(await self._page(fetch, page), jobs)
-                if rows == 0:
-                    # The page count comes from the announced total, which
-                    # counts a posting once per location, so the list can
-                    # run out early. The coverage floor below decides
-                    # whether what was collected is enough.
-                    break
-                if added == 0:
-                    # Postings, but none of them new: the site is serving
-                    # the same page again.
-                    raise ScraperError(
-                        f"TalentBrew ({self.host}) page {page} of {pages} "
-                        "repeated postings without adding a new one"
-                    )
+            if total <= RESULT_CAP:
+                walked: set[str] = set()
+                self._absorb(fragment, jobs, walked)
+                await self._walk(fetch, jobs, pages, walked=walked, start=2)
+                expected = total
+            else:
+                await self._walk(fetch, jobs, pages, sort=_NEWEST_FIRST)
+                await self._walk(fetch, jobs, pages, sort=_OLDEST_FIRST)
+                expected = min(total, 2 * RESULT_CAP)
 
             # Distinct postings, not rows: a repeated page must not count.
-            expected = min(total, RESULT_CAP)
             if len(jobs) < math.ceil(expected * MIN_COVERAGE):
                 raise ScraperError(
                     f"TalentBrew ({self.host}) returned {len(jobs)} of "
                     f"{expected} expected postings"
                 )
-            if total > RESULT_CAP:
+            if total > 2 * RESULT_CAP:
                 logger.warning(
-                    "TalentBrew (%s) announces %d postings; the search stops "
-                    "at %d, so %d were read",
+                    "TalentBrew (%s) announces %d postings; a search stops "
+                    "at %d in each sort order, so %d were read",
                     self.host, total, RESULT_CAP, len(jobs),
                 )
             if not self.include_descriptions:
@@ -217,10 +210,12 @@ class TalentBrewScraper(BaseScraper):
 
         return self._run_sync(run())
 
-    async def _page(self, fetch: Fetcher, page: int) -> BeautifulSoup:
+    async def _page(
+        self, fetch: Fetcher, page: int, sort: dict[str, str] | None = None,
+    ) -> BeautifulSoup:
         payload = await fetch.get_json(
             f"{self.base_url}/search-jobs/results",
-            params={**_SEARCH_PARAMS, "CurrentPage": str(page)},
+            params={**_SEARCH_PARAMS, **(sort or {}), "CurrentPage": str(page)},
         )
         results = payload.get("results") if isinstance(payload, dict) else None
         if not isinstance(results, str):
@@ -229,17 +224,60 @@ class TalentBrewScraper(BaseScraper):
             )
         return _parse_html(results)
 
-    def _absorb(
-        self, fragment: BeautifulSoup, jobs: dict[str, Job],
-    ) -> tuple[int, int]:
-        """Add a page's postings to ``jobs``.
+    async def _walk(
+        self,
+        fetch: Fetcher,
+        jobs: dict[str, Job],
+        pages: int,
+        *,
+        walked: set[str] | None = None,
+        start: int = 1,
+        sort: dict[str, str] | None = None,
+    ) -> None:
+        """Read pages ``start`` to ``pages`` of one sort order into ``jobs``.
 
-        Returns ``(rows, added)``: how many rows of the page parsed into a
-        posting (rows that lost their id or title do not count), and how
-        many of those were not in ``jobs`` yet.
+        ``walked`` holds the postings this walk already read. The walk ends
+        at an empty page, after RESULT_CAP postings, or at a page whose
+        postings an earlier walk in another order read (the walks met).
+        """
+        walked = set() if walked is None else walked
+        # Some sites ignore RecordsPerPage and keep their own page size,
+        # so follow the page count the site reports, not ours.
+        for page in range(start, pages + 1):
+            if len(walked) >= RESULT_CAP:
+                break
+            rows, added, fresh = self._absorb(
+                await self._page(fetch, page, sort), jobs, walked,
+            )
+            if rows == 0:
+                # The page count comes from the announced total, which
+                # counts a posting once per location, so the list can
+                # run out early. The coverage floor decides whether what
+                # was collected is enough.
+                break
+            if fresh == 0:
+                # Postings, but none new to this walk: the site is serving
+                # the same page again.
+                raise ScraperError(
+                    f"TalentBrew ({self.host}) page {page} of {pages} "
+                    "repeated postings without adding a new one"
+                )
+            if added == 0:
+                break
+
+    def _absorb(
+        self, fragment: BeautifulSoup, jobs: dict[str, Job], walked: set[str],
+    ) -> tuple[int, int, int]:
+        """Add a page's postings to ``jobs`` and their ids to ``walked``.
+
+        Returns ``(rows, added, fresh)``: how many rows of the page parsed
+        into a posting (rows that lost their id or title do not count), how
+        many of those were not in ``jobs`` yet, and how many were not in
+        ``walked`` yet.
         """
         rows = 0
         added = 0
+        fresh = 0
         seen_on_page: set[str] = set()
         for link in fragment.select("a[data-job-id][href]"):
             href = str(link.get("href") or "")
@@ -255,6 +293,9 @@ class TalentBrewScraper(BaseScraper):
                 continue
             rows += 1
             ats_id = f"{self.host}:{job_id}"
+            if ats_id not in walked:
+                walked.add(ats_id)
+                fresh += 1
             if ats_id in jobs:
                 continue
             added += 1
@@ -267,7 +308,7 @@ class TalentBrewScraper(BaseScraper):
                 location=_link_location(link),
                 fetched_at=datetime.now(UTC),
             )
-        return rows, added
+        return rows, added, fresh
 
     async def _enrich(
         self, fetch: Fetcher, semaphore: asyncio.Semaphore, job: Job,
