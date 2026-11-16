@@ -70,6 +70,28 @@ def test_facet_that_misses_jobs_is_a_last_resort() -> None:
     )[0] == "locationCountry"
 
 
+def test_falling_back_to_a_facet_that_misses_jobs_is_logged(caplog) -> None:
+    facets = [{"facetParameter": "timeType", "values": _values({"ft": 1500, "pt": 1000})}]
+
+    with caplog.at_level("WARNING", logger="ats_scrapers.scrapers.workday"):
+        picked = _pick_subdivision_facet(facets, already_applied={"jobFamilyGroup"}, size=3000)
+
+    assert picked[0] == "timeType"
+    assert "no facet covers all 3000 jobs" in caplog.text
+
+
+def test_board_root_size_is_the_largest_single_value_facet() -> None:
+    """The root reports 2,000; time type shows the board holds 30,000."""
+    facets = [
+        {"facetParameter": "jobFamilyGroup", "values": _values({"a": 15000, "b": 10000})},
+        {"facetParameter": "timeType", "values": _values({"ft": 28000, "pt": 2000})},
+    ]
+
+    picked = _pick_subdivision_facet(facets, already_applied=set(), size=QUERY_TOTAL_CAP)
+
+    assert picked[0] == "timeType"
+
+
 def _posting(key: str) -> dict:
     return {"title": f"Job {key}", "externalPath": f"/job/{key}", "bulletFields": [key]}
 

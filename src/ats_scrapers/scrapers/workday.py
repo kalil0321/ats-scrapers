@@ -126,6 +126,9 @@ _SUBDIVISION_FACETS = (
 # `distance` lists search radii around a typed-in place, one posting each:
 # it never splits the postings.
 _IGNORED_FACETS = frozenset({"distance"})
+# Facets that give each posting at most one value: their counts add up to
+# at most the search's real size, while the reported total stops at 2,000.
+_SINGLE_VALUE_FACETS = ("jobFamilyGroup", "timeType", "workerSubType")
 
 
 @ScraperRegistry.register(ATSType.WORKDAY)
@@ -749,17 +752,23 @@ def _pick_subdivision_facet(
 
     Skips facets that are already in ``already_applied`` (reusing the same
     facet would just hit the cap again) and facets with fewer than two
-    non-empty values. When the search's job count ``size`` is known, a
-    facet whose counts add up to less leaves the jobs without a value out
-    of every split, so it is used only when no other facet covers them
-    all. Tries the priority list first, then falls back to the
-    highest-cardinality remaining facet.
+    non-empty values. A facet whose counts add up to less than the search's
+    job count leaves the jobs without a value out of every split, so it is
+    used only when no other facet covers them all. The count is ``size``
+    or the largest sum of a single-value facet, whichever is higher. Tries
+    the priority list first, then falls back to the highest-cardinality
+    remaining facet.
     """
+    values = _facet_values(facets)
     by_param = {
         param: items
-        for param, items in _facet_values(facets).items()
+        for param, items in values.items()
         if param not in already_applied and len(items) >= 2
     }
+    size = max(
+        [size or 0]
+        + [sum(count for _, count in values[p]) for p in _SINGLE_VALUE_FACETS if p in values]
+    )
     if size:
         # Counts drift by a few jobs between two searches.
         complete = {
@@ -767,6 +776,12 @@ def _pick_subdivision_facet(
             for param, items in by_param.items()
             if sum(count for _, count in items) >= size * 0.99
         }
+        if by_param and not complete:
+            logger.warning(
+                "Workday: no facet covers all %d jobs of a capped search; "
+                "the split leaves out the jobs without a value",
+                size,
+            )
         by_param = complete or by_param
     for preferred in _SUBDIVISION_FACETS:
         if preferred in by_param:
