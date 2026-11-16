@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.scrapers.eures import EuresScraper, _extract_detail_description
 
 
@@ -78,6 +81,27 @@ def test_zero_width_description_is_ignored() -> None:
 
     assert job is not None
     assert job.description is None
+
+
+def test_schedule_list_sets_employment_type_without_contract_type() -> None:
+    job = EuresScraper("eures")._parse(
+        _base_item(positionOfferingCode="NS",
+                   positionScheduleCodes=["flextime", "parttime"])
+    )
+
+    assert job is not None
+    assert job.employment_type == "PART_TIME"
+    assert job.raw["positionScheduleCodes"] == ["flextime", "parttime"]
+
+
+def test_contract_type_wins_over_schedule() -> None:
+    job = EuresScraper("eures")._parse(
+        _base_item(positionOfferingCode="temporary",
+                   positionScheduleCodes=["fulltime"])
+    )
+
+    assert job is not None
+    assert job.employment_type == "TEMPORARY"
 
 
 def test_get_description_fetches_detail_api(httpx_mock) -> None:
@@ -240,7 +264,7 @@ def _fake_exhaust(items_to_emit):
     """Build a coroutine that mimics ``_exhaust_query``'s contract:
     it calls the supplied ``absorb`` callback with a single batch of
     items, then returns."""
-    async def _fake(client, sem, *, base, depth, used_dims, absorb):
+    async def _fake(fetcher, sem, *, base, absorb, slices=None):
         await absorb(items_to_emit)
     return _fake
 
@@ -305,33 +329,18 @@ def test_fetch_stream_yields_same_jobs_as_legacy(monkeypatch) -> None:
     assert sorted(j.ats_id for j in streamed) == sorted(str(i) for i in range(7))
 
 
-def test_fetch_stream_terminates_cleanly_when_all_countries_fail(
-    monkeypatch, caplog
-) -> None:
-    """``_gather_tolerant`` (used for the country fan-out) swallows
-    per-country exceptions by design — see PR #35. ``fetch_stream``
-    must therefore still terminate cleanly when every country task
-    raises: the consumer iterator finishes with zero jobs and the
-    failures show up as warning logs (not a re-raised error)."""
+def test_fetch_stream_raises_when_the_portal_query_fails(monkeypatch) -> None:
+    """Failed sub-slices are logged by ``_gather_tolerant``; a failed
+    top-level query means nothing was collected and must surface."""
     scraper = EuresScraper("eures")
 
-    async def boom(client, sem, *, base, depth, used_dims, absorb):
-        raise RuntimeError("network down")
+    async def boom(fetcher, sem, *, base, absorb, slices=None):
+        raise ScraperError("network down")
 
     monkeypatch.setattr(scraper, "_exhaust_query", boom)
 
-    import logging
     async def consume():
-        out = []
-        async for job in scraper.fetch_stream():
-            out.append(job)
-        return out
+        return [job async for job in scraper.fetch_stream()]
 
-    with caplog.at_level(logging.WARNING):
-        result = asyncio.run(consume())
-    assert result == []
-    # The per-country failures are logged so an operator can see them.
-    assert any(
-        "EURES country subtask failed" in r.getMessage()
-        for r in caplog.records
-    )
+    with pytest.raises(ScraperError, match="network down"):
+        asyncio.run(consume())

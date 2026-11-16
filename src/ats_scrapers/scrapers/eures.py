@@ -6,22 +6,35 @@ API the frontend consumes:
 
     POST https://europa.eu/eures/api/jv-searchengine/public/jv-search/search
 
-The API caps every query at **10,000 results** (50 ``resultsPerPage`` ×
-200 ``page`` max). Past page=200 the server returns 400. To collect the
-full ~2.7M jobs we subdivide recursively, in priority order:
+The API caps every query at 10,000 results (50 ``resultsPerPage`` x
+200 ``page``). A query above the cap is split into narrower queries,
+recursively, until every slice fits:
 
-1. ``locationCodes`` — country code (de, fr, it, …). 31 buckets.
-2. NUTS regions inside the country (de1..de7) — read from the response's
-   ``POSITION_LOCATION`` facet ``childrenList``. Used when a country
-   alone exceeds the 10k cap.
-3. ``sectorCodes`` (NACE A..U) — 21 buckets. Used when a region still
-   exceeds the cap.
-4. ``positionScheduleCodes`` (fulltime/parttime/flextime/etc.) — final
-   fallback.
+- Each response carries a ``facets`` block with per-value counts for
+  location, contract type, experience, education, EURES flag, sector,
+  schedule, required languages and benefits. Facets ignore their own
+  filter and apply all the others, so the counts describe the children
+  of the current slice. Every facet lists an ``NS`` (not specified)
+  value, which the filters accept, so no vacancy falls outside a facet
+  (languages need one more child, see ``_ISO_639_1``).
+- ``_plan_split`` picks the facet that leaves the fewest vacancies above
+  the cap and repeats the fewest (a vacancy can carry several regions,
+  sectors or schedules). Location is a tree: countries, then the NUTS
+  regions the portal indexes for that country (deeper NUTS codes match
+  nothing).
+- When no facet can split a slice further, the ISCO occupation tree
+  (``occupationUris``) takes over. It has no facet, so its child counts
+  come from the child queries themselves, and vacancies without an
+  occupation fall outside it.
 
-Each response carries a ``facets`` block with per-bucket counts so we
-plan subdivision optimally without extra probes (same trick as the
-Bundesagentur scraper).
+Values of one filter are ORed, so one extra query with every child value
+counts the union of the children, which must reach the parent total. It
+also catches facet values the filter does not accept. A shortfall, or a
+slice that cannot be split below the cap, is logged as a warning with the
+number of vacancies left out.
+
+Sorting does not help past the cap: ``BEST_MATCH`` and ``MOST_RECENT``
+return the same order when no keyword is set.
 
 Single-source scraper: ``company_slug`` is informational and ignored.
 The output rows carry the publishing employer's name as ``company`` so
@@ -34,6 +47,7 @@ import asyncio
 import html
 import logging
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
@@ -60,22 +74,105 @@ DETAIL_API_URL_FMT = (
     "https://europa.eu/eures/api/jv-searchengine/public/jv/id/{jv_id}?lang=en"
 )
 PAGE_SIZE = 50  # API caps `resultsPerPage` at 50 (>50 returns 400).
-PAGE_LIMIT = 200  # `page` caps at 200 (page>200 returns 400).
+# ``page`` x ``resultsPerPage`` above 10,000 returns 400, whatever the size.
+PAGE_LIMIT = 200
 PAGINATION_CAP = PAGE_SIZE * PAGE_LIMIT  # 10,000 jobs per query.
 MAX_CONCURRENCY = 6  # The portal is generous but we stay polite.
-MAX_SUBDIVISION_DEPTH = 4
+# Slices reading their pages at once. Each keeps the ids and timestamps of
+# its pages (up to 10,000 rows) until its rereads are done, and rereads
+# queue behind the pages of the other active slices; enough slices to keep
+# every request busy, few enough to bound that memory.
+MAX_ACTIVE_SLICES = 2 * MAX_CONCURRENCY
+_REREAD_ROUNDS = 4  # See ``_rereads``.
 
-# 31 EURES countries (EU 27 + EEA 3 + Switzerland), as used by the
-# ``locationCodes`` filter. Codes match ISO 3166-1 alpha-2 lowercased.
-_COUNTRIES = (
-    "at", "be", "bg", "ch", "cy", "cz", "de", "dk", "ee", "el",
-    "es", "fi", "fr", "hr", "hu", "ie", "is", "it", "li", "lt",
-    "lu", "lv", "mt", "nl", "no", "pl", "pt", "ro", "se", "si",
-    "sk",
+
+@dataclass(frozen=True)
+class _Dimension:
+    name: str
+    facet: str | None
+    field: str
+
+
+_LOCATION = _Dimension("location", "POSITION_LOCATION", "locationCodes")
+_EDUCATION = _Dimension(
+    "education",
+    "EDUCATION_AND_QUALIFICATION_LEVEL",
+    "educationAndQualificationLevelCodes",
+)
+_LANGUAGE = _Dimension("language", "LANGUAGE_SKILLS", "requiredLanguages")
+_OCCUPATION = _Dimension("occupation", None, "occupationUris")
+_FACET_DIMENSIONS = (
+    _Dimension("contract", "POSITION_OFFERING", "positionOfferingCodes"),
+    _Dimension("experience", "REQUIRED_EXPERIENCE", "requiredExperienceCodes"),
+    _EDUCATION,
+    _Dimension("flag", "EURES_FLAG", "euresFlagCodes"),
+    _Dimension("sector", "NACE_CODE", "sectorCodes"),
+    _Dimension("schedule", "POSITION_SCHEDULE", "positionScheduleCodes"),
+    _LANGUAGE,
+    _Dimension("benefit", "EXTRA_BENEFIT", "otherBenefitsCodes"),
 )
 
-# NACE sectors A..U.
-_NACE_SECTORS = tuple("abcdefghijklmnopqrstu")
+# The language filter takes {isoCode, level} and matches vacancies that
+# require the language at or below that CEFR level, so C2 matches them all.
+# Any other level string fails with a server error.
+_LANGUAGE_ANY_LEVEL = "C2"
+
+# The language facet lists only the EU/EEA languages, but the filter takes
+# any ISO 639-1 code, and some vacancies require only others (Russian,
+# Luxembourgish, Ukrainian, ...). One extra child ORs every code the facet
+# does not list.
+_ISO_639_1 = (
+    "aa", "ab", "ae", "af", "ak", "am", "an", "ar", "as", "av", "ay", "az", "ba",
+    "be", "bg", "bh", "bi", "bm", "bn", "bo", "br", "bs", "ca", "ce", "ch", "co",
+    "cr", "cs", "cu", "cv", "cy", "da", "de", "dv", "dz", "ee", "el", "en", "eo",
+    "es", "et", "eu", "fa", "ff", "fi", "fj", "fo", "fr", "fy", "ga", "gd", "gl",
+    "gn", "gu", "gv", "ha", "he", "hi", "ho", "hr", "ht", "hu", "hy", "hz", "ia",
+    "id", "ie", "ig", "ii", "ik", "io", "is", "it", "iu", "ja", "jv", "ka", "kg",
+    "ki", "kj", "kk", "kl", "km", "kn", "ko", "kr", "ks", "ku", "kv", "kw", "ky",
+    "la", "lb", "lg", "li", "ln", "lo", "lt", "lu", "lv", "mg", "mh", "mi", "mk",
+    "ml", "mn", "mr", "ms", "mt", "my", "na", "nb", "nd", "ne", "ng", "nl", "nn",
+    "no", "nr", "nv", "ny", "oc", "oj", "om", "or", "os", "pa", "pi", "pl", "ps",
+    "pt", "qu", "rm", "rn", "ro", "ru", "rw", "sa", "sc", "sd", "se", "sg", "si",
+    "sk", "sl", "sm", "sn", "so", "sq", "sr", "ss", "st", "su", "sv", "sw", "ta",
+    "te", "tg", "th", "ti", "tk", "tl", "tn", "to", "tr", "ts", "tt", "tw", "ty",
+    "ug", "uk", "ur", "uz", "ve", "vi", "vo", "wa", "wo", "xh", "yi", "yo", "za",
+    "zh", "zu",
+)
+
+# The education facet reports groups, but the filter takes the ISCED and
+# EQF levels behind each group (mapping from the portal's frontend). A
+# group name sent as a filter value matches nothing.
+_EDUCATION_FILTER_CODES = {
+    "basic": ("isced_0", "isced_1", "isced_2", "eqf_1", "eqf_2", "eqf_3"),
+    "medium": ("isced_3", "isced_4", "eqf_4"),
+    "tertiary": ("isced_5", "eqf_5"),
+    "bachelor": ("isced_6", "eqf_6"),
+    "master": ("isced_7", "eqf_7"),
+    "doctoral": ("isced_8", "eqf_8"),
+    "not_classified": ("isced_9",),
+}
+
+# ISCO-08 groups as ESCO concept URIs. The filter matches a group and
+# everything below it (C2 > C25 > C251 > C2512), and a vacancy may carry
+# several occupations.
+_ISCO_URI_PREFIX = "http://data.europa.eu/esco/isco/C"
+_ISCO_UNIT_DIGITS = 4
+
+
+@dataclass(frozen=True)
+class _Child:
+    values: tuple[Any, ...]
+    # Count announced by the parent's facet; None for occupations.
+    count: int | None
+
+
+@dataclass(frozen=True)
+class _Split:
+    dimension: _Dimension
+    children: tuple[_Child, ...]
+
+    def union_values(self) -> list[Any]:
+        return [value for child in self.children for value in child.values]
 
 # Many EURES rows ship with a placeholder employer — confirmed
 # 86% of FR rows ("non renseigné") and 60% of ES rows ("") in a
@@ -91,9 +188,6 @@ _NACE_SECTORS = tuple("abcdefghijklmnopqrstu")
 # useful signal about the source NES, and downstream consumers
 # can decide how to render it without us hard-coding a canonical
 # English marker on their behalf.
-
-# Position schedule values from the API enum.
-_SCHEDULES = ("fulltime", "parttime", "flextime", "NS")
 
 
 def _empty_search_body(rpp: int = PAGE_SIZE, page: int = 1) -> dict[str, Any]:
@@ -257,7 +351,7 @@ class EuresScraper(BaseScraper):
         *,
         on_job: Callable[[Job], Awaitable[None]] | None = None,
     ) -> list[Job]:
-        """Drive the per-country fan-out + dedup.
+        """Crawl the whole portal, split by ``_exhaust_query``, with dedup.
 
         Two modes:
 
@@ -301,19 +395,9 @@ class EuresScraper(BaseScraper):
                 else:
                     all_jobs.extend(new_jobs)
 
-            # Country-level fan-out — even tiny markets get their own
-            # query so the 10k cap is split before we have to look at
-            # facets at all.
-            async def per_country(cc: str) -> None:
-                await self._exhaust_query(
-                    fetcher, sem,
-                    base={"locationCodes": [cc]},
-                    depth=0, used_dims=set(),
-                    absorb=absorb,
-                )
-            await _gather_tolerant(
-                (per_country(c) for c in _COUNTRIES),
-                label="country",
+            await self._exhaust_query(
+                fetcher, sem, base={}, absorb=absorb,
+                slices=asyncio.Semaphore(MAX_ACTIVE_SLICES),
             )
         return all_jobs
 
@@ -323,93 +407,118 @@ class EuresScraper(BaseScraper):
         sem: asyncio.Semaphore,
         *,
         base: dict[str, Any],
-        depth: int,
-        used_dims: set[str],
-        absorb,
+        absorb: Callable[[list[dict[str, Any]]], Awaitable[None]],
+        slices: asyncio.Semaphore | None = None,
     ) -> None:
-        """Pull every job matching ``base``. If the total exceeds the
-        per-query cap, pick the next subdivision dimension and recurse."""
-        first = await self._search(fetcher, sem, base=base, page=1)
-        total = int(first.get("numberRecords") or 0)
+        """Pull every job matching ``base``, splitting it while it is
+        above the pagination cap. ``slices`` bounds how many slices read
+        their pages at once."""
+        if slices is None:
+            slices = asyncio.Semaphore(MAX_ACTIVE_SLICES)
+
+        async def read_capped() -> None:
+            async with slices:
+                await self._fan_out_pages(
+                    fetcher, sem, base=base, total=PAGINATION_CAP, absorb=absorb,
+                )
+
+        async def read_whole() -> dict[str, Any] | None:
+            """Read a slice that fit under the cap when planned, starting
+            from a fresh page 1: while it waited for its turn, modified
+            vacancies moved to the top and the slice may have grown.
+            Returns that page 1 if the slice no longer fits."""
+            async with slices:
+                fresh = await self._search(fetcher, sem, base=base, page=1)
+                total = int(fresh.get("numberRecords") or 0)
+                items = fresh.get("jvs") or []
+                await absorb(items)
+                if total > PAGINATION_CAP:
+                    return fresh
+                first_page = _slim(items)
+                del fresh, items
+                await self._fan_out_pages(
+                    fetcher, sem, base=base, total=total, absorb=absorb,
+                    first_page=first_page,
+                )
+                return None
+
+        payload = await self._search(fetcher, sem, base=base, page=1)
+        total = int(payload.get("numberRecords") or 0)
         if total == 0:
             return
-        await absorb(first.get("jvs") or [])
-
+        await absorb(payload.get("jvs") or [])
+        if total <= PAGE_SIZE:
+            return
         if total <= PAGINATION_CAP:
-            await self._fan_out_pages(
-                fetcher, sem, base=base, total=total, absorb=absorb,
-            )
-            return
-
-        if depth >= MAX_SUBDIVISION_DEPTH:
-            # Out of depth — accept the cap loss.
-            await self._fan_out_pages(
-                fetcher, sem, base=base, total=PAGINATION_CAP, absorb=absorb,
-            )
-            return
-
-        # Pick the next subdivision dimension we haven't applied yet.
-        # Order: NUTS region under the active country → NACE sector →
-        # schedule. Region first because for a single country it splits
-        # most cleanly (regions are named NUTS-1 / NUTS-2 codes).
-        if "region" not in used_dims and base.get("locationCodes"):
-            children = _region_children_for(
-                first.get("facets") or {}, base["locationCodes"],
-            )
-            if children:
-                async def child_region(code: str) -> None:
-                    await self._exhaust_query(
-                        fetcher, sem,
-                        base={**base, "locationCodes": [code]},
-                        depth=depth + 1,
-                        used_dims=used_dims | {"region"},
-                        absorb=absorb,
-                    )
-                await _gather_tolerant(
-                    (child_region(c) for c in children),
-                    label="region",
-                )
+            # Full rows are not kept while the slice waits for its turn.
+            del payload
+            grown = await read_whole()
+            if grown is None:
                 return
+            payload, total = grown, int(grown.get("numberRecords") or 0)
 
-        if "sector" not in used_dims:
-            facet = (first.get("facets") or {}).get("NACE_CODE") or {}
-            sectors = [
-                e["code"] for e in (facet.get("facetEntriesList") or [])
-                if (e.get("count") or 0) > 0
-            ] or list(_NACE_SECTORS)
-            async def child_sector(code: str) -> None:
-                await self._exhaust_query(
-                    fetcher, sem,
-                    base={**base, "sectorCodes": [code]},
-                    depth=depth + 1,
-                    used_dims=used_dims | {"sector"},
-                    absorb=absorb,
-                )
-            await _gather_tolerant(
-                (child_sector(c) for c in sectors),
-                label="sector",
+        split = _plan_split(payload.get("facets") or {}, base, total)
+        # Nor while its children are read.
+        del payload
+        if split is None:
+            log.warning(
+                "EURES slice %s holds %d vacancies and cannot be split "
+                "further; %d beyond the first %d are not reachable",
+                _describe(base), total, total - PAGINATION_CAP, PAGINATION_CAP,
             )
+            await read_capped()
             return
 
-        if "schedule" not in used_dims:
-            async def child_sched(code: str) -> None:
-                await self._exhaust_query(
-                    fetcher, sem,
-                    base={**base, "positionScheduleCodes": [code]},
-                    depth=depth + 1,
-                    used_dims=used_dims | {"schedule"},
-                    absorb=absorb,
-                )
-            await _gather_tolerant(
-                (child_sched(c) for c in _SCHEDULES),
-                label="schedule",
+        dimension = split.dimension
+        # Vacancies without an occupation cannot be isolated. When an
+        # occupation split may leave some out, reading the slice itself
+        # keeps those in its first pages.
+        read_slice = False
+        # Values of one filter are ORed, so this counts the union of the
+        # children. It also catches facet values the filter does not accept.
+        try:
+            union = await self._search(
+                fetcher, sem,
+                base={**base, dimension.field: split.union_values()},
+                page=1, size=1,
             )
-            return
+        except ScraperError as exc:
+            log.warning(
+                "EURES could not check the split of %s by %s: %s",
+                _describe(base), dimension.name, exc,
+            )
+            read_slice = dimension is _OCCUPATION
+        else:
+            covered = int(union.get("numberRecords") or 0)
+            # Its facets are not kept while the children are read.
+            del union
+            if covered < total:
+                log.warning(
+                    "EURES split of %s by %s covers %d of %d vacancies; "
+                    "%d fall outside it",
+                    _describe(base), dimension.name, covered, total,
+                    total - covered,
+                )
+                read_slice = dimension is _OCCUPATION
 
-        # Exhausted dimensions — accept the cap loss for this slice.
-        await self._fan_out_pages(
-            fetcher, sem, base=base, total=PAGINATION_CAP, absorb=absorb,
-        )
+        async def child_slice(child: _Child) -> None:
+            child_base = {**base, dimension.field: list(child.values)}
+            try:
+                await self._exhaust_query(
+                    fetcher, sem, base=child_base, absorb=absorb, slices=slices,
+                )
+            except ScraperError as exc:
+                # Failures inside the child's own children are logged
+                # there, so this is the child's first request.
+                announced = "?" if child.count is None else child.count
+                raise ScraperError(
+                    f"{_describe(child_base)} ({announced} announced): {exc}"
+                ) from exc
+
+        tasks = [child_slice(child) for child in split.children]
+        if read_slice:
+            tasks.append(read_capped())
+        await _gather_tolerant(tasks, label=dimension.name)
 
     async def _fan_out_pages(
         self,
@@ -418,21 +527,79 @@ class EuresScraper(BaseScraper):
         *,
         base: dict[str, Any],
         total: int,
-        absorb,
+        absorb: Callable[[list[dict[str, Any]]], Awaitable[None]],
+        first_page: list[dict[str, Any]] | None = None,
     ) -> None:
-        # Page 1 is already absorbed by the caller.
+        """Read pages 2.. of a slice whose page 1 the caller absorbed.
+
+        With ``first_page``, a slice that comes back short is checked for
+        vacancies repeated across pages, and the runs of tied vacancies
+        around them are read again (``_rereads``).
+        """
         page_count = min((total + PAGE_SIZE - 1) // PAGE_SIZE, PAGE_LIMIT)
-        if page_count <= 1:
-            return
+        page_label = f"page of {_describe(base)}"
+        pages: dict[int, list[dict[str, Any]]] = {}
+        seen: set[str] = set()
+
+        def keep(page: int | None, items: list[dict[str, Any]]) -> None:
+            if first_page is None:
+                return
+            slim = _slim(items)
+            if page is not None:
+                pages[page] = slim
+            seen.update(item["id"] for item in slim)
 
         async def one(page: int) -> None:
             payload = await self._search(fetcher, sem, base=base, page=page)
-            await absorb(payload.get("jvs") or [])
+            items = payload.get("jvs") or []
+            keep(page, items)
+            await absorb(items)
 
+        if first_page is not None:
+            keep(1, first_page)
         await _gather_tolerant(
-            (one(p) for p in range(2, page_count + 1)),
-            label="page",
+            (one(p) for p in range(2, page_count + 1)), label=page_label,
         )
+        if first_page is None:
+            return
+
+        windows_read: set[_Reread] = set()
+        refresh: set[int] = set()
+
+        async def window(reread: _Reread) -> None:
+            payload = await self._search(
+                fetcher, sem, base=base, page=reread.page, size=reread.size,
+            )
+            items = payload.get("jvs") or []
+            keep(None, items)
+            await absorb(items)
+            if not reread.holds_run(items):
+                refresh.update(_pages_around(reread.first, reread.last))
+
+        for _ in range(_REREAD_ROUNDS):
+            if len(seen) >= total:
+                return
+            # A window that held its run is not read twice. Pages are,
+            # since a run that moved shows up again in the fresh pages.
+            todo = [r for r in _rereads(pages) if r not in windows_read]
+            windows_read.update(r for r in todo if r.size)
+            regular = {r.page for r in todo if not r.size} | refresh
+            refresh = set()
+            regular &= set(range(1, page_count + 1))
+            if not todo and not regular:
+                break
+            await _gather_tolerant(
+                [
+                    *(window(r) for r in todo if r.size),
+                    *(one(page) for page in sorted(regular)),
+                ],
+                label=page_label,
+            )
+        if len(seen) < total:
+            log.warning(
+                "EURES slice %s returned %d of %d vacancies",
+                _describe(base), len(seen), total,
+            )
 
     async def _search(
         self,
@@ -441,8 +608,9 @@ class EuresScraper(BaseScraper):
         *,
         base: dict[str, Any],
         page: int,
+        size: int | None = None,
     ) -> dict[str, Any]:
-        body = _empty_search_body(PAGE_SIZE, page)
+        body = _empty_search_body(size or PAGE_SIZE, page)
         body.update(base)
         # Opt-in keyword filter (see ``__init__``): overrides the empty
         # ``keywords`` default with the API's object shape.
@@ -451,8 +619,9 @@ class EuresScraper(BaseScraper):
         # Network errors and 429/5xx are retried inside the shared
         # Fetcher. Two provider quirks stay here via ``handled``:
         #
-        # - 400 means "past pagination cap or invalid filter" — return
-        #   an empty payload so the caller treats the slice as exhausted.
+        # - 400 means a page past the cap or a filter value the API does
+        #   not know. Neither is ever requested on purpose, so it raises
+        #   and the caller logs the lost slice.
         # - 307 with an HTML "Network Error" body is the CDN/load-
         #   balancer in front of EURES timing out; the next attempt
         #   routes through a fresh upstream and almost always succeeds,
@@ -469,7 +638,9 @@ class EuresScraper(BaseScraper):
                     "POST", API_URL, json=body, handled={307, 400},
                 )
             if r.status_code == 400:
-                return {"numberRecords": 0, "jvs": [], "facets": {}}
+                raise ScraperError(
+                    f"EURES rejected the query {_describe(base)} page={page}"
+                )
             if r.status_code == 307:
                 if attempt == retries:
                     raise ScraperError(
@@ -537,19 +708,25 @@ class EuresScraper(BaseScraper):
                         employment_type = mapped
                         break
 
-        # ``positionScheduleCode`` (full-time / part-time) — used as a
-        # fallback when ``positionOfferingCode`` is missing/unspecific.
-        schedule = item.get("positionScheduleCode")
-        if isinstance(schedule, str) and schedule.strip() and not employment_type:
-            sched_norm = schedule.strip().lower()
+        # The schedule (full-time / part-time) is the fallback when the
+        # contract type is missing or unspecific. Search rows carry a
+        # ``positionScheduleCodes`` list.
+        schedules = item.get("positionScheduleCodes")
+        if not isinstance(schedules, list):
+            schedules = [item.get("positionScheduleCode")]
+        for schedule in schedules if not employment_type else ():
+            sched_norm = schedule.strip().lower() if isinstance(schedule, str) else ""
             if sched_norm in ("fulltime", "full-time", "full_time"):
                 employment_type = "FULL_TIME"
             elif sched_norm in ("parttime", "part-time", "part_time"):
                 employment_type = "PART_TIME"
+            if employment_type:
+                break
 
         raw: dict[str, Any] = {}
         for k in ("euresFlag", "numberOfPosts", "lastModificationDate",
-                  "positionOfferingCode", "positionScheduleCode"):
+                  "positionOfferingCode", "positionScheduleCodes",
+                  "positionScheduleCode"):
             v = item.get(k)
             if v not in (None, "", []):
                 raw[k] = v
@@ -765,24 +942,237 @@ async def _gather_tolerant(
             log.warning("EURES %s subtask failed: %s", label, r)
 
 
-def _region_children_for(
+def _slim(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ids and timestamps only, all ``_rereads`` needs of a page."""
+    return [
+        {"id": str(item.get("id")),
+         "lastModificationDate": item.get("lastModificationDate")}
+        for item in items
+    ]
+
+
+@dataclass(frozen=True)
+class _Reread:
+    """A regular page (``size`` None) or a custom-size window that must
+    return the whole run of ``rows`` vacancies stamped ``stamp``, which
+    held positions ``first``..``last`` in the regular pages."""
+
+    page: int
+    size: int | None = None
+    stamp: Any = None
+    rows: int = 0
+    first: int = 0
+    last: int = 0
+
+    def holds_run(self, items: list[dict[str, Any]]) -> bool:
+        """Whether a window came back with its run whole. Vacancies that
+        arrived or left since the regular pages shift the run, so an edge
+        the window left room at must lie outside it."""
+        stamps = [item.get("lastModificationDate") for item in items]
+        if stamps.count(self.stamp) < self.rows:
+            return False
+        top = (self.page - 1) * (self.size or PAGE_SIZE)
+        if top < self.first and stamps and stamps[0] == self.stamp:
+            return False
+        bottom = top + (self.size or PAGE_SIZE) - 1
+        return not (
+            bottom > self.last
+            and len(stamps) == self.size
+            and stamps[-1] == self.stamp
+        )
+
+
+def _pages_around(first: int, last: int) -> range:
+    """The regular pages covering positions ``first``..``last`` and their
+    neighbours."""
+    low, high = max(0, first - 1), last + 1
+    return range(low // PAGE_SIZE + 1, high // PAGE_SIZE + 2)
+
+
+def _rereads(pages: dict[int, list[dict[str, Any]]]) -> list[_Reread]:
+    """Requests for each run of vacancies sharing a ``lastModificationDate``
+    around a vacancy seen on two pages.
+
+    Results are ordered by that date, and the order inside a run changes
+    over time, so pages read moments apart can repeat one vacancy of a run
+    and skip another. A run that fits in one page is read again in a
+    single window of a custom size, with room around it where possible;
+    a longer run gets its regular pages read again. A repeat with other
+    timestamps between its two places is a vacancy that arrived or left
+    meanwhile, which skips nothing.
+    """
+    stamps: dict[int, Any] = {}
+    found_at: dict[str, list[int]] = {}
+    for page, items in pages.items():
+        for index, item in enumerate(items):
+            position = (page - 1) * PAGE_SIZE + index
+            stamps[position] = item.get("lastModificationDate")
+            found_at.setdefault(str(item.get("id")), []).append(position)
+    runs: set[tuple[Any, int, int]] = set()
+    for positions in found_at.values():
+        if len(positions) < 2:
+            continue
+        stamp = stamps[positions[0]]
+        start, end = min(positions), max(positions)
+        if any(stamps.get(p, stamp) != stamp for p in range(start, end + 1)):
+            continue
+        while start - 1 in stamps and stamps[start - 1] == stamp:
+            start -= 1
+        while end + 1 in stamps and stamps[end + 1] == stamp:
+            end += 1
+        runs.add((stamp, start, end))
+    requests: set[_Reread] = set()
+    for stamp, start, end in runs:
+        window = _window(start, end)
+        if window is None:
+            requests.update(_Reread(page) for page in _pages_around(start, end))
+        else:
+            page, size = window
+            requests.add(_Reread(page, size, stamp, end - start + 1, start, end))
+    return sorted(requests, key=lambda r: (r.page, r.size or 0))
+
+
+def _window(start: int, end: int) -> tuple[int, int] | None:
+    """``(page, size)`` of the window holding positions ``start``..``end``
+    with the most room on its tighter side."""
+    best: tuple[int, int, int] | None = None
+    for size in range(end - start + 1, PAGE_SIZE + 1):
+        index = start // size
+        if index != end // size or (index + 1) * size > PAGINATION_CAP:
+            continue
+        room = min(start - index * size if start else size,
+                   (index + 1) * size - 1 - end)
+        if best is None or room > best[0]:
+            best = (room, index + 1, size)
+    return None if best is None else best[1:]
+
+
+def _plan_split(
     facets: dict[str, Any],
-    selected: list[str],
-) -> list[str]:
-    """Find regional children of the selected country in
-    ``POSITION_LOCATION``. Returns a list of NUTS codes that we can
-    pass back as ``locationCodes`` to subdivide."""
+    base: dict[str, Any],
+    total: int,
+) -> _Split | None:
+    """Pick how to split a slice of ``total`` vacancies above the cap.
+
+    Among the facets not yet filtered on, prefer one whose counts reach
+    the parent total, then the fewest vacancies left above the cap plus
+    repeated across children. Falls back to the next ISCO level.
+    """
+    candidates: list[tuple[tuple[int, ...], _Split]] = []
+    for priority, dimension in enumerate((_LOCATION, *_FACET_DIMENSIONS)):
+        if dimension is _LOCATION:
+            counted = _location_children(facets, base.get("locationCodes"))
+        elif base.get(dimension.field):
+            continue
+        else:
+            counted = _counted(_facet_entries(facets, dimension.facet))
+        children = [
+            _Child(_filter_values(dimension, code), count)
+            for code, count in counted
+        ]
+        counts = [count for _, count in counted]
+        unlisted = _unlisted_languages(facets) if dimension is _LANGUAGE else None
+        # An empty filter would match the whole parent again.
+        if unlisted is not None and unlisted.values:
+            # The vacancies no listed language covers need an unlisted one.
+            children.append(unlisted)
+            counts.append(max(0, total - sum(counts)))
+        if len(counts) < 2 or max(counts) >= total:
+            continue
+        volume = sum(counts)
+        overflow = sum(max(0, count - PAGINATION_CAP) for count in counts)
+        duplicates = max(0, volume - total)
+        key = (int(volume < total), overflow + duplicates, len(counts), priority)
+        candidates.append((key, _Split(dimension, tuple(children))))
+    if candidates:
+        return min(candidates, key=lambda c: c[0])[1]
+
+    uris = _occupation_children(base.get("occupationUris"))
+    if not uris:
+        return None
+    return _Split(_OCCUPATION, tuple(_Child((uri,), None) for uri in uris))
+
+
+def _filter_values(dimension: _Dimension, code: str) -> tuple[Any, ...]:
+    if dimension is _EDUCATION:
+        return _EDUCATION_FILTER_CODES.get(code, (code,))
+    if dimension is _LANGUAGE:
+        return ({"isoCode": code, "level": _LANGUAGE_ANY_LEVEL},)
+    return (code,)
+
+
+def _unlisted_languages(facets: dict[str, Any]) -> _Child:
+    listed = {e.get("code") for e in _facet_entries(facets, _LANGUAGE.facet)}
+    return _Child(
+        tuple(
+            {"isoCode": code, "level": _LANGUAGE_ANY_LEVEL}
+            for code in _ISO_639_1
+            if code not in listed
+        ),
+        None,
+    )
+
+
+def _facet_entries(facets: dict[str, Any], name: str | None) -> list[dict[str, Any]]:
+    facet = (facets or {}).get(name or "") or {}
+    entries = facet.get("facetEntriesList") if isinstance(facet, dict) else None
+    return [e for e in entries or [] if isinstance(e, dict)]
+
+
+def _counted(entries: list[dict[str, Any]]) -> list[tuple[str, int]]:
+    out: list[tuple[str, int]] = []
+    for entry in entries:
+        code = entry.get("code")
+        count = int(entry.get("count") or 0)
+        if isinstance(code, str) and code and count > 0:
+            out.append((code, count))
+    return out
+
+
+def _location_children(
+    facets: dict[str, Any],
+    selected: list[str] | None,
+) -> list[tuple[str, int]]:
+    """Countries for an unlocated slice, the regions of a country, and
+    nothing below a region. ``NS`` and ``<country>-NS`` hold vacancies
+    without a country or region."""
+    entries = _facet_entries(facets, _LOCATION.facet)
     if not selected:
+        return _counted(entries)
+    if len(selected) != 1:
         return []
     target = selected[0].lower()
-    pos = (facets or {}).get("POSITION_LOCATION") or {}
-    for entry in pos.get("facetEntriesList") or []:
-        if (entry.get("code") or "").lower() != target:
-            continue
-        children = entry.get("childrenList") or []
-        codes = [
-            c.get("code") for c in children
-            if c.get("code") and (c.get("count") or 0) > 0
-        ]
-        return codes
+    for entry in entries:
+        if str(entry.get("code") or "").lower() == target:
+            children = entry.get("childrenList") or []
+            return _counted([c for c in children if isinstance(c, dict)])
     return []
+
+
+def _occupation_children(selected: list[str] | None) -> list[str]:
+    if not selected:
+        return [f"{_ISCO_URI_PREFIX}{d}" for d in range(10)]
+    if len(selected) != 1 or not selected[0].startswith(_ISCO_URI_PREFIX):
+        return []
+    code = selected[0].removeprefix(_ISCO_URI_PREFIX)
+    if len(code) >= _ISCO_UNIT_DIGITS:
+        return []
+    return [f"{_ISCO_URI_PREFIX}{code}{d}" for d in range(10)]
+
+
+def _describe(base: dict[str, Any]) -> str:
+    parts = []
+    for key, value in base.items():
+        if not isinstance(value, list) or not value:
+            continue
+        labels = [_label(v) for v in value[:8]]
+        if len(value) > len(labels):
+            labels.append(f"+{len(value) - len(labels)}")
+        parts.append(f"{key}={','.join(labels)}")
+    return " ".join(parts).replace(_ISCO_URI_PREFIX, "isco:") or "(all)"
+
+
+def _label(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("isoCode") or value)
+    return str(value)
