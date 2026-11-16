@@ -176,6 +176,7 @@ def test_provider_max_concurrency_caps_requested_value(
         _timeout=30,
         *,
         include_descriptions=True,
+        egress=False,
     ):
         nonlocal active, max_active
         active += 1

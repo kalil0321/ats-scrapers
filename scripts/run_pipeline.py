@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import csv
 import fcntl
+import itertools
 import json
 import os
 import re
@@ -755,6 +756,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "max_concurrency": 4,
     },
     "workday": {
+        # Rate-limited per IP: spread tenants over the egress pool.
+        "egress": "pool",
         # Workday's slug is the FULL careers URL (the scraper parses the
         # company/instance/site components). The CSV stores `url` directly.
         "scraper": WorkdayScraper,
@@ -844,6 +847,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "fail_closed_on_empty": True,
     },
     "teamtailor": {
+        # Rate-limited per IP: spread tenants over the egress pool.
+        "egress": "pool",
         "scraper": TeamtailorScraper,
         "slug": lambda r: _slug_col(r) or (r.get("name") or "").strip() or None,
         "csv": "ats-companies/teamtailor.csv",
@@ -941,6 +946,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "fail_closed_tolerance": 0.05,
     },
     "recruitee": {
+        # Rate-limited per IP: spread tenants over the egress pool.
+        "egress": "pool",
         "scraper": RecruiteeScraper,
         # Recruitee CSVs mix human names ("5280 High School") with the
         # actual subdomain ("5280highschool"). Always derive the slug
@@ -1061,6 +1068,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "fail_closed_tolerance": 0.05,
     },
     "workable": {
+        # Rate-limited per IP: spread tenants over the egress pool.
+        "egress": "pool",
         "scraper": WorkableScraper,
         "slug": _workable_slug,
         "csv": "ats-companies/workable.csv",
@@ -1107,6 +1116,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "output": "avature/jobs.csv",
     },
     "join_com": {
+        # Rate-limited per IP: spread tenants over the egress pool.
+        "egress": "pool",
         "scraper": JoinComScraper,
         # Prefer the canonical slug column; legacy fallback derives it
         # from the URL's last path component. The lowercased form
@@ -1352,6 +1363,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
         "output": "ycombinator/jobs.csv",
     },
     "eightfold": {
+        # Rate-limited per IP: spread tenants over the egress pool.
+        "egress": "pool",
         "scraper": EightfoldScraper,
         # CSV has either a slug (most tenants → ``{slug}.eightfold.ai``) or a
         # full custom-domain URL (``apply.careers.{co}.com``). Pass the slug
@@ -1974,6 +1987,35 @@ def _bounded_timeout(cfg: dict[str, Any], requested: float) -> float:
     return requested
 
 
+_egress_turn = itertools.count()
+
+
+def _egress_pool() -> list[str | None]:
+    """Egress identities for providers with ``"egress": "pool"``.
+
+    ``ATS_SCRAPERS_EGRESS_POOL`` lists proxy URLs separated by commas or
+    newlines; ``direct`` stands for the server's own IP. Tenants take turns
+    over the pool, so each IP carries a fraction of a provider's requests.
+    """
+    raw = os.getenv("ATS_SCRAPERS_EGRESS_POOL", "")
+    members = [m.strip() for m in raw.replace("\n", ",").split(",") if m.strip()]
+    return [None if m == "direct" else m for m in members]
+
+
+def _egress_attempts(pool: list[str | None]) -> list[str | None]:
+    """Proxies to try for one tenant: two pool members, then the fallback."""
+    if not pool:
+        return [None]
+    first = next(_egress_turn)
+    attempts = [pool[first % len(pool)]]
+    if len(pool) > 1:
+        attempts.append(pool[(first + max(1, len(pool) // 2)) % len(pool)])
+    fallback = os.getenv("ATS_SCRAPERS_FALLBACK_PROXY")
+    if fallback:
+        attempts.append(fallback)
+    return attempts
+
+
 async def _run_scraper(
     scraper_cls,
     slug,
@@ -1981,22 +2023,32 @@ async def _run_scraper(
     timeout=30,
     *,
     include_descriptions: bool = True,
+    egress: bool = False,
 ) -> tuple[str, BaseScraper | None, list[Job], str | None]:
-    """Run one scraper in a thread (most are sync)."""
-    extra = kwargs or {}
+    """Run one scraper in a thread (most are sync).
 
-    def _run() -> tuple[BaseScraper, list[Job]]:
-        scraper = scraper_cls(slug, timeout=timeout, **extra)
+    With ``egress``, a tenant that fails (rate limit, block) is retried
+    from another IP of the pool, then from the fallback proxy.
+    """
+    extra = kwargs or {}
+    attempts = _egress_attempts(_egress_pool()) if egress else [None]
+
+    def _run(proxy: str | None) -> tuple[BaseScraper, list[Job]]:
+        options = {**extra, "proxy": proxy} if proxy else extra
+        scraper = scraper_cls(slug, timeout=timeout, **options)
         scraper.include_descriptions = include_descriptions
         return scraper, scraper.fetch()
 
-    try:
-        scraper, jobs = await asyncio.to_thread(_run)
-        return slug, scraper, jobs, None
-    except CompanyNotFoundError:
-        return slug, None, [], "not_found"
-    except Exception as exc:
-        return slug, None, [], f"{type(exc).__name__}: {str(exc)[:120]}"
+    error = "no attempt"
+    for proxy in attempts:
+        try:
+            scraper, jobs = await asyncio.to_thread(_run, proxy)
+            return slug, scraper, jobs, None
+        except CompanyNotFoundError:
+            return slug, None, [], "not_found"
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {str(exc)[:120]}"
+    return slug, None, [], error
 
 
 async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: float) -> int:
@@ -2209,6 +2261,7 @@ async def run(ats: str, concurrency: int, max_tenants: int | None, timeout: floa
                                 include_descriptions=not bool(
                                     cfg.get("defer_descriptions_to_cache")
                                 ),
+                                egress=cfg.get("egress") == "pool",
                             )
                         finally:
                             if tenant_delay:
