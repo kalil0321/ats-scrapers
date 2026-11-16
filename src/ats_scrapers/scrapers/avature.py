@@ -649,13 +649,16 @@ def _parse_job_element(
         else _join_avature_url(base, href)
     )
 
-    # Job ID = path tail for JobDetail/ProjectDetail pages, or pipelineId
-    # for the SearchJobsMaps/PipelineDetail variant.
+    # Job ID = path tail for JobDetail/ProjectDetail pages, ``jobId`` for
+    # ``JobDetail?jobId=N`` links, or pipelineId for the
+    # SearchJobsMaps/PipelineDetail variant.
     parsed_href = urlparse(href)
     query = parse_qs(parsed_href.query)
     ats_id = (query.get("pipelineId") or [""])[0]
     if not ats_id:
         ats_id = href.rsplit("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+        if ats_id == "JobDetail":
+            ats_id = (query.get("jobId") or [""])[0]
     if not ats_id:
         return None
 
@@ -795,6 +798,7 @@ def _is_map_search(base: str) -> bool:
 def _is_detail_href(href: str) -> bool:
     return (
         "/JobDetail/" in href
+        or "/JobDetail?" in href
         or "/ProjectDetail/" in href
         or "/PipelineDetail" in href
     )

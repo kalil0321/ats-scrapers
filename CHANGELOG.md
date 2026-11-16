@@ -38,6 +38,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - Avature: listing pages follow the portal's own pagination links, so a portal that
   serves fewer jobs per page than asked, pages by `projectOffset`, or redirects to
   another host is read to the end instead of stopping after the first page.
+- Avature: job links of the form `JobDetail?jobId=N` are read, so portals such as
+  Booz Allen no longer return no jobs.
 - Zoho Recruit: a career site that lists 750 jobs, the most one page carries, is
   logged as a warning, since the site may have more.
 - Beisen legacy: a tenant that moved to the current Beisen portal raises instead of

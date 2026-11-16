@@ -184,6 +184,27 @@ def test_pseudo_only_anchors_are_filtered(httpx_mock) -> None:
     assert [j.title for j in jobs] == ["Real Engineer"]
 
 
+def test_parses_job_detail_links_keyed_by_job_id_query(httpx_mock) -> None:
+    """Booz Allen links jobs as ``JobDetail?jobId=N``."""
+    page = """
+    <html><body>
+    <article class="article article--result">
+      <h3 class="article__header__text__title">
+        <a href="https://acme.avature.net/careers/JobDetail?jobId=132998">Data Scientist</a>
+      </h3>
+      <a href="https://acme.avature.net/careers/ApplicationMethods?jobId=132998">Apply</a>
+    </article>
+    </body></html>
+    """
+    httpx_mock.add_response(url=_url("acme", 0), text=page)
+
+    [job] = AvatureScraper("acme").fetch()
+
+    assert job.ats_id == "132998"
+    assert job.title == "Data Scientist"
+    assert str(job.url) == "https://acme.avature.net/careers/JobDetail?jobId=132998"
+
+
 # --- Pagination & termination ----------------------------------------------
 
 
