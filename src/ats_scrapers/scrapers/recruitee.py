@@ -115,12 +115,13 @@ class RecruiteeScraper(BaseScraper):
             raise CompanyNotFoundError(
                 f"Recruitee careers site of {self.company_slug!r} is closed"
             )
+        site_host = urlparse(site_url).hostname or ""
         moved_to = urlparse(target).hostname
         if (
-            self.company_slug.startswith(("http://", "https://"))
+            not _is_recruitee_host(site_host)
             and moved_to
-            and moved_to != urlparse(site_url).hostname
-            and not moved_to.endswith("recruitee.com")
+            and moved_to != site_host
+            and not _is_recruitee_host(moved_to)
         ):
             raise CompanyNotFoundError(
                 f"Recruitee careers site {site_url} now redirects to {moved_to}"
@@ -211,6 +212,10 @@ _EMPLOYMENT_MAP = {
 }
 
 _TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _is_recruitee_host(host: str) -> bool:
+    return host == "recruitee.com" or host.endswith(".recruitee.com")
 
 
 def _map_employment_type(value: object) -> str | None:

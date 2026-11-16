@@ -194,3 +194,17 @@ def test_recruitee_403_on_an_open_site_stays_an_error(httpx_mock) -> None:
 
     with pytest.raises(ScraperError, match="returned 403"):
         RecruiteeScraper("acme").fetch()
+
+
+def test_recruitee_hosted_board_given_as_url_is_not_a_custom_domain(httpx_mock) -> None:
+    httpx_mock.add_response(url=RECRUITEE_API, status_code=403, text="blocked")
+    httpx_mock.add_response(
+        method="HEAD",
+        url=RECRUITEE_SITE,
+        status_code=302,
+        headers={"Location": "https://careers.acme.example/"},
+    )
+
+    with pytest.raises(ScraperError, match="returned 403") as raised:
+        RecruiteeScraper("https://acme.recruitee.com").fetch()
+    assert not isinstance(raised.value, CompanyNotFoundError)
