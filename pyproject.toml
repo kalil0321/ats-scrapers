@@ -71,10 +71,6 @@ parquet = [
 all = [
     "ats-scrapers[scrapers,parquet]",
 ]
-# Runs the library test suite. The ops pipeline under ``pipeline/``
-# (publisher, R2 client) is repo-only — its tests additionally need
-# ``pipeline/requirements.txt``, which CI installs alongside this
-# extra.
 test = [
     "ats-scrapers[all]",
     "pytest>=8.0",
@@ -100,8 +96,7 @@ Dataset = "https://storage.stapply.ai/jobhive/v1/manifest.json"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ats_scrapers"]
 
-# Tests are not shipped: the suite also covers the repo-only ops code
-# under ``pipeline/``, so it only runs from a full checkout.
+# Tests are not shipped.
 [tool.hatch.build.targets.sdist]
 include = [
     "/src",
@@ -128,8 +123,6 @@ warn_unused_configs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Repo root on sys.path so tests can import the unpackaged ops code
-# under ``pipeline/``.
 pythonpath = ["."]
 asyncio_mode = "auto"
 # Live e2e tests (tests/e2e/) hit real ATS endpoints. They are doubly

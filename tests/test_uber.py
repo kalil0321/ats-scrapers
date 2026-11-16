@@ -160,9 +160,3 @@ def test_rejects_invalid_payload(httpx_mock, monkeypatch) -> None:
 
     with pytest.raises(ScraperError, match="invalid jobs payload"):
         UberScraper("uber").fetch()
-
-
-def test_pipeline_fails_closed_on_empty() -> None:
-    from scripts.run_pipeline import CONFIGS
-
-    assert CONFIGS["uber"]["fail_closed_on_empty"] is True

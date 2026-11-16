@@ -9,9 +9,6 @@ Two layers of progressive disclosure:
 2. Per-ATS scrapers (BYO companies):
    >>> from ats_scrapers.scrapers import GreenhouseScraper
    >>> jobs = GreenhouseScraper("anthropic").fetch()
-
-Publishing/orchestration code lives in the repo-only ``pipeline/``
-directory and is not part of the installable package.
 """
 
 from ats_scrapers._version import __version__

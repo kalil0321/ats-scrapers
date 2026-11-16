@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 
 import pytest
@@ -9,9 +8,6 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import MyCareersFutureScraper
 from ats_scrapers.scrapers.base import ScraperRegistry
-from ats_scrapers.source_kind import source_kind
-from pipeline.publisher import ATS_DEDUP_PRIORITY
-from scripts.run_pipeline import CONFIGS
 
 API = "https://api.mycareersfuture.gov.sg/v2/jobs"
 SITE = "https://www.mycareersfuture.gov.sg"
@@ -325,15 +321,3 @@ def test_a_link_to_another_site_is_not_used(httpx_mock) -> None:
     [job] = MyCareersFutureScraper("all").fetch()
 
     assert str(job.url) == f"{SITE}/job/{1:032x}"
-
-
-def test_mycareersfuture_is_a_public_board() -> None:
-    config = CONFIGS["mycareersfuture"]
-
-    assert config["scraper"] is MyCareersFutureScraper
-    assert config["singleton"] is True
-    assert config["output"] == "mycareersfuture/jobs.csv"
-    assert config["fail_closed_on_empty"] is True
-    assert source_kind("mycareersfuture") == "gov_board"
-    assert ATS_DEDUP_PRIORITY["mycareersfuture"] == ATS_DEDUP_PRIORITY["jobbankca"]
-    assert re.fullmatch(r"[a-z]+", ATSType.MYCAREERSFUTURE.value)

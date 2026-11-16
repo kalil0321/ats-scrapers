@@ -334,9 +334,3 @@ def test_persistent_500_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=_API_RE, status_code=500, is_reusable=True)
     with pytest.raises(ScraperError):
         TheHubScraper("any").fetch()
-
-
-def test_pipeline_fails_closed_on_empty() -> None:
-    from scripts.run_pipeline import CONFIGS
-
-    assert CONFIGS["thehub"]["fail_closed_on_empty"] is True

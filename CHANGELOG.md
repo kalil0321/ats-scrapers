@@ -24,6 +24,11 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   requisition number. The site has no page per opening, so each job links to
   the list page.
 
+### Removed
+
+- The dataset pipeline (`scripts/`, `pipeline/`) and the snapshot archive
+  workflow. The library and the company lists are unchanged.
+
 ### Fixed
 
 - Pipeline: a few failed boards no longer hold back ADP, Jobvite, Keka, PageUp, Paycom or Varbi.

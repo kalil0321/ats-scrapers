@@ -185,9 +185,9 @@ class BundesagenturScraper(BaseScraper):
         the accumulated list is a few GB of Job objects in RAM.
         Shares its fan-out + dedup logic with :meth:`afetch` by
         plugging a queue-pushing ``on_job`` callback into it. The
-        consumer iterator yields each job as it lands so callers
-        (e.g. :func:`scripts.run_pipeline.run`) can write straight
-        to a CSV writer without ever holding the full corpus in RAM.
+        consumer iterator yields each job as it lands so callers can
+        write straight to a CSV writer without ever holding the full
+        corpus in RAM.
 
         Termination uses an ``asyncio.Event`` rather than a queue
         sentinel: the consumer polls ``queue.get`` with a 500 ms
