@@ -280,6 +280,9 @@ def test_verified_cover_retries_catalogue_shrink(httpx_mock, monkeypatch) -> Non
     import ats_scrapers.scrapers.bundesagentur as ba
 
     _single_region(monkeypatch)
+    # The slice loses a third of its jobs, far beyond the region cover's churn
+    # tolerance; widen it so the sort-order cover's own handling is tested.
+    monkeypatch.setattr(ba, "REGION_COVER_TOLERANCE", 0.5)
     monkeypatch.setattr(ba, "PAGE_SIZE", 2)
     monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
     monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
@@ -492,6 +495,60 @@ def test_region_cover_tolerates_churn_within_limit(
 
     assert sorted(job.ats_id for job in jobs) == ["A", "B", "C", "D"]
     assert not any("beruf" in params for params in requests)
+
+
+def _end_count(monkeypatch: pytest.MonkeyPatch, end_total: int) -> None:
+    """Answer the region cover's closing count of the whole slice with
+    ``end_total``; the root count is the first such probe."""
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    probes = 0
+    fetch_page = ba.BundesagenturScraper._fetch_page
+
+    async def counted(self, client, sem, *, params):
+        nonlocal probes
+        if params.get("size") == 1 and "wo" not in params:
+            probes += 1
+            if probes == 2:
+                return {"maxErgebnisse": end_total, "ergebnisliste": []}
+        return await fetch_page(self, client, sem, params=params)
+
+    monkeypatch.setattr(ba.BundesagenturScraper, "_fetch_page", counted)
+
+
+def test_region_cover_rejects_a_slice_count_that_moved(
+    httpx_mock, monkeypatch
+) -> None:
+    _regional_catalogue(httpx_mock, monkeypatch, _UNREACHABLE_MIDDLE)
+    _end_count(monkeypatch, 0)
+
+    with pytest.raises(ScraperError, match="changed from 5 to 0 jobs"):
+        BundesagenturScraper("any").fetch()
+
+
+def test_region_cover_accepts_a_slice_count_moved_within_tolerance(
+    httpx_mock, monkeypatch
+) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "REGION_COVER_TOLERANCE", 0.2)
+    _regional_catalogue(httpx_mock, monkeypatch, _UNREACHABLE_MIDDLE)
+    _end_count(monkeypatch, 4)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["A", "B", "C", "D"]
+
+
+def test_empty_payload_without_list_is_retried_outside_regions(
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(
+        url=_API_RE, json={"maxErgebnisse": 0}, is_reusable=True
+    )
+
+    with pytest.raises(ScraperError, match="invalid 200 payload"):
+        BundesagenturScraper("any").fetch()
 
 
 def test_missing_result_total_is_a_contract_break(httpx_mock) -> None:

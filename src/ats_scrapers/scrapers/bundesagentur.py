@@ -204,7 +204,8 @@ _FOREIGN_COUNTRIES = (
     "Ghana",
 )
 # Postings close and open while a region cover runs, so its union may fall
-# this fraction short of the leaf total without failing the scrape.
+# this fraction short of the leaf total, and the total may move by as much,
+# without failing the scrape.
 REGION_COVER_TOLERANCE = 0.002
 
 
@@ -493,7 +494,8 @@ class BundesagenturScraper(BaseScraper):
         of every sort order are then sought in the leaf's facet buckets that
         fit under the cap, while the union would otherwise be rejected. The
         union must reach the leaf's advertised total, less
-        ``REGION_COVER_TOLERANCE`` for churn.
+        ``REGION_COVER_TOLERANCE`` for churn, and a second count at the end
+        must stay within that tolerance of the first.
         """
         references: set[str] = set()
 
@@ -564,11 +566,16 @@ class BundesagenturScraper(BaseScraper):
             sem,
             params={**base_params, "size": 1, "page": 1},
         )
-        expected = min(total, _result_total(end))
-        if len(references) < expected - int(expected * REGION_COVER_TOLERANCE):
+        end_total = _result_total(end)
+        if abs(end_total - total) > total - accepted:
+            raise ScraperError(
+                f"Bundesagentur slice changed from {total} to {end_total} "
+                f"jobs during its region cover for params={base_params}"
+            )
+        if len(references) < accepted:
             raise ScraperError(
                 f"Bundesagentur regions covered {len(references)} of "
-                f"{expected} jobs for params={base_params}"
+                f"{total} jobs for params={base_params}"
             )
 
     async def _collect_verified_cover(
@@ -754,6 +761,14 @@ class BundesagenturScraper(BaseScraper):
                             "Bundesagentur returned a non-object payload"
                         )
                     else:
+                        # A region with no postings omits the list. Elsewhere
+                        # results are expected, so that payload is retried.
+                        if (
+                            "wo" in params
+                            and payload.get("maxErgebnisse") == 0
+                            and "ergebnisliste" not in payload
+                        ):
+                            payload["ergebnisliste"] = []
                         try:
                             _result_items(payload)
                             _result_total(payload)
@@ -964,9 +979,6 @@ _SALARY_PERIODS: dict[str, SalaryPeriod] = {
 
 def _result_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
     items = payload.get("ergebnisliste")
-    # An empty result omits the list.
-    if items is None and payload.get("maxErgebnisse") == 0:
-        return []
     if not isinstance(items, list):
         raise ScraperError("Bundesagentur v6 response is missing ergebnisliste")
     if not all(isinstance(item, dict) for item in items):
