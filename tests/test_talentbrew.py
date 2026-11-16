@@ -208,9 +208,8 @@ def test_site_above_the_result_cap_is_read_from_both_ends(httpx_mock) -> None:
     assert sorts == ["0"] + ["1"] * last + ["0"] * oldest
 
 
-def test_site_that_ignores_the_sort_stops_at_the_result_cap(httpx_mock) -> None:
-    total = RESULT_CAP + 857
-
+@pytest.mark.parametrize("total", [RESULT_CAP + 857, 17_000, 2 * RESULT_CAP + 1])
+def test_site_that_ignores_the_sort_stops_at_the_result_cap(httpx_mock, caplog, total) -> None:
     def reply(request: httpx.Request) -> httpx.Response:
         page = int(parse_qs(urlparse(str(request.url)).query)["CurrentPage"][0])
         first = (page - 1) * PAGE_SIZE
@@ -220,11 +219,13 @@ def test_site_that_ignores_the_sort_stops_at_the_result_cap(httpx_mock) -> None:
     last = RESULT_CAP // PAGE_SIZE
     httpx_mock.add_callback(reply, url=SEARCH, is_reusable=True)
 
-    jobs = TalentBrewScraper(HOST, include_descriptions=False).fetch()
+    with caplog.at_level("WARNING", logger="ats_scrapers.scrapers.talentbrew"):
+        jobs = TalentBrewScraper(HOST, include_descriptions=False).fetch()
 
     assert len(jobs) == RESULT_CAP
     # The second walk ends on its first page: nothing it lists is new.
     assert len(httpx_mock.get_requests()) == 1 + last + 1
+    assert f"announces {total} postings" in caplog.text
 
 
 def test_site_with_its_own_page_size_is_walked_to_the_end(httpx_mock) -> None:

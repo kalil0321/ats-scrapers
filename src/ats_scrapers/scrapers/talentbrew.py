@@ -156,6 +156,7 @@ class TalentBrewScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         jobs: dict[str, Job] = {}
+        sort_works = True
         async with self.make_fetcher() as fetch:
             fragment = await self._page(fetch, 1)
             total, pages = _totals(fragment)
@@ -168,8 +169,11 @@ class TalentBrewScraper(BaseScraper):
                 expected = total
             else:
                 await self._walk(fetch, jobs, pages, sort=_NEWEST_FIRST)
+                newest = len(jobs)
                 await self._walk(fetch, jobs, pages, sort=_OLDEST_FIRST)
-                expected = min(total, 2 * RESULT_CAP)
+                # A site that ignores the sort lists the same window twice.
+                sort_works = len(jobs) > newest
+                expected = min(total, (2 if sort_works else 1) * RESULT_CAP)
 
             # Distinct postings, not rows: a repeated page must not count.
             if len(jobs) < math.ceil(expected * MIN_COVERAGE):
@@ -177,11 +181,13 @@ class TalentBrewScraper(BaseScraper):
                     f"TalentBrew ({self.host}) returned {len(jobs)} of "
                     f"{expected} expected postings"
                 )
-            if total > 2 * RESULT_CAP:
+            if total > RESULT_CAP and (total > 2 * RESULT_CAP or not sort_works):
                 logger.warning(
                     "TalentBrew (%s) announces %d postings; a search stops "
-                    "at %d in each sort order, so %d were read",
-                    self.host, total, RESULT_CAP, len(jobs),
+                    "at %d %s, so %d were read",
+                    self.host, total, RESULT_CAP,
+                    "in each sort order" if sort_works else "and the site ignores the sort",
+                    len(jobs),
                 )
             if not self.include_descriptions:
                 return list(jobs.values())
