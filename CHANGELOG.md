@@ -61,6 +61,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - Arbetsförmedlingen: one search returns at most 2,100 ads, so the board is split by
   publication date until each part fits, and a refused page raises instead of ending
   the walk.
+- jobs.ch: one search returns at most 2,000 postings, so the board is split by
+  publication date until each part fits. `query_seeds` now defaults to none.
 - Recruitee: a board whose careers site is closed, whose public API is disabled, or
   whose custom domain now sends readers to another job site is reported as not found.
 - Wanted: requests are no longer rejected with 403 by the site's firewall, and

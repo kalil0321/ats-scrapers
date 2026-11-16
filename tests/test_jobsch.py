@@ -9,8 +9,11 @@ constructed canonical English URL otherwise).
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
+import httpx
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
@@ -236,6 +239,43 @@ def test_enriches_after_cross_seed_dedupe(httpx_mock) -> None:
         url=re.compile(r"^https://www\.jobs\.ch/en/vacancies/detail/dupe/")
     )
     assert len(detail_requests) == 1
+
+
+def _fake_search(docs: list[dict[str, Any]]):
+    """Serve ``docs`` with the API's date filter and 2,000-row window.
+
+    Each doc's ``_published`` is the local ``Y-m-d H:i:s`` time the
+    ``publication-date-from`` (inclusive) / ``-to`` (exclusive) pair filters on.
+    """
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        params = {k: v[0] for k, v in parse_qs(urlsplit(str(request.url)).query).items()}
+        start = int(params.get("start", 0))
+        if start >= 2000:
+            return httpx.Response(422, json={"errors": []})
+        lo = params.get("publication-date-from")
+        hi = params.get("publication-date-to")
+        matches = [
+            d for d in docs
+            if lo is None or lo <= d["_published"] < hi
+        ]
+        return httpx.Response(200, json=_page(matches[start:start + 20], len(matches)))
+
+    return respond
+
+
+def test_splits_publication_dates_past_the_row_window(httpx_mock) -> None:
+    first = datetime(2026, 1, 1)
+    docs = []
+    for i in range(4_500):
+        doc = _doc(job_id=f"j{i}", title=f"Job {i}")
+        doc["_published"] = (first + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S")
+        docs.append(doc)
+    httpx_mock.add_callback(_fake_search(docs), url=_API_RE, is_reusable=True)
+
+    jobs = JobsChScraper("any", include_descriptions=False).fetch()
+
+    assert len(jobs) == 4_500
 
 
 # --- defensive --------------------------------------------------------------
