@@ -9,30 +9,32 @@ Amazon has two job APIs:
    bucketing required to exceed it.
 
 2. ``POST https://www.amazon.jobs/api/jobs/search``
-   Internal but unauthenticated. Returns ``found`` = the real total (≈20K)
-   and exposes facets, but **its ``filters`` body is silently ignored** —
-   every filtered POST returns the unfiltered count. We use it only to
-   discover the true total and the business-category facet values; all
-   actual job fetching runs through the GET endpoint.
+   Internal but unauthenticated. Exposes facets with full counts, but
+   ``found`` saturates at 10,000 and **its ``filters`` body is silently
+   ignored** — every filtered POST returns the unfiltered count. We use
+   it only to read the business-category facet; all actual job fetching
+   runs through the GET endpoint.
 
 Strategy:
 
-  - POST once with ``size=1`` to read ``found`` (true total ≈ 20K) and the
-    ``businessCategory`` facet (≈61 values, largest ``aws`` = ~6K).
-  - If ``total <= 10K`` → GET-paginate the unfiltered endpoint.
+  - POST once with ``size=1`` to read the ``businessCategory`` facet
+    (≈62 values, largest ``aws`` ≈ 7K). The facet counts sum to the true
+    total (≈21K); ``found`` does not.
+  - If ``total < 10K`` → GET-paginate the unfiltered endpoint.
   - Else → for each business category, GET-paginate that bucket. Every
     Amazon business category sits well under 10K so a single layer
-    suffices.
+    suffices. Confidential postings are counted in the facet but the
+    GET endpoint never returns them.
 
-Earlier rev bucketed by ``country`` via the POST endpoint; that path
-silently capped at 10K because the POST endpoint ignores the filter and
-every bucket request returned the same first 10K results.
+The POST endpoint ignores filters, so bucketing through it (by
+``country`` or anything else) returns the same first 10K jobs per bucket.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -49,6 +51,8 @@ PAGE_SIZE = 100
 PAGINATION_CAP = 10_000  # Amazon stops returning hits past offset+limit = 10K.
 MAX_CONCURRENCY = 6
 
+log = logging.getLogger(__name__)
+
 
 @ScraperRegistry.register(ATSType.AMAZON)
 class AmazonScraper(BaseScraper):
@@ -64,15 +68,19 @@ class AmazonScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         async with self.make_fetcher() as fetch:
-            # Single POST call to read the true total and the
-            # businessCategory facet. The POST endpoint's ``filters``
-            # body is broken (returns unfiltered counts), so we never
-            # use it for actual fetching.
+            # Single POST call to read the businessCategory facet. The
+            # POST endpoint's ``filters`` body is broken (returns
+            # unfiltered counts), so we never use it for actual fetching.
             facets_payload = await fetch.post_json(
                 FACET_URL,
                 json={"searchType": "JOB_SEARCH", "start": 0, "size": 1, "filters": []},
             )
-            total = int(facets_payload.get("found") or 0)
+            categories = _extract_facet_values(
+                facets_payload.get("facets") or [], "businessCategory"
+            )
+            # ``found`` stops at 10,000; the facet counts do not.
+            found = int(facets_payload.get("found") or 0)
+            total = max(found, sum(count for _, count in categories))
             if total == 0:
                 return []
 
@@ -92,7 +100,8 @@ class AmazonScraper(BaseScraper):
                         seen.add(job.ats_id)
                         all_jobs.append(job)
 
-            async def get_page(extra_params: dict[str, str], offset: int) -> None:
+            async def get_page(extra_params: dict[str, str], offset: int) -> int:
+                """Absorb one page and return the query's ``hits`` count."""
                 async with sem:
                     # 400 means "past the pagination cap" — treat as an
                     # empty page so the caller stops.
@@ -104,34 +113,28 @@ class AmazonScraper(BaseScraper):
                     )
                 payload = {} if response.status_code == 400 else response.json()
                 absorb(payload.get("jobs") or [])
+                return int(payload.get("hits") or 0)
 
-            if total <= PAGINATION_CAP:
-                offsets = list(range(0, total, PAGE_SIZE))
-                await asyncio.gather(*(get_page({}, o) for o in offsets))
+            async def paginate(extra_params: dict[str, str]) -> None:
+                hits = await get_page(extra_params, 0)
+                if hits > PAGINATION_CAP:
+                    log.warning(
+                        "Amazon: %s matches %d jobs, only the first %d are reachable",
+                        extra_params or "the unfiltered search", hits, PAGINATION_CAP,
+                    )
+                offsets = range(PAGE_SIZE, min(hits, PAGINATION_CAP), PAGE_SIZE)
+                await asyncio.gather(*(get_page(extra_params, o) for o in offsets))
+
+            if total < PAGINATION_CAP or not categories:
+                await paginate({})
                 return all_jobs
 
             # Past the cap — bucket by businessCategory. The POST facet uses
             # the same lowercase-dashed slugs that the GET endpoint accepts
-            # in ``business_category[]`` (verified empirically: ``aws`` →
-            # ~6.1K hits, ``operations`` → ~800).
-            categories = _extract_facet_values(
-                facets_payload.get("facets") or [], "businessCategory"
-            )
-            if not categories:
-                # Facet missing — fall back to capped pagination so we at
-                # least get the first 10K rather than crashing.
-                offsets = list(range(0, PAGINATION_CAP, PAGE_SIZE))
-                await asyncio.gather(*(get_page({}, o) for o in offsets))
-                return all_jobs
-
-            async def category_bucket(name: str, count: int) -> None:
-                local_total = min(count, PAGINATION_CAP)
-                offsets = list(range(0, local_total, PAGE_SIZE))
-                await asyncio.gather(*(
-                    get_page({"business_category[]": name}, o) for o in offsets
-                ))
-
-            await asyncio.gather(*(category_bucket(n, c) for n, c in categories))
+            # in ``business_category[]``.
+            await asyncio.gather(*(
+                paginate({"business_category[]": name}) for name, _ in categories
+            ))
             return all_jobs
 
     def _parse_hit(self, hit: dict[str, Any]) -> list[Job]:

@@ -56,6 +56,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   split below the cap is logged.
 - TalentBrew: a site above 10,000 postings is read newest first and then oldest
   first, so up to 20,000 postings are collected instead of the first 10,000.
+- Amazon: the search total stops at 10,000, so the board is read per business category
+  and every job is collected.
 - Recruitee: a board whose careers site is closed, whose public API is disabled, or
   whose custom domain now sends readers to another job site is reported as not found.
 - Wanted: requests are no longer rejected with 403 by the site's firewall, and
