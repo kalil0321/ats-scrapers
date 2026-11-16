@@ -947,9 +947,11 @@ def _plan_split(
             for code, count in counted
         ]
         counts = [count for _, count in counted]
-        if dimension is _LANGUAGE:
+        unlisted = _unlisted_languages(facets) if dimension is _LANGUAGE else None
+        # An empty filter would match the whole parent again.
+        if unlisted is not None and unlisted.values:
             # The vacancies no listed language covers need an unlisted one.
-            children.append(_unlisted_languages(facets))
+            children.append(unlisted)
             counts.append(max(0, total - sum(counts)))
         if len(counts) < 2 or max(counts) >= total:
             continue

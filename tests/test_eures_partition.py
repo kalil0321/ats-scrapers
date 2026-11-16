@@ -182,6 +182,18 @@ def test_one_listed_language_and_the_unlisted_rest_still_split_the_slice() -> No
     assert len(split.children) == 2
 
 
+def test_no_unlisted_language_child_when_the_facet_lists_every_code() -> None:
+    every = dict.fromkeys(eures._ISO_639_1, 400)
+    facets = {"LANGUAGE_SKILLS": _entries({**every, "nl": 9_000, "NS": 3_000})}
+
+    split = _plan_split(facets, {"locationCodes": ["nl36"]}, 12_000)
+
+    assert split is not None
+    assert split.dimension.field == "requiredLanguages"
+    # An empty child would send no language filter and repeat its parent.
+    assert all(child.values for child in split.children)
+
+
 def test_falls_back_to_the_isco_tree_down_to_unit_groups() -> None:
     split = _plan_split({}, {"locationCodes": ["nl36"]}, 12_000)
     assert split is not None
