@@ -1,14 +1,15 @@
 """Arbetsförmedlingen (Swedish Public Employment Service) scraper.
 
 Sweden's federal job board exposes a clean public JSON search API at
-``jobsearch.api.jobtechdev.se`` — no auth, no API key. Every active
-listing lives under one of 21 Swedish ``region`` codes; total volume is
-~46k active jobs.
+``jobsearch.api.jobtechdev.se`` — no auth, no API key. Total volume is
+~40-50k active ads.
 
-Pagination caps at ``offset+limit ≤ 10,000`` per query. Stockholm
-(largest region, ~11k) is the only one that pushes past the cap; we
-subdivide it by ``occupation-field`` to recover the trailing jobs.
-Every other region fits in a single paginated stream.
+One query can read at most 2,100 ads: ``limit`` stops at 100 and any
+``offset`` above 2,000 answers 400. The scraper therefore splits the
+board into publication-date windows (``published-after`` and
+``published-before``, both inclusive) and halves any window that still
+matches more than 2,100 ads. Unlike region or occupation filters, every
+ad has a publication date, so the windows cover the whole board.
 
 Public API docs: https://jobtechdev.se/sv/komponenter/jobsearch
 """
@@ -16,6 +17,7 @@ Public API docs: https://jobtechdev.se/sv/komponenter/jobsearch
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
@@ -24,40 +26,19 @@ from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from typing import Any
 
     from ats_scrapers.fetch import Fetcher
 
+log = logging.getLogger(__name__)
+
 API_URL = "https://jobsearch.api.jobtechdev.se/search"
 PAGE_SIZE = 100  # API hard-caps at 100/page.
-PAGINATION_CAP = 10_000  # offset+limit cap. Past 10k the API returns 0 hits.
+MAX_OFFSET = 2_000  # Larger offsets answer 400.
+WINDOW_CAP = MAX_OFFSET + PAGE_SIZE  # Most ads one query can return.
 MAX_CONCURRENCY = 8
-
-# Swedish region concept_ids (län). Static — the Arbetsförmedlingen
-# taxonomy doesn't churn. Fetched from the API's ``stats=region`` facet.
-SWEDEN_REGIONS = (
-    "CifL_Rzy_Mku",  # Stockholms län
-    "zdoY_6u5_Krt",  # Västra Götalands län
-    "CaRE_1nn_cSU",  # Skåne län
-    "oLT3_Q9p_3nn",  # Östergötlands län
-    "MtbE_xWT_eMi",  # Jönköpings län
-    "g5Tt_CXo_GTH",  # Uppsala län
-    "9hXe_F4g_eTG",  # Hallands län
-    "EVe9_z5Q_DJv",  # Södermanlands län
-    "Pnmw_Tbx_2Eg",  # Örebro län
-    "yiyJ_KFi_LX9",  # Gävleborgs län
-    "JkJv_Ssr_2hG",  # Värmlands län
-    "qXSE_AC1_RkA",  # Dalarnas län
-    "tF3y_MF9_h5G",  # Norrbottens län
-    "9TLG_xj1_VKA",  # Västerbottens län
-    "K8iD_VQv_2BB",  # Västernorrlands län
-    "DQZd_uYs_oKb",  # Kronobergs län
-    "8QQ6_e95_R2P",  # Blekinge län
-    "EFLm_8iL_4Wy",  # Gotlands län
-    "NvUF_SP1_1zo",  # Kalmar län
-    "txzq_TmJ_jUn",  # Jämtlands län
-    "9YR1_AsT_eSc",  # Västmanlands län
-)
+_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
 @ScraperRegistry.register(ATSType.ARBETSFORMEDLINGEN)
@@ -85,122 +66,70 @@ class ArbetsformedlingenScraper(BaseScraper):
 
         async with self.make_fetcher() as fetch:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
-            # Fetch the live region list rather than hardcoding —
-            # the taxonomy adjusts over time (län merges, retired codes,
-            # etc.). ``stats.limit=30`` returns all 21 current regions
-            # (default is 5, which is the trap that bit us before).
-            seed = await self._fetch_page(
-                fetch, sem,
-                params={"limit": 0, "stats": "region", "stats.limit": 30},
+            newest, oldest = await asyncio.gather(
+                self._fetch_page(fetch, sem, params={"limit": 1, "sort": "pubdate-desc"}),
+                self._fetch_page(fetch, sem, params={"limit": 1, "sort": "pubdate-asc"}),
             )
-            stats = seed.get("stats") or []
-            regions: list[str] = []
-            if stats and isinstance(stats[0], dict):
-                regions = [
-                    v.get("concept_id")
-                    for v in stats[0].get("values") or []
-                    if isinstance(v, dict) and v.get("concept_id")
-                ]
-            if not regions:
-                # Last-resort fallback to the static list — better to get
-                # partial coverage than to crash if the API moves.
-                regions = list(SWEDEN_REGIONS)
-            await asyncio.gather(*(
-                self._exhaust_region(fetch, sem, region, absorb)
-                for region in regions
-            ))
+            if not (newest.get("total") or {}).get("value"):
+                return []
+            end = _publication_date(newest)
+            start = _publication_date(oldest)
+            if start is None or end is None:
+                raise ScraperError(
+                    "Arbetsförmedlingen: the search returned ads without a "
+                    "publication date; cannot split it into date windows"
+                )
+            await self._walk_window(fetch, sem, start, end, absorb)
         return all_jobs
 
-    async def _exhaust_region(
+    async def _walk_window(
         self,
         fetch: Fetcher,
         sem: asyncio.Semaphore,
-        region: str,
-        absorb,
+        start: datetime,
+        end: datetime,
+        absorb: Callable[[list[dict[str, Any]]], None],
     ) -> None:
-        first = await self._fetch_page(fetch, sem, params={
-            "region": region, "limit": PAGE_SIZE, "offset": 0,
-        })
+        """Read every ad published in ``[start, end]``."""
+        window = {
+            "published-after": start.strftime(_DATE_FORMAT),
+            "published-before": end.strftime(_DATE_FORMAT),
+        }
+        first = await self._fetch_page(
+            fetch, sem, params={**window, "limit": PAGE_SIZE, "offset": 0}
+        )
         total = (first.get("total") or {}).get("value", 0)
-        if total == 0:
-            return
         absorb(first.get("hits") or [])
         if total <= PAGE_SIZE:
             return
 
-        # Pagination cap — the trailing jobs past offset 10k are
-        # unreachable without a finer filter. For Stockholm we subdivide
-        # by occupation-field (currently ~28 buckets in 2026, each well
-        # under 10k); other regions stay under the cap.
-        if total > PAGINATION_CAP:
-            await self._subdivide_by_occupation(fetch, sem, region, absorb)
-            return
+        if total > WINDOW_CAP:
+            # Halves overlap on their shared second so an ad stamped with a
+            # fraction of a second cannot fall between them.
+            middle = start + (end - start) // 2
+            middle = middle.replace(microsecond=0)
+            if start < middle < end:
+                await asyncio.gather(
+                    self._walk_window(fetch, sem, start, middle, absorb),
+                    self._walk_window(fetch, sem, middle, end, absorb),
+                )
+                return
+            log.warning(
+                "Arbetsförmedlingen: %d ads published between %s and %s; "
+                "only %d of them are reachable",
+                total, window["published-after"], window["published-before"],
+                WINDOW_CAP,
+            )
 
-        offsets = list(range(PAGE_SIZE, total, PAGE_SIZE))
+        offsets = range(PAGE_SIZE, min(total, WINDOW_CAP), PAGE_SIZE)
         await asyncio.gather(*(
             self._fetch_and_absorb(
                 fetch, sem,
-                params={"region": region, "limit": PAGE_SIZE, "offset": o},
+                params={**window, "limit": PAGE_SIZE, "offset": o},
                 absorb=absorb,
             )
             for o in offsets
         ))
-
-    async def _subdivide_by_occupation(
-        self,
-        fetch: Fetcher,
-        sem: asyncio.Semaphore,
-        region: str,
-        absorb,
-    ) -> None:
-        # Discover occupation-field codes via stats — the API returns the
-        # top buckets dynamically, which is fine because the largest
-        # buckets are what we need to hit before the trailing cap.
-        stats = await self._fetch_page(fetch, sem, params={
-            "region": region, "limit": 0, "stats": "occupation-field",
-        })
-        fields = stats.get("stats") or []
-        codes: list[str] = []
-        if fields and isinstance(fields[0], dict):
-            codes = [
-                v.get("concept_id")
-                for v in fields[0].get("values") or []
-                if isinstance(v, dict) and v.get("concept_id")
-            ]
-        if not codes:
-            # Fallback — just paginate up to the cap.
-            offsets = list(range(PAGE_SIZE, PAGINATION_CAP, PAGE_SIZE))
-            await asyncio.gather(*(
-                self._fetch_and_absorb(
-                    fetch, sem,
-                    params={"region": region, "limit": PAGE_SIZE, "offset": o},
-                    absorb=absorb,
-                )
-                for o in offsets
-            ))
-            return
-
-        async def occ_bucket(code: str) -> None:
-            sub = await self._fetch_page(fetch, sem, params={
-                "region": region, "occupation-field": code,
-                "limit": PAGE_SIZE, "offset": 0,
-            })
-            sub_total = min((sub.get("total") or {}).get("value", 0), PAGINATION_CAP)
-            absorb(sub.get("hits") or [])
-            if sub_total <= PAGE_SIZE:
-                return
-            offsets = list(range(PAGE_SIZE, sub_total, PAGE_SIZE))
-            await asyncio.gather(*(
-                self._fetch_and_absorb(
-                    fetch, sem,
-                    params={"region": region, "occupation-field": code,
-                            "limit": PAGE_SIZE, "offset": o},
-                    absorb=absorb,
-                )
-                for o in offsets
-            ))
-
-        await asyncio.gather(*(occ_bucket(c) for c in codes))
 
     async def _fetch_and_absorb(
         self,
@@ -208,7 +137,7 @@ class ArbetsformedlingenScraper(BaseScraper):
         sem: asyncio.Semaphore,
         *,
         params: dict[str, Any],
-        absorb,
+        absorb: Callable[[list[dict[str, Any]]], None],
     ) -> None:
         payload = await self._fetch_page(fetch, sem, params=params)
         absorb(payload.get("hits") or [])
@@ -221,14 +150,13 @@ class ArbetsformedlingenScraper(BaseScraper):
         params: dict[str, Any],
     ) -> dict[str, Any]:
         # Retries, backoff, and 429/5xx → ScraperError mapping live in
-        # the shared Fetcher. The one provider quirk kept here: the API
-        # answers 400 when a query walks past the pagination cap (or the
-        # params are invalid) — treat that as an empty result set.
+        # the shared Fetcher.
         async with sem:
             r = await fetch.request("GET", API_URL, params=params, handled={400})
         if r.status_code == 400:
-            # Past pagination cap or invalid params — return empty.
-            return {"hits": [], "total": {"value": 0}}
+            raise ScraperError(
+                f"Arbetsförmedlingen rejected {params}: {r.text[:200]}"
+            )
         try:
             return r.json()
         except ValueError as exc:
@@ -419,3 +347,18 @@ def _parse_iso(value: object) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _publication_date(payload: dict[str, Any]) -> datetime | None:
+    """Publication date of the first hit, to the second, without a zone."""
+    hits = payload.get("hits") or []
+    if not hits or not isinstance(hits[0], dict):
+        return None
+    value = hits[0].get("publication_date")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=None, microsecond=0)

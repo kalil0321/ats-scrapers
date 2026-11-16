@@ -58,6 +58,9 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   first, so up to 20,000 postings are collected instead of the first 10,000.
 - Amazon: the search total stops at 10,000, so the board is read per business category
   and every job is collected.
+- Arbetsförmedlingen: one search returns at most 2,100 ads, so the board is split by
+  publication date until each part fits, and a refused page raises instead of ending
+  the walk.
 - Recruitee: a board whose careers site is closed, whose public API is disabled, or
   whose custom domain now sends readers to another job site is reported as not found.
 - Wanted: requests are no longer rejected with 403 by the site's firewall, and
