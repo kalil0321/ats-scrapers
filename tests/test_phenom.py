@@ -367,6 +367,70 @@ def test_init_404_raises_company_not_found(httpx_mock) -> None:
         PhenomScraper(BASE).fetch()
 
 
+@pytest.mark.parametrize(
+    "target",
+    ["https://www.acme.com/careers/home", f"{BASE}/overview/"],
+)
+def test_redirect_off_phenom_is_not_found(httpx_mock, target: str) -> None:
+    httpx_mock.add_response(
+        url=SEARCH_URL, status_code=301, headers={"Location": target}
+    )
+    httpx_mock.add_response(
+        url=target, text="<html><body>Careers at Acme</body></html>"
+    )
+    with pytest.raises(CompanyNotFoundError, match="redirects"):
+        PhenomScraper(BASE).fetch()
+
+
+def test_redirect_to_another_phenom_page_is_followed(httpx_mock) -> None:
+    home = f"{BASE}/global/en"
+    httpx_mock.add_response(
+        url=SEARCH_URL, status_code=303, headers={"Location": home}
+    )
+    httpx_mock.add_response(
+        url=home,
+        text=(
+            '<html><script>var phApp = {"csrfToken":"tok-abc-123"};'
+            "</script></html>"
+        ),
+    )
+    httpx_mock.add_response(url=WIDGETS_URL, json=_search_response([_job()], 1))
+    assert len(PhenomScraper(BASE).fetch()) == 1
+
+
+def test_blocked_search_page_is_not_mistaken_for_a_move(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=SEARCH_URL,
+        text="<html><body><h4>This Website is not available in your country"
+        "</h4></body></html>",
+    )
+    httpx_mock.add_response(url=WIDGETS_URL, text="<html>blocked</html>")
+    with pytest.raises(ScraperError, match="malformed JSON") as raised:
+        PhenomScraper(BASE).fetch()
+    assert not isinstance(raised.value, CompanyNotFoundError)
+
+
+def test_unresolvable_site_is_not_found(httpx_mock) -> None:
+    import socket
+
+    try:
+        raise httpx.ConnectError("connect failed") from socket.gaierror(
+            socket.EAI_NONAME, "Name or service not known"
+        )
+    except httpx.ConnectError as exc:
+        httpx_mock.add_exception(exc, url=SEARCH_URL, is_reusable=True)
+    with pytest.raises(CompanyNotFoundError, match="does not resolve"):
+        PhenomScraper(BASE).fetch()
+
+
+def test_requests_name_the_client(httpx_mock) -> None:
+    _seed_csrf(httpx_mock)
+    httpx_mock.add_response(url=WIDGETS_URL, json=_search_response([_job()], 1))
+    PhenomScraper(BASE).fetch()
+    agents = {request.headers["User-Agent"] for request in httpx_mock.get_requests()}
+    assert agents == {"Mozilla/5.0 (compatible; ats-scrapers/1.0)"}
+
+
 def test_widgets_5xx_retries(httpx_mock) -> None:
     _seed_csrf(httpx_mock)
     httpx_mock.add_response(url=WIDGETS_URL, status_code=503)

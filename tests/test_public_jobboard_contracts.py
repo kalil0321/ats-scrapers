@@ -7,8 +7,6 @@ import pytest
 from ats_scrapers.scrapers.base import BaseScraper
 from ats_scrapers.scrapers.jobbankca import JobBankCAScraper
 from ats_scrapers.scrapers.seek import SeekScraper
-from pipeline.publisher import ATS_DEDUP_PRIORITY
-from scripts.run_pipeline import CONFIGS
 
 
 @pytest.mark.parametrize(
@@ -26,12 +24,3 @@ def test_custom_scrapers_preserve_standard_options(
 
     assert scraper.include_descriptions is False
     assert scraper.proxy == "http://proxy.example:8080"
-
-
-def test_jobboard_dedup_priorities_prefer_employer_sources() -> None:
-    assert ATS_DEDUP_PRIORITY["seek"] > ATS_DEDUP_PRIORITY["workday"]
-    assert ATS_DEDUP_PRIORITY["jobbankca"] > ATS_DEDUP_PRIORITY["seek"]
-
-
-def test_jobbank_singleton_fails_closed_on_empty() -> None:
-    assert CONFIGS["jobbankca"]["fail_closed_on_empty"] is True

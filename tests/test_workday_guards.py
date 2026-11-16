@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import scripts.run_pipeline as runner
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.scrapers.workday import WorkdayScraper
 
@@ -157,40 +156,6 @@ def test_workday_from_url_delegates_to_constructor() -> None:
     assert scraper.company_slug == url
     assert scraper.max_fetch_seconds == 5
     assert scraper.company_name == "Accenture"
-
-
-def test_workday_runner_sets_tenant_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ATS_SCRAPERS_WORKDAY_TENANT_TIMEOUT", "123")
-    kwargs = runner.CONFIGS["workday"]["kwargs"]({"name": "Advocate Health"})
-
-    assert kwargs == {
-        "max_fetch_seconds": 123.0,
-        "company_name": "Advocate Health",
-    }
-
-
-def test_workday_pipeline_keeps_one_row_per_posting_across_career_sites() -> None:
-    from ats_scrapers.models import ATSType, Job
-
-    config = runner.CONFIGS["workday"]
-    assert config["dedupe_by_ats_id"] is True
-
-    def job(company: str, site: str, path: str) -> Job:
-        return Job(
-            url=f"https://acme.wd1.myworkdayjobs.com/{site}{path}",
-            title="Engineer",
-            company=company,
-            ats_type=ATSType.WORKDAY,
-            ats_id="acme.wd1.myworkdayjobs.com/job/USA/Engineer_R-1",
-        )
-
-    # Two catalogue rows of one tenant, each with its own display name.
-    main_site = job("Acme", "External", "/job/USA/Engineer_R-1")
-    campus_site = job("Acme Campus", "Campus", "/job/USA/Engineer_R-1-1")
-
-    assert runner._job_dedupe_key(main_site, config) == runner._job_dedupe_key(
-        campus_site, config
-    )
 
 
 def test_workday_catalogue_lists_each_career_site_once() -> None:

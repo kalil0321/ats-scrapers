@@ -24,10 +24,39 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   requisition number. The site has no page per opening, so each job links to
   the list page.
 
+### Removed
+
+- The dataset pipeline (`scripts/`, `pipeline/`) and the snapshot archive
+  workflow. The library and the company lists are unchanged.
+
 ### Fixed
 
+- Recruitee: a board whose careers site is closed, whose public API is disabled, or
+  whose custom domain now sends readers to another job site is reported as not found.
+- Wanted: requests are no longer rejected with 403 by the site's firewall, and
+  description requests are paced under its rate limit.
+- Wellfound: reads the job data embedded in every page of each role, descriptions
+  included, without Firecrawl. Listings imported from an ATS are skipped unless
+  `include_ats_imports=True`. `firecrawl_api_key` stays available; the
+  `FIRECRAWL_API_KEY` variable alone no longer enables it.
+- Meta, Tesla: `cloakbrowser` is pinned to 0.6.5, the last release that
+  launches without a license key, with `playwright<1.65`.
+- Meta: reads the renamed `job_search_with_featured_jobs_v2` field.
 - Pipeline: a few failed boards no longer hold back ADP, Jobvite, Keka, PageUp, Paycom or Varbi.
 - Lever, Gem, Recruitee: a board whose public page is closed is reported as not found.
+- Avature: a tenant whose host no longer resolves is reported as not found, and
+  a tenant behind an AWS WAF JavaScript challenge says so in its error. The
+  Avature company row points at its own portal (`careers.avature.net/en_US/main`).
+- PageUp: a tenant that moved to PageUp's newer career site is read from its
+  RSS feed, with complete descriptions, instead of failing.
+- Jobvite: a board that redirects away from Jobvite is reported as not found, a
+  board that shows "No results found." is empty, job pages that the employer
+  redirects to its own site are read on Jobvite, and a job that the unstable
+  list order hides at a page boundary is fetched again. The catalogue drops
+  Jobvite's demo tenant `piedpiper`.
+- Keka: a tenant that no longer exists or has switched its careers portal off
+  is reported as not found.
+- HRMOS: a board that says it has no published jobs is empty instead of failing.
 - Phenom: job links open the posting.
 - Oracle: job links open the posting.
 - Amazon: job links open the posting.
@@ -68,6 +97,27 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   exponential backoff, and retries 5xx responses with linear delays. It stops
   the per-job detail calls for the rest of the run after a 403 or 405 block,
   or after a 429 that asks to wait more than a minute.
+- Paycom: a retired portal ("Job board does not exist") is reported as not found.
+- SuccessFactors: a site is reported as not found when it is deactivated, when
+  its feed redirects away from a feed (to the employer's homepage or another
+  ATS), when its host now serves Workday, does not resolve or presents a
+  certificate for another name, and when a legacy career site does not know
+  the company.
+- SuccessFactors: legacy XML feeds of large employers, which take close to a
+  minute to start, no longer time out.
+- Catalogue: AkzoNobel, Bechtel and Viega move from SuccessFactors to Phenom,
+  Gateway Foundation's site is now Alpharus Health's, MANN+HUMMEL's row points
+  at `careers.mann-hummel.com`, and a duplicate Suntory Global Spirits row is
+  removed.
+- Cornerstone: a career site whose `{slug}.csod.com` host no longer resolves is
+  reported as not found.
+- Softgarden: a site whose domain belongs to no client, or to a removed
+  company, is reported as not found.
+- Phenom: requests name the client (`Mozilla/5.0 (compatible; ats-scrapers/1.0)`)
+  instead of a bare `Mozilla/5.0`, which Akamai held until timeout on
+  Electrolux's site. A site whose search page redirects to a page that is not
+  Phenom's (KBR, SEI, Morningstar), or whose host no longer resolves, is
+  reported as not found. The catalogue gains Trinzic.
 
 ## [0.3.0] — 2026-09-02
 

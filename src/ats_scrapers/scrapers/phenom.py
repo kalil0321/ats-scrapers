@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -44,8 +44,14 @@ _CSRF_RE = re.compile(r'"csrfToken"\s*:\s*"([^"]+)"')
 _SITE_PATH_RE = re.compile(r"^/([a-z]{2,6})/([a-z]{2})(?:/|$)")
 _PAGE_BASE_URL_RE = re.compile(r'"baseUrl"\s*:\s*"(https?://[^"]+)"')
 
+# Akamai in front of some sites holds a request whose agent is a bare
+# "Mozilla/5.0" until it times out.
+_USER_AGENT = "Mozilla/5.0 (compatible; ats-scrapers/1.0)"
+# Every page of a Phenom site loads its client from these names.
+_PHENOM_PAGE_MARKERS = ("phApp", "phenompeople")
+
 _BASE_HEADERS = {
-    "User-Agent": "Mozilla/5.0",
+    "User-Agent": _USER_AGENT,
     "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
@@ -119,7 +125,7 @@ class PhenomScraper(BaseScraper):
         self.company_name = host
 
     async def afetch(self) -> list[Job]:
-        async with self.make_fetcher() as fetch:
+        async with self.make_fetcher(missing_host_not_found=True) as fetch:
             csrf = await self._init_session(fetch)
             first = await self._search(fetch, csrf, start=0)
             jobs_first = self._extract_jobs(first)
@@ -165,6 +171,10 @@ class PhenomScraper(BaseScraper):
         ``x-csrf-token`` header."""
         search_url = self._search_results_url()
         response = await fetch.request("GET", search_url, headers=_BASE_HEADERS)
+        if _left_phenom(search_url, response.url, response.text):
+            raise CompanyNotFoundError(
+                f"Phenom site {self.base_url} redirects to {response.url}"
+            )
         self._resolved_site_path = _site_path_of(response.text, self.base_url)
         # Cookie-based csrf is the canonical path; some tenants only embed
         # the token in the page HTML.
@@ -220,7 +230,7 @@ class PhenomScraper(BaseScraper):
             "Accept": "*/*",
             "Origin": self.base_url,
             "Referer": self._search_results_url(),
-            "User-Agent": "Mozilla/5.0",
+            "User-Agent": _USER_AGENT,
         }
         if csrf:
             headers["x-csrf-token"] = csrf
@@ -387,6 +397,21 @@ def _parse_iso(value: object) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _left_phenom(requested: str, answered: str | None, page: str) -> bool:
+    """Whether the search page redirected to a page that is not Phenom's.
+
+    A live site may redirect to another of its own pages, and a bot wall
+    or a country block answers without redirecting.
+    """
+    if not answered:
+        return False
+    before, after = urlparse(requested), urlparse(answered)
+    redirected = (before.hostname, before.path) != (after.hostname, after.path)
+    return redirected and not any(
+        marker in page for marker in _PHENOM_PAGE_MARKERS
+    )
 
 
 def _site_path_of(page: str, base_url: str) -> str | None:

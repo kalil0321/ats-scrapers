@@ -120,6 +120,38 @@ def test_init_404_raises_company_not_found(httpx_mock) -> None:
         CornerstoneScraper("acme").fetch()
 
 
+def test_unresolvable_tenant_host_is_not_found(httpx_mock) -> None:
+    import socket
+
+    import httpx
+
+    try:
+        raise httpx.ConnectError("connect failed") from socket.gaierror(
+            socket.EAI_NONAME, "Name or service not known"
+        )
+    except httpx.ConnectError as exc:
+        httpx_mock.add_exception(exc, url=CAREER_URL, is_reusable=True)
+    with pytest.raises(CompanyNotFoundError, match="does not resolve"):
+        CornerstoneScraper("acme").fetch()
+
+
+def test_unresolvable_api_host_is_not_a_missing_board(httpx_mock) -> None:
+    import socket
+
+    import httpx
+
+    httpx_mock.add_response(url=CAREER_URL, text=_site_html())
+    try:
+        raise httpx.ConnectError("connect failed") from socket.gaierror(
+            socket.EAI_NONAME, "Name or service not known"
+        )
+    except httpx.ConnectError as exc:
+        httpx_mock.add_exception(exc, url=API_URL, is_reusable=True)
+    with pytest.raises(ScraperError) as raised:
+        CornerstoneScraper("acme").fetch()
+    assert not isinstance(raised.value, CompanyNotFoundError)
+
+
 def test_missing_token_raises_helpful_error(httpx_mock) -> None:
     httpx_mock.add_response(url=CAREER_URL, text="<html><body>no token</body></html>")
     with pytest.raises(ScraperError, match="couldn't extract JWT token"):

@@ -1,24 +1,27 @@
-"""Wellfound (formerly AngelList Talent) — US startup-direct jobs.
+"""Wellfound (formerly AngelList Talent): startup jobs.
 
-Wellfound is the largest direct-posting startup-jobs platform in the
-US (~30-50k active postings). Companies pay to list, not aggregator
-content.
+Wellfound has no public job API, but its role pages are rendered on the
+server with their data in ``__NEXT_DATA__``::
 
-The site sits behind Akamai and 403s every direct or proxied HTTP
-GET. Scraping requires a rendering backend that runs a real browser
-and bypasses the JS challenge. We use **Firecrawl** (already wired
-into the library for Built In's opt-in enrichment) for the same
-reason: cheap per-page, returns rendered markdown.
+    GET /role/{role}?page={n}  -> 20 startups, each with up to three
+                                  listings, full descriptions included
 
-Library default: **no Firecrawl key, scraper raises ScraperError
-with a clear configuration hint.** Pass ``firecrawl_api_key=…`` to
-the constructor or set ``FIRECRAWL_API_KEY`` env to enable.
+A startup with more openings in a role than its three highlighted ones
+shows only those three, so the scraper reads a curated set of roles, every
+page of each, and deduplicates the listings by id. Coverage is that of the
+roles read, not of the whole site.
 
-Pagination strategy: Wellfound's ``/jobs`` URL returns ~50 jobs and
-isn't paginated (``?page=2`` returns the same set). To get full
-coverage we walk a fixed list of role-specific URLs
-(``/role/{role}``); each yields a different ~40-job slice. Dedup on
-the per-job URL collapses overlap to ~1,000-2,000 unique jobs.
+Listings that Wellfound imported from an ATS (``atsSource``) or posted
+automatically (``autoPosted``) are skipped by default: they are copies of
+postings the ATS scrapers read at the source. Pass
+``include_ats_imports=True`` to keep them.
+
+Cloudflare answers some User-Agents with 403 and may do the same for
+datacenter addresses; pass ``proxy=`` when the scraper runs from a server.
+
+``firecrawl_api_key`` routes the page requests through Firecrawl's scrape
+API (paid) instead. The ``FIRECRAWL_API_KEY`` environment variable alone
+does not enable it.
 
 Single-source scraper: ``company_slug`` is informational and ignored.
 """
@@ -26,113 +29,121 @@ Single-source scraper: ``company_slug`` is informational and ignored.
 from __future__ import annotations
 
 import asyncio
-import os
+import json
+import logging
 import re
-from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
+
+from pydantic import HttpUrl
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, EmploymentType, Job
+from ats_scrapers.scrapers._htmltree import parse_html
+from ats_scrapers.scrapers._throttle import Throttle
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from ats_scrapers.fetch import Fetcher
 
-WELLFOUND_BASE = "https://wellfound.com"
-FIRECRAWL_BASE = "https://api.firecrawl.dev"
-MAX_CONCURRENCY = 4
+logger = logging.getLogger(__name__)
 
-# Wellfound role slugs we want to enumerate. The platform exposes
-# ``/role/{slug}`` for each. The list is intentionally biased toward
-# tech / product / growth — Wellfound's bread-and-butter — and skews
-# US since that's what Wellfound covers best.
+WELLFOUND_BASE = "https://wellfound.com"
+FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v1/scrape"
+MAX_CONCURRENCY = 4
+MAX_PAGES_PER_ROLE = 200
+# Cloudflare challenges an address that asks for about 100 pages a minute.
+REQUEST_INTERVAL_S = 1.0
+# A page past the last one redirects to the first.
+_NO_PAGE = frozenset({301, 302, 303, 307, 308, 404})
+
+# The roles Wellfound links from its own role pages.
 DEFAULT_ROLE_SLUGS: tuple[str, ...] = (
     "software-engineer",
     "frontend-engineer",
     "backend-engineer",
-    "fullstack-engineer",
+    "full-stack-engineer",
     "mobile-engineer",
-    "data-engineer",
-    "data-scientist",
-    "machine-learning-engineer",
     "devops-engineer",
     "engineering-manager",
-    "founding-engineer",
+    "data-engineer",
+    "data-scientist",
+    "data-analyst",
+    "machine-learning-engineer",
     "product-manager",
     "designer",
-    "ux-designer",
     "product-designer",
+    "ux-designer",
+    "ui-ux-designer",
+    "graphic-designer",
     "marketing-manager",
-    "growth-marketing-manager",
-    "content-marketing-manager",
+    "growth-marketer",
+    "sales-manager",
     "account-executive",
-    "customer-success-manager",
+    "account-manager",
     "operations-manager",
     "finance-manager",
-    "founders-associate",
+    "financial-analyst",
+    "hr-manager",
 )
 
-# Markdown shape of a Wellfound job card (one per posting):
-#   [TITLE](https://wellfound.com/jobs/{id}-{slug})
-#   COMPANY • [REMOTE_FLAG] • LOCATION • $SALARY • POSTED
-#
-# We lean on the title-link line as the primary anchor and read the
-# meta line that immediately follows for company/location/salary.
-# Each Wellfound role page is grouped by company. A company block
-# starts with a bold link to the company page:
-#     [**Company Name**](https://wellfound.com/company/{slug})
-# All job postings that follow (until the next company block or EOF)
-# belong to that company.
-_COMPANY_HEADER_RE = re.compile(
-    r"\[\*\*([^*\n]{1,200})\*\*\]\((https?://wellfound\.com/company/[^)]+)\)"
+_NEXT_DATA_RE = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL)
+_JSON_LD_RE = re.compile(
+    r'<script type="application/ld\+json"[^>]*>(.*?)</script>', re.DOTALL
 )
-# A job link: [Title](https://wellfound.com/jobs/{id}-{slug})
-_TITLE_RE = re.compile(
-    r"\[([^\]\n]{2,200})\]\(https?://wellfound\.com/jobs/(\d+)-([a-z0-9-]+)\)"
+_RESULTS_PREFIX = "seoLandingPageJobSearchResults("
+_EMPLOYMENT_TYPES: dict[str, EmploymentType] = {
+    "full-time": "FULL_TIME",
+    "part-time": "PART_TIME",
+    "contract": "CONTRACT",
+    "internship": "INTERN",
+}
+# "$120k – $160k", "₹10L – ₹25L", "$90k – $120k CAD", "Up to $150k".
+_SALARY_RE = re.compile(
+    r"^(?:(?P<upto>up to)\s+)?(?P<sym>[^\d\s]+)(?P<lo>\d[\d,]*(?:\.\d+)?)(?P<lo_unit>[kKL]?)"
+    r"(?:\s*[–-]\s*(?P=sym)?(?P<hi>\d[\d,]*(?:\.\d+)?)(?P<hi_unit>[kKL]?))?"
+    r"(?:\s+(?P<code>[A-Z]{3}))?$",
+    re.IGNORECASE,
 )
-_SALARY_RANGE_RE = re.compile(
-    r"\$(\d+(?:\.\d+)?)\s*([Kk]?)\s*[–\-]\s*\$?(\d+(?:\.\d+)?)\s*([Kk]?)"
-)
-_SALARY_SINGLE_RE = re.compile(r"\$(\d+(?:\.\d+)?)\s*([Kk]?)")
-# Posted-date is on its own line: 'today', 'yesterday', '3 days ago',
-# '2 months ago', etc.
-_RELATIVE_RE = re.compile(
-    r"^\s*(\d+)\s*(minute|hour|day|week|month|year)s?\s*ago\s*$", re.IGNORECASE,
-)
-_TODAY_RE = re.compile(r"^\s*(today|yesterday|just posted)\s*$", re.IGNORECASE)
-_EXPERIENCE_RE = re.compile(r"^\s*(\d+)\s*years?\s*of\s*exp\b", re.IGNORECASE)
-# Location-side flag: 'Remote • United States' / 'Remote only • United States'
-_REMOTE_PREFIX_RE = re.compile(r"^\s*(?:remote(?:\s+only)?|fully\s+remote)\b\s*", re.IGNORECASE)
+_CURRENCY_SYMBOLS = {"$": "USD", "€": "EUR", "£": "GBP", "₹": "INR", "د.إ": "AED"}
+_UNITS = {"": 1, "k": 1_000, "l": 100_000}
 
 
 @ScraperRegistry.register(ATSType.WELLFOUND)
 class WellfoundScraper(BaseScraper):
-    """Wellfound (wellfound.com) — US startup-direct jobs.
+    """Wellfound (wellfound.com): startup jobs, read from its role pages.
 
     Single-source: ``company_slug`` is ignored.
 
-    **Firecrawl is required.** The site 403s every direct fetch
-    (Akamai). Pass ``firecrawl_api_key=…`` (or set
-    ``FIRECRAWL_API_KEY`` env) to enable; otherwise the scraper
-    raises a clear ScraperError. Firecrawl is paid; expect roughly
-    1 request per role (default ~23 roles → ~$0.02 per full run).
-
     Knobs:
-    - ``role_slugs`` — override the role list. Default is a curated
-      tech/product/growth set; pass an empty tuple to disable.
+    - ``role_slugs``: the roles to read (``/role/{slug}``).
+    - ``max_pages``: pages read per role at most.
+    - ``request_interval``: seconds between the starts of two requests.
+    - ``include_ats_imports``: keep listings imported from an ATS.
+    - ``firecrawl_api_key``: fetch the pages through Firecrawl.
     """
 
     ats = ATSType.WELLFOUND
+    # Cloudflare 403s httpx's default User-Agent.
+    default_headers: ClassVar[dict[str, str]] = {
+        "User-Agent": "Mozilla/5.0 (compatible; ats-scrapers/1.0)",
+        "Accept": "text/html,application/xhtml+xml",
+    }
 
     def __init__(
         self,
         company_slug: str,
         *,
-        timeout: float = 120.0,  # Firecrawl can take ~30-60s per page.
+        timeout: float = 60.0,
         include_descriptions: bool = True,
         proxy: str | None = None,
-        firecrawl_api_key: str | None = None,
         role_slugs: tuple[str, ...] | list[str] = DEFAULT_ROLE_SLUGS,
+        max_pages: int = MAX_PAGES_PER_ROLE,
+        include_ats_imports: bool = False,
+        request_interval: float = REQUEST_INTERVAL_S,
+        firecrawl_api_key: str | None = None,
     ) -> None:
         super().__init__(
             company_slug,
@@ -140,382 +151,261 @@ class WellfoundScraper(BaseScraper):
             include_descriptions=include_descriptions,
             proxy=proxy,
         )
-        self.firecrawl_api_key = (
-            firecrawl_api_key or os.environ.get("FIRECRAWL_API_KEY") or None
-        )
+        if max_pages < 1:
+            raise ValueError("max_pages must be at least 1")
         self.role_slugs = tuple(role_slugs)
+        self.max_pages = max_pages
+        self.include_ats_imports = include_ats_imports
+        self.request_interval = request_interval
+        self.firecrawl_api_key = firecrawl_api_key or None
+
+    async def afetch(self) -> list[Job]:
+        if not self.role_slugs:
+            return []
+        throttle = Throttle(MAX_CONCURRENCY, self.request_interval)
+        async with self.make_fetcher(follow_redirects=False) as fetch:
+            per_role = await asyncio.gather(
+                *(self._read_role(fetch, throttle, role) for role in self.role_slugs)
+            )
+        if all(listings is None for listings in per_role):
+            raise ScraperError(
+                f"Wellfound: none of the role pages exist ({', '.join(self.role_slugs)})"
+            )
+        jobs: dict[str, Job] = {}
+        for listings in per_role:
+            for startup, listing in listings or []:
+                job = self._parse_listing(startup, listing)
+                if job is not None and job.ats_id not in jobs:
+                    jobs[job.ats_id] = job
+        return list(jobs.values())
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
-        if not self.firecrawl_api_key:
-            return None
-        copy = job.model_copy()
 
         async def run() -> str | None:
             async with self.make_fetcher() as fetch:
-                sem = asyncio.Semaphore(1)
-                await self._enrich_description(fetch, sem, copy)
-            return copy.description
+                page = await self._get_page(fetch, str(job.url))
+            return _posting_description(page) if page else None
 
-        return self._run_sync(run())
-
-    async def afetch(self) -> list[Job]:
-        if not self.firecrawl_api_key:
-            raise ScraperError(
-                "Wellfound requires a Firecrawl API key — the site is gated "
-                "behind Akamai and won't respond to direct httpx requests. "
-                "Pass firecrawl_api_key=… to the scraper or set the "
-                "FIRECRAWL_API_KEY env variable."
-            )
-        seen: set[str] = set()
-        jobs: list[Job] = []
-        lock = asyncio.Lock()
-
-        async def absorb(items: list[Job]) -> None:
-            async with lock:
-                for j in items:
-                    if j.ats_id in seen:
-                        continue
-                    seen.add(j.ats_id)
-                    jobs.append(j)
-
-        async with self.make_fetcher() as fetch:
-            sem = asyncio.Semaphore(MAX_CONCURRENCY)
-
-            async def per_role(slug: str) -> None:
-                page_jobs = await self._fetch_role(fetch, sem, slug)
-                await absorb(page_jobs)
-
-            # Always include the bare ``/jobs`` URL — gives ~50
-            # newest-overall jobs that may not surface in any specific
-            # role page yet.
-            async def fetch_overall() -> None:
-                page_jobs = await self._fetch_url(fetch, sem, f"{WELLFOUND_BASE}/jobs")
-                await absorb(page_jobs)
-
-            tasks = [fetch_overall()] + [per_role(s) for s in self.role_slugs]
-            await asyncio.gather(*tasks)
-            if self.include_descriptions and jobs:
-                await asyncio.gather(*(
-                    self._enrich_description(fetch, sem, job) for job in jobs
-                ))
-        return jobs
-
-    async def _enrich_description(
-        self,
-        fetch: Fetcher,
-        sem: asyncio.Semaphore,
-        job: Job,
-    ) -> None:
+        # A description is optional: one posting that fails leaves the
+        # others to be enriched.
         try:
-            markdown = await self._firecrawl_scrape(fetch, sem, str(job.url))
+            return self._run_sync(run())
         except ScraperError:
-            return
-        if not markdown:
-            return
-        description = _description_from_markdown(markdown, title=job.title)
-        if description and not job.description:
-            job.description = description[:25_000]
+            return None
 
-    async def _fetch_role(
-        self,
-        fetch: Fetcher,
-        sem: asyncio.Semaphore,
-        slug: str,
-    ) -> list[Job]:
-        return await self._fetch_url(fetch, sem, f"{WELLFOUND_BASE}/role/{slug}")
+    async def _read_role(
+        self, fetch: Fetcher, throttle: Throttle, role: str
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]] | None:
+        """Every listing on every page of ``role``; ``None`` if the role is gone."""
+        first = await self._read_role_page(fetch, throttle, role, 1)
+        if first is None:
+            logger.warning("Wellfound role %r has no page; skipping it", role)
+            return None
+        listings, page_count = first
+        last = min(page_count, self.max_pages)
+        if page_count > last:
+            logger.warning(
+                "Wellfound role %r has %d pages; reading the first %d",
+                role, page_count, last,
+            )
+        rest = await asyncio.gather(
+            *(self._read_role_page(fetch, throttle, role, n) for n in range(2, last + 1))
+        )
+        for page in rest:
+            if page is not None:
+                listings.extend(page[0])
+        return listings
 
-    async def _fetch_url(
-        self,
-        fetch: Fetcher,
-        sem: asyncio.Semaphore,
-        url: str,
-    ) -> list[Job]:
-        """Render ``url`` via Firecrawl and parse its markdown for jobs."""
-        markdown = await self._firecrawl_scrape(fetch, sem, url)
-        if not markdown:
-            return []
-        return list(_parse_markdown(markdown))
+    async def _read_role_page(
+        self, fetch: Fetcher, throttle: Throttle, role: str, page: int
+    ) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], int] | None:
+        url = f"{WELLFOUND_BASE}/role/{role}"
+        if page > 1:
+            url += f"?page={page}"
+        async with throttle:
+            html = await self._get_page(fetch, url)
+        return _role_listings(html, role, page, url) if html is not None else None
 
-    async def _firecrawl_scrape(
-        self,
-        fetch: Fetcher,
-        sem: asyncio.Semaphore,
-        url: str,
-    ) -> str:
-        """Single Firecrawl ``/v1/scrape`` call returning rendered
-        markdown. Soft-fails (returns ``""``) on transient errors so a
-        single bad role doesn't sink the whole run; auth/quota statuses
-        (401/402/403/404) raise so the user notices a bad key."""
-        body = {"url": url, "formats": ["markdown"]}
-        headers = {
-            "Authorization": f"Bearer {self.firecrawl_api_key}",
-            "Content-Type": "application/json",
-        }
-        async with sem:
-            try:
-                response = await fetch.request(
-                    "POST",
-                    f"{FIRECRAWL_BASE}/v1/scrape",
-                    json=body,
-                    headers=headers,
-                    handled={401, 402, 403, 404},
-                )
-            except ScraperError:
-                # Transient failures (429/5xx/network) exhausted the
-                # Fetcher's retries — soft-fail for this URL.
-                return ""
+    async def _get_page(self, fetch: Fetcher, url: str) -> str | None:
+        """The page, or ``None`` when it does not exist or redirects away."""
+        if not self.firecrawl_api_key:
+            response = await fetch.request("GET", url, handled=_NO_PAGE)
+            return None if response.status_code in _NO_PAGE else response.text
+        response = await fetch.request(
+            "POST",
+            FIRECRAWL_SCRAPE_URL,
+            json={"url": url, "formats": ["rawHtml"]},
+            headers={
+                "Authorization": f"Bearer {self.firecrawl_api_key}",
+                "Accept": "application/json",
+            },
+            handled={401, 402, 403},
+        )
         if response.status_code != 200:
-            # Permanent failure (bad key, quota exhausted). Surface as
-            # a hard error so the user knows, rather than silently
-            # returning [] for the whole board.
             raise ScraperError(
                 f"Firecrawl returned {response.status_code} for {url}: "
                 f"{response.text[:200]}"
             )
-        try:
-            payload = response.json()
-        except ValueError:
-            return ""
-        return (payload.get("data") or {}).get("markdown") or ""
+        payload = response.json()
+        data = payload.get("data") if isinstance(payload, dict) else None
+        metadata = data.get("metadata") if isinstance(data, dict) else None
+        if isinstance(metadata, dict) and metadata.get("statusCode") == 404:
+            return None
+        html = data.get("rawHtml") if isinstance(data, dict) else None
+        if not isinstance(html, str):
+            raise ScraperError(f"Firecrawl returned no page for {url}")
+        return html
 
+    def _parse_listing(self, startup: dict[str, Any], item: dict[str, Any]) -> Job | None:
+        ats_id = str(item.get("id") or "").strip()
+        title = str(item.get("title") or "").strip()
+        slug = str(item.get("slug") or "").strip()
+        company = str(startup.get("name") or "").strip()
+        if not ats_id.isdigit() or not title or not slug or not company:
+            return None
+        ats_source = item.get("atsSource") or None
+        auto_posted = item.get("autoPosted") is True
+        if not self.include_ats_imports and (ats_source or auto_posted):
+            return None
 
-# --- markdown parser --------------------------------------------------------
+        compensation = str(item.get("compensation") or "").strip() or None
+        currency, salary_min, salary_max = _parse_salary(compensation)
+        locations = _strings(item.get("locationNames"))
+        remote_locations = _strings(item.get("acceptedRemoteLocationNames"))
+        live_start = item.get("liveStartAt")
+        description = item.get("description")
+        experience = item.get("yearsExperienceMin")
 
-
-def _parse_markdown(md: str):
-    """Yield ``Job`` instances by walking the rendered markdown.
-
-    Wellfound's role pages are grouped by company:
-      [**Company**](company-url)
-      ... (description, badges)
-      [Job Title](job-url)  Full-time
-      $salary
-      Location
-      posted-date
-
-    We walk the markdown once, tracking the most recently seen
-    company-header link. Each job link inherits that company. Within
-    a job's window (up to the next job link or company header), the
-    field-per-line structure is parsed positionally — not all fields
-    are always present, so we sniff each line and assign by shape.
-    """
-    seen_ids: set[str] = set()
-    # Build an interleaved list of (kind, position, payload) markers
-    # where kind ∈ {'company', 'job'}, sorted by position. That way
-    # a single forward walk associates jobs with their preceding
-    # company header.
-    markers: list[tuple[int, str, re.Match]] = []
-    for m in _COMPANY_HEADER_RE.finditer(md):
-        markers.append((m.start(), "company", m))
-    for m in _TITLE_RE.finditer(md):
-        markers.append((m.start(), "job", m))
-    markers.sort(key=lambda t: t[0])
-
-    current_company: str = "Unknown"
-    for i, (_pos, kind, mm) in enumerate(markers):
-        if kind == "company":
-            current_company = mm.group(1).strip() or "Unknown"
-            continue
-        # kind == "job"
-        ats_id = mm.group(2)
-        if ats_id in seen_ids:
-            continue
-        seen_ids.add(ats_id)
-        title = mm.group(1).strip()
-        slug = mm.group(3)
-        url = f"{WELLFOUND_BASE}/jobs/{ats_id}-{slug}"
-
-        # Window for this job's metadata: from end of this match to
-        # start of the next marker (job or company), clamped so we
-        # don't scan unbounded text.
-        window_start = mm.end()
-        window_end = markers[i + 1][0] if i + 1 < len(markers) else min(
-            len(md), window_start + 800,
-        )
-        window = md[window_start:window_end]
-
-        location, is_remote, salary_min, salary_max, posted, experience = (
-            _parse_job_window(window)
-        )
-
-        yield Job(
-            url=url,
+        raw: dict[str, Any] = {
+            "company_slug": startup.get("slug"),
+            "company_id": startup.get("id"),
+            "role": item.get("primaryRoleTitle"),
+            "remote_locations": remote_locations or None,
+            "years_experience_max": item.get("yearsExperienceMax"),
+            "ats_source": ats_source,
+            "auto_posted": auto_posted or None,
+        }
+        return Job(
+            url=HttpUrl(f"{WELLFOUND_BASE}/jobs/{ats_id}-{slug}"),
             title=title,
-            company=current_company,
+            company=company,
             ats_type=ATSType.WELLFOUND,
             ats_id=ats_id,
-            location=location,
-            is_remote=is_remote,
-            salary_currency="USD" if (salary_min or salary_max) else None,
-            salary_period="YEAR" if (salary_min or salary_max) else None,
+            location=", ".join(locations or remote_locations) or None,
+            is_remote=item["remote"] if isinstance(item.get("remote"), bool) else None,
+            salary_summary=compensation,
+            salary_currency=currency,
+            salary_period="YEAR" if currency else None,
             salary_min=salary_min,
             salary_max=salary_max,
-            experience=experience,
-            posted_at=posted,
+            experience=experience if type(experience) is int else None,
+            employment_type=_EMPLOYMENT_TYPES.get(str(item.get("jobType"))),
+            description=(
+                description.strip()[:25_000]
+                if self.include_descriptions and isinstance(description, str)
+                and description.strip()
+                else None
+            ),
+            posted_at=(
+                datetime.fromtimestamp(live_start, UTC)
+                if type(live_start) is int and live_start > 0
+                else None
+            ),
             fetched_at=datetime.now(UTC),
+            raw={key: value for key, value in raw.items() if value is not None} or None,
         )
 
 
-def _description_from_markdown(md: str, *, title: str) -> str | None:
-    """Extract a useful body from a rendered Wellfound job page.
+def _role_listings(
+    html: str, role: str, page: int, url: str
+) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], int] | None:
+    """The ``(startup, listing)`` pairs of one role page and the role's page count.
 
-    Role/list pages are company-grouped and include multiple card links; those
-    are intentionally ignored so we don't store listing chrome as a posting
-    description.
+    ``None`` when the page is the role's first page served in place of a page
+    past the last one.
     """
-    if _COMPANY_HEADER_RE.search(md):
+    match = _NEXT_DATA_RE.search(html)
+    try:
+        data = json.loads(match.group(1)) if match else None
+        cache = data["props"]["pageProps"]["apolloState"]["data"]
+        queries = cache["ROOT_QUERY"]["talent"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ScraperError(f"Wellfound page {url} carries no job data") from exc
+    pages: dict[object, Any] = {}
+    for key, value in queries.items():
+        if not key.startswith(_RESULTS_PREFIX):
+            continue
+        try:
+            args = json.loads(key[len(_RESULTS_PREFIX):-1])
+        except ValueError:
+            continue
+        if isinstance(args, dict) and args.get("role") == role:
+            pages[args.get("page")] = value
+    results = pages.get(page)
+    if results is None and page > 1 and 1 in pages:
         return None
-    lines: list[str] = []
-    skip_until_body = bool(title)
-    for raw in md.splitlines():
-        line = raw.strip()
-        if not line:
-            if lines and lines[-1] != "":
-                lines.append("")
+    if not isinstance(results, dict) or not isinstance(results.get("startups"), list):
+        raise ScraperError(f"Wellfound page {url} carries no job search results")
+    page_count = results.get("pageCount")
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for startup in _refs(cache, results["startups"]):
+        for listing in _refs(cache, startup.get("highlightedJobListings")):
+            pairs.append((startup, listing))
+    return pairs, page_count if type(page_count) is int and page_count > 0 else 1
+
+
+def _refs(cache: dict[str, Any], refs: object) -> list[dict[str, Any]]:
+    """The Apollo cache entries ``refs`` point to."""
+    if not isinstance(refs, list):
+        return []
+    entries = (
+        cache.get(ref.get("__ref")) for ref in refs if isinstance(ref, dict)
+    )
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _strings(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(
+        item.strip() for item in value if isinstance(item, str) and item.strip()
+    ))
+
+
+def _parse_salary(
+    compensation: str | None,
+) -> tuple[str | None, float | None, float | None]:
+    """Currency and bounds of a yearly pay range; equity after "•" is ignored."""
+    if not compensation:
+        return None, None, None
+    match = _SALARY_RE.match(compensation.split("•")[0].strip())
+    if not match:
+        return None, None, None
+    currency = match["code"] or _CURRENCY_SYMBOLS.get(match["sym"])
+    if currency is None:
+        return None, None, None
+    low = _amount(match["lo"], match["lo_unit"])
+    if match["upto"]:
+        return currency, None, low
+    high = _amount(match["hi"], match["hi_unit"]) if match["hi"] else low
+    return currency, low, high
+
+
+def _amount(number: str, unit: str) -> float:
+    return float(number.replace(",", "")) * _UNITS[unit.lower()]
+
+
+def _posting_description(html: str) -> str | None:
+    """The description of a job page's JobPosting JSON-LD, as text."""
+    for match in _JSON_LD_RE.finditer(html):
+        try:
+            data = json.loads(match.group(1))
+        except ValueError:
             continue
-        if skip_until_body:
-            if title.lower() in line.lower():
-                skip_until_body = False
-            continue
-        if line in {"Apply", "Save", "SaveApply"}:
-            continue
-        if line.startswith("[") and "wellfound.com/jobs/" in line:
-            continue
-        if _parse_relative(line) is not None:
-            continue
-        if "$" in line and _parse_salary(line) is not None:
-            continue
-        cleaned = _markdown_to_text(line)
-        if cleaned:
-            lines.append(cleaned)
-    text = "\n".join(lines).strip()
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text or None
-
-
-def _markdown_to_text(value: str) -> str:
-    value = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", value)
-    value = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)
-    value = re.sub(r"[*_`#>]+", "", value)
-    return re.sub(r"[ \t\r\f\v]+", " ", value).strip()
-
-
-def _parse_job_window(window: str) -> tuple[
-    str | None, bool | None, float | None, float | None, datetime | None, int | None,
-]:
-    """Walk the metadata lines after a job title link and assign each
-    line to the right field by shape:
-    - lines containing ``$`` → salary
-    - 'today' / 'yesterday' / 'N days ago' → posted_at
-    - 'N years of exp' → experience
-    - 'Remote …' / 'Remote only' → is_remote (the rest is location)
-    - everything else (and not a UI element) → location
-    """
-    location: str | None = None
-    is_remote: bool | None = None
-    salary_min: float | None = None
-    salary_max: float | None = None
-    posted: datetime | None = None
-    experience: int | None = None
-
-    for raw in window.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        # UI/meta elements we want to ignore outright.
-        if line in {"SaveApply", "Save", "Apply"}:
-            continue
-        if line.endswith("Save"):
-            # Wellfound concatenates the date with 'Save' on a sibling
-            # line ('todaySave', 'yesterdaySave'); we already captured
-            # the date on the previous iteration, so skip.
-            continue
-        if line in {"Full-time", "Part-time", "Contract", "Internship"}:
-            # Job-type chip; we surface that via the dedicated field
-            # if needed, but it's not the location/salary/etc.
-            continue
-
-        # Salary
-        if "$" in line and salary_min is None:
-            sal = _parse_salary(line)
-            if sal is not None:
-                salary_min, salary_max = sal
-                continue
-
-        # Posted date
-        if posted is None:
-            d = _parse_relative(line)
-            if d is not None:
-                posted = d
-                continue
-
-        # Experience
-        if experience is None:
-            em = _EXPERIENCE_RE.match(line)
-            if em:
-                experience = int(em.group(1))
-                continue
-
-        # Remote-prefix line ('Remote • United States', 'Remote only')
-        rm = _REMOTE_PREFIX_RE.match(line)
-        if rm:
-            is_remote = True
-            tail = line[rm.end():].lstrip(" •")
-            if tail and location is None:
-                location = tail
-            elif location is None:
-                location = "Remote"
-            continue
-
-        # 'In office' / 'Onsite'
-        if line.lower() in {"in office", "on-site", "onsite", "in-office"}:
-            is_remote = False
-            continue
-
-        # Default: a plain location label if we don't have one yet.
-        if location is None and not line.startswith("[") and len(line) < 120:
-            location = line
-
-    return location, is_remote, salary_min, salary_max, posted, experience
-
-
-def _parse_salary(s: str) -> tuple[float | None, float | None] | None:
-    """``$75k – $125k`` → (75000, 125000). ``$120k`` → (120000, 120000).
-    Returns None if no $ amounts found."""
-    m = _SALARY_RANGE_RE.search(s)
-    if m:
-        lo = _scale(m.group(1), m.group(2))
-        hi = _scale(m.group(3), m.group(4) or m.group(2))
-        return lo, hi
-    m = _SALARY_SINGLE_RE.search(s)
-    if m and "$" in s:
-        amt = _scale(m.group(1), m.group(2))
-        return amt, amt
+        if isinstance(data, dict) and data.get("@type") == "JobPosting":
+            description = data.get("description")
+            if isinstance(description, str) and description.strip():
+                return parse_html(description).lines()[:25_000] or None
     return None
-
-
-def _scale(num: str, suffix: str) -> float:
-    v = float(num)
-    if suffix and suffix.lower() == "k":
-        return v * 1_000
-    return v
-
-
-def _parse_relative(s: str) -> datetime | None:
-    if _TODAY_RE.search(s):
-        return datetime.now()
-    m = _RELATIVE_RE.search(s)
-    if not m:
-        return None
-    n = int(m.group(1))
-    unit = m.group(2).lower()
-    seconds_per = {
-        "minute": 60, "hour": 3600, "day": 86_400,
-        "week": 86_400 * 7, "month": 86_400 * 30, "year": 86_400 * 365,
-    }
-    delta = n * seconds_per.get(unit, 0)
-    if delta == 0:
-        return None
-    return datetime.now() - timedelta(seconds=delta)

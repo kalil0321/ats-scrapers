@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import socket
+import ssl
 import sys
 import types
 from typing import Any
@@ -10,7 +12,12 @@ from typing import Any
 import pytest
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
-from ats_scrapers.fetch import Fetcher, FetchResponse, proxy_url_from_env
+from ats_scrapers.fetch import (
+    Fetcher,
+    FetchResponse,
+    RetryExhaustedError,
+    proxy_url_from_env,
+)
 
 URL = "https://api.example.com/jobs"
 
@@ -128,6 +135,88 @@ async def test_network_errors_retry(httpx_mock) -> None:
     httpx_mock.add_response(url=URL, json={"ok": 1})
     async with _fetcher() as fetch:
         assert await fetch.get_json(URL) == {"ok": 1}
+
+
+def _connect_error(cause: BaseException) -> Exception:
+    import httpx
+
+    try:
+        raise httpx.ConnectError("connect failed") from cause
+    except httpx.ConnectError as exc:
+        return exc
+
+
+def _certificate_error(verify_code: int) -> ssl.SSLCertVerificationError:
+    error = ssl.SSLCertVerificationError(1, "certificate verify failed")
+    error.verify_code = verify_code
+    return error
+
+
+@pytest.mark.parametrize(
+    ("cause", "reason"),
+    [
+        (
+            socket.gaierror(socket.EAI_NONAME, "Name or service not known"),
+            "does not resolve",
+        ),
+        (_certificate_error(62), "certificate for another name"),
+    ],
+)
+async def test_missing_host_is_not_found_when_enabled(
+    httpx_mock, monkeypatch, cause: BaseException, reason: str
+) -> None:
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    httpx_mock.add_exception(_connect_error(cause), is_reusable=True)
+    async with _fetcher(missing_host_not_found=True) as fetch:
+        with pytest.raises(CompanyNotFoundError, match=reason):
+            await fetch.get_text(URL)
+    assert len(httpx_mock.get_requests()) == 3
+
+
+async def test_missing_host_that_comes_back_is_fetched(httpx_mock) -> None:
+    httpx_mock.add_exception(
+        _connect_error(socket.gaierror(socket.EAI_NONAME, "unknown"))
+    )
+    httpx_mock.add_response(url=URL, text="ok")
+    async with _fetcher(missing_host_not_found=True) as fetch:
+        assert await fetch.get_text(URL) == "ok"
+
+
+async def test_missing_host_is_retried_by_default(httpx_mock) -> None:
+    error = _connect_error(socket.gaierror(socket.EAI_NONAME, "unknown"))
+    httpx_mock.add_exception(error, is_reusable=True)
+    async with _fetcher() as fetch:
+        with pytest.raises(RetryExhaustedError):
+            await fetch.get_text(URL)
+
+
+async def test_failed_lookup_behind_a_proxy_is_not_a_missing_host(httpx_mock) -> None:
+    error = _connect_error(socket.gaierror(socket.EAI_NONAME, "unknown"))
+    httpx_mock.add_exception(error, is_reusable=True)
+    async with _fetcher(missing_host_not_found=True, proxy="http://proxy.invalid:8080") as fetch:
+        with pytest.raises(RetryExhaustedError):
+            await fetch.get_text(URL)
+
+
+async def test_failed_lookup_behind_an_environment_proxy_is_not_a_missing_host(
+    httpx_mock, monkeypatch,
+) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:8080")
+    error = _connect_error(socket.gaierror(socket.EAI_NONAME, "unknown"))
+    httpx_mock.add_exception(error, is_reusable=True)
+    async with _fetcher(missing_host_not_found=True) as fetch:
+        with pytest.raises(RetryExhaustedError):
+            await fetch.get_text(URL)
+
+
+async def test_expired_certificate_is_not_a_missing_host(httpx_mock) -> None:
+    error = _connect_error(_certificate_error(10))
+    for _ in range(3):
+        httpx_mock.add_exception(error)
+    async with _fetcher(missing_host_not_found=True) as fetch:
+        with pytest.raises(RetryExhaustedError):
+            await fetch.get_text(URL)
 
 
 async def test_retries_config_is_respected(httpx_mock) -> None:
@@ -263,6 +352,15 @@ def test_malformed_legacy_proxy_ignored(monkeypatch: pytest.MonkeyPatch) -> None
 def test_fetch_response_json_parses_text() -> None:
     response = FetchResponse(200, '{"a": 1}', {})
     assert response.json() == {"a": 1}
+
+
+async def test_response_reports_the_url_that_answered(httpx_mock) -> None:
+    moved = "https://www.example.com/careers"
+    httpx_mock.add_response(url=URL, status_code=301, headers={"Location": moved})
+    httpx_mock.add_response(url=moved, text="ok")
+    async with _fetcher() as fetch:
+        response = await fetch.request("GET", URL)
+    assert response.url == moved
 
 
 # --- sync wrapper on BaseScraper -------------------------------------------

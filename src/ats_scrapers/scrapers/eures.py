@@ -216,8 +216,7 @@ class EuresScraper(BaseScraper):
         introduce if the consumer ever stops draining (cubic PR #69
         P1) and means producer cleanup is always non-blocking.
 
-        Usage from :func:`scripts.run_pipeline.run` (for ATSes whose
-        full output would exceed RAM):
+        Usage when the full output would exceed RAM:
 
         .. code-block:: python
 

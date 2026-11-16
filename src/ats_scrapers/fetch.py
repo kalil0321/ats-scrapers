@@ -47,8 +47,11 @@ import asyncio
 import json as json_mod
 import logging
 import os
+import socket
+import ssl
 from types import TracebackType
 from typing import Any, Literal, Self
+from urllib.parse import urlparse
 
 import httpx
 
@@ -86,6 +89,7 @@ DEFAULT_TIMEOUT = 30.0
 # noticed.
 _RETRYABLE_STATUSES = frozenset({408, 429}) | frozenset(range(500, 600))
 _BLOCKED_STATUSES = frozenset({403, 406})
+_X509_V_ERR_HOSTNAME_MISMATCH = 62
 
 
 def proxy_url_from_env() -> str | None:
@@ -118,9 +122,12 @@ class FetchResponse:
     ``JSONDecodeError``) on malformed bodies, so a 200 that turns out
     to be a WAF/maintenance HTML page stays inside the scraper
     exception hierarchy callers are documented to handle.
+
+    ``url`` is the address that answered, after redirects, when the
+    engine reports it.
     """
 
-    __slots__ = ("_context", "headers", "status_code", "text")
+    __slots__ = ("_context", "headers", "status_code", "text", "url")
 
     def __init__(
         self,
@@ -128,9 +135,11 @@ class FetchResponse:
         text: str,
         headers: dict[str, str],
         context: str | None = None,
+        url: str | None = None,
     ) -> None:
         self.status_code = status_code
         self.text = text
+        self.url = url
         self.headers = headers
         self._context = context
 
@@ -166,6 +175,12 @@ class Fetcher:
     proxy:
         Proxy URL for both engines. ``None`` reads
         ``ATS_SCRAPERS_PROXY`` / legacy ``PROXY`` from the environment.
+    missing_host_not_found:
+        Raise :class:`CompanyNotFoundError` when the last attempt failed
+        because the host name does not resolve or presents a certificate
+        for another name. Only for scrapers whose host belongs to the
+        tenant (its own subdomain or custom domain), where either means
+        the board was taken down.
     """
 
     def __init__(
@@ -181,6 +196,7 @@ class Fetcher:
         retries: int | None = None,
         retry_base_delay: float | None = None,
         max_retry_delay: float | None = None,
+        missing_host_not_found: bool = False,
     ) -> None:
         self.label = label
         self.timeout = timeout
@@ -192,7 +208,16 @@ class Fetcher:
         self._retries = retries
         self._retry_base_delay = retry_base_delay
         self._max_retry_delay = max_retry_delay
+        self.missing_host_not_found = missing_host_not_found
         self._client: httpx.AsyncClient | None = None
+
+    def _uses_proxy(self) -> bool:
+        """Whether requests go through a proxy, ours or one httpx reads from
+        the standard environment variables."""
+        return bool(self.proxy) or any(
+            os.environ.get(name)
+            for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
+        )
 
     # --- lifecycle --------------------------------------------------------
 
@@ -294,6 +319,15 @@ class Fetcher:
             except Exception as exc:  # network layer (httpx transport, cloak)
                 last_error = str(exc)
                 if attempt == retries:
+                    reason = (
+                        _missing_host_reason(exc, via_proxy=self._uses_proxy())
+                        if self.missing_host_not_found
+                        else None
+                    )
+                    if reason:
+                        raise CompanyNotFoundError(
+                            f"{self.label}: {urlparse(url).hostname} {reason}"
+                        ) from exc
                     raise RetryExhaustedError(
                         f"{self.label}: {method} {url} failed after "
                         f"{retries} attempts: {exc}"
@@ -380,6 +414,7 @@ class Fetcher:
             response.text,
             dict(response.headers),
             context=f"{self.label}: {url}",
+            url=str(response.url),
         )
 
     def _cloak_request_sync(
@@ -409,12 +444,39 @@ class Fetcher:
             raise ScraperError(
                 f"{self.label}: cloak engine does not support {method}"
             )
+        final_url = getattr(response, "url", None)
         return FetchResponse(
             response.status_code,
             response.text,
             dict(getattr(response, "headers", {}) or {}),
             context=f"{self.label}: {url}",
+            url=str(final_url) if final_url else None,
         )
+
+
+def _missing_host_reason(exc: BaseException, *, via_proxy: bool) -> str | None:
+    """Why a connection error shows the host serves nothing under its name.
+
+    Hosting platforms answer a domain they dropped with their default
+    certificate, so a name mismatch means the same as a name that no
+    longer resolves. An expired certificate is not treated as gone.
+    Through a proxy, a failed lookup may be the proxy's own name, so only
+    the certificate, which the tenant host presents end to end, counts.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, socket.gaierror):
+            if current.errno == socket.EAI_NONAME and not via_proxy:
+                return "does not resolve"
+            return None
+        if isinstance(current, ssl.SSLCertVerificationError):
+            if current.verify_code == _X509_V_ERR_HOSTNAME_MISMATCH:
+                return "presents a certificate for another name"
+            return None
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def _cloak_available() -> bool:

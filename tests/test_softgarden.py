@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import SoftgardenScraper
 from ats_scrapers.scrapers.base import ScraperRegistry
@@ -177,6 +177,36 @@ def test_count_mismatch_fails_closed(httpx_mock) -> None:
 
     with pytest.raises(ScraperError, match="expected 2 jobs"):
         SoftgardenScraper(TENANT).fetch()
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        f"No such client for domain {TENANT}.career.softgarden.de",
+        "Cannot read properties of null (reading 'companyId')",
+    ],
+)
+def test_retired_site_is_not_found(httpx_mock, message: str) -> None:
+    httpx_mock.add_response(
+        url=FEED_URL,
+        status_code=400,
+        json={"success": False, "errorMessage": message, "errorId": "x"},
+    )
+
+    with pytest.raises(CompanyNotFoundError):
+        SoftgardenScraper(TENANT).fetch()
+
+
+def test_other_bad_request_is_an_error(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=FEED_URL,
+        status_code=400,
+        json={"success": False, "errorMessage": "Invalid locale"},
+    )
+
+    with pytest.raises(ScraperError, match="400") as raised:
+        SoftgardenScraper(TENANT).fetch()
+    assert not isinstance(raised.value, CompanyNotFoundError)
 
 
 def test_duplicate_job_ids_fail_closed(httpx_mock) -> None:

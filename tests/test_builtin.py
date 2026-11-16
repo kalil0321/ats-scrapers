@@ -115,7 +115,7 @@ def test_parses_listing_with_plain_plus_type_attr(httpx_mock) -> None:
 
 def test_preserves_html_in_description(httpx_mock) -> None:
     """Description now keeps HTML tags intact — the post-scrape
-    markdownify pass (scripts/normalize_descriptions.py) converts them
+    markdownify pass converts them
     to markdown later. Entities are unescaped at scrape time.
     """
     httpx_mock.add_response(

@@ -15,8 +15,15 @@ import pytest
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import ScraperRegistry, WantedScraper
+from ats_scrapers.scrapers import wanted as wanted_module
 
 _API_RE = re.compile(r"^https://www\.wanted\.co\.kr/api/v4/jobs(?:\?.*)?$")
+_DETAIL_RE = re.compile(r"^https://www\.wanted\.co\.kr/api/v4/jobs/\d+$")
+
+
+@pytest.fixture(autouse=True)
+def _no_detail_pacing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(wanted_module, "DETAIL_INTERVAL_S", 0)
 
 
 @pytest.fixture(autouse=True)
@@ -98,6 +105,12 @@ def _page(
 
 def test_registry_resolves_wanted() -> None:
     assert ScraperRegistry.get(ATSType.WANTED) is WantedScraper
+
+
+def test_user_agent_is_not_a_bare_mozilla_token(httpx_mock) -> None:
+    httpx_mock.add_response(url=_API_RE, json=_page([]))
+    WantedScraper("any", country_codes=["kr"]).fetch()
+    assert httpx_mock.get_request().headers["User-Agent"] != "Mozilla/5.0"
 
 
 # --- happy path -------------------------------------------------------------
@@ -248,6 +261,21 @@ def test_falls_back_to_full_location_when_structured_parts_missing(httpx_mock) -
 
 
 # --- error handling ---------------------------------------------------------
+
+
+def test_blocked_descriptions_stop_the_detail_requests(httpx_mock) -> None:
+    httpx_mock.reset()  # drop the detail stub
+    httpx_mock.add_response(
+        url=_API_RE,
+        json=_page([_job(job_id=i, position=f"Job {i}") for i in range(1, 6)]),
+    )
+    httpx_mock.add_response(url=_DETAIL_RE, status_code=403)
+
+    jobs = WantedScraper("any", country_codes=["kr"]).fetch()
+
+    assert len(jobs) == 5
+    assert all(job.description is None for job in jobs)
+    assert len(httpx_mock.get_requests(url=_DETAIL_RE)) <= wanted_module.MAX_CONCURRENCY
 
 
 def test_persistent_500_raises(httpx_mock) -> None:

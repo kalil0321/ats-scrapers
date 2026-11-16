@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import csv
 import re
 from datetime import UTC, datetime
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import pytest
 
@@ -251,3 +254,29 @@ def test_eu_404_is_company_not_found(httpx_mock) -> None:
     with pytest.raises(CompanyNotFoundError) as excinfo:
         LeverScraper("acme", region="eu").fetch()
     assert "region='eu'" not in str(excinfo.value)
+
+
+def test_catalog_slugs_preserve_canonical_url_case() -> None:
+    with Path("ats-companies/lever.csv").open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    mismatches = []
+    boards = []
+    for row in rows:
+        parsed = urlparse(row["url"])
+        canonical = unquote(parsed.path.strip("/").split("/", 1)[0])
+        boards.append(canonical.casefold())
+        # ``slug`` is what ``get_scraper("lever", slug)`` is given. A bare
+        # slug is read from the US API, so a board in the EU region
+        # carries its board URL.
+        expected = (
+            f"https://jobs.eu.lever.co/{canonical}"
+            if parsed.hostname == "jobs.eu.lever.co"
+            else canonical
+        )
+        if row["slug"] != expected:
+            mismatches.append((row["slug"], expected, row["url"]))
+
+    assert mismatches == []
+    # A board is listed once, in one region.
+    assert len(set(boards)) == len(boards)

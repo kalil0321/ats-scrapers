@@ -220,7 +220,6 @@ model in `src/ats_scrapers/models.py` for the schema you populate.
 git clone https://github.com/kalil0321/ats-scrapers
 cd ats-scrapers
 uv sync --extra dev
-uv pip install -r pipeline/requirements.txt  # repo-only ops/publisher tests
 uv run pytest
 uv run ruff check .
 ```

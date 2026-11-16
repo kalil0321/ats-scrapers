@@ -9,9 +9,6 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import EmploiticScraper
 from ats_scrapers.scrapers.base import ScraperRegistry
-from ats_scrapers.source_kind import source_kind
-from pipeline.publisher import ATS_DEDUP_PRIORITY
-from scripts.run_pipeline import CONFIGS
 
 SITE = "https://emploitic.com"
 SITEMAP = f"{SITE}/sitemap-jobs.xml"
@@ -209,14 +206,3 @@ def test_a_job_with_bare_fields(httpx_mock) -> None:
     assert job.salary_summary == "DZD 60,000 - 90,000 per month"
     assert (job.salary_min, job.salary_max, job.salary_period) == (60000.0, 90000.0, "MONTH")
     assert job.raw is None
-
-
-def test_emploitic_is_a_job_board() -> None:
-    config = CONFIGS["emploitic"]
-
-    assert config["scraper"] is EmploiticScraper
-    assert config["singleton"] is True
-    assert config["output"] == "emploitic/jobs.csv"
-    assert config["fail_closed_on_empty"] is True
-    assert source_kind("emploitic") == "job_board"
-    assert ATS_DEDUP_PRIORITY["emploitic"] == ATS_DEDUP_PRIORITY["seek"]

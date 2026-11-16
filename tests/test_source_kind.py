@@ -13,7 +13,6 @@ from ats_scrapers.source_kind import (
     is_headline,
     source_kind,
 )
-from pipeline.publisher import ATS_DEDUP_PRIORITY
 
 
 def test_explicit_lists_do_not_overlap() -> None:
@@ -50,10 +49,3 @@ def test_marketplaces_do_not_count_toward_the_headline() -> None:
     """Mercor is one feed for many employers: a job board, not an ATS."""
     assert source_kind("mercor") == "job_board"
     assert not is_headline("mercor")
-
-
-def test_gem_ranks_with_the_direct_ats_sources_in_the_publisher() -> None:
-    """Gem ATS hosts one board per employer, so its rows are not the ones
-    to drop when another source lists the same job."""
-    assert ATS_DEDUP_PRIORITY["gem"] == ATS_DEDUP_PRIORITY["greenhouse"] == 1
-    assert ATS_DEDUP_PRIORITY["mercor"] > 1
