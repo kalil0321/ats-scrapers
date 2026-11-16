@@ -444,6 +444,7 @@ class BundesagenturScraper(BaseScraper):
                     sem,
                     base_params=base_params,
                     total=total,
+                    initial_payload=first,
                     depth=depth,
                     absorb=absorb,
                 )
@@ -478,6 +479,7 @@ class BundesagenturScraper(BaseScraper):
         *,
         base_params: dict[str, Any],
         total: int,
+        initial_payload: dict[str, Any],
         depth: int,
         absorb: Callable[[list[dict[str, Any]]], Awaitable[None]],
     ) -> None:
@@ -487,8 +489,11 @@ class BundesagenturScraper(BaseScraper):
         abroad are then queried only until the union holds as many
         non-German postings as the leaf has. Postings located only as
         "Deutschland" match no state, so the official sort orders of the
-        whole leaf fill what is still missing. The union must reach the
-        leaf's advertised total, less ``REGION_COVER_TOLERANCE`` for churn.
+        whole leaf fill what is still missing. Postings past the first 10,000
+        of every sort order are then sought in the leaf's facet buckets that
+        fit under the cap, while the union would otherwise be rejected. The
+        union must reach the leaf's advertised total, less
+        ``REGION_COVER_TOLERANCE`` for churn.
         """
         references: set[str] = set()
 
@@ -524,22 +529,35 @@ class BundesagenturScraper(BaseScraper):
                 break
             await exhaust_region(f"{country} (Land)")
 
-        page_count = min((total + PAGE_SIZE - 1) // PAGE_SIZE, PAGE_LIMIT)
-        for sort in _COVER_SORTS:
+        async def fill(params: dict[str, Any], count: int, target: int) -> None:
+            page_count = min((count + PAGE_SIZE - 1) // PAGE_SIZE, PAGE_LIMIT)
             for page in range(1, page_count + 1):
-                if len(references) >= total:
-                    break
+                if len(references) >= target:
+                    return
                 payload = await self._fetch_page(
                     client,
                     sem,
-                    params={
-                        **base_params,
-                        "sort": sort,
-                        "size": PAGE_SIZE,
-                        "page": page,
-                    },
+                    params={**params, "size": PAGE_SIZE, "page": page},
                 )
                 await record(_result_items(payload))
+
+        for sort in _COVER_SORTS:
+            await fill({**base_params, "sort": sort}, total, total)
+
+        accepted = total - int(total * REGION_COVER_TOLERANCE)
+        facets = initial_payload.get("facetten")
+        for facet_name in _COVER_FACETS:
+            if facet_name in base_params:
+                continue
+            for value, count in sorted(
+                _bucket_counts(facets, facet_name).items(),
+                key=lambda item: item[1],
+                reverse=True,
+            ):
+                if len(references) >= accepted:
+                    break
+                if count <= PAGINATION_CAP:
+                    await fill({**base_params, facet_name: value}, count, accepted)
 
         end = await self._fetch_page(
             client,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections import Counter
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -314,13 +315,17 @@ def test_verified_cover_retries_catalogue_shrink(httpx_mock, monkeypatch) -> Non
 
 
 def _regional_catalogue(
-    httpx_mock, monkeypatch, jobs: dict[str, tuple[str, ...]]
+    httpx_mock,
+    monkeypatch,
+    jobs: dict[str, tuple[str, ...]],
+    professions: dict[str, str] | None = None,
 ) -> list[dict[str, list[str]]]:
     """Serve ``jobs`` (reference -> regions) with no exact facet partition.
 
     A region is a German state or a country abroad; a reference whose regions
     name no state is a posting located only as "Deutschland". Sorting by
-    ``moddatum`` reverses the order. Returns the query parameters of every
+    ``moddatum`` reverses the order. ``professions`` (reference -> beruf) feeds
+    the ``beruf`` facet and filter. Returns the query parameters of every
     request served.
     """
     import ats_scrapers.scrapers.bundesagentur as ba
@@ -346,6 +351,9 @@ def _regional_catalogue(
         seen.append(params)
         wo = params.get("wo", [None])[0]
         refs = [ref for ref, regions in jobs.items() if matches(regions, wo)]
+        profession = params.get("beruf", [None])[0]
+        if profession is not None:
+            refs = [ref for ref in refs if (professions or {}).get(ref) == profession]
         if params.get("sort") == ["moddatum"]:
             refs.reverse()
         size = int(params["size"][0])
@@ -354,7 +362,13 @@ def _regional_catalogue(
             _job(ref, f"Job {ref}")
             for ref in refs[(page - 1) * size:page * size]
         ]
-        payload: dict = {"maxErgebnisse": len(refs), "facetten": {}}
+        counts = Counter(
+            (professions or {})[ref] for ref in refs if ref in (professions or {})
+        )
+        payload: dict = {
+            "maxErgebnisse": len(refs),
+            "facetten": {"beruf": {"counts": dict(counts)}} if counts else {},
+        }
         if refs:
             payload["ergebnisliste"] = items
         return httpx.Response(200, json=payload)
@@ -434,6 +448,26 @@ _UNREACHABLE_MIDDLE = {
 }
 
 
+def test_region_cover_finds_postings_beyond_the_sort_orders_by_facet(
+    httpx_mock, monkeypatch
+) -> None:
+    requests = _regional_catalogue(
+        httpx_mock,
+        monkeypatch,
+        _UNREACHABLE_MIDDLE,
+        professions={"nationwide": "Verkäufer/in"},
+    )
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == [
+        "A", "B", "C", "D", "nationwide",
+    ]
+    assert [params["beruf"][0] for params in requests if "beruf" in params] == [
+        "Verkäufer/in"
+    ]
+
+
 def test_region_cover_missing_postings_fails(httpx_mock, monkeypatch) -> None:
     _regional_catalogue(httpx_mock, monkeypatch, _UNREACHABLE_MIDDLE)
 
@@ -447,11 +481,17 @@ def test_region_cover_tolerates_churn_within_limit(
     import ats_scrapers.scrapers.bundesagentur as ba
 
     monkeypatch.setattr(ba, "REGION_COVER_TOLERANCE", 0.2)
-    _regional_catalogue(httpx_mock, monkeypatch, _UNREACHABLE_MIDDLE)
+    requests = _regional_catalogue(
+        httpx_mock,
+        monkeypatch,
+        _UNREACHABLE_MIDDLE,
+        professions={"nationwide": "Verkäufer/in"},
+    )
 
     jobs = BundesagenturScraper("any").fetch()
 
     assert sorted(job.ats_id for job in jobs) == ["A", "B", "C", "D"]
+    assert not any("beruf" in params for params in requests)
 
 
 def test_missing_result_total_is_a_contract_break(httpx_mock) -> None:
