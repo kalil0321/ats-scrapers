@@ -91,6 +91,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   Global Spirits row is removed.
 - Cornerstone: a career site whose `{slug}.csod.com` host no longer resolves is
   reported as not found.
+- Softgarden: a site whose domain belongs to no client, or to a removed
+  company, is reported as not found.
 
 ## [0.3.0] — 2026-09-02
 
