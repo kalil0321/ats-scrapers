@@ -38,6 +38,9 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - Meta: reads the renamed `job_search_with_featured_jobs_v2` field.
 - Pipeline: a few failed boards no longer hold back ADP, Jobvite, Keka, PageUp, Paycom or Varbi.
 - Lever, Gem, Recruitee: a board whose public page is closed is reported as not found.
+- Avature: a tenant whose host no longer resolves is reported as not found, and
+  a tenant behind an AWS WAF JavaScript challenge says so in its error. The
+  Avature company row points at its own portal (`careers.avature.net/en_US/main`).
 - Phenom: job links open the posting.
 - Oracle: job links open the posting.
 - Amazon: job links open the posting.
