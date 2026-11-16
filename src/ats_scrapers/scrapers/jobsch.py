@@ -85,6 +85,9 @@ _DESCRIPTION_BLOCK_RE = re.compile(
 # Lower bound of the publication-date walk; live postings are far younger.
 EARLIEST_PUBLICATION = datetime(2000, 1, 1)
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+# A walk over today's board takes well under a hundred windows; a search
+# that ignores the date filter would split until one-second windows.
+MAX_DATE_WINDOWS = 1_000
 
 
 class _BlockedError(Exception):
@@ -126,6 +129,7 @@ class JobsChScraper(BaseScraper):
             proxy=proxy,
         )
         self.max_pages = max_pages
+        self._windows = 0
         self.query_seeds: tuple[str, ...] = tuple(query_seeds or ())
 
     def get_description(self, job: Job) -> str | None:
@@ -207,6 +211,8 @@ class JobsChScraper(BaseScraper):
 
             if total > MAX_USABLE_OFFSET:
                 latest = datetime.now(UTC).replace(tzinfo=None) + timedelta(days=2)
+                await self._check_date_filter(fetcher, sem, latest)
+                self._windows = 0
                 await self._walk_dates(
                     fetcher, sem, EARLIEST_PUBLICATION, latest.replace(microsecond=0),
                     absorb, in_proxy_mode,
@@ -231,6 +237,25 @@ class JobsChScraper(BaseScraper):
             await self._enrich_descriptions(all_jobs, proxy_url=proxy_url)
         return all_jobs
 
+    async def _check_date_filter(
+        self, fetcher: Fetcher, sem: asyncio.Semaphore, latest: datetime,
+    ) -> None:
+        """Raise unless a window before 2000 and one a year ahead are empty.
+
+        A search that ignores either bound would match postings there.
+        """
+        for start in (datetime(1990, 1, 1), latest + timedelta(days=365)):
+            params = {
+                "publication-date-from": start.strftime(_DATE_FORMAT),
+                "publication-date-to": (start + timedelta(days=1)).strftime(_DATE_FORMAT),
+            }
+            page = await self._fetch_page(fetcher, sem, start=0, params=params)
+            if int(page.get("total_hits") or 0):
+                raise ScraperError(
+                    f"jobs.ch matched postings in the empty window {params}; "
+                    "the search no longer filters by publication date"
+                )
+
     async def _walk_dates(
         self,
         fetcher: Fetcher,
@@ -241,6 +266,12 @@ class JobsChScraper(BaseScraper):
         in_proxy_mode: bool,
     ) -> None:
         """Read every posting first published in ``[start, end)``."""
+        self._windows += 1
+        if self._windows > MAX_DATE_WINDOWS:
+            raise ScraperError(
+                f"jobs.ch: the publication-date walk passed {MAX_DATE_WINDOWS} "
+                "windows; refusing to go on"
+            )
         params = {
             "publication-date-from": start.strftime(_DATE_FORMAT),
             "publication-date-to": end.strftime(_DATE_FORMAT),
@@ -364,6 +395,12 @@ class JobsChScraper(BaseScraper):
                 f"jobs.ch returned 403 at start={start}"
             )
         if response.status_code == 422:
+            if start == 0:
+                # The first page of a search is never past the cap: the
+                # API rejected the search itself.
+                raise ScraperError(
+                    f"jobs.ch rejected the search {params or {}}: {response.text[:200]}"
+                )
             # Past the search-engine cap (rare; API caps deep
             # pagination differently per query). Treat as exhausted.
             return {"documents": [], "total_hits": 0}

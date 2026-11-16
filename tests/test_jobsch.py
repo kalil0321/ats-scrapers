@@ -278,6 +278,52 @@ def test_splits_publication_dates_past_the_row_window(httpx_mock) -> None:
     assert len(jobs) == 4_500
 
 
+def _undated_board(date_status: int = 200):
+    """A 5,000-posting board whose search ignores, or rejects, the date filter."""
+    docs = [_doc(job_id=f"j{i}", title=f"Job {i}") for i in range(5_000)]
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        params = {k: v[0] for k, v in parse_qs(urlsplit(str(request.url)).query).items()}
+        start = int(params.get("start", 0))
+        if start >= 2000 or ("publication-date-from" in params and date_status != 200):
+            return httpx.Response(422, json={"errors": []})
+        return httpx.Response(200, json=_page(docs[start:start + 20], len(docs)))
+
+    return respond
+
+
+def test_search_that_ignores_the_date_filter_raises(httpx_mock) -> None:
+    httpx_mock.add_callback(_undated_board(), url=_API_RE, is_reusable=True)
+
+    with pytest.raises(ScraperError, match="no longer filters by publication date"):
+        JobsChScraper("any", include_descriptions=False).fetch()
+
+    assert len(httpx_mock.get_requests()) < 200
+
+
+def test_search_that_rejects_a_date_window_raises(httpx_mock) -> None:
+    httpx_mock.add_callback(_undated_board(date_status=422), url=_API_RE, is_reusable=True)
+
+    with pytest.raises(ScraperError, match="rejected the search"):
+        JobsChScraper("any", include_descriptions=False).fetch()
+
+
+def test_date_walk_stops_at_its_window_ceiling(httpx_mock, monkeypatch) -> None:
+    from ats_scrapers.scrapers import jobsch
+
+    monkeypatch.setattr(jobsch, "MAX_DATE_WINDOWS", 3)
+    first = datetime(2026, 1, 1)
+    docs = []
+    for i in range(4_500):
+        doc = _doc(job_id=f"j{i}", title=f"Job {i}")
+        doc["_published"] = (first + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S")
+        docs.append(doc)
+    httpx_mock.add_callback(_fake_search(docs), url=_API_RE, is_reusable=True)
+
+    with pytest.raises(ScraperError, match="passed 3 windows"):
+        JobsChScraper("any", include_descriptions=False).fetch()
+
+
 # --- defensive --------------------------------------------------------------
 
 
