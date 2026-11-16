@@ -63,7 +63,7 @@ class BuiltInScraper(BaseScraper):
     Single-source: ``company_slug`` is ignored.
 
     Knobs:
-    - ``max_pages`` — pagination cap (default 1,000, the last page the
+    - ``max_pages``: pagination cap (default 1,000, the last page the
       listing serves; 10 to 25 jobs per page).
     """
 
@@ -234,7 +234,7 @@ class BuiltInScraper(BaseScraper):
         the direct httpx user-agent. Verified live 2026-05-09: 200 with
         full ~390 KB HTML where direct returns 403/919 B.
 
-        Cloudflare also rate-limits deep pagination via httpcloak — a
+        Cloudflare also rate-limits deep pagination via httpcloak: a
         403 or 429 here is treated as transient (retry with backoff) and
         only escalates to a hard ``ScraperError`` if it survives every
         retry. The caller in :meth:`afetch` then keeps the jobs

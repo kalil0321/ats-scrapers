@@ -56,7 +56,7 @@ class YCombinatorScraper(BaseScraper):
     ``""``).
 
     Knobs:
-    - ``max_company_pages`` — page cap on the companies API (default
+    - ``max_company_pages``: page cap on the companies API (default
       1,000 pages of 25; the whole list is ~260 pages). Reaching it
       logs a warning.
     """

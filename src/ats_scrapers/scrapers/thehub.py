@@ -55,7 +55,7 @@ class TheHubScraper(BaseScraper):
     (``"any"``, ``""``).
 
     Knobs:
-    - ``max_pages`` — pagination cap per market (default 200, far above
+    - ``max_pages``: pagination cap per market (default 200, far above
       the current active board).
     """
 

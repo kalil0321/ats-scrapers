@@ -11,7 +11,7 @@ Amazon has two job APIs:
 2. ``POST https://www.amazon.jobs/api/jobs/search``
    Internal but unauthenticated. Exposes facets with full counts, but
    ``found`` saturates at 10,000 and **its ``filters`` body is silently
-   ignored** — every filtered POST returns the unfiltered count. We use
+   ignored**: every filtered POST returns the unfiltered count. We use
    it only to read the business-category facet; all actual job fetching
    runs through the GET endpoint.
 

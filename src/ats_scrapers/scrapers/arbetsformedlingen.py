@@ -1,7 +1,7 @@
 """Arbetsförmedlingen (Swedish Public Employment Service) scraper.
 
 Sweden's federal job board exposes a clean public JSON search API at
-``jobsearch.api.jobtechdev.se`` — no auth, no API key. Total volume is
+``jobsearch.api.jobtechdev.se``: no auth, no API key. Total volume is
 ~40-50k active ads.
 
 One query can read at most 2,100 ads: ``limit`` stops at 100 and any

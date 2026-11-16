@@ -100,9 +100,9 @@ class JobsChScraper(BaseScraper):
     Single-source: ``company_slug`` is ignored.
 
     Knobs:
-    - ``max_pages`` — page cap per query (default 100, the API's own
+    - ``max_pages``: page cap per query (default 100, the API's own
       2,000-row window).
-    - ``query_seeds`` — extra keyword searches run after the date walk.
+    - ``query_seeds``: extra keyword searches run after the date walk.
     """
 
     ats = ATSType.JOBSCH
