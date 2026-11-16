@@ -58,6 +58,19 @@ def test_parses_primary_response_shape() -> None:
     assert job.department == "Reality Labs"
 
 
+def test_parses_v2_response_shape() -> None:
+    payload = {
+        "data": {
+            "job_search_with_featured_jobs_v2": {
+                "all_jobs": [{"id": "42", "title": "Data Scientist", "locations": ["London, UK"]}]
+            }
+        }
+    }
+    [job] = MetaScraper("meta")._parse_responses([payload])
+    assert job.ats_id == "42"
+    assert job.location == "London, UK"
+
+
 def test_dedupes_repeated_ids_across_responses() -> None:
     """Meta's UI fires the same query multiple times when the user
     interacts with filters; we mustn't double-count."""
