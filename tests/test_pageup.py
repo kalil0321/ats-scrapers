@@ -714,3 +714,12 @@ def test_normalizes_supported_tenant_paths(value: str, expected: str) -> None:
 def test_rejects_invalid_tenant_paths(value: str) -> None:
     with pytest.raises(ValueError):
         _normalize_tenant_path(value)
+
+
+def test_moved_tenant_feed_honours_include_descriptions(httpx_mock) -> None:
+    _moved_listing(httpx_mock)
+    httpx_mock.add_response(url=_FEED_URL, text=_feed(_feed_item("494022", "Analyst")))
+
+    jobs = PageUpScraper("513/cw/en", include_descriptions=False).fetch()
+
+    assert [job.description for job in jobs] == [None]

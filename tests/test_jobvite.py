@@ -901,3 +901,43 @@ def test_listing_redirect_within_jobvite_is_followed(httpx_mock) -> None:
     jobs = JobviteScraper("acme", include_descriptions=False).fetch()
 
     assert [job.title for job in jobs] == ["Engineer"]
+
+
+def test_detail_redirected_to_another_job_page_is_followed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        text=_listing([("a1", "Engineer", "Paris")], start=1, end=1, total=1),
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/job/a1",
+        status_code=301,
+        headers={"Location": "https://jobs.jobvite.com/acme/job/a1/engineer"},
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/job/a1/engineer",
+        text=_detail("a1"),
+    )
+
+    jobs = JobviteScraper("acme").fetch()
+
+    assert [job.ats_id for job in jobs] == ["a1"]
+    assert jobs[0].description
+
+
+def test_page_read_again_with_other_rows_fails_closed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        text=_listing([("a1", "Engineer", "Paris")], start=1, end=1, total=2),
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=1",
+        text=_listing([("a1", "Engineer", "Paris")], start=2, end=2, total=2),
+    )
+    # Second read of page 0 claims rows 2-2: not the page read the first time.
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        text=_listing([("a2", "Engineer", "Paris")], start=2, end=2, total=2),
+    )
+
+    with pytest.raises(ScraperError, match="changed its rows on a second read"):
+        JobviteScraper("acme", include_descriptions=False).fetch()

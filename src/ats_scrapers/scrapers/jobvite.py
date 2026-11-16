@@ -27,6 +27,7 @@ BASE_URL = "https://jobs.jobvite.com"
 DETAIL_CONCURRENCY = 8
 SEAM_RETRIES = 5
 _MAX_LISTING_REDIRECTS = 3
+_MAX_DETAIL_REDIRECTS = 4
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _DETAIL_HANDLED = _REDIRECT_STATUSES | {404, 410}
 _NO_JOBS_MARKERS = ("no jobs", "no positions", "no openings", "no results found")
@@ -130,6 +131,7 @@ class JobviteScraper(BaseScraper):
     async def _fetch_listing(self, fetch: Fetcher) -> list[Job]:
         jobs: dict[str, Job] = {}
         seams: set[int] = set()
+        page_ranges: dict[int, tuple[int, int]] = {}
         page = 0
         expected_start = 1
         reported_total: int | None = None
@@ -159,6 +161,7 @@ class JobviteScraper(BaseScraper):
                     "Jobvite listing count did not match pagination range "
                     f"({len(page_jobs)} rows for {start}-{end})"
                 )
+            page_ranges[page] = (start, end)
             for job in page_jobs:
                 if job.ats_id in jobs:
                     seams.add(page)
@@ -178,11 +181,17 @@ class JobviteScraper(BaseScraper):
             if len(jobs) >= reported_total:
                 break
             for retry_page in retry_pages:
-                page_jobs, _, _, total = await self._listing_page(fetch, retry_page)
+                page_jobs, start, end, total = await self._listing_page(
+                    fetch, retry_page,
+                )
                 if total != reported_total:
                     raise ScraperError(
                         "Jobvite total changed during pagination "
                         f"({reported_total} to {total})"
+                    )
+                if (start, end) != page_ranges[retry_page] or len(page_jobs) != end - start + 1:
+                    raise ScraperError(
+                        f"Jobvite page {retry_page} changed its rows on a second read"
                     )
                 for job in page_jobs:
                     jobs.setdefault(str(job.ats_id), job)
@@ -236,21 +245,30 @@ class JobviteScraper(BaseScraper):
                 response = await fetch.request(
                     "GET", str(job.url), handled=_DETAIL_HANDLED,
                 )
-                if response.status_code in _REDIRECT_STATUSES:
-                    target = urljoin(
-                        str(job.url), response.headers.get("location", ""),
-                    )
+                url = str(job.url)
+                employer_redirect_seen = False
+                for _ in range(_MAX_DETAIL_REDIRECTS):
+                    if response.status_code not in _REDIRECT_STATUSES:
+                        break
+                    target = urljoin(url, response.headers.get("location", ""))
                     if _is_trusted_jobvite_url(target):
-                        # A closed job redirects to the job list.
+                        if _JOB_ID_RE.search(urlparse(target).path) is None:
+                            # A closed job redirects to the job list.
+                            return None
+                        url = target
+                    elif employer_redirect_seen:
                         return None
-                    # The employer sends its job pages to its own site.
-                    # ``nl=1`` asks Jobvite to serve the posting itself.
-                    job.url = HttpUrl(_without_employer_redirect(str(job.url)))
+                    else:
+                        # The employer sends its job pages to its own site.
+                        # ``nl=1`` asks Jobvite to serve the posting itself.
+                        employer_redirect_seen = True
+                        job.url = HttpUrl(_without_employer_redirect(str(job.url)))
+                        url = str(job.url)
                     response = await fetch.request(
-                        "GET", str(job.url), handled=_DETAIL_HANDLED,
+                        "GET", url, handled=_DETAIL_HANDLED,
                     )
-                    if response.status_code in _REDIRECT_STATUSES:
-                        return None
+                if response.status_code in _REDIRECT_STATUSES:
+                    return None
         except ScraperError as exc:
             logger.warning(
                 "Retaining Jobvite job %s without detail metadata after "

@@ -445,7 +445,11 @@ class PageUpScraper(BaseScraper):
                     ),
                     department="; ".join(categories) or None,
                     commitment="; ".join(work_types) or None,
-                    description=(body or summary)[:25_000] or None,
+                    description=(
+                        (body or summary)[:25_000] or None
+                        if self.include_descriptions
+                        else None
+                    ),
                     posted_at=_feed_date(_feed_text(item, "pubDate")),
                     application_deadline=_feed_date(
                         _feed_text(item, f"{_FEED_NS}closingDate")
