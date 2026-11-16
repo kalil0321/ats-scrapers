@@ -183,6 +183,16 @@ def test_paginates_and_deduplicates_jobs(httpx_mock) -> None:
     assert json.loads(requests[1].content)["offset"] == 50
 
 
+def test_raises_instead_of_truncating_at_page_guard(httpx_mock, monkeypatch) -> None:
+    monkeypatch.setattr("ats_scrapers.scrapers.moka.MAX_PAGES", 2)
+    for page in range(2):
+        rows = [job(f"job-{page}-{index}", f"Engineer {index}") for index in range(50)]
+        httpx_mock.add_response(url=URL_APP, json=envelope(rows, total=150))
+
+    with pytest.raises(ScraperError, match="page guard 2"):
+        MokaScraper("fixturecorp/12345").fetch()
+
+
 def test_request_body_matches_public_api(httpx_mock) -> None:
     httpx_mock.add_response(url=URL_APP, json=envelope([]))
     MokaScraper("fixturecorp/12345").fetch()

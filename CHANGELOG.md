@@ -40,6 +40,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - Beisen legacy: a tenant that moved to the current Beisen portal raises instead of
   returning no jobs, and a closed tenant is reported as not found. Anmei Group is
   listed under `beisen`.
+- Moka: a board is read up to 50,000 jobs instead of 10,000, and a board past that
+  raises instead of returning a cut list.
 - Recruitee: a board whose careers site is closed, whose public API is disabled, or
   whose custom domain now sends readers to another job site is reported as not found.
 - Wanted: requests are no longer rejected with 403 by the site's firewall, and

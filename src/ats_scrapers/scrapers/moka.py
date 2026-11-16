@@ -39,8 +39,8 @@ _HOST_ALIASES = {
 
 API_TEMPLATE = "https://{host}/api/outer/ats-apply/website/jobs/v2"
 _DEFAULT_AES_IV = b"de7c21ed8d6f50fe"
-PAGE_SIZE = 50
-MAX_PAGES = 200
+PAGE_SIZE = 50  # the API rejects a larger limit
+MAX_PAGES = 1_000
 
 _EMPLOYMENT_MAP: dict[str, EmploymentType] = {
     "全职": "FULL_TIME",
@@ -128,6 +128,12 @@ class MokaScraper(BaseScraper):
                     break
                 if len(page_jobs) < PAGE_SIZE:
                     break
+            else:
+                raise ScraperError(
+                    f"Moka ({self.company_slug}) still returned full pages after "
+                    f"{len(jobs)} jobs (page guard {MAX_PAGES}); refusing to "
+                    "return a partial list"
+                )
             return jobs
 
     async def _fetch_page(
