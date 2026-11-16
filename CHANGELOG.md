@@ -41,6 +41,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - Avature: a tenant whose host no longer resolves is reported as not found, and
   a tenant behind an AWS WAF JavaScript challenge says so in its error. The
   Avature company row points at its own portal (`careers.avature.net/en_US/main`).
+- PageUp: a tenant that moved to PageUp's newer career site is read from its
+  RSS feed, with complete descriptions, instead of failing.
 - Phenom: job links open the posting.
 - Oracle: job links open the posting.
 - Amazon: job links open the posting.

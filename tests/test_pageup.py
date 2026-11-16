@@ -546,6 +546,140 @@ def test_missing_results_container_fails_closed(httpx_mock) -> None:
         PageUpScraper("513/cw/en").fetch()
 
 
+_LISTING_URL = (
+    "https://careers.pageuppeople.com/513/cw/en/listing/?page=1&page-items=1000"
+)
+_FEED_URL = "https://careers.pageuppeople.com/513/cw/en/latest_jobs.rss"
+
+
+def _feed_item(job_id: str, title: str, **fields: str) -> str:
+    extra = "".join(f"<job:{tag}>{value}</job:{tag}>" for tag, value in fields.items())
+    return f"""
+    <item>
+      <guid isPermaLink="true">https://careers.pageuppeople.com/513/cw/en/job/{job_id}</guid>
+      <link>https://careers.pageuppeople.com/513/cw/en/job/{job_id}</link>
+      <title>{title}</title>
+      <description>Short summary of {title}.</description>
+      <pubDate>Wed, 11 Nov 2026 22:00:00 Z</pubDate>
+      <job:refNo>{job_id}</job:refNo>
+      {extra}
+    </item>
+    """
+
+
+def _feed(*items: str) -> str:
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+    <rss xmlns:a10="http://www.w3.org/2005/Atom" version="2.0">
+      <channel xmlns:job="http://pageuppeople.com/">
+        <link>https://careers.pageuppeople.com/513/cw/en/listing/</link>
+        {"".join(items)}
+      </channel>
+    </rss>
+    """
+
+
+def _moved_listing(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_LISTING_URL,
+        status_code=302,
+        headers={"Location": "https://careers.example.com.au/"},
+    )
+
+
+def test_tenant_moved_to_new_career_site_reads_feed(httpx_mock) -> None:
+    _moved_listing(httpx_mock)
+    httpx_mock.add_response(
+        url=_FEED_URL,
+        text=_feed(
+            _feed_item(
+                "494021",
+                "Assistant Director Financial Systems",
+                location="ACT|Head Office, Canberra,SA|Adelaide",
+                workType="Full Time,Full Time / Part Time",
+                category="Administration,Finance,Finance",
+                description="&lt;p&gt;Lead the &lt;strong&gt;finance&lt;/strong&gt; systems.&lt;/p&gt;",
+                applyLink=(
+                    "https://secure.dc2.pageuppeople.com/apply/513/gateway/"
+                    "default.aspx?c=apply&amp;lJobID=494021"
+                ),
+                closingDate="Thu, 26 Nov 2026 12:55:00 GMT",
+                businessLayer1="Corporate",
+            ),
+            _feed_item("494022", "Remote Analyst", location="Remote"),
+        ),
+    )
+
+    jobs = PageUpScraper("513/cw/en", company_name="DHA").fetch()
+
+    assert [job.ats_id for job in jobs] == ["513/cw/en:494021", "513/cw/en:494022"]
+    first = jobs[0]
+    assert str(first.url) == "https://careers.pageuppeople.com/513/cw/en/job/494021"
+    assert first.company == "DHA"
+    assert first.requisition_id == "494021"
+    assert first.location == "Head Office, Canberra, ACT; Adelaide, SA"
+    assert first.employment_type == "FULL_TIME"
+    assert first.commitment == "Full Time; Full Time / Part Time"
+    assert first.department == "Administration; Finance"
+    assert first.description == "Lead the\nfinance\nsystems."
+    assert first.posted_at is not None
+    assert first.posted_at.isoformat() == "2026-11-11T22:00:00+00:00"
+    assert first.application_deadline is not None
+    assert first.application_deadline.isoformat() == "2026-11-26T12:55:00+00:00"
+    assert str(first.apply_url).startswith("https://secure.dc2.pageuppeople.com/apply/513/")
+    assert first.raw == {
+        "careers_page": "https://careers.example.com.au/",
+        "listing_summary": "Short summary of Assistant Director Financial Systems.",
+        "business_unit": "Corporate",
+    }
+    assert jobs[1].is_remote is True
+    assert jobs[1].description == "Short summary of Remote Analyst."
+
+
+def test_moved_tenant_with_empty_feed_returns_empty(httpx_mock) -> None:
+    _moved_listing(httpx_mock)
+    httpx_mock.add_response(url=_FEED_URL, text=_feed())
+
+    assert PageUpScraper("513/cw/en").fetch() == []
+
+
+def test_moved_tenant_with_invalid_feed_fails_closed(httpx_mock) -> None:
+    _moved_listing(httpx_mock)
+    httpx_mock.add_response(url=_FEED_URL, text="<html>challenge</html>")
+
+    with pytest.raises(ScraperError, match="invalid job feed"):
+        PageUpScraper("513/cw/en").fetch()
+
+
+def test_moved_tenant_feed_rejects_foreign_job_links(httpx_mock) -> None:
+    _moved_listing(httpx_mock)
+    httpx_mock.add_response(
+        url=_FEED_URL,
+        text=_feed(_feed_item("1", "Engineer")).replace(
+            "careers.pageuppeople.com/513/cw/en/job/1",
+            "careers.pageuppeople.com/920/cw/en/job/1",
+        ),
+    )
+
+    with pytest.raises(ScraperError, match="unsafe job URL"):
+        PageUpScraper("513/cw/en").fetch()
+
+
+def test_redirect_within_pageup_keeps_listing_flow(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_LISTING_URL,
+        status_code=302,
+        headers={"Location": _LISTING_URL},
+    )
+    httpx_mock.add_response(
+        url=_LISTING_URL,
+        text=_listing([("101", "Engineer", "Melbourne")]),
+    )
+
+    jobs = PageUpScraper("513/cw/en", include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["513/cw/en:101"]
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
