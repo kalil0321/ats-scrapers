@@ -319,6 +319,33 @@ def test_pages_follow_the_host_a_portal_redirects_to(httpx_mock) -> None:
     assert len(jobs) == 25
 
 
+def test_relative_page_links_follow_the_host_that_served_the_page(httpx_mock) -> None:
+    """After the redirect, a relative link names a path on the new host."""
+    new_search = "https://jobs.acme.example/en_US/SearchJobs/"
+
+    def page(start: int, count: int, link: str = "") -> str:
+        anchors = "".join(
+            f'<a href="https://jobs.acme.example/en_US/JobDetail/Job/{i}">Job {i}</a>'
+            for i in range(start, start + count)
+        )
+        return f"<html><body>{anchors}{link}</body></html>"
+
+    httpx_mock.add_response(
+        url=_url("acme", 0), status_code=302, headers={"Location": new_search},
+    )
+    httpx_mock.add_response(
+        url=new_search,
+        text=page(0, 10, '<a href="/en_US/SearchJobs/?jobRecordsPerPage=10&amp;jobOffset=10">2</a>'),
+    )
+    httpx_mock.add_response(
+        url=f"{new_search}?jobRecordsPerPage=10&jobOffset=10", text=page(10, 5),
+    )
+
+    jobs = AvatureScraper("acme").fetch()
+
+    assert len(jobs) == 15
+
+
 # --- URL forms --------------------------------------------------------------
 
 

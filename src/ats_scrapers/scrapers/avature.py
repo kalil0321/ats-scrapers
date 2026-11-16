@@ -285,7 +285,7 @@ class AvatureScraper(BaseScraper):
         offset, url = 0, None
         for page_num in range(MAX_PAGES):
             try:
-                html_text = await asyncio.to_thread(
+                html_text, page_url = await asyncio.to_thread(
                     self._fetch_page_via_httpcloak_sync, base, offset, url
                 )
             except _BlockedTenantError:
@@ -299,7 +299,9 @@ class AvatureScraper(BaseScraper):
             for j in new:
                 seen.add(j.ats_id)
             all_jobs.extend(new)
-            following = _next_page(html_text, base, offset, len(page_jobs), page_size)
+            following = _next_page(
+                html_text, page_url, offset, len(page_jobs), page_size
+            )
             if following is None:
                 break
             offset, url = following
@@ -317,7 +319,8 @@ class AvatureScraper(BaseScraper):
 
     def _fetch_page_via_httpcloak_sync(
         self, base: str, offset: int, url: str | None = None,
-    ) -> str:
+    ) -> tuple[str, str]:
+        """``(html, final URL)`` of one listing page."""
         import httpcloak
 
         try:
@@ -341,7 +344,7 @@ class AvatureScraper(BaseScraper):
                 f"Avature ({base}) httpcloak returned {response.status_code} "
                 f"at offset={offset}"
             )
-        return response.text
+        return response.text, str(response.url or url or _search_url(base))
 
     async def _enrich_with_detail_via_httpcloak(
         self, sem: asyncio.Semaphore, job: Job,
@@ -378,7 +381,9 @@ class AvatureScraper(BaseScraper):
             page_size = _page_size(base)
             offset, url = 0, None
             for _ in range(MAX_PAGES):
-                html_text = await self._fetch_page(client, base, offset, url)
+                html_text, page_url = await self._fetch_page(
+                    client, base, offset, url
+                )
                 page_jobs = self._parse_page(html_text, base, company)
                 new = [j for j in page_jobs if j.ats_id not in seen]
                 if not new:
@@ -387,7 +392,7 @@ class AvatureScraper(BaseScraper):
                     seen.add(j.ats_id)
                 all_jobs.extend(new)
                 following = _next_page(
-                    html_text, base, offset, len(page_jobs), page_size
+                    html_text, page_url, offset, len(page_jobs), page_size
                 )
                 if following is None:
                     break
@@ -481,6 +486,7 @@ class AvatureScraper(BaseScraper):
                     except Exception:
                         break
                     html_text = await page.content()
+                    page_url = page.url or list_url
                     page_jobs = self._parse_page(html_text, base, company)
                     new = [j for j in page_jobs if j.ats_id not in seen]
                     if not new:
@@ -489,7 +495,7 @@ class AvatureScraper(BaseScraper):
                         seen.add(j.ats_id)
                     all_jobs.extend(new)
                     following = _next_page(
-                        html_text, base, offset, len(page_jobs), page_size
+                        html_text, page_url, offset, len(page_jobs), page_size
                     )
                     if following is None:
                         break
@@ -533,7 +539,8 @@ class AvatureScraper(BaseScraper):
         base: str,
         offset: int,
         url: str | None = None,
-    ) -> str:
+    ) -> tuple[str, str]:
+        """``(html, final URL)`` of one listing page."""
         list_url = url or _paginated_search_url(base, offset)
         for attempt in range(1, MAX_RETRIES + 1):
             try:
@@ -553,7 +560,7 @@ class AvatureScraper(BaseScraper):
             if response.status_code == 404:
                 raise CompanyNotFoundError(f"Avature site not found: {base}")
             if response.status_code == 200:
-                return response.text
+                return response.text, str(response.url)
             if response.headers.get("x-amzn-waf-action", "").lower() == "challenge":
                 raise ScraperError(
                     f"Avature ({base}) answered with an AWS WAF JavaScript "
@@ -762,10 +769,11 @@ def _page_size(base: str) -> int:
 
 
 def _next_page(
-    html_text: str, base: str, offset: int, rows: int, page_size: int,
+    html_text: str, page_url: str, offset: int, rows: int, page_size: int,
 ) -> tuple[int, str | None] | None:
     """``(offset, url)`` of the listing page after ``offset``, or None after
-    the last. ``url`` is None when the page should be built from ``base``.
+    the last. ``url`` is None when the page should be built from the base.
+    Links are relative to ``page_url``, the address that served the page.
 
     The page's own pagination link leads: some portals serve fewer rows than
     ``jobRecordsPerPage`` asks for (6 instead of 12), page by
@@ -773,7 +781,7 @@ def _next_page(
     without such a link continues only when it is full.
     """
     links = [
-        (int(number), urljoin(_search_url(base), html.unescape(href)))
+        (int(number), urljoin(page_url, html.unescape(href)))
         for href, number in _PAGE_LINK_RE.findall(html_text)
         if int(number) > offset
     ]
