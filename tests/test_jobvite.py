@@ -6,9 +6,10 @@ import json
 
 import pytest
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.jobvite import (
+    SEAM_RETRIES,
     JobviteScraper,
     _apply_detail,
     _normalize_tenant_path,
@@ -512,28 +513,133 @@ def test_catalogue_becoming_empty_mid_pagination_fails_closed(
         JobviteScraper("acme").fetch()
 
 
-def test_duplicate_job_id_fails_closed(httpx_mock) -> None:
+def test_job_repeated_across_pages_is_filled_by_asking_again(httpx_mock) -> None:
+    for second in ("a1", "a2"):
+        httpx_mock.add_response(
+            url="https://jobs.jobvite.com/acme/search?p=0",
+            text=_listing([("a1", "Engineer", "Paris")], start=1, end=1, total=2),
+        )
+        httpx_mock.add_response(
+            url="https://jobs.jobvite.com/acme/search?p=1",
+            text=_listing([(second, "Engineer", "Paris")], start=2, end=2, total=2),
+        )
+
+    jobs = JobviteScraper("acme", include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["a1", "a2"]
+
+
+def test_job_repeated_on_every_pass_fails_closed(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://jobs.jobvite.com/acme/search?p=0",
-        text=_listing(
-            [("a1", "Engineer", "Paris")],
-            start=1,
-            end=1,
-            total=2,
-        ),
+        text=_listing([("a1", "Engineer", "Paris")], start=1, end=1, total=2),
+        is_reusable=True,
     )
     httpx_mock.add_response(
         url="https://jobs.jobvite.com/acme/search?p=1",
+        text=_listing([("a1", "Engineer", "Paris")], start=2, end=2, total=2),
+        is_reusable=True,
+    )
+
+    with pytest.raises(ScraperError, match="ended before the reported total"):
+        JobviteScraper("acme", include_descriptions=False).fetch()
+
+    assert len(httpx_mock.get_requests()) == 2 + 2 * SEAM_RETRIES
+
+
+def test_job_listed_twice_on_one_page_fails_closed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
         text=_listing(
-            [("a1", "Engineer", "Paris")],
-            start=2,
+            [("a1", "Engineer", "Paris"), ("a1", "Engineer", "Lyon")],
+            start=1,
             end=2,
             total=2,
         ),
     )
 
-    with pytest.raises(ScraperError, match="duplicate job id"):
+    with pytest.raises(ScraperError, match="listed a job twice"):
         JobviteScraper("acme").fetch()
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "http://search.jobvite.com?invalid=1",
+        "https://recruiting.adp.com/?p=search&p=0&nl=1",
+    ],
+)
+def test_board_redirecting_off_jobvite_is_not_found(httpx_mock, location) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        status_code=302,
+        headers={"Location": location},
+    )
+
+    with pytest.raises(CompanyNotFoundError):
+        JobviteScraper("acme").fetch()
+
+
+def test_board_without_openings_page_returns_empty(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        text="""
+        <html><body>
+          <article class="jv-page-body" role="main">
+            <div class="jv-wrapper"><p ng-non-bindable>No results found.</p></div>
+          </article>
+        </body></html>
+        """,
+    )
+
+    assert JobviteScraper("acme").fetch() == []
+
+
+def test_detail_redirected_to_employer_site_is_read_on_jobvite(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        text=_listing([("a1", "Engineer", "Paris")], start=1, end=1, total=1),
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/job/a1",
+        status_code=302,
+        headers={"Location": "https://www.acme.example/careers/?p=job/a1&nl=1"},
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/job/a1?nl=1",
+        text=_detail("a1"),
+    )
+
+    jobs = JobviteScraper("acme").fetch()
+
+    assert [job.ats_id for job in jobs] == ["a1"]
+    assert str(jobs[0].url) == "https://jobs.jobvite.com/acme/job/a1?nl=1"
+    assert jobs[0].description
+
+
+def test_detail_redirected_to_job_list_is_dropped(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        text=_listing(
+            [("a1", "Engineer", "Paris"), ("a2", "Designer", "Lyon")],
+            start=1,
+            end=2,
+            total=2,
+        ),
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/job/a1",
+        text=_detail("a1"),
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/job/a2",
+        status_code=303,
+        headers={"Location": "https://jobs.jobvite.com/careers/acme/jobs?error=404"},
+    )
+
+    jobs = JobviteScraper("acme").fetch()
+
+    assert [job.ats_id for job in jobs] == ["a1"]
 
 
 def test_all_details_without_descriptions_fail_closed(httpx_mock) -> None:
@@ -779,3 +885,59 @@ def test_registry_contains_jobvite() -> None:
     from ats_scrapers.scrapers.base import ScraperRegistry
 
     assert ScraperRegistry.get(ATSType.JOBVITE) is JobviteScraper
+
+
+def test_listing_redirect_within_jobvite_is_followed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        status_code=301,
+        headers={"Location": "https://jobs.jobvite.com/acme-careers/search?p=0"},
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme-careers/search?p=0",
+        text=_listing([("oAbc1", "Engineer", "Remote")], start=1, end=1, total=1),
+    )
+
+    jobs = JobviteScraper("acme", include_descriptions=False).fetch()
+
+    assert [job.title for job in jobs] == ["Engineer"]
+
+
+def test_detail_redirected_to_another_job_page_is_followed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        text=_listing([("a1", "Engineer", "Paris")], start=1, end=1, total=1),
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/job/a1",
+        status_code=301,
+        headers={"Location": "https://jobs.jobvite.com/acme/job/a1/engineer"},
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/job/a1/engineer",
+        text=_detail("a1"),
+    )
+
+    jobs = JobviteScraper("acme").fetch()
+
+    assert [job.ats_id for job in jobs] == ["a1"]
+    assert jobs[0].description
+
+
+def test_page_read_again_with_other_rows_fails_closed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        text=_listing([("a1", "Engineer", "Paris")], start=1, end=1, total=2),
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=1",
+        text=_listing([("a1", "Engineer", "Paris")], start=2, end=2, total=2),
+    )
+    # Second read of page 0 claims rows 2-2: not the page read the first time.
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        text=_listing([("a2", "Engineer", "Paris")], start=2, end=2, total=2),
+    )
+
+    with pytest.raises(ScraperError, match="changed its rows on a second read"):
+        JobviteScraper("acme", include_descriptions=False).fetch()

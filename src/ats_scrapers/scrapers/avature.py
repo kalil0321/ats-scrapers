@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import socket
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
@@ -516,6 +517,11 @@ class AvatureScraper(BaseScraper):
             try:
                 response = await client.get(list_url, headers=_BROWSER_HEADERS)
             except httpx.HTTPError as exc:
+                if _host_does_not_resolve(exc) and not _environment_proxy():
+                    # Avature drops the DNS record of a closed tenant.
+                    raise CompanyNotFoundError(
+                        f"Avature site not found: {base} (host does not resolve)"
+                    ) from exc
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
                         f"Avature fetch failed for {base} at offset={offset}: {exc}"
@@ -526,6 +532,11 @@ class AvatureScraper(BaseScraper):
                 raise CompanyNotFoundError(f"Avature site not found: {base}")
             if response.status_code == 200:
                 return response.text
+            if response.headers.get("x-amzn-waf-action", "").lower() == "challenge":
+                raise ScraperError(
+                    f"Avature ({base}) answered with an AWS WAF JavaScript "
+                    "challenge; only a real browser can load this tenant"
+                )
             if response.status_code == 406:
                 # 406 from Avature is usually transient rate-limit-style
                 # blocking — retry with backoff. Only escalate to the
@@ -925,6 +936,33 @@ def _apply_detail_to_job(
     if description and not job.description:
         # Cap at ~12kB to avoid Pydantic warnings on extreme outliers.
         job.description = description[:25_000]
+
+
+def _environment_proxy() -> bool:
+    """Whether httpx would go through a proxy set in the environment.
+
+    Behind a proxy, a failed lookup may be the proxy's own name.
+    """
+    return any(
+        os.environ.get(name)
+        for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
+    )
+
+
+def _host_does_not_resolve(exc: BaseException) -> bool:
+    """True when DNS answered that the host has no address.
+
+    A transient resolver failure (``EAI_AGAIN``) does not count.
+    """
+    no_address = {socket.EAI_NONAME, getattr(socket, "EAI_NODATA", socket.EAI_NONAME)}
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, socket.gaierror):
+            return current.errno in no_address
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _company_from_base(base: str) -> str | None:

@@ -18,9 +18,9 @@ import asyncio
 import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -39,6 +39,13 @@ _SCRIPT_IDENTIFIER_RE = re.compile(
     r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
     re.IGNORECASE,
 )
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+# Keka sends an unknown tenant to TenantNotFound.html and a tenant whose
+# careers portal is switched off to 403.html.
+_CLOSED_PORTAL_PATHS = frozenset({
+    "/careers/content/tenantnotfound.html",
+    "/careers/content/403.html",
+})
 _EMPLOYMENT_TYPES: dict[int, EmploymentType] = {
     1: "PART_TIME",
     2: "FULL_TIME",
@@ -155,9 +162,24 @@ class KekaScraper(BaseScraper):
         self.company_name = _string(company_name)
 
     async def afetch(self) -> list[Job]:
+        async with self.make_fetcher(follow_redirects=False) as probe:
+            response = await probe.request(
+                "GET", self.portal_url, handled=_REDIRECT_STATUSES,
+            )
+        if response.status_code in _REDIRECT_STATUSES:
+            target = urljoin(self.portal_url, response.headers.get("location", ""))
+            if urlparse(target).path.casefold() in _CLOSED_PORTAL_PATHS:
+                raise CompanyNotFoundError(
+                    f"Keka ({self.host}) careers portal is closed: {target}"
+                )
+            if urlparse(target).hostname != self.host:
+                raise ScraperError(
+                    f"Keka ({self.host}) careers page redirected to {target}"
+                )
+            async with self.make_fetcher() as fetch:
+                response = await fetch.request("GET", target)
         async with self.make_fetcher() as fetch:
-            html = await fetch.get_text(self.portal_url)
-            identifier = _extract_identifier(html, self.host)
+            identifier = _extract_identifier(response.text, self.host)
             api_root = f"https://{self.host}/careers/api"
             jobs_request = fetch.get_json(
                 f"{api_root}/embedjobs/{self.portal}/active/{identifier}"

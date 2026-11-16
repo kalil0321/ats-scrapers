@@ -8,8 +8,10 @@ import html
 import logging
 import re
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urljoin, urlparse
+from xml.etree import ElementTree as ET
 
 from pydantic import HttpUrl, ValidationError
 
@@ -30,6 +32,11 @@ _TENANT_RE = re.compile(
     r"(?P<locale>[A-Za-z]{2}(?:-[A-Za-z]{2})?)$"
 )
 _JOB_ID_RE = re.compile(r"/job/(\d+)(?:/|$)", re.IGNORECASE)
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_FEED_NS = "{http://pageuppeople.com/}"
+# Feed fields join values with "," and levels with "|". A comma followed by
+# a space belongs to the value ("Head Office, Canberra").
+_FEED_VALUE_SEPARATOR_RE = re.compile(r",(?=\S)")
 _COUNT_RE = re.compile(r"\d[\d,]*")
 _NO_JOBS_MARKERS = (
     "no jobs matched",
@@ -103,9 +110,25 @@ class PageUpScraper(BaseScraper):
         seen_ids: set[str] = set()
         visited_urls: set[str] = set()
         expected_total: int | None = None
-        next_url: str | None = (
-            f"{self.base_url}/listing/?page=1&page-items={PAGE_SIZE}"
-        )
+        first_url = f"{self.base_url}/listing/?page=1&page-items={PAGE_SIZE}"
+        next_url: str | None = first_url
+
+        async with self.make_fetcher(follow_redirects=False) as probe:
+            first = await probe.request(
+                "GET", first_url, handled=_REDIRECT_STATUSES,
+            )
+        prefetched: str | None = None
+        if first.status_code in _REDIRECT_STATUSES:
+            target = urljoin(first_url, first.headers.get("location", ""))
+            if urlparse(target).hostname != urlparse(BASE_URL).hostname:
+                # The tenant moved to PageUp's newer career site, which
+                # answers HTTP clients with a JavaScript challenge. The
+                # tenant's RSS feed on this host still lists every job.
+                async with self.make_fetcher() as fetch:
+                    feed = await fetch.get_text(f"{self.base_url}/latest_jobs.rss")
+                return self._parse_feed(feed, careers_page=target)
+        else:
+            prefetched = first.text
 
         async with self.make_fetcher() as fetch:
             while next_url is not None:
@@ -114,7 +137,10 @@ class PageUpScraper(BaseScraper):
                         f"PageUp ({self.tenant_path}) repeated a pagination URL"
                     )
                 visited_urls.add(next_url)
-                listing_html = await fetch.get_text(next_url)
+                if prefetched is not None:
+                    listing_html, prefetched = prefetched, None
+                else:
+                    listing_html = await fetch.get_text(next_url)
                 page_jobs, next_url, remaining = self._parse_listing(listing_html)
                 if not jobs and remaining is not None:
                     expected_total = len(page_jobs) + remaining
@@ -149,6 +175,9 @@ class PageUpScraper(BaseScraper):
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
+        if job.raw and "careers_page" in job.raw:
+            # Read from the feed: the job page sits behind a JavaScript challenge.
+            return self._run_sync(self._feed_description(job))
         copy = job.model_copy(deep=True)
 
         async def run() -> str | None:
@@ -346,6 +375,111 @@ class PageUpScraper(BaseScraper):
             expected_segment="listing",
         ), remaining
 
+    async def _feed_description(self, job: Job) -> str | None:
+        async with self.make_fetcher() as fetch:
+            feed = await fetch.get_text(f"{self.base_url}/latest_jobs.rss")
+        include = self.include_descriptions
+        self.include_descriptions = True
+        try:
+            jobs = self._parse_feed(feed, careers_page=str(job.raw.get("careers_page", "")))
+        finally:
+            self.include_descriptions = include
+        return next((j.description for j in jobs if j.ats_id == job.ats_id), None)
+
+    def _parse_feed(self, xml_text: str, *, careers_page: str) -> list[Job]:
+        try:
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as exc:
+            raise ScraperError(
+                f"PageUp ({self.tenant_path}) returned an invalid job feed"
+            ) from exc
+        channel = root.find("channel")
+        if root.tag != "rss" or channel is None:
+            raise ScraperError(
+                f"PageUp ({self.tenant_path}) returned an invalid job feed"
+            )
+
+        jobs: list[Job] = []
+        seen_ids: set[str] = set()
+        fetched_at = datetime.now(UTC)
+        for item in channel.findall("item"):
+            link = _feed_text(item, "link")
+            title = _clean_text(_feed_text(item, "title"))
+            match = _JOB_ID_RE.search(link)
+            if match is None or not title:
+                raise ScraperError(
+                    f"PageUp ({self.tenant_path}) feed item lacks a job link "
+                    "or title"
+                )
+            job_id = match.group(1)
+            if job_id in seen_ids:
+                raise ScraperError(f"PageUp returned duplicate job id {job_id!r}")
+            seen_ids.add(job_id)
+
+            location = "; ".join(
+                ", ".join(reversed(levels))
+                for levels in _feed_values(_feed_text(item, f"{_FEED_NS}location"))
+            )
+            work_types = [
+                levels[-1]
+                for levels in _feed_values(_feed_text(item, f"{_FEED_NS}workType"))
+            ]
+            categories = [
+                levels[-1]
+                for levels in _feed_values(_feed_text(item, f"{_FEED_NS}category"))
+            ]
+            summary = _clean_text(_feed_text(item, "description"))
+            body_html = _feed_text(item, f"{_FEED_NS}description")
+            body = (
+                _clean_text(_parse_html(body_html).get_text("\n", strip=True))
+                if body_html
+                else ""
+            )
+            raw: dict[str, Any] = {"careers_page": careers_page}
+            if summary:
+                raw["listing_summary"] = summary
+            if business_unit := _clean_text(
+                _feed_text(item, f"{_FEED_NS}businessLayer1")
+            ):
+                raw["business_unit"] = business_unit
+            jobs.append(
+                Job(
+                    url=HttpUrl(self._tenant_url(link, expected_segment="job")),
+                    title=title,
+                    company=self.company_name,
+                    ats_type=ATSType.PAGEUP,
+                    ats_id=f"{self.tenant_path}:{job_id}",
+                    requisition_id=_feed_text(item, f"{_FEED_NS}refNo") or job_id,
+                    location=location or None,
+                    is_remote=(
+                        True if location and "remote" in location.lower() else None
+                    ),
+                    employment_type=next(
+                        filter(None, map(_employment_type, work_types)), None,
+                    ),
+                    department="; ".join(categories) or None,
+                    commitment="; ".join(work_types) or None,
+                    description=(
+                        (body or summary)[:25_000] or None
+                        if self.include_descriptions
+                        else None
+                    ),
+                    posted_at=_feed_date(_feed_text(item, "pubDate")),
+                    application_deadline=_feed_date(
+                        _feed_text(item, f"{_FEED_NS}closingDate")
+                    ),
+                    apply_url=_apply_url(
+                        _feed_text(item, f"{_FEED_NS}applyLink"),
+                        base=link,
+                        job_id=job_id,
+                    ),
+                    language=self.language,
+                    fetched_at=fetched_at,
+                    raw=raw,
+                )
+            )
+        return jobs
+
     def _tenant_url(self, href: str, *, expected_segment: str) -> str:
         try:
             resolved = urljoin(f"{BASE_URL}/", href)
@@ -474,27 +608,7 @@ def _apply_detail(job: Job, html_text: str) -> None:
     if apply_link is not None:
         href = apply_link.get("href")
         if isinstance(href, str) and href:
-            try:
-                apply_url = urljoin(str(job.url), href)
-                parsed_apply = urlparse(apply_url)
-                if (
-                    parsed_apply.scheme != "https"
-                    or parsed_apply.hostname is None
-                    or not (
-                        parsed_apply.hostname == "careers.pageuppeople.com"
-                        or parsed_apply.hostname.endswith(".pageuppeople.com")
-                    )
-                    or parsed_apply.username is not None
-                    or parsed_apply.password is not None
-                    or parsed_apply.port not in (None, 443)
-                ):
-                    raise ValueError("unsafe PageUp apply URL")
-                job.apply_url = HttpUrl(apply_url)
-            except (ValidationError, ValueError):
-                logger.warning(
-                    "Ignoring invalid PageUp apply URL for job %s",
-                    job.ats_id,
-                )
+            job.apply_url = _apply_url(href, base=str(job.url), job_id=job.ats_id)
 
     description_soup = _parse_html(str(container))
     description = description_soup.select_one("#job-content")
@@ -508,6 +622,55 @@ def _apply_detail(job: Job, html_text: str) -> None:
     job.description = _clean_text(
         description.get_text("\n", strip=True)
     )[:25_000] or None
+
+
+def _apply_url(href: str, *, base: str, job_id: str | None) -> HttpUrl | None:
+    if not href:
+        return None
+    try:
+        apply_url = urljoin(base, href)
+        parsed_apply = urlparse(apply_url)
+        if (
+            parsed_apply.scheme != "https"
+            or parsed_apply.hostname is None
+            or not (
+                parsed_apply.hostname == "careers.pageuppeople.com"
+                or parsed_apply.hostname.endswith(".pageuppeople.com")
+            )
+            or parsed_apply.username is not None
+            or parsed_apply.password is not None
+            or parsed_apply.port not in (None, 443)
+        ):
+            raise ValueError("unsafe PageUp apply URL")
+        return HttpUrl(apply_url)
+    except (ValidationError, ValueError):
+        logger.warning("Ignoring invalid PageUp apply URL for job %s", job_id)
+        return None
+
+
+def _feed_text(item: ET.Element, tag: str) -> str:
+    node = item.find(tag)
+    return (node.text or "").strip() if node is not None else ""
+
+
+def _feed_values(value: str) -> list[list[str]]:
+    """Split a feed field into its values, each a list of levels."""
+    values: list[list[str]] = []
+    for entry in _FEED_VALUE_SEPARATOR_RE.split(value):
+        levels = [level for level in map(_clean_text, entry.split("|")) if level]
+        if levels and levels not in values:
+            values.append(levels)
+    return values
+
+
+def _feed_date(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _extract_metadata(container: Tag) -> dict[str, list[str]]:

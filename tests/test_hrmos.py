@@ -189,6 +189,40 @@ def test_unrecognized_html_fails_closed(httpx_mock) -> None:
         HrmosScraper(TENANT).fetch()
 
 
+def test_board_without_published_jobs_returns_empty(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LISTING_URL,
+        text="""
+          <html><body>
+            <h1 class="sg-corporate-name">株式会社アクメ 求人一覧</h1>
+            <div class="pg-list-wrapper">
+              <section class="sg-wrapper sg-unavailable-notifier">
+                <h2>公開されている 株式会社アクメ の求人はありません。</h2>
+                <p><a href="./">株式会社アクメ 採用情報へ</a></p>
+              </section>
+            </div>
+          </body></html>
+        """,
+    )
+
+    assert HrmosScraper(TENANT).fetch() == []
+
+
+def test_unavailable_notice_without_no_jobs_text_fails_closed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LISTING_URL,
+        text="""
+          <html><body>
+            <h1 class="sg-corporate-name">株式会社アクメ 求人一覧</h1>
+            <section class="sg-unavailable-notifier"><h2>メンテナンス中</h2></section>
+          </body></html>
+        """,
+    )
+
+    with pytest.raises(ScraperError, match="unrecognized careers page"):
+        HrmosScraper(TENANT).fetch()
+
+
 def test_untrusted_job_url_fails_closed(httpx_mock) -> None:
     bad = _card("1").replace(
         "https://hrmos.co/pages/acme/jobs/1",
