@@ -35,6 +35,9 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   job is collected instead of the first 9,900.
 - Oracle: a site with more than 10,000 jobs is read in two parts by posting date, so
   every job is collected instead of the first 10,000.
+- Avature: listing pages follow the portal's own pagination links, so a portal that
+  serves fewer jobs per page than asked, pages by `projectOffset`, or redirects to
+  another host is read to the end instead of stopping after the first page.
 - Zoho Recruit: a career site that lists 750 jobs, the most one page carries, is
   logged as a warning, since the site may have more.
 - Beisen legacy: a tenant that moved to the current Beisen portal raises instead of
