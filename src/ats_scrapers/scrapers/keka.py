@@ -172,9 +172,12 @@ class KekaScraper(BaseScraper):
                 raise CompanyNotFoundError(
                     f"Keka ({self.host}) careers portal is closed: {target}"
                 )
-            raise ScraperError(
-                f"Keka ({self.host}) careers page redirected to {target}"
-            )
+            if urlparse(target).hostname != self.host:
+                raise ScraperError(
+                    f"Keka ({self.host}) careers page redirected to {target}"
+                )
+            async with self.make_fetcher() as fetch:
+                response = await fetch.request("GET", target)
         async with self.make_fetcher() as fetch:
             identifier = _extract_identifier(response.text, self.host)
             api_root = f"https://{self.host}/careers/api"

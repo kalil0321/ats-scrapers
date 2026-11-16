@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 BASE_URL = "https://jobs.jobvite.com"
 DETAIL_CONCURRENCY = 8
 SEAM_RETRIES = 5
+_MAX_LISTING_REDIRECTS = 3
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _DETAIL_HANDLED = _REDIRECT_STATUSES | {404, 410}
 _NO_JOBS_MARKERS = ("no jobs", "no positions", "no openings", "no results found")
@@ -208,18 +209,20 @@ class JobviteScraper(BaseScraper):
 
     async def _get_listing(self, fetch: Fetcher, page: int) -> str:
         url = f"{self.base_url}/search?p={page}"
-        response = await fetch.request("GET", url, handled=_REDIRECT_STATUSES)
-        if response.status_code not in _REDIRECT_STATUSES:
-            return response.text
-        target = urljoin(url, response.headers.get("location", ""))
-        if not _is_trusted_jobvite_url(target):
-            # Jobvite sends a closed board to search.jobvite.com?invalid=1, or
-            # to the employer's new careers site.
-            raise CompanyNotFoundError(
-                f"Jobvite ({self.tenant_path}) board redirects to {target}"
-            )
+        for _ in range(_MAX_LISTING_REDIRECTS + 1):
+            response = await fetch.request("GET", url, handled=_REDIRECT_STATUSES)
+            if response.status_code not in _REDIRECT_STATUSES:
+                return response.text
+            target = urljoin(url, response.headers.get("location", ""))
+            if not _is_trusted_jobvite_url(target):
+                # Jobvite sends a closed board to search.jobvite.com?invalid=1,
+                # or to the employer's new careers site.
+                raise CompanyNotFoundError(
+                    f"Jobvite ({self.tenant_path}) board redirects to {target}"
+                )
+            url = target
         raise ScraperError(
-            f"Jobvite ({self.tenant_path}) redirected its job list to {target}"
+            f"Jobvite ({self.tenant_path}) redirected its job list too many times"
         )
 
     async def _enrich_detail(

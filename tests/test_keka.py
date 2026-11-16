@@ -292,6 +292,17 @@ def test_closed_portal_redirect_maps_to_company_not_found(
         KekaScraper(PORTAL_URL).fetch()
 
 
+def test_redirect_within_the_tenant_host_is_followed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=PORTAL_URL, status_code=301, headers={"Location": "/careers/"},
+    )
+    httpx_mock.add_response(url=PORTAL_URL + "/", text=_bootstrap())
+    httpx_mock.add_response(url=JOBS_URL, json=[_job()])
+    httpx_mock.add_response(url=COMPANY_URL, json={"shortName": "Bright Future"})
+
+    assert len(KekaScraper(PORTAL_URL).fetch()) == 1
+
+
 def test_unexpected_portal_redirect_fails_closed(httpx_mock) -> None:
     httpx_mock.add_response(
         url=PORTAL_URL,

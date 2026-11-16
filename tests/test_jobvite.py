@@ -885,3 +885,19 @@ def test_registry_contains_jobvite() -> None:
     from ats_scrapers.scrapers.base import ScraperRegistry
 
     assert ScraperRegistry.get(ATSType.JOBVITE) is JobviteScraper
+
+
+def test_listing_redirect_within_jobvite_is_followed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme/search?p=0",
+        status_code=301,
+        headers={"Location": "https://jobs.jobvite.com/acme-careers/search?p=0"},
+    )
+    httpx_mock.add_response(
+        url="https://jobs.jobvite.com/acme-careers/search?p=0",
+        text=_listing([("oAbc1", "Engineer", "Remote")], start=1, end=1, total=1),
+    )
+
+    jobs = JobviteScraper("acme", include_descriptions=False).fetch()
+
+    assert [job.title for job in jobs] == ["Engineer"]
