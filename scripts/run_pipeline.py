@@ -1886,62 +1886,66 @@ def _job_to_row(job: Job) -> dict[str, Any]:
 
 
 # A run that writes far fewer jobs than the previous one is usually a block
-# or a rate limit, not a market change: keep the previous jobs.csv. The same
-# drop on a third run in a row is accepted, so a real shrink still lands.
+# or a rate limit, not a market change: keep the previous jobs.csv. The drop
+# is accepted on the third run in a row only if it is stable (no more than
+# 15% below the blocked runs), so a real shrink still lands but a worsening
+# outage never does.
 DROP_GUARD_MIN_RATIO = 0.8
 DROP_GUARD_MIN_ROWS = 1000
 DROP_GUARD_MAX_BLOCKS = 2
+DROP_GUARD_STABLE_RATIO = 0.85
 RUN_ROWS_FILENAME = ".last_run.json"
 
 
-def _previous_rows(output_path: Path) -> tuple[int | None, int]:
-    """Rows of the current jobs.csv and how many drops were already blocked."""
-    state = output_path.parent / RUN_ROWS_FILENAME
+def _run_state(output_path: Path) -> dict[str, Any] | None:
+    """Rows of the current jobs.csv and the drops already blocked against it."""
+    if not output_path.exists():
+        return None
     try:
-        data = json.loads(state.read_text())
-        return int(data["rows"]), int(data.get("blocked", 0))
+        data = json.loads((output_path.parent / RUN_ROWS_FILENAME).read_text())
+        return {"rows": int(data["rows"]), "blocked_rows": [int(r) for r in data.get("blocked_rows", [])]}
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    if not output_path.exists():
-        return None, 0
     try:
         import polars as pl
 
         rows = pl.scan_csv(output_path, infer_schema_length=0).select(pl.len()).collect().item()
-        return int(rows), 0
+        return {"rows": int(rows), "blocked_rows": []}
     except Exception:  # pragma: no cover - no polars or unreadable file
-        return None, 0
+        return None
 
 
-def _write_run_rows(output_path: Path, rows: int, blocked: int = 0) -> None:
+def _write_run_rows(output_path: Path, rows: int, blocked_rows: list[int] | None = None) -> None:
     state = output_path.parent / RUN_ROWS_FILENAME
     tmp = state.with_name(state.name + ".tmp")
-    tmp.write_text(json.dumps({"rows": rows, "blocked": blocked}))
+    tmp.write_text(json.dumps({"rows": rows, "blocked_rows": blocked_rows or []}))
     tmp.replace(state)
 
 
 def _drop_guard(ats: str, cfg: dict[str, Any], output_path: Path, rows: int) -> str | None:
     """Return the keep_previous message when this run must not replace jobs.csv."""
-    previous, blocked = _previous_rows(output_path)
+    state = _run_state(output_path)
     ratio = float(cfg.get("min_kept_ratio", DROP_GUARD_MIN_RATIO))
     if (
-        previous is None
-        or previous < DROP_GUARD_MIN_ROWS
-        or rows >= ratio * previous
+        state is None
+        or state["rows"] < DROP_GUARD_MIN_ROWS
+        or rows >= ratio * state["rows"]
         or os.environ.get("ATS_SCRAPERS_ACCEPT_DROP") == "1"
     ):
         return None
-    if blocked >= DROP_GUARD_MAX_BLOCKS:
+    previous, blocked = state["rows"], state["blocked_rows"]
+    if len(blocked) >= DROP_GUARD_MAX_BLOCKS and rows >= DROP_GUARD_STABLE_RATIO * min(blocked):
         print(
-            f"[{ats}] WARN: accepting {rows:,} jobs after {blocked} blocked runs "
-            f"below {ratio:.0%} of {previous:,}"
+            f"[{ats}] WARN: accepting {rows:,} jobs: the drop below {ratio:.0%} of "
+            f"{previous:,} held for {len(blocked)} blocked runs ({', '.join(f'{r:,}' for r in blocked)})"
         )
         return None
-    _write_run_rows(output_path, previous, blocked + 1)
+    blocked = [*blocked, rows][-DROP_GUARD_MAX_BLOCKS:]
+    _write_run_rows(output_path, previous, blocked)
     return (
         f"[{ats}] ACTION keep_previous: {rows:,} jobs is below {ratio:.0%} of the "
-        f"previous {previous:,} (blocked run {blocked + 1}/{DROP_GUARD_MAX_BLOCKS}); "
-        f"preserved {output_path}. ATS_SCRAPERS_ACCEPT_DROP=1 accepts it."
+        f"previous {previous:,}; preserved {output_path}. A stable drop is accepted "
+        f"after {DROP_GUARD_MAX_BLOCKS} blocked runs; ATS_SCRAPERS_ACCEPT_DROP=1 accepts it now."
     )
 
 
