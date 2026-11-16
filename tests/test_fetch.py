@@ -165,17 +165,25 @@ def _certificate_error(verify_code: int) -> ssl.SSLCertVerificationError:
 async def test_missing_host_is_not_found_when_enabled(
     httpx_mock, cause: BaseException, reason: str
 ) -> None:
-    httpx_mock.add_exception(_connect_error(cause))
+    httpx_mock.add_exception(_connect_error(cause), is_reusable=True)
     async with _fetcher(missing_host_not_found=True) as fetch:
         with pytest.raises(CompanyNotFoundError, match=reason):
             await fetch.get_text(URL)
-    assert len(httpx_mock.get_requests()) == 1
+    assert len(httpx_mock.get_requests()) == 3
+
+
+async def test_missing_host_that_comes_back_is_fetched(httpx_mock) -> None:
+    httpx_mock.add_exception(
+        _connect_error(socket.gaierror(socket.EAI_NONAME, "unknown"))
+    )
+    httpx_mock.add_response(url=URL, text="ok")
+    async with _fetcher(missing_host_not_found=True) as fetch:
+        assert await fetch.get_text(URL) == "ok"
 
 
 async def test_missing_host_is_retried_by_default(httpx_mock) -> None:
     error = _connect_error(socket.gaierror(socket.EAI_NONAME, "unknown"))
-    for _ in range(3):
-        httpx_mock.add_exception(error)
+    httpx_mock.add_exception(error, is_reusable=True)
     async with _fetcher() as fetch:
         with pytest.raises(RetryExhaustedError):
             await fetch.get_text(URL)

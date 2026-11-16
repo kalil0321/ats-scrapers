@@ -89,14 +89,6 @@ DEFAULT_TIMEOUT = 30.0
 # noticed.
 _RETRYABLE_STATUSES = frozenset({408, 429}) | frozenset(range(500, 600))
 _BLOCKED_STATUSES = frozenset({403, 406})
-_NO_SUCH_NAME_ERRNOS = frozenset(
-    code
-    for code in (
-        getattr(socket, "EAI_NONAME", None),
-        getattr(socket, "EAI_NODATA", None),
-    )
-    if code is not None
-)
 _X509_V_ERR_HOSTNAME_MISMATCH = 62
 
 
@@ -179,10 +171,11 @@ class Fetcher:
         Proxy URL for both engines. ``None`` reads
         ``ATS_SCRAPERS_PROXY`` / legacy ``PROXY`` from the environment.
     missing_host_not_found:
-        Raise :class:`CompanyNotFoundError` at once when the host name
-        does not resolve or presents a certificate for another name. Only
-        for scrapers whose host belongs to the tenant (its own subdomain
-        or custom domain), where either means the board was taken down.
+        Raise :class:`CompanyNotFoundError` when the last attempt failed
+        because the host name does not resolve or presents a certificate
+        for another name. Only for scrapers whose host belongs to the
+        tenant (its own subdomain or custom domain), where either means
+        the board was taken down.
     """
 
     def __init__(
@@ -311,14 +304,17 @@ class Fetcher:
             except ScraperError:
                 raise
             except Exception as exc:  # network layer (httpx transport, cloak)
-                if self.missing_host_not_found:
-                    reason = _missing_host_reason(exc)
+                last_error = str(exc)
+                if attempt == retries:
+                    reason = (
+                        _missing_host_reason(exc)
+                        if self.missing_host_not_found
+                        else None
+                    )
                     if reason:
                         raise CompanyNotFoundError(
                             f"{self.label}: {urlparse(url).hostname} {reason}"
                         ) from exc
-                last_error = str(exc)
-                if attempt == retries:
                     raise RetryExhaustedError(
                         f"{self.label}: {method} {url} failed after "
                         f"{retries} attempts: {exc}"
@@ -454,7 +450,7 @@ def _missing_host_reason(exc: BaseException) -> str | None:
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if isinstance(current, socket.gaierror):
-            if current.errno in _NO_SUCH_NAME_ERRNOS:
+            if current.errno == socket.EAI_NONAME:
                 return "does not resolve"
             return None
         if isinstance(current, ssl.SSLCertVerificationError):

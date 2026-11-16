@@ -130,7 +130,7 @@ def test_unresolvable_tenant_host_is_not_found(httpx_mock) -> None:
             socket.EAI_NONAME, "Name or service not known"
         )
     except httpx.ConnectError as exc:
-        httpx_mock.add_exception(exc, url=CAREER_URL)
+        httpx_mock.add_exception(exc, url=CAREER_URL, is_reusable=True)
     with pytest.raises(CompanyNotFoundError, match="does not resolve"):
         CornerstoneScraper("acme").fetch()
 

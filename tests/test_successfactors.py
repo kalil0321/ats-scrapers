@@ -676,7 +676,7 @@ def test_unresolvable_host_is_not_found(httpx_mock) -> None:
             socket.EAI_NONAME, "Name or service not known"
         )
     except httpx.ConnectError as exc:
-        httpx_mock.add_exception(exc, url=FEED_URL)
+        httpx_mock.add_exception(exc, url=FEED_URL, is_reusable=True)
     with pytest.raises(CompanyNotFoundError, match="does not resolve"):
         SuccessFactorsScraper("job.acme.com").fetch()
 
