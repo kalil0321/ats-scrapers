@@ -177,6 +177,31 @@ def test_paginates_until_three_consecutive_empty_pages(httpx_mock) -> None:
     assert {j.ats_id for j in jobs} == {"100", "200"}
 
 
+def test_waits_out_a_rate_limit_challenge(
+    httpx_mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 429 challenge mid-walk is retried; the pages after it are still read."""
+    import ats_scrapers.scrapers.builtin as bi
+    monkeypatch.setattr(bi, "MAX_RETRIES", 3)
+    httpx_mock.add_response(
+        url="https://builtin.com/jobs?page=1",
+        text=_listing_html([_item(position=1, job_id=100, name="A")]),
+    )
+    httpx_mock.add_response(url="https://builtin.com/jobs?page=2", status_code=429)
+    httpx_mock.add_response(
+        url="https://builtin.com/jobs?page=2",
+        text=_listing_html([_item(position=1, job_id=200, name="B")]),
+    )
+    httpx_mock.add_response(
+        url="https://builtin.com/jobs?page=3",
+        text=_listing_html([_item(position=1, job_id=300, name="C")]),
+    )
+
+    jobs = BuiltInScraper("any", max_pages=3).fetch()
+
+    assert [j.ats_id for j in jobs] == ["100", "200", "300"]
+
+
 def test_max_pages_caps_pagination(httpx_mock) -> None:
     """Even with all-fresh content, ``max_pages`` is the hard ceiling."""
     for p in range(1, 6):

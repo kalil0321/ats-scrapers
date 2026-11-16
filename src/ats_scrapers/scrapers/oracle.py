@@ -25,6 +25,7 @@ Pass the full base URL (and optionally a site number) as the slug.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
@@ -40,12 +41,20 @@ if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
 
 PAGE_LIMIT = 200
+# A page past this many rows comes back empty while TotalJobsCount still
+# counts every job.
+RESULT_WINDOW = 10_000
+# ``postingDatesFacet`` ids: 30 is "less than 30 days", 31 "greater than 30
+# days". Together they hold every job once.
+POSTING_DATE_PARTS = ("30", "31")
 SITE_RE = re.compile(r"site_number=([^&]+)")
 SITE_PATH_RE = re.compile(r"/sites/([^/?#]+)")
 DEFAULT_SITE = "CX_1"
 DETAIL_CONCURRENCY = 8
 
 _TAG_RE = re.compile(r"<[^>]+>")
+
+logger = logging.getLogger(__name__)
 
 # Oracle's ``WorkplaceTypeCode`` is a stable enum string — map to the
 # canonical remote flag. ``ORA_HYBRID`` stays None (neither purely
@@ -157,33 +166,15 @@ class OracleScraper(BaseScraper):
             )
         api = f"{base}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
 
-        all_jobs: list[Job] = []
-        seen: set[str] = set()
+        jobs: dict[str, Job] = {}
         async with self.make_fetcher() as fetch:
-            # First call also tells us TotalJobsCount.
-            first = await self._fetch_page(fetch, api, site, offset=0)
-            items, total = _unwrap(first)
-            for it in items:
-                job = self._parse_job(it, base, site)
-                if job.ats_id and job.ats_id not in seen:
-                    seen.add(job.ats_id)
-                    all_jobs.append(job)
-            if total is not None and total > len(items):
-                # Paginate the rest. Use `len(items)` as the actual page size
-                # (Oracle may return less than the requested limit on the first
-                # page, e.g. 198 instead of 200).
-                page_size = max(len(items), 1)
-                offsets = list(range(page_size, total, page_size))
-                for offset in offsets:
-                    payload = await self._fetch_page(fetch, api, site, offset=offset)
-                    page_items, _ = _unwrap(payload)
-                    if not page_items:
-                        break
-                    for it in page_items:
-                        job = self._parse_job(it, base, site)
-                        if job.ats_id and job.ats_id not in seen:
-                            seen.add(job.ats_id)
-                            all_jobs.append(job)
+            total = await self._collect(fetch, api, base, site, jobs)
+            if isinstance(total, int) and len(jobs) < total:
+                logger.warning(
+                    "Oracle (%s, site %s) announced %d jobs, collected %d",
+                    base, site, total, len(jobs),
+                )
+            all_jobs = list(jobs.values())
 
             if self.include_descriptions and all_jobs:
                 sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
@@ -196,6 +187,54 @@ class OracleScraper(BaseScraper):
                     for j in all_jobs
                 ))
         return all_jobs
+
+    async def _collect(
+        self,
+        fetch: Fetcher,
+        api: str,
+        base: str,
+        site: str,
+        jobs: dict[str, Job],
+        facet: str = "",
+    ) -> int | None:
+        """Read every listing matching ``facet`` into ``jobs``; return the
+        announced count."""
+        first = await self._fetch_page(fetch, api, site, offset=0, facet=facet)
+        items, total = _unwrap(first)
+        self._add_jobs(items, base, site, jobs)
+        if not isinstance(total, int) or total <= len(items):
+            return total
+        if total > RESULT_WINDOW and not facet:
+            for part in POSTING_DATE_PARTS:
+                await self._collect(
+                    fetch, api, base, site, jobs,
+                    facet=f"selectedPostingDatesFacet={part}",
+                )
+            return total
+        # Use `len(items)` as the actual page size (Oracle may return less
+        # than the requested limit on the first page, e.g. 198 instead of 200).
+        page_size = max(len(items), 1)
+        for offset in range(page_size, min(total, RESULT_WINDOW), page_size):
+            payload = await self._fetch_page(
+                fetch, api, site, offset=offset, facet=facet
+            )
+            page_items, _ = _unwrap(payload)
+            if not page_items:
+                break
+            self._add_jobs(page_items, base, site, jobs)
+        return total
+
+    def _add_jobs(
+        self,
+        items: list[dict[str, Any]],
+        base: str,
+        site: str,
+        jobs: dict[str, Job],
+    ) -> None:
+        for item in items:
+            job = self._parse_job(item, base, site)
+            if job.ats_id and job.ats_id not in jobs:
+                jobs[job.ats_id] = job
 
     async def _enrich_detail(
         self,
@@ -255,13 +294,17 @@ class OracleScraper(BaseScraper):
         site: str,
         *,
         offset: int,
+        facet: str = "",
     ) -> dict[str, Any]:
+        finder = f"findReqs;siteNumber={site},limit={PAGE_LIMIT},offset={offset}"
+        if facet:
+            finder += f",{facet}"
         params = {
             "onlyData": "true",
             # Pagination params MUST live inside the `finder` string —
             # Oracle silently ignores top-level `limit`/`offset` and returns
             # a fixed 25 results from the first page when they're external.
-            "finder": f"findReqs;siteNumber={site},limit={PAGE_LIMIT},offset={offset}",
+            "finder": finder,
             # Without `expand=requisitionList`, the response only contains
             # search-context metadata (facets, totalCount), not actual jobs.
             "expand": "requisitionList",

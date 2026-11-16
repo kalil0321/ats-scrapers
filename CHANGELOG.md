@@ -31,6 +31,45 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
+- Phenom: a board with more than 9,900 jobs is split by category and state, so every
+  job is collected instead of the first 9,900.
+- Oracle: a site with more than 10,000 jobs is read in two parts by posting date, so
+  every job is collected instead of the first 10,000.
+- Avature: listing pages follow the portal's own pagination links, so a portal that
+  serves fewer jobs per page than asked, pages by `projectOffset`, or redirects to
+  another host is read to the end instead of stopping after the first page.
+- Avature: job links of the form `JobDetail?jobId=N` are read, so portals such as
+  Booz Allen no longer return no jobs.
+- iCIMS: a board is read past 200 pages (up to 2,000), and a board past that raises
+  instead of returning the first 4,000 jobs.
+- Zoho Recruit: a career site that lists 750 jobs, the most one page carries, is
+  logged as a warning, since the site may have more.
+- Beisen legacy: a tenant that moved to the current Beisen portal raises instead of
+  returning no jobs, and a closed tenant is reported as not found. Anmei Group is
+  listed under `beisen`.
+- Moka: a board is read up to 50,000 jobs instead of 10,000, and a board past that
+  raises instead of returning a cut list.
+- Workday: a board above the 2,000-job search cap is also split by the country and
+  city facets Workday nests under `locationMainGroup`, and no longer by the
+  `distance` facet, which never splits it. A facet that leaves jobs without a value
+  is used only when no other one covers them all, and a search that still cannot be
+  split below the cap is logged.
+- TalentBrew: a site above 10,000 postings is read newest first and then oldest
+  first, so up to 20,000 postings are collected instead of the first 10,000.
+- Amazon: the search total stops at 10,000, so the board is read per business category
+  and every job is collected.
+- Arbetsförmedlingen: one search returns at most 2,100 ads, so the board is split by
+  publication date until each part fits, and a refused page raises instead of ending
+  the walk.
+- jobs.ch: one search returns at most 2,000 postings, so the board is split by
+  publication date until each part fits. `query_seeds` now defaults to none.
+- Y Combinator: the hiring filter stops at 1,000 companies, so the full company list
+  is walked and the hiring companies kept.
+- The Hub: every market is listed; the unfiltered list holds only remote jobs.
+- jobs.cz: asks for the classic listing, since the beta site some visitors are sent to
+  has no listings in its HTML and returned no jobs.
+- Built In: waits out Cloudflare's short rate-limit challenge instead of ending the
+  walk, and reads up to the listing's last page (1,000) instead of 200.
 - Recruitee: a board whose careers site is closed, whose public API is disabled, or
   whose custom domain now sends readers to another job site is reported as not found.
 - Wanted: requests are no longer rejected with 403 by the site's firewall, and

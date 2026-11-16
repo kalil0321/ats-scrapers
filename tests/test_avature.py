@@ -184,6 +184,27 @@ def test_pseudo_only_anchors_are_filtered(httpx_mock) -> None:
     assert [j.title for j in jobs] == ["Real Engineer"]
 
 
+def test_parses_job_detail_links_keyed_by_job_id_query(httpx_mock) -> None:
+    """Booz Allen links jobs as ``JobDetail?jobId=N``."""
+    page = """
+    <html><body>
+    <article class="article article--result">
+      <h3 class="article__header__text__title">
+        <a href="https://acme.avature.net/careers/JobDetail?jobId=132998">Data Scientist</a>
+      </h3>
+      <a href="https://acme.avature.net/careers/ApplicationMethods?jobId=132998">Apply</a>
+    </article>
+    </body></html>
+    """
+    httpx_mock.add_response(url=_url("acme", 0), text=page)
+
+    [job] = AvatureScraper("acme").fetch()
+
+    assert job.ats_id == "132998"
+    assert job.title == "Data Scientist"
+    assert str(job.url) == "https://acme.avature.net/careers/JobDetail?jobId=132998"
+
+
 # --- Pagination & termination ----------------------------------------------
 
 
@@ -231,6 +252,113 @@ def test_full_page_followed_by_empty_terminates(httpx_mock) -> None:
     httpx_mock.add_response(url=_url("acme", 12), text="<html></html>")
     jobs = AvatureScraper("acme").fetch()
     assert len(jobs) == 12
+
+
+def _linked_pages(httpx_mock, first_url: str, page_url: str, per_page: int, total: int) -> None:
+    """Pages of ``per_page`` jobs, each linking to the next at ``page_url``
+    (formatted with the offset) and echoing its own offset in a language
+    link, as Avature portals do."""
+    for offset in range(0, total, per_page):
+        anchors = "".join(
+            f'<a href="/careers/JobDetail/Job/{i}">Job {i}</a>'
+            for i in range(offset, min(offset + per_page, total))
+        )
+        own = page_url.format(offset=offset).replace("&", "&amp;")
+        nxt = ""
+        if offset + per_page < total:
+            link = page_url.format(offset=offset + per_page).replace("&", "&amp;")
+            nxt = f'<a class="paginationNextLink" href="{link}">Next</a>'
+        httpx_mock.add_response(
+            url=first_url if offset == 0 else page_url.format(offset=offset),
+            text=f'<html><body><a href="{own}">FR</a>{anchors}{nxt}</body></html>',
+        )
+
+
+def test_portal_serving_fewer_rows_than_asked_is_read_to_the_end(httpx_mock) -> None:
+    """careers.avature.net answers ``jobRecordsPerPage=12`` with 6 rows and
+    links to the next page at ``jobOffset=6``."""
+    _linked_pages(
+        httpx_mock,
+        _url("acme", 0),
+        "https://acme.avature.net/careers/SearchJobs/?jobRecordsPerPage=6&jobOffset={offset}",
+        per_page=6,
+        total=19,
+    )
+
+    jobs = AvatureScraper("acme").fetch()
+
+    assert {j.ats_id for j in jobs} == {str(i) for i in range(19)}
+
+
+def test_portal_paging_by_project_offset_is_read_to_the_end(httpx_mock) -> None:
+    _linked_pages(
+        httpx_mock,
+        _url("acme", 0),
+        "https://acme.avature.net/careers/SearchJobs/?projectRecordsPerPage=10&projectOffset={offset}",
+        per_page=10,
+        total=25,
+    )
+
+    jobs = AvatureScraper("acme").fetch()
+
+    assert len(jobs) == 25
+
+
+def test_pages_follow_the_host_a_portal_redirects_to(httpx_mock) -> None:
+    """The redirect drops ``jobOffset``; the page's links carry it."""
+    _linked_pages(
+        httpx_mock,
+        _url("acme", 0),
+        "https://jobs.acme.example/en_US/SearchJobs/?jobRecordsPerPage=10&jobOffset={offset}",
+        per_page=10,
+        total=25,
+    )
+
+    jobs = AvatureScraper("acme").fetch()
+
+    assert len(jobs) == 25
+
+
+def test_page_guard_raises_instead_of_truncating(httpx_mock, monkeypatch) -> None:
+    import ats_scrapers.scrapers.avature as av
+
+    monkeypatch.setattr(av, "MAX_PAGES", 2)
+    for offset in (0, 12):
+        anchors = "".join(
+            f'<a href="/careers/JobDetail/Job/{i}">Job {i}</a>'
+            for i in range(offset, offset + 12)
+        )
+        httpx_mock.add_response(url=_url("acme", offset), text=f"<html><body>{anchors}</body></html>")
+
+    with pytest.raises(ScraperError, match="after 2 pages"):
+        AvatureScraper("acme").fetch()
+
+
+def test_relative_page_links_follow_the_host_that_served_the_page(httpx_mock) -> None:
+    """After the redirect, a relative link names a path on the new host."""
+    new_search = "https://jobs.acme.example/en_US/SearchJobs/"
+
+    def page(start: int, count: int, link: str = "") -> str:
+        anchors = "".join(
+            f'<a href="https://jobs.acme.example/en_US/JobDetail/Job/{i}">Job {i}</a>'
+            for i in range(start, start + count)
+        )
+        return f"<html><body>{anchors}{link}</body></html>"
+
+    httpx_mock.add_response(
+        url=_url("acme", 0), status_code=302, headers={"Location": new_search},
+    )
+    httpx_mock.add_response(
+        url=new_search,
+        text=page(0, 10, '<a href="/en_US/SearchJobs/?jobRecordsPerPage=10&amp;jobOffset=10">2</a>'),
+    )
+    httpx_mock.add_response(
+        url=f"{new_search}?jobRecordsPerPage=10&jobOffset=10", text=page(10, 5),
+    )
+
+    jobs = AvatureScraper("acme").fetch()
+
+    assert len(jobs) == 15
 
 
 # --- URL forms --------------------------------------------------------------

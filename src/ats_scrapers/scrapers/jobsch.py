@@ -24,15 +24,15 @@ Two anti-bot quirks to handle:
     silently 0-scraping.
 
   - Deep-pagination cap — ``start>=2000`` always returns 422
-    regardless of IP. The empty-query view therefore tops out at
-    2 000 of the ~49 000 live postings. To recover the rest we
-    issue the same paginated search under ~35 keyword seeds (the
-    only filter param the API honours; verified 2026-05-09:
-    ``industry_ids`` / ``region_ids`` / ``place`` are all silently
-    ignored — total stays at 48 892 — but ``query=developer``
-    drops it to 707). Seeds span DE / FR / IT / EN to match the
-    four official languages of Swiss job postings; results across
-    seeds are deduped by ``job_id``.
+    regardless of IP, so one query reads at most 2 000 of the ~37 000
+    live postings. Facet filters do not help: many postings carry no
+    region, category or industry. Every posting but a few dozen has an
+    initial publication date, so the scraper splits the board into
+    ``publication-date-from`` / ``publication-date-to`` windows (local
+    time, ``Y-m-d H:i:s``, from inclusive, to exclusive) and halves any
+    window that still matches more than 2 000 postings. The unfiltered
+    newest 2 000 are read first, which also picks up recent postings
+    without a date.
 
 Single-source scraper: ``company_slug`` is informational and ignored.
 """
@@ -43,7 +43,7 @@ import asyncio
 import html
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar
 
 import httpx
@@ -54,6 +54,7 @@ from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from typing import Any
 
 log = logging.getLogger(__name__)
@@ -81,27 +82,12 @@ _DESCRIPTION_BLOCK_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# Keyword seeds covering DE / FR / IT / EN to defeat the per-query
-# 2 000-row pagination cap. Probed live 2026-05-09: each seed below
-# returns at least 36 unique-to-the-seed hits, the broad seeds
-# (``a``, ``manager``, ``verkauf``) hit the 2 000 cap and contribute
-# their newest 2 000 each. After dedup by ``job_id`` we observed
-# ~30 k unique rows across these seeds vs the 2 000 you get with no
-# query.
-_QUERY_SEEDS: tuple[str, ...] = (
-    # English
-    "developer", "manager", "engineer", "sales", "marketing", "finance",
-    "designer", "analyst", "consultant", "support", "operations", "hr",
-    "lead", "senior", "junior", "intern", "specialist", "executive",
-    # German
-    "entwickler", "verkauf", "ingenieur", "buchhaltung", "leiter",
-    "projektleiter", "kundenberater", "fachkraft", "assistent", "praktikant",
-    # French
-    "développeur", "responsable", "vente", "ingénieur", "comptable",
-    "stagiaire", "assistant", "directeur",
-    # Italian
-    "sviluppatore", "vendita", "ingegnere", "responsabile",
-)
+# Lower bound of the publication-date walk; live postings are far younger.
+EARLIEST_PUBLICATION = datetime(2000, 1, 1)
+_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+# A walk over today's board takes well under a hundred windows; a search
+# that ignores the date filter would split until one-second windows.
+MAX_DATE_WINDOWS = 1_000
 
 
 class _BlockedError(Exception):
@@ -117,7 +103,9 @@ class JobsChScraper(BaseScraper):
     Single-source: ``company_slug`` is ignored.
 
     Knobs:
-    - ``max_pages`` — pagination cap (default 2,500, ~50k jobs).
+    - ``max_pages``: page cap per query (default 100, the API's own
+      2,000-row window).
+    - ``query_seeds``: extra keyword searches run after the date walk.
     """
 
     ats = ATSType.JOBSCH
@@ -141,12 +129,8 @@ class JobsChScraper(BaseScraper):
             proxy=proxy,
         )
         self.max_pages = max_pages
-        # ``None`` keeps the production default (full seed list); pass
-        # ``()`` to disable seed-segmentation entirely (unit tests, or
-        # callers who only want the most-recent 2 000 rows).
-        self.query_seeds: tuple[str, ...] = (
-            _QUERY_SEEDS if query_seeds is None else tuple(query_seeds)
-        )
+        self._windows = 0
+        self.query_seeds: tuple[str, ...] = tuple(query_seeds or ())
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -173,7 +157,7 @@ class JobsChScraper(BaseScraper):
         # 403-blocked, the same probe-then-proxy escalation runs once,
         # and every subsequent seed reuses the resulting proxy_url.
         try:
-            return await self._fetch_all_seeds(proxy_url=None)
+            return await self._fetch_all(proxy_url=None)
         except _BlockedError:
             pass
 
@@ -189,80 +173,27 @@ class JobsChScraper(BaseScraper):
             "jobs.ch: direct request 403'd — retrying via PROXY "
             "residential fallback."
         )
-        return await self._fetch_all_seeds(proxy_url=proxy_url)
+        return await self._fetch_all(proxy_url=proxy_url)
 
-    async def _fetch_all_seeds(self, *, proxy_url: str | None) -> list[Job]:
-        """Run the empty-query fetch followed by every keyword seed,
-        deduping by ``job_id`` across all queries.
+    async def _fetch_all(self, *, proxy_url: str | None) -> list[Job]:
+        """Read the unfiltered search, then every publication-date window,
+        then each keyword seed, deduping by ``job_id``.
 
-        A 403 on the empty query escalates to the caller (proxy
-        fallback). Once that's been handled (or direct works), 403s on
-        individual seeds are demoted to a warning + skip — the rest of
-        the seeds still run and contribute their unique rows.
+        A 403 before the proxy switch escalates to the caller (proxy
+        fallback). Once in proxy mode, a 403 drops only that page, window
+        or seed.
         """
         seen: set[str] = set()
         all_jobs: list[Job] = []
+        in_proxy_mode = proxy_url is not None
 
-        # Empty-query first — its 403 is the signal the caller uses
-        # to flip from direct to proxy mode.
-        first_slice = await self._run_fetch(proxy_url=proxy_url, query=None)
-        for job in first_slice:
-            if job.ats_id in seen:
-                continue
-            seen.add(job.ats_id)
-            all_jobs.append(job)
-        log.info(
-            "jobs.ch: empty query → %d rows (%d new)",
-            len(first_slice), len(all_jobs),
-        )
-
-        for seed in self.query_seeds:
-            try:
-                slice_jobs = await self._run_fetch(
-                    proxy_url=proxy_url, query=seed
-                )
-            except _BlockedError:
-                log.warning(
-                    "jobs.ch: query=%s blocked even via PROXY; "
-                    "skipping this seed.", seed,
-                )
-                continue
-            new_count = 0
-            for job in slice_jobs:
-                if job.ats_id in seen:
+        def absorb(items: list[dict[str, Any]]) -> None:
+            for it in items:
+                job = self._parse(it)
+                if job is None or job.ats_id in seen:
                     continue
                 seen.add(job.ats_id)
                 all_jobs.append(job)
-                new_count += 1
-            log.info(
-                "jobs.ch: query=%s → %d rows (%d new, total %d)",
-                seed, len(slice_jobs), new_count, len(all_jobs),
-            )
-
-        if self.include_descriptions and all_jobs:
-            await self._enrich_descriptions(all_jobs, proxy_url=proxy_url)
-        return all_jobs
-
-    async def _run_fetch(
-        self, *, proxy_url: str | None, query: str | None
-    ) -> list[Job]:
-        seen: set[str] = set()
-        jobs: list[Job] = []
-        lock = asyncio.Lock()
-
-        # After the proxy switch, any further 403 mid-pagination is a
-        # per-IP rate-limit / regional dropout — drop that page so the
-        # rest of the slice survives.
-        already_in_proxy_mode = proxy_url is not None
-
-        async def absorb(items: list[dict[str, Any]]) -> None:
-            async with lock:
-                for it in items:
-                    job = self._parse(it)
-                    if job is None or job.ats_id in seen:
-                        continue
-                    seen.add(job.ats_id)
-                    jobs.append(job)
 
         fetcher = self.make_fetcher(proxy=proxy_url)
         # ``proxy_url=None`` means the direct-IP probe — it must NOT
@@ -273,33 +204,131 @@ class JobsChScraper(BaseScraper):
 
         async with fetcher:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
-
-            first = await self._fetch_page(fetcher, sem, start=0, query=query)
+            first = await self._fetch_page(fetcher, sem, start=0)
             total = int(first.get("total_hits") or 0)
-            await absorb(first.get("documents") or [])
+            await self._drain(fetcher, sem, {}, first, absorb, in_proxy_mode)
+            log.info("jobs.ch: unfiltered search → %d of %d rows", len(all_jobs), total)
 
-            if total <= PER_PAGE:
-                return jobs
+            if total > MAX_USABLE_OFFSET:
+                latest = datetime.now(UTC).replace(tzinfo=None) + timedelta(days=2)
+                await self._check_date_filter(fetcher, sem, latest)
+                self._windows = 0
+                await self._walk_dates(
+                    fetcher, sem, EARLIEST_PUBLICATION, latest.replace(microsecond=0),
+                    absorb, in_proxy_mode,
+                )
+                log.info(
+                    "jobs.ch: date windows → %d unique rows of %d", len(all_jobs), total,
+                )
 
-            usable = min(total, MAX_USABLE_OFFSET)
-            page_count = min(
-                (usable + PER_PAGE - 1) // PER_PAGE, self.max_pages
-            )
-            offsets = [PER_PAGE * i for i in range(1, page_count)]
-
-            async def one(offset: int) -> None:
+            for seed in self.query_seeds:
+                params = {"query": seed}
                 try:
-                    payload = await self._fetch_page(
-                        fetcher, sem, start=offset, query=query
-                    )
+                    first = await self._fetch_page(fetcher, sem, start=0, params=params)
+                    await self._drain(fetcher, sem, params, first, absorb, in_proxy_mode)
                 except _BlockedError:
-                    if not already_in_proxy_mode:
+                    if not in_proxy_mode:
                         raise
-                    return
-                await absorb(payload.get("documents") or [])
+                    log.warning("jobs.ch: query=%s blocked even via PROXY; skipping it.", seed)
+                    continue
+                log.info("jobs.ch: query=%s → total %d unique rows", seed, len(all_jobs))
 
-            await asyncio.gather(*(one(o) for o in offsets))
-        return jobs
+        if self.include_descriptions and all_jobs:
+            await self._enrich_descriptions(all_jobs, proxy_url=proxy_url)
+        return all_jobs
+
+    async def _check_date_filter(
+        self, fetcher: Fetcher, sem: asyncio.Semaphore, latest: datetime,
+    ) -> None:
+        """Raise unless a window before 2000 and one a year ahead are empty.
+
+        A search that ignores either bound would match postings there.
+        """
+        for start in (datetime(1990, 1, 1), latest + timedelta(days=365)):
+            params = {
+                "publication-date-from": start.strftime(_DATE_FORMAT),
+                "publication-date-to": (start + timedelta(days=1)).strftime(_DATE_FORMAT),
+            }
+            page = await self._fetch_page(fetcher, sem, start=0, params=params)
+            if int(page.get("total_hits") or 0):
+                raise ScraperError(
+                    f"jobs.ch matched postings in the empty window {params}; "
+                    "the search no longer filters by publication date"
+                )
+
+    async def _walk_dates(
+        self,
+        fetcher: Fetcher,
+        sem: asyncio.Semaphore,
+        start: datetime,
+        end: datetime,
+        absorb: Callable[[list[dict[str, Any]]], None],
+        in_proxy_mode: bool,
+    ) -> None:
+        """Read every posting first published in ``[start, end)``."""
+        self._windows += 1
+        if self._windows > MAX_DATE_WINDOWS:
+            raise ScraperError(
+                f"jobs.ch: the publication-date walk passed {MAX_DATE_WINDOWS} "
+                "windows; refusing to go on"
+            )
+        params = {
+            "publication-date-from": start.strftime(_DATE_FORMAT),
+            "publication-date-to": end.strftime(_DATE_FORMAT),
+        }
+        try:
+            first = await self._fetch_page(fetcher, sem, start=0, params=params)
+        except _BlockedError:
+            if not in_proxy_mode:
+                raise
+            log.warning("jobs.ch: window %s blocked even via PROXY; skipping it.", params)
+            return
+        total = int(first.get("total_hits") or 0)
+        if total > MAX_USABLE_OFFSET:
+            middle = (start + (end - start) / 2).replace(microsecond=0)
+            if start < middle < end:
+                await asyncio.gather(
+                    self._walk_dates(fetcher, sem, start, middle, absorb, in_proxy_mode),
+                    self._walk_dates(fetcher, sem, middle, end, absorb, in_proxy_mode),
+                )
+                return
+            log.warning(
+                "jobs.ch: %d postings first published at %s; only %d are reachable",
+                total, params["publication-date-from"], MAX_USABLE_OFFSET,
+            )
+        await self._drain(fetcher, sem, params, first, absorb, in_proxy_mode)
+
+    async def _drain(
+        self,
+        fetcher: Fetcher,
+        sem: asyncio.Semaphore,
+        params: dict[str, str],
+        first: dict[str, Any],
+        absorb: Callable[[list[dict[str, Any]]], None],
+        in_proxy_mode: bool,
+    ) -> None:
+        """Absorb ``first`` and every following page of the same query."""
+        absorb(first.get("documents") or [])
+        total = int(first.get("total_hits") or 0)
+        if total <= PER_PAGE:
+            return
+        usable = min(total, MAX_USABLE_OFFSET)
+        page_count = min((usable + PER_PAGE - 1) // PER_PAGE, self.max_pages)
+
+        async def one(offset: int) -> None:
+            try:
+                payload = await self._fetch_page(
+                    fetcher, sem, start=offset, params=params
+                )
+            except _BlockedError:
+                # After the proxy switch a 403 is a per-IP dropout: lose
+                # the page, keep the rest.
+                if not in_proxy_mode:
+                    raise
+                return
+            absorb(payload.get("documents") or [])
+
+        await asyncio.gather(*(one(PER_PAGE * i) for i in range(1, page_count)))
 
     async def _enrich_descriptions(
         self, jobs: list[Job], *, proxy_url: str | None
@@ -343,11 +372,9 @@ class JobsChScraper(BaseScraper):
         sem: asyncio.Semaphore,
         *,
         start: int,
-        query: str | None = None,
+        params: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        params: dict[str, Any] = {"start": start, "rows": PER_PAGE}
-        if query:
-            params["query"] = query
+        query: dict[str, Any] = {"start": start, "rows": PER_PAGE, **(params or {})}
         # The shared Fetcher owns retries/backoff for 429/5xx and
         # network errors. 403 (datacenter IP block → proxy escalation)
         # and 422 (past the deep-pagination cap → exhausted) are
@@ -356,7 +383,7 @@ class JobsChScraper(BaseScraper):
             response = await fetcher.request(
                 "GET",
                 API_URL,
-                params=params,
+                params=query,
                 headers={"Accept": "application/json"},
                 handled={403, 422},
             )
@@ -368,6 +395,12 @@ class JobsChScraper(BaseScraper):
                 f"jobs.ch returned 403 at start={start}"
             )
         if response.status_code == 422:
+            if start == 0:
+                # The first page of a search is never past the cap: the
+                # API rejected the search itself.
+                raise ScraperError(
+                    f"jobs.ch rejected the search {params or {}}: {response.text[:200]}"
+                )
             # Past the search-engine cap (rare; API caps deep
             # pagination differently per query). Treat as exhausted.
             return {"documents": [], "total_hits": 0}

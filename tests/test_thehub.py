@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import httpx
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
@@ -18,6 +19,19 @@ from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import ScraperRegistry, TheHubScraper
 
 _API_RE = re.compile(r"^https://thehub\.io/api/v2/jobs")
+_MARKET_RE = re.compile(r"^https://thehub\.io/api/v2/jobs\?.*countryCode=")
+
+
+@pytest.fixture(autouse=True)
+def market_docs(httpx_mock) -> dict[str, list[dict[str, Any]]]:
+    """Listing of each ``countryCode`` market; markets left out are empty."""
+    docs: dict[str, list[dict[str, Any]]] = {}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_envelope(docs.get(request.url.params["countryCode"], [])))
+
+    httpx_mock.add_callback(respond, url=_MARKET_RE, is_reusable=True, is_optional=True)
+    return docs
 
 
 def _doc(
@@ -191,6 +205,26 @@ def test_max_pages_caps_pagination(httpx_mock) -> None:
 def test_no_fanout_when_one_page(httpx_mock) -> None:
     _mock_page(httpx_mock, [_doc(job_id="solo")])
     assert len(TheHubScraper("any").fetch()) == 1
+
+
+def test_lists_every_market(httpx_mock, market_docs) -> None:
+    # Without ``countryCode`` the API lists only the remote jobs.
+    _mock_page(httpx_mock, [_doc(job_id="remote", is_remote=True)])
+    shared = _doc(job_id="shared")
+    for market, job_id in (("DK", "copenhagen"), ("SE", "stockholm")):
+        market_docs[market] = [_doc(job_id=job_id), shared]
+        httpx_mock.add_response(
+            url=f"https://thehub.io/api/jobs/{job_id}",
+            json={"doc": _doc(job_id=job_id), "related": []},
+        )
+    httpx_mock.add_response(
+        url="https://thehub.io/api/jobs/shared",
+        json={"doc": shared, "related": []},
+    )
+
+    jobs = TheHubScraper("any").fetch()
+
+    assert sorted(j.ats_id for j in jobs) == ["copenhagen", "remote", "shared", "stockholm"]
 
 
 # --- defensive --------------------------------------------------------------

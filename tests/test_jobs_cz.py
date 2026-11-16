@@ -274,6 +274,23 @@ def test_paginates_until_empty_page(httpx_mock) -> None:
     assert len(jobs) == 60
 
 
+def test_asks_for_the_classic_listing(httpx_mock) -> None:
+    """Bucket A of the site's beta test redirects to a page without cards."""
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.jobs\.cz/prace/praha/$"),
+        text=_page([_card(job_id="p1", title="Job")]),
+    )
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.jobs\.cz/prace/praha/\?page=2$"),
+        text=_page([]),
+    )
+
+    JobsCzScraper("any", location_seeds=("praha",)).fetch()
+
+    for request in httpx_mock.get_requests():
+        assert "beta_bucket=5%3AB" in request.headers["Cookie"]
+
+
 def test_stops_when_page_is_all_duplicates(httpx_mock) -> None:
     """The pager silently clamps deep page numbers to the last available
     page. When the same ids reappear, we treat it as the end of the

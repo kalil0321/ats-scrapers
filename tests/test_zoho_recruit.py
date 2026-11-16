@@ -11,6 +11,7 @@ import pytest
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import ScraperRegistry, ZohoRecruitScraper
+from ats_scrapers.scrapers.zoho_recruit import LIST_CAP
 
 PORTAL = "https://acme.zohorecruit.com/jobs/Careers"
 
@@ -195,6 +196,27 @@ def test_unpublished_and_incomplete_rows_are_dropped(httpx_mock) -> None:
     httpx_mock.add_response(url=PORTAL, text=_portal_page(rows))
 
     assert [job.ats_id for job in ZohoRecruitScraper(PORTAL).fetch()] == ["5"]
+
+
+def test_a_full_page_is_reported(httpx_mock, caplog) -> None:
+    rows = [_job(str(n)) for n in range(LIST_CAP)]
+    httpx_mock.add_response(url=PORTAL, text=_portal_page(rows))
+
+    with caplog.at_level("WARNING", logger="ats_scrapers.scrapers.zoho_recruit"):
+        jobs = ZohoRecruitScraper(PORTAL, include_descriptions=False).fetch()
+
+    assert len(jobs) == LIST_CAP
+    assert f"lists {LIST_CAP} jobs" in caplog.text
+
+
+def test_a_page_under_the_cap_is_not_reported(httpx_mock, caplog) -> None:
+    rows = [_job(str(n)) for n in range(LIST_CAP - 1)]
+    httpx_mock.add_response(url=PORTAL, text=_portal_page(rows))
+
+    with caplog.at_level("WARNING", logger="ats_scrapers.scrapers.zoho_recruit"):
+        ZohoRecruitScraper(PORTAL, include_descriptions=False).fetch()
+
+    assert "the most a page carries" not in caplog.text
 
 
 def test_no_jobs(httpx_mock) -> None:

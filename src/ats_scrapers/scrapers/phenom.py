@@ -17,12 +17,15 @@ Tenants vary on ``country`` (``"ca"``, ``"global"``, ``"us"``) and ``locale``
 (``"en_ca"``, ``"en_global"``, ``"en_us"``) — pass them at construction.
 
 Pagination: the first response includes ``totalHits``; we fan out the
-remaining offsets concurrently.
+remaining offsets concurrently. The search serves only the first
+``RESULT_WINDOW`` rows of a query, so a larger search is split by facet
+(category, then state, ...) until every part fits.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -39,6 +42,14 @@ if TYPE_CHECKING:
 
 PAGE_SIZE = 100  # Phenom accepts up to 100 per page.
 MAX_CONCURRENCY = 8
+# Pages past this many rows come back empty while ``totalHits`` still counts
+# every job.
+RESULT_WINDOW = 9_900
+# Facets that split a search larger than the window, in order of preference.
+# ``city`` is last: its aggregation lists at most 1,000 values.
+PARTITION_FIELDS = ("category", "state", "country", "city")
+
+logger = logging.getLogger(__name__)
 
 _CSRF_RE = re.compile(r'"csrfToken"\s*:\s*"([^"]+)"')
 _SITE_PATH_RE = re.compile(r"^/([a-z]{2,6})/([a-z]{2})(?:/|$)")
@@ -127,37 +138,62 @@ class PhenomScraper(BaseScraper):
     async def afetch(self) -> list[Job]:
         async with self.make_fetcher(missing_host_not_found=True) as fetch:
             csrf = await self._init_session(fetch)
-            first = await self._search(fetch, csrf, start=0)
-            jobs_first = self._extract_jobs(first)
-            total = self._extract_total(first)
-
-            seen: set[str] = set()
-            all_jobs: list[Job] = []
-            for item in jobs_first:
-                job = self._parse_job(item)
-                if job is None or job.ats_id in seen:
-                    continue
-                seen.add(job.ats_id)
-                all_jobs.append(job)
-
-            if not total or total <= len(jobs_first):
-                return all_jobs
-
-            offsets = list(range(len(jobs_first), total, PAGE_SIZE))
+            jobs: dict[str, Job] = {}
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
+            total = await self._collect(fetch, csrf, {}, sem, jobs)
+            if total and len(jobs) < total:
+                logger.warning(
+                    "Phenom (%s) announced %d jobs, collected %d",
+                    self.base_url, total, len(jobs),
+                )
+            return list(jobs.values())
 
-            async def task(offset: int) -> None:
-                async with sem:
-                    payload = await self._search(fetch, csrf, start=offset)
-                    for item in self._extract_jobs(payload):
-                        job = self._parse_job(item)
-                        if job is None or job.ats_id in seen:
-                            continue
-                        seen.add(job.ats_id)
-                        all_jobs.append(job)
+    async def _collect(
+        self,
+        fetch: Fetcher,
+        csrf: str | None,
+        selected: dict[str, list[str]],
+        sem: asyncio.Semaphore,
+        jobs: dict[str, Job],
+    ) -> int | None:
+        """Read every job matching ``selected`` into ``jobs``; return the
+        announced count."""
+        async with sem:
+            first = await self._search(fetch, csrf, start=0, selected=selected)
+        self._add_jobs(first, jobs)
+        total = self._extract_total(first)
+        first_page = len(self._extract_jobs(first))
+        if not total or total <= first_page:
+            return total
 
-            await asyncio.gather(*(task(o) for o in offsets))
-            return all_jobs
+        if total > RESULT_WINDOW:
+            split = _partition(first, selected, total)
+            if split is not None:
+                field, values = split
+                await asyncio.gather(*(
+                    self._collect(fetch, csrf, {**selected, field: [value]}, sem, jobs)
+                    for value in values
+                ))
+                return total
+
+        async def page(offset: int) -> None:
+            async with sem:
+                payload = await self._search(
+                    fetch, csrf, start=offset, selected=selected
+                )
+            self._add_jobs(payload, jobs)
+
+        await asyncio.gather(*(
+            page(offset)
+            for offset in range(first_page, min(total, RESULT_WINDOW), PAGE_SIZE)
+        ))
+        return total
+
+    def _add_jobs(self, payload: dict[str, Any], jobs: dict[str, Job]) -> None:
+        for item in self._extract_jobs(payload):
+            job = self._parse_job(item)
+            if job is not None and job.ats_id not in jobs:
+                jobs[job.ats_id] = job
 
     # --- session / csrf -------------------------------------------------
 
@@ -198,6 +234,7 @@ class PhenomScraper(BaseScraper):
         csrf: str | None,
         *,
         start: int,
+        selected: dict[str, list[str]] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "lang": self.locale,
@@ -222,7 +259,7 @@ class PhenomScraper(BaseScraper):
             "siteType": "external",
             "keywords": "",
             "global": True,
-            "selected_fields": {},
+            "selected_fields": selected or {},
             "locationData": {},
         }
         headers = {
@@ -363,6 +400,33 @@ class PhenomScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _partition(
+    payload: dict[str, Any],
+    selected: dict[str, list[str]],
+    total: int,
+) -> tuple[str, list[str]] | None:
+    """The first facet whose values split ``payload``'s search, if any.
+
+    A facet qualifies only when its counts add up to the whole search, so no
+    job falls outside every part. Values combine with AND across facets.
+    """
+    rs = payload.get("refineSearch")
+    data = rs.get("data") if isinstance(rs, dict) else None
+    aggregations = data.get("aggregations") if isinstance(data, dict) else None
+    counts: dict[str, dict[str, Any]] = {}
+    for aggregation in aggregations if isinstance(aggregations, list) else []:
+        if isinstance(aggregation, dict) and isinstance(aggregation.get("value"), dict):
+            counts[str(aggregation.get("field"))] = aggregation["value"]
+    for field in PARTITION_FIELDS:
+        values = counts.get(field) or {}
+        if field in selected or len(values) < 2:
+            continue
+        covered = sum(n for n in values.values() if isinstance(n, int))
+        if covered >= total:
+            return field, list(values)
+    return None
 
 
 def _format_location(item: dict[str, Any]) -> str | None:

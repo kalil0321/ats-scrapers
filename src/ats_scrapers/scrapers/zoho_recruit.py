@@ -62,6 +62,9 @@ _JS_PARSE_RE = re.compile(r"JSON\.parse\('((?:[^'\\]|\\.)*)'\)")
 _JS_ESCAPE_RE = re.compile(r"\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|.)", re.DOTALL)
 _JS_SIMPLE_ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f", "v": "\v", "0": "\0"}
 DETAIL_CONCURRENCY = 4
+# A career site page carries at most this many jobs, and no parameter reaches
+# the others.
+LIST_CAP = 750
 _HTML_TAG_RE = re.compile(r"<[a-zA-Z/][^>]*>")
 _MISSING_PAGE_RE = re.compile(r"<title>\s*Page does not exist\s*</title>", re.IGNORECASE)
 
@@ -107,6 +110,13 @@ class ZohoRecruitScraper(BaseScraper):
                     )
                 raise ScraperError(
                     f"Zoho Recruit page {self.portal_url} carries no list of jobs"
+                )
+            if len(postings) >= LIST_CAP:
+                logger.warning(
+                    "Zoho Recruit page %s lists %d jobs, the most a page carries; "
+                    "the site may have more",
+                    self.portal_url,
+                    len(postings),
                 )
             company = (
                 self.company_name or _company_name(page) or _tenant(self.portal_url)

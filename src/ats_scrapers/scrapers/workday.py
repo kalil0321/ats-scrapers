@@ -16,8 +16,9 @@ caps the **reported total** at 2,000 per query. Past offset=2,000 the
 API silently loops back to the first page — so a naïve scraper can never
 collect more than 2K jobs from any one query no matter how it paginates.
 
-For tenants with >2K jobs (e.g. Accenture has ~61K, Dollar Tree ~22K),
-we subdivide by the ``jobFamilyGroup`` facet ("Area of Work"). Each
+For tenants with >2K jobs (e.g. Accenture), we subdivide by the
+``jobFamilyGroup`` facet ("Area of Work"), and a filtered query still at
+the cap by further facets (time type, country, city, skills). Each
 filtered query has its own ≤2K cap, and the union covers the full set.
 
 The ``facets`` field in every response carries each value's true ``count``
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import html as html_mod
+import logging
 import re
 import time
 from datetime import UTC, datetime
@@ -42,6 +44,8 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
+
+logger = logging.getLogger(__name__)
 
 URL_PATTERN = re.compile(
     r"^https://(?P<company>[^.]+)\.(?P<instance>wd\d+)\.myworkdayjobs\.com/(?P<site>[^/?#]+)"
@@ -86,9 +90,9 @@ QUERY_TOTAL_CAP = 2000  # On capped tenants, total is reported as exactly 2000
                        # Detection: total == QUERY_TOTAL_CAP triggers subdivision.
                        # Tenants with no cap (Dollar Tree, ~22K) report the real
                        # total and paginate cleanly.
-MAX_SUBDIVISION_DEPTH = 4  # Recursion bound — Accenture needs depth 3 to fully
-                          # cover Software Engineering (32K jobs). Depth 4 is a
-                          # paranoid ceiling.
+# Recursion bound. Each level applies one more facet, so the facets a tenant
+# offers end the recursion first; Accenture's largest area needs five.
+MAX_SUBDIVISION_DEPTH = 8
 MAX_CONCURRENCY = 10
 MAX_RETRIES = 3
 RETRY_BACKOFF = 1.5
@@ -105,11 +109,26 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 # Facets we'll try as subdivision dimensions, in priority order. After
 # `jobFamilyGroup` (which usually covers level 1 well), `timeType`
-# partitions further into Full/Part-time. `workerSubType` (Skills) is
-# multi-tag — its sum exceeds total — but each query still returns valid
-# subsets and dedup absorbs the overlap, so it's our level-3 fallback for
-# tenants like Accenture's Software Engineering (32K jobs in one area).
-_SUBDIVISION_FACETS = ("jobFamilyGroup", "timeType", "locations", "workerSubType")
+# partitions further into Full/Part-time, then the location facets, which
+# Workday nests under `locationMainGroup`. `workerSubType` (Skills) is
+# multi-tag (its sum exceeds total) but each query still returns valid
+# subsets and dedup absorbs the overlap, so it's the last resort.
+_SUBDIVISION_FACETS = (
+    "jobFamilyGroup",
+    "timeType",
+    "locationCountry",
+    "Location_Country",
+    "locationRegionStateProvince",
+    "Location_Region_State_Province",
+    "locations",
+    "workerSubType",
+)
+# `distance` lists search radii around a typed-in place, one posting each:
+# it never splits the postings.
+_IGNORED_FACETS = frozenset({"distance"})
+# Facets that give each posting at most one value: their counts add up to
+# at most the search's real size, while the reported total stops at 2,000.
+_SINGLE_VALUE_FACETS = ("jobFamilyGroup", "timeType", "workerSubType")
 
 
 @ScraperRegistry.register(ATSType.WORKDAY)
@@ -349,8 +368,11 @@ class WorkdayScraper(BaseScraper):
         applied_facets: dict[str, list[str]],
         absorb,
         depth: int,
+        size: int | None = None,
     ) -> None:
         """Recursively exhaust the given filter combination.
+
+        ``size`` is the job count the parent search gave this filter value.
 
         - If total != cap → paginate normally.
         - If total == cap and we have unused facets → subdivide.
@@ -374,21 +396,25 @@ class WorkdayScraper(BaseScraper):
             )
             return
 
-        # total is capped at 2000. Try to subdivide further.
-        if depth >= MAX_SUBDIVISION_DEPTH:
-            # Recursion bound — accept the capped 2000 from this query.
-            await self._fan_out_pages(
-                client, api, sem,
-                applied_facets=applied_facets, total=total, absorb=absorb,
+        # total is capped at 2000. Try to subdivide further. The capped total
+        # is a floor for the size when the parent gave none (the board root).
+        facet = (
+            _pick_subdivision_facet(
+                first.get("facets") or [],
+                already_applied=set(applied_facets.keys()),
+                size=max(size or 0, total),
             )
-            return
-
-        facet = _pick_subdivision_facet(
-            first.get("facets") or [],
-            already_applied=set(applied_facets.keys()),
+            if depth < MAX_SUBDIVISION_DEPTH
+            else None
         )
         if facet is None:
-            # No more partitioning facets available — take the capped 2000.
+            # Nothing left to split on: only the first 2000 are reachable.
+            logger.warning(
+                "Workday (%s): a search filtered on %s still holds more than "
+                "%d jobs and cannot be split further; only %d are read",
+                self.company_slug, sorted(applied_facets) or "nothing",
+                QUERY_TOTAL_CAP, QUERY_TOTAL_CAP,
+            )
             await self._fan_out_pages(
                 client, api, sem,
                 applied_facets=applied_facets, total=total, absorb=absorb,
@@ -397,15 +423,16 @@ class WorkdayScraper(BaseScraper):
 
         param, values = facet
 
-        async def child(value_id: str) -> None:
+        async def child(value_id: str, count: int) -> None:
             self._check_deadline()
             child_filters = {**applied_facets, param: [value_id]}
             await self._exhaust_query(
                 client, api, sem,
                 applied_facets=child_filters, absorb=absorb, depth=depth + 1,
+                size=count,
             )
 
-        await asyncio.gather(*(child(v_id) for v_id, _ in values))
+        await asyncio.gather(*(child(v_id, count) for v_id, count in values))
 
     async def _fan_out_pages(
         self,
@@ -718,33 +745,44 @@ def _pick_subdivision_facet(
     facets: list[dict[str, Any]],
     *,
     already_applied: set[str],
+    size: int | None = None,
 ) -> tuple[str, list[tuple[str, int]]] | None:
     """Return ``(param, [(value_id, value_count), ...])`` for the best facet
     to subdivide further on, or ``None`` if nothing useful remains.
 
-    Skips facets that are already in ``already_applied`` — reusing the same
-    facet would just hit the cap again. Tries the priority list
-    (``jobFamilyGroup`` → ``timeType`` → ``locations``) first, then falls
-    back to the highest-cardinality remaining facet (typically
-    ``workerSubType``/Skills, which is multi-tag — dedup absorbs the
-    overlap).
+    Skips facets that are already in ``already_applied`` (reusing the same
+    facet would just hit the cap again) and facets with fewer than two
+    non-empty values. A facet whose counts add up to less than the search's
+    job count leaves the jobs without a value out of every split, so it is
+    used only when no other facet covers them all. The count is ``size``
+    or the largest sum of a single-value facet, whichever is higher. Tries
+    the priority list first, then falls back to the highest-cardinality
+    remaining facet.
     """
-    by_param: dict[str, list[tuple[str, int]]] = {}
-    for facet in facets:
-        if not isinstance(facet, dict):
-            continue
-        param = facet.get("facetParameter")
-        values = facet.get("values") or []
-        if not param or param in already_applied or len(values) < 2:
-            continue
-        items = [
-            (v.get("id"), int(v.get("count") or 0))
-            for v in values
-            if isinstance(v, dict) and v.get("id") and v.get("count", 0) > 0
-        ]
-        if items:
-            by_param[param] = items
-
+    values = _facet_values(facets)
+    by_param = {
+        param: items
+        for param, items in values.items()
+        if param not in already_applied and len(items) >= 2
+    }
+    size = max(
+        [size or 0]
+        + [sum(count for _, count in values[p]) for p in _SINGLE_VALUE_FACETS if p in values]
+    )
+    if size:
+        # Counts drift by a few jobs between two searches.
+        complete = {
+            param: items
+            for param, items in by_param.items()
+            if sum(count for _, count in items) >= size * 0.99
+        }
+        if by_param and not complete:
+            logger.warning(
+                "Workday: no facet covers all %d jobs of a capped search; "
+                "the split leaves out the jobs without a value",
+                size,
+            )
+        by_param = complete or by_param
     for preferred in _SUBDIVISION_FACETS:
         if preferred in by_param:
             return preferred, by_param[preferred]
@@ -752,3 +790,38 @@ def _pick_subdivision_facet(
         param, values = max(by_param.items(), key=lambda kv: len(kv[1]))
         return param, values
     return None
+
+
+def _facet_values(facets: object) -> dict[str, list[tuple[str, int]]]:
+    """Every facet of a search response with its non-empty values.
+
+    A facet whose values are facets of their own (``locationMainGroup``
+    holds ``locationCountry`` and ``locations``) is replaced by them.
+    """
+    found: dict[str, list[tuple[str, int]]] = {}
+    if not isinstance(facets, list):
+        return found
+    for facet in facets:
+        if not isinstance(facet, dict):
+            continue
+        values = [v for v in facet.get("values") or [] if isinstance(v, dict)]
+        nested = [v for v in values if v.get("facetParameter")]
+        if nested:
+            for param, items in _facet_values(nested).items():
+                found.setdefault(param, items)
+            continue
+        param = facet.get("facetParameter")
+        if not isinstance(param, str) or not param or param in _IGNORED_FACETS:
+            continue
+        items: list[tuple[str, int]] = []
+        for value in values:
+            value_id = value.get("id")
+            try:
+                count = int(value.get("count") or 0)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(value_id, str) and value_id and count > 0:
+                items.append((value_id, count))
+        if items:
+            found.setdefault(param, items)
+    return found

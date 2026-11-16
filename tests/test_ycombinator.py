@@ -31,13 +31,26 @@ _PAGE_RE = re.compile(r"^https://www\.ycombinator\.com/companies/[a-z0-9-]+$")
 # --- helpers ----------------------------------------------------------------
 
 
-def _api_page(slugs: list[str], *, page: int = 1, total_pages: int = 1) -> dict:
+def _api_page(
+    slugs: list[str],
+    *,
+    page: int = 1,
+    total_pages: int = 1,
+    not_hiring: tuple[str, ...] = (),
+) -> dict:
     return {
-        "companies": [{"slug": s, "name": s.title()} for s in slugs],
+        "companies": [
+            {
+                "slug": s,
+                "name": s.title(),
+                "badges": [] if s in not_hiring else ["isHiring"],
+            }
+            for s in slugs
+        ],
         "page": page,
         "totalPages": total_pages,
         "nextPage": (
-            f"https://api.ycombinator.com/v0.1/companies?isHiring=true&page={page+1}"
+            f"https://api.ycombinator.com/v0.1/companies?page={page+1}"
             if page < total_pages else None
         ),
     }
@@ -260,6 +273,29 @@ def test_paginates_companies_until_empty(httpx_mock) -> None:
     )
     jobs = YCombinatorScraper("any").fetch()
     assert len(jobs) == 2
+
+
+def test_reads_the_whole_company_list_and_keeps_hiring_companies(httpx_mock) -> None:
+    # The ``isHiring=true`` filter stops at page 50; the full list does not.
+    total_pages = 60
+    for page in range(1, total_pages + 1):
+        slugs = [f"co{page}"] if page in (1, 60) else [f"idle{page}"]
+        httpx_mock.add_response(
+            url=f"https://api.ycombinator.com/v0.1/companies?page={page}",
+            json=_api_page(
+                slugs, page=page, total_pages=total_pages,
+                not_hiring=tuple(s for s in slugs if s.startswith("idle")),
+            ),
+        )
+    for job_id, slug in enumerate(("co1", "co60"), start=1):
+        httpx_mock.add_response(
+            url=f"https://www.ycombinator.com/companies/{slug}",
+            text=_company_page_html([_job(job_id=job_id, company_slug=slug)]),
+        )
+
+    jobs = YCombinatorScraper("any").fetch()
+
+    assert sorted(j.ats_id for j in jobs) == ["1", "2"]
 
 
 def test_company_404_treated_as_no_jobs(httpx_mock) -> None:

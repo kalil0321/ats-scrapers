@@ -32,12 +32,13 @@ order of cost:
 from __future__ import annotations
 
 import asyncio
+import html
 import os
 import re
 import socket
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -51,7 +52,7 @@ if TYPE_CHECKING:
 
 PAGE_SIZE = 12  # Avature's default page size.
 MAP_PAGE_SIZE = 30  # SearchJobsMaps pages use a different offset scheme.
-MAX_PAGES = 200  # Defensive upper bound — caps a runaway loop at ~2400 jobs.
+MAX_PAGES = 1_000  # Runaway guard; a walk also stops on a page with no new jobs.
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
 # How many JobDetail pages to fetch concurrently per tenant. Avature
@@ -105,6 +106,12 @@ _LOCALE_PREFIXES = {
     "fr_FR", "fr_CA", "es_ES", "es_MX", "de_DE", "it_IT",
     "pt_BR", "pt_PT", "zh_CN", "zh_TW", "ja_JP", "ko_KR", "nl_NL",
 }
+
+# A link to another listing page and its offset. Portals name the offset
+# ``jobOffset``, ``projectOffset`` or ``pipelineOffset``.
+_PAGE_LINK_RE = re.compile(
+    r'href="([^"]*?[?&;](?:job|project|pipeline)Offset=(\d+)[^"]*)"'
+)
 
 # Pseudo-anchor texts that aren't real jobs (action buttons rendered as <a>).
 _PSEUDO_TITLES = {
@@ -275,11 +282,11 @@ class AvatureScraper(BaseScraper):
         seen: set[str] = set()
         all_jobs: list[Job] = []
         page_size = _page_size(base)
+        offset, url = 0, None
         for page_num in range(MAX_PAGES):
-            offset = page_num * page_size
             try:
-                html_text = await asyncio.to_thread(
-                    self._fetch_page_via_httpcloak_sync, base, offset
+                html_text, page_url = await asyncio.to_thread(
+                    self._fetch_page_via_httpcloak_sync, base, offset, url
                 )
             except _BlockedTenantError:
                 if page_num == 0:
@@ -292,8 +299,14 @@ class AvatureScraper(BaseScraper):
             for j in new:
                 seen.add(j.ats_id)
             all_jobs.extend(new)
-            if len(page_jobs) < page_size:
+            following = _next_page(
+                html_text, page_url, offset, len(page_jobs), page_size
+            )
+            if following is None:
                 break
+            offset, url = following
+        else:
+            raise _page_guard_error(base, len(all_jobs))
 
         # Same TLS fingerprint for detail enrichment so we don't lose
         # the descriptions we just unlocked. Best-effort — a single
@@ -306,13 +319,16 @@ class AvatureScraper(BaseScraper):
             ))
         return all_jobs
 
-    def _fetch_page_via_httpcloak_sync(self, base: str, offset: int) -> str:
+    def _fetch_page_via_httpcloak_sync(
+        self, base: str, offset: int, url: str | None = None,
+    ) -> tuple[str, str]:
+        """``(html, final URL)`` of one listing page."""
         import httpcloak
 
         try:
             response = httpcloak.get(
-                _search_url(base),
-                params=_pagination_params(base, offset),
+                url or _search_url(base),
+                params=None if url else _pagination_params(base, offset),
                 headers=_BROWSER_HEADERS,
                 timeout=self.timeout,
             )
@@ -330,7 +346,7 @@ class AvatureScraper(BaseScraper):
                 f"Avature ({base}) httpcloak returned {response.status_code} "
                 f"at offset={offset}"
             )
-        return response.text
+        return response.text, str(response.url or url or _search_url(base))
 
     async def _enrich_with_detail_via_httpcloak(
         self, sem: asyncio.Semaphore, job: Job,
@@ -365,9 +381,11 @@ class AvatureScraper(BaseScraper):
             timeout=self.timeout, follow_redirects=True
         ) as client:
             page_size = _page_size(base)
-            for page_num in range(MAX_PAGES):
-                offset = page_num * page_size
-                html_text = await self._fetch_page(client, base, offset)
+            offset, url = 0, None
+            for _ in range(MAX_PAGES):
+                html_text, page_url = await self._fetch_page(
+                    client, base, offset, url
+                )
                 page_jobs = self._parse_page(html_text, base, company)
                 new = [j for j in page_jobs if j.ats_id not in seen]
                 if not new:
@@ -375,9 +393,14 @@ class AvatureScraper(BaseScraper):
                 for j in new:
                     seen.add(j.ats_id)
                 all_jobs.extend(new)
-                # Termination: short page = last page.
-                if len(page_jobs) < page_size:
+                following = _next_page(
+                    html_text, page_url, offset, len(page_jobs), page_size
+                )
+                if following is None:
                     break
+                offset, url = following
+            else:
+                raise _page_guard_error(base, len(all_jobs))
 
             # Per-job detail fetch — Avature's search-results page has
             # only title/location/department; everything else (description,
@@ -457,9 +480,9 @@ class AvatureScraper(BaseScraper):
 
                 # Listing pages — sequential on one tab.
                 page_size = _page_size(base)
-                for page_num in range(MAX_PAGES):
-                    offset = page_num * page_size
-                    list_url = _paginated_search_url(base, offset)
+                offset, url = 0, None
+                for _ in range(MAX_PAGES):
+                    list_url = url or _paginated_search_url(base, offset)
                     try:
                         await page.goto(
                             list_url, wait_until="domcontentloaded", timeout=30_000
@@ -467,6 +490,7 @@ class AvatureScraper(BaseScraper):
                     except Exception:
                         break
                     html_text = await page.content()
+                    page_url = page.url or list_url
                     page_jobs = self._parse_page(html_text, base, company)
                     new = [j for j in page_jobs if j.ats_id not in seen]
                     if not new:
@@ -474,8 +498,14 @@ class AvatureScraper(BaseScraper):
                     for j in new:
                         seen.add(j.ats_id)
                     all_jobs.extend(new)
-                    if len(page_jobs) < page_size:
+                    following = _next_page(
+                        html_text, page_url, offset, len(page_jobs), page_size
+                    )
+                    if following is None:
                         break
+                    offset, url = following
+                else:
+                    raise _page_guard_error(base, len(all_jobs))
 
                 if self.include_descriptions:
                     # Detail pages — small parallel batch on extra tabs.
@@ -510,9 +540,14 @@ class AvatureScraper(BaseScraper):
         return all_jobs
 
     async def _fetch_page(
-        self, client: httpx.AsyncClient, base: str, offset: int
-    ) -> str:
-        list_url = _paginated_search_url(base, offset)
+        self,
+        client: httpx.AsyncClient,
+        base: str,
+        offset: int,
+        url: str | None = None,
+    ) -> tuple[str, str]:
+        """``(html, final URL)`` of one listing page."""
+        list_url = url or _paginated_search_url(base, offset)
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 response = await client.get(list_url, headers=_BROWSER_HEADERS)
@@ -531,7 +566,7 @@ class AvatureScraper(BaseScraper):
             if response.status_code == 404:
                 raise CompanyNotFoundError(f"Avature site not found: {base}")
             if response.status_code == 200:
-                return response.text
+                return response.text, str(response.url)
             if response.headers.get("x-amzn-waf-action", "").lower() == "challenge":
                 raise ScraperError(
                     f"Avature ({base}) answered with an AWS WAF JavaScript "
@@ -627,13 +662,16 @@ def _parse_job_element(
         else _join_avature_url(base, href)
     )
 
-    # Job ID = path tail for JobDetail/ProjectDetail pages, or pipelineId
-    # for the SearchJobsMaps/PipelineDetail variant.
+    # Job ID = path tail for JobDetail/ProjectDetail pages, ``jobId`` for
+    # ``JobDetail?jobId=N`` links, or pipelineId for the
+    # SearchJobsMaps/PipelineDetail variant.
     parsed_href = urlparse(href)
     query = parse_qs(parsed_href.query)
     ats_id = (query.get("pipelineId") or [""])[0]
     if not ats_id:
         ats_id = href.rsplit("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+        if ats_id == "JobDetail":
+            ats_id = (query.get("jobId") or [""])[0]
     if not ats_id:
         return None
 
@@ -736,6 +774,37 @@ def _page_size(base: str) -> int:
     return MAP_PAGE_SIZE if _is_map_search(base) else PAGE_SIZE
 
 
+def _page_guard_error(base: str, found: int) -> ScraperError:
+    return ScraperError(
+        f"Avature ({base}) still lists new jobs after {MAX_PAGES} pages "
+        f"({found} jobs); refusing to return a partial list"
+    )
+
+
+def _next_page(
+    html_text: str, page_url: str, offset: int, rows: int, page_size: int,
+) -> tuple[int, str | None] | None:
+    """``(offset, url)`` of the listing page after ``offset``, or None after
+    the last. ``url`` is None when the page should be built from the base.
+    Links are relative to ``page_url``, the address that served the page.
+
+    The page's own pagination link leads: some portals serve fewer rows than
+    ``jobRecordsPerPage`` asks for (6 instead of 12), page by
+    ``projectOffset``, or redirect to a host that drops the query. A page
+    without such a link continues only when it is full.
+    """
+    links = [
+        (int(number), urljoin(page_url, html.unescape(href)))
+        for href, number in _PAGE_LINK_RE.findall(html_text)
+        if int(number) > offset
+    ]
+    if links:
+        return min(links)
+    if rows >= page_size:
+        return offset + page_size, None
+    return None
+
+
 def _pagination_params(base: str, offset: int) -> dict[str, int]:
     if _is_map_search(base):
         return {"pipelineOffset": offset}
@@ -750,6 +819,7 @@ def _is_map_search(base: str) -> bool:
 def _is_detail_href(href: str) -> bool:
     return (
         "/JobDetail/" in href
+        or "/JobDetail?" in href
         or "/ProjectDetail/" in href
         or "/PipelineDetail" in href
     )

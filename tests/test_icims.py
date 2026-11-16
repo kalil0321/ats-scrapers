@@ -229,6 +229,29 @@ def test_paginates_until_no_new_ids(httpx_mock) -> None:
     assert len(jobs) == 40
 
 
+def test_reads_past_two_hundred_pages(httpx_mock) -> None:
+    for page in range(251):
+        cards = [_job_anchor(str(page * 2 + i), "Job") for i in range(2)] if page < 250 else []
+        httpx_mock.add_response(url=_page_url("acme", page), text=_page(cards))
+
+    jobs = iCIMSScraper("acme", include_descriptions=False).fetch()
+
+    assert len(jobs) == 500
+
+
+def test_page_guard_raises_instead_of_truncating(httpx_mock, monkeypatch) -> None:
+    from ats_scrapers.scrapers import icims
+
+    monkeypatch.setattr(icims, "MAX_PAGES", 2)
+    for page in range(2):
+        httpx_mock.add_response(
+            url=_page_url("acme", page), text=_page([_job_anchor(str(page), "Job")])
+        )
+
+    with pytest.raises(ScraperError, match="after 2 pages"):
+        iCIMSScraper("acme", include_descriptions=False).fetch()
+
+
 def test_terminates_immediately_on_empty_first_page(httpx_mock) -> None:
     httpx_mock.add_response(url=_page_url("acme", 0), text=_page([]))
     assert iCIMSScraper("acme").fetch() == []

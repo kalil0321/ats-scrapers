@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 from pydantic import HttpUrl
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
 from ats_scrapers.scrapers._slug import require_host_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -40,6 +40,10 @@ _PAGE_RE = re.compile(
 )
 _TOTAL_RE = re.compile(r"共\s*(\d+)\s*条记录")
 _DATE_RE = re.compile(r"\d{4}-\d{1,2}-\d{1,2}")
+# A closed tenant redirects every path to this error page.
+_ERROR_PAGE_RE = re.compile(r"<div[^>]*\bclass=\"errorpage\"", re.IGNORECASE)
+# The shell of the current Beisen portal, which no legacy path can list.
+_CURRENT_PORTAL_RE = re.compile(r"var\s+BSGlobal\s*=")
 _FOREIGN_LOCATION_MARKERS = (
     "国外",
     "海外",
@@ -114,8 +118,10 @@ class BeisenLegacyScraper(BaseScraper):
         self.language = language
         self.country_iso = country_iso.upper() if country_iso else None
         self.base_url = f"https://{self.slug}.zhiye.com"
+        self._pages_found = 0
 
     async def afetch(self) -> list[Job]:
+        self._pages_found = 0
         async with self.make_fetcher() as fetch:
             rows: list[_ListingRow] = []
             seen: set[str] = set()
@@ -127,6 +133,10 @@ class BeisenLegacyScraper(BaseScraper):
                     rows.append(row)
             if not rows and self.categories == CATEGORIES:
                 rows.extend(await self._fetch_index(fetch))
+                if not self._pages_found:
+                    raise CompanyNotFoundError(
+                        f"Beisen legacy tenant {self.slug!r} has no careers pages"
+                    )
             if self.include_descriptions and rows:
                 await self._enrich_rows(fetch, rows)
         return [self._build_job(row) for row in rows]
@@ -210,8 +220,14 @@ class BeisenLegacyScraper(BaseScraper):
             f"{self.base_url}{path}",
             handled={404},
         )
-        if response.status_code == 404:
+        if response.status_code == 404 or _ERROR_PAGE_RE.search(response.text):
             return None
+        if _CURRENT_PORTAL_RE.search(response.text):
+            raise ScraperError(
+                f"Beisen legacy tenant {self.slug!r} runs the current Beisen "
+                "portal; scrape it with BeisenScraper"
+            )
+        self._pages_found += 1
         return response.text
 
     async def _enrich_rows(
