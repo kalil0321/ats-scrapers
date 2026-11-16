@@ -400,9 +400,21 @@ def test_unresolvable_host_raises_company_not_found(
 ) -> None:
     import ats_scrapers.scrapers.avature as av
     monkeypatch.setattr(av, "MAX_RETRIES", 3)
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
     httpx_mock.add_exception(_dns_error(errno), url=_url("gone", 0))
     with pytest.raises(CompanyNotFoundError, match="does not resolve"):
         AvatureScraper("gone").fetch()
+
+
+def test_failed_lookup_behind_an_environment_proxy_is_not_not_found(
+    monkeypatch, httpx_mock,
+) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:8080")
+    httpx_mock.add_exception(_dns_error(socket.EAI_NONAME), url=_url("acme", 0), is_reusable=True)
+    with pytest.raises(ScraperError) as excinfo:
+        AvatureScraper("acme").fetch()
+    assert not isinstance(excinfo.value, CompanyNotFoundError)
 
 
 def test_transient_dns_failure_stays_a_scraper_error(httpx_mock) -> None:

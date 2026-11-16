@@ -517,7 +517,7 @@ class AvatureScraper(BaseScraper):
             try:
                 response = await client.get(list_url, headers=_BROWSER_HEADERS)
             except httpx.HTTPError as exc:
-                if _host_does_not_resolve(exc):
+                if _host_does_not_resolve(exc) and not _environment_proxy():
                     # Avature drops the DNS record of a closed tenant.
                     raise CompanyNotFoundError(
                         f"Avature site not found: {base} (host does not resolve)"
@@ -936,6 +936,17 @@ def _apply_detail_to_job(
     if description and not job.description:
         # Cap at ~12kB to avoid Pydantic warnings on extreme outliers.
         job.description = description[:25_000]
+
+
+def _environment_proxy() -> bool:
+    """Whether httpx would go through a proxy set in the environment.
+
+    Behind a proxy, a failed lookup may be the proxy's own name.
+    """
+    return any(
+        os.environ.get(name)
+        for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
+    )
 
 
 def _host_does_not_resolve(exc: BaseException) -> bool:

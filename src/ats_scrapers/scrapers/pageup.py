@@ -175,6 +175,9 @@ class PageUpScraper(BaseScraper):
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
+        if job.raw and "careers_page" in job.raw:
+            # Read from the feed: the job page sits behind a JavaScript challenge.
+            return self._run_sync(self._feed_description(job))
         copy = job.model_copy(deep=True)
 
         async def run() -> str | None:
@@ -371,6 +374,17 @@ class PageUpScraper(BaseScraper):
             href,
             expected_segment="listing",
         ), remaining
+
+    async def _feed_description(self, job: Job) -> str | None:
+        async with self.make_fetcher() as fetch:
+            feed = await fetch.get_text(f"{self.base_url}/latest_jobs.rss")
+        include = self.include_descriptions
+        self.include_descriptions = True
+        try:
+            jobs = self._parse_feed(feed, careers_page=str(job.raw.get("careers_page", "")))
+        finally:
+            self.include_descriptions = include
+        return next((j.description for j in jobs if j.ats_id == job.ats_id), None)
 
     def _parse_feed(self, xml_text: str, *, careers_page: str) -> list[Job]:
         try:

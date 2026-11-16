@@ -723,3 +723,17 @@ def test_moved_tenant_feed_honours_include_descriptions(httpx_mock) -> None:
     jobs = PageUpScraper("513/cw/en", include_descriptions=False).fetch()
 
     assert [job.description for job in jobs] == [None]
+
+
+def test_feed_job_description_is_read_from_the_feed_later(httpx_mock) -> None:
+    _moved_listing(httpx_mock)
+    httpx_mock.add_response(
+        url=_FEED_URL,
+        text=_feed(_feed_item("494022", "Analyst", description="&lt;p&gt;Analyse data.&lt;/p&gt;")),
+        is_reusable=True,
+    )
+    scraper = PageUpScraper("513/cw/en", include_descriptions=False)
+    [job] = scraper.fetch()
+
+    assert job.description is None
+    assert scraper.get_description(job) == "Analyse data."
