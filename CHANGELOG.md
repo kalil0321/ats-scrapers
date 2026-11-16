@@ -87,8 +87,9 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - SuccessFactors: legacy XML feeds of large employers, which take close to a
   minute to start, no longer time out.
 - Catalogue: AkzoNobel, Bechtel and Viega move from SuccessFactors to Phenom,
-  Gateway Foundation's site is now Alpharus Health's, and a duplicate Suntory
-  Global Spirits row is removed.
+  Gateway Foundation's site is now Alpharus Health's, MANN+HUMMEL's row points
+  at `careers.mann-hummel.com`, and a duplicate Suntory Global Spirits row is
+  removed.
 - Cornerstone: a career site whose `{slug}.csod.com` host no longer resolves is
   reported as not found.
 - Softgarden: a site whose domain belongs to no client, or to a removed
