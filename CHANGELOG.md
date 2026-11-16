@@ -79,6 +79,16 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   the per-job detail calls for the rest of the run after a 403 or 405 block,
   or after a 429 that asks to wait more than a minute.
 - Paycom: a retired portal ("Job board does not exist") is reported as not found.
+- SuccessFactors: a site is reported as not found when it is deactivated, when
+  its feed redirects away from a feed (to the employer's homepage or another
+  ATS), when its host now serves Workday, does not resolve or presents a
+  certificate for another name, and when a legacy career site does not know
+  the company.
+- SuccessFactors: legacy XML feeds of large employers, which take close to a
+  minute to start, no longer time out.
+- Catalogue: AkzoNobel, Bechtel and Viega move from SuccessFactors to Phenom,
+  Gateway Foundation's site is now Alpharus Health's, and a duplicate Suntory
+  Global Spirits row is removed.
 
 ## [0.3.0] — 2026-09-02
 

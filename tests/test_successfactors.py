@@ -626,3 +626,90 @@ def test_non_job_listing_legacy_xml_raises_clean_error(httpx_mock) -> None:
     httpx_mock.add_response(url=LEGACY_FEED_URL, text="<rss></rss>")
     with pytest.raises(ScraperError, match="non-job-listing"):
         SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()
+
+
+# --- Retired sites ----------------------------------------------------------
+
+
+def test_follows_redirect_to_another_feed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=FEED_URL,
+        status_code=301,
+        headers={"Location": "https://careers.acme.com/sitemal.xml"},
+    )
+    httpx_mock.add_response(
+        url="https://careers.acme.com/sitemal.xml", text=_rss([_item()])
+    )
+    jobs = SuccessFactorsScraper("job.acme.com").fetch()
+    assert [job.ats_id for job in jobs] == ["86101"]
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "/deactivated-site/",
+        "https://acme.wd5.myworkdayjobs.com/acme",
+        "https://www.acme.com/careers/",
+    ],
+)
+def test_redirect_away_from_the_feed_is_not_found(httpx_mock, location) -> None:
+    httpx_mock.add_response(
+        url=FEED_URL, status_code=302, headers={"Location": location}
+    )
+    with pytest.raises(CompanyNotFoundError, match="redirects"):
+        SuccessFactorsScraper("job.acme.com").fetch()
+
+
+def test_gone_status_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(url=FEED_URL, status_code=410)
+    with pytest.raises(CompanyNotFoundError, match="deactivated"):
+        SuccessFactorsScraper("job.acme.com").fetch()
+
+
+def test_unresolvable_host_is_not_found(httpx_mock) -> None:
+    import socket
+
+    import httpx
+
+    try:
+        raise httpx.ConnectError("connect failed") from socket.gaierror(
+            socket.EAI_NONAME, "Name or service not known"
+        )
+    except httpx.ConnectError as exc:
+        httpx_mock.add_exception(exc, url=FEED_URL)
+    with pytest.raises(CompanyNotFoundError, match="does not resolve"):
+        SuccessFactorsScraper("job.acme.com").fetch()
+
+
+def test_host_serving_workday_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=FEED_URL,
+        text=(
+            '<wml:Application_Error xmlns:wml="http://www.workday.com/ns/model/1.0"'
+            ' Type="Validation"><wml:Message>Requested page not found'
+            " /sitemal.xml</wml:Message></wml:Application_Error>"
+        ),
+    )
+    with pytest.raises(CompanyNotFoundError, match="Workday"):
+        SuccessFactorsScraper("job.acme.com").fetch()
+
+
+def test_legacy_error_page_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LEGACY_FEED_URL,
+        text=(
+            "<html>\n<script>var a = b && c;</script>\n<body>"
+            '<div class="round sysmsg error"><div class="bd">'
+            "An error occurred while processing your request.</div></div>"
+            "</body></html>"
+        ),
+    )
+    with pytest.raises(CompanyNotFoundError, match="amkor"):
+        SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()
+
+
+def test_legacy_feed_waits_for_a_slow_first_byte(httpx_mock) -> None:
+    httpx_mock.add_response(url=LEGACY_FEED_URL, text=_legacy_feed([]))
+    SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()
+    request = httpx_mock.get_requests()[0]
+    assert request.extensions["timeout"]["read"] >= 120
