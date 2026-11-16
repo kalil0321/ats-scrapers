@@ -278,6 +278,33 @@ def test_404_maps_to_company_not_found(httpx_mock) -> None:
 
 
 @pytest.mark.parametrize(
+    "location",
+    ["/careers/Content/TenantNotFound.html", "/careers/Content/403.html"],
+)
+def test_closed_portal_redirect_maps_to_company_not_found(
+    httpx_mock, location: str,
+) -> None:
+    httpx_mock.add_response(
+        url=PORTAL_URL, status_code=302, headers={"Location": location},
+    )
+
+    with pytest.raises(CompanyNotFoundError, match="careers portal is closed"):
+        KekaScraper(PORTAL_URL).fetch()
+
+
+def test_unexpected_portal_redirect_fails_closed(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=PORTAL_URL,
+        status_code=302,
+        headers={"Location": "https://login.keka.com/"},
+    )
+
+    with pytest.raises(ScraperError, match="redirected to") as excinfo:
+        KekaScraper(PORTAL_URL).fetch()
+    assert not isinstance(excinfo.value, CompanyNotFoundError)
+
+
+@pytest.mark.parametrize(
     "slug",
     [
         "",

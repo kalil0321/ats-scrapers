@@ -48,6 +48,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   redirects to its own site are read on Jobvite, and a job that the unstable
   list order hides at a page boundary is fetched again. The catalogue drops
   Jobvite's demo tenant `piedpiper`.
+- Keka: a tenant that no longer exists or has switched its careers portal off
+  is reported as not found.
 - Phenom: job links open the posting.
 - Oracle: job links open the posting.
 - Amazon: job links open the posting.
