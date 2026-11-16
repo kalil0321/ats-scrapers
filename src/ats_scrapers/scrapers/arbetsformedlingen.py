@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
@@ -79,6 +79,9 @@ class ArbetsformedlingenScraper(BaseScraper):
                     "Arbetsförmedlingen: the search returned ads without a "
                     "publication date; cannot split it into date windows"
                 )
+            # Bounds are whole seconds: the newest ad may carry a fraction
+            # past ``end``, so the window ends one second later.
+            end += timedelta(seconds=1)
             await self._walk_window(fetch, sem, start, end, absorb)
         return all_jobs
 

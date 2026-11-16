@@ -76,6 +76,17 @@ def test_warns_when_one_second_holds_more_than_a_window(httpx_mock, caplog) -> N
     assert "only 2100 of them are reachable" in caplog.text
 
 
+def test_newest_ad_stamped_with_a_fraction_of_a_second_is_read(httpx_mock) -> None:
+    ads = _ads([datetime(2026, 1, 1, 11), datetime(2026, 1, 1, 11, 30)])
+    newest = _ads([datetime(2026, 1, 1, 12)])[0]
+    ads.append({**newest, "id": "late", "publication_date": "2026-01-01T12:00:00.500"})
+    httpx_mock.add_callback(_fake_api(ads), url=_API_RE, is_reusable=True)
+
+    jobs = ArbetsformedlingenScraper("arbetsformedlingen").fetch()
+
+    assert {j.ats_id for j in jobs} == {"0", "1", "late"}
+
+
 def test_empty_board(httpx_mock) -> None:
     httpx_mock.add_callback(_fake_api([]), url=_API_RE, is_reusable=True)
 
