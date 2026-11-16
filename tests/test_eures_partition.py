@@ -310,6 +310,8 @@ class _FakePortal:
     arriving: list[_Vacancy] = field(default_factory=list)
     # Counted in ``numberRecords`` but never returned.
     phantoms: int = 0
+    # Filter values whose queries fail with 503.
+    unavailable: set[str] = field(default_factory=set)
     bodies: list[dict] = field(default_factory=list)
     reads: dict[int, int] = field(default_factory=dict)
 
@@ -334,6 +336,8 @@ class _FakePortal:
             return httpx.Response(400, json={"error": "bad request"})
         if self.failing_unions and len(body.get(self.failing_unions) or []) > 1:
             return httpx.Response(400, json={"error": "bad request"})
+        if any(body.get("locationCodes") == [v] for v in self.unavailable):
+            return httpx.Response(503, text="unavailable")
         if self.arriving and body["resultsPerPage"] != eures.PAGE_SIZE:
             self.vacancies.extend(self.arriving)
             self.arriving = []
@@ -629,5 +633,26 @@ def test_rejected_filter_value_is_reported_instead_of_read_as_empty(
     assert any(
         "location subtask failed" in r.getMessage()
         and "rejected the query locationCodes=de2" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_a_failed_slice_is_named_with_its_announced_count(
+    httpx_mock, small_pages, caplog,
+) -> None:
+    vacancies = [
+        _Vacancy("f0", "fr", "fr10"),
+        *(_Vacancy(f"d{i}", "de", "de1") for i in range(3)),
+        *(_Vacancy(f"e{i}", "de", "de2") for i in range(3)),
+    ]
+    _serve(httpx_mock, _FakePortal(vacancies, max_results=4, unavailable={"de2"}))
+
+    with caplog.at_level(logging.WARNING):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) >= {f"d{i}" for i in range(3)}
+    assert any(
+        "location subtask failed" in r.getMessage()
+        and "locationCodes=de2 (3 announced)" in r.getMessage()
         for r in caplog.records
     )

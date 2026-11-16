@@ -480,14 +480,21 @@ class EuresScraper(BaseScraper):
                 )
                 read_slice = dimension is _OCCUPATION
 
-        tasks = [
-            self._exhaust_query(
-                fetcher, sem,
-                base={**base, dimension.field: list(child.values)},
-                absorb=absorb, slices=slices,
-            )
-            for child in split.children
-        ]
+        async def child_slice(child: _Child) -> None:
+            child_base = {**base, dimension.field: list(child.values)}
+            try:
+                await self._exhaust_query(
+                    fetcher, sem, base=child_base, absorb=absorb, slices=slices,
+                )
+            except ScraperError as exc:
+                # Failures inside the child's own children are logged
+                # there, so this is the child's first request.
+                announced = "?" if child.count is None else child.count
+                raise ScraperError(
+                    f"{_describe(child_base)} ({announced} announced): {exc}"
+                ) from exc
+
+        tasks = [child_slice(child) for child in split.children]
         if read_slice:
             tasks.append(read(PAGINATION_CAP))
         await _gather_tolerant(tasks, label=dimension.name)
@@ -509,6 +516,7 @@ class EuresScraper(BaseScraper):
         around them are read again (``_rereads``).
         """
         page_count = min((total + PAGE_SIZE - 1) // PAGE_SIZE, PAGE_LIMIT)
+        page_label = f"page of {_describe(base)}"
         pages: dict[int, list[dict[str, Any]]] = {}
         seen: set[str] = set()
 
@@ -529,7 +537,7 @@ class EuresScraper(BaseScraper):
         if first_page is not None:
             keep(1, first_page)
         await _gather_tolerant(
-            (one(p) for p in range(2, page_count + 1)), label="page",
+            (one(p) for p in range(2, page_count + 1)), label=page_label,
         )
         if first_page is None:
             return
@@ -564,7 +572,7 @@ class EuresScraper(BaseScraper):
                     *(window(r) for r in todo if r.size),
                     *(one(page) for page in sorted(regular)),
                 ],
-                label="page",
+                label=page_label,
             )
         if len(seen) < total:
             log.warning(
