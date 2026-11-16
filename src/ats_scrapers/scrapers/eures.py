@@ -78,6 +78,11 @@ PAGE_SIZE = 50  # API caps `resultsPerPage` at 50 (>50 returns 400).
 PAGE_LIMIT = 200
 PAGINATION_CAP = PAGE_SIZE * PAGE_LIMIT  # 10,000 jobs per query.
 MAX_CONCURRENCY = 6  # The portal is generous but we stay polite.
+# Slices reading their pages at once. Each keeps the ids and timestamps of
+# its pages (up to 10,000 rows) until its rereads are done, and rereads
+# queue behind the pages of the other active slices; enough slices to keep
+# every request busy, few enough to bound that memory.
+MAX_ACTIVE_SLICES = 2 * MAX_CONCURRENCY
 _REREAD_ROUNDS = 3  # See ``_rereads``.
 
 
@@ -390,7 +395,10 @@ class EuresScraper(BaseScraper):
                 else:
                     all_jobs.extend(new_jobs)
 
-            await self._exhaust_query(fetcher, sem, base={}, absorb=absorb)
+            await self._exhaust_query(
+                fetcher, sem, base={}, absorb=absorb,
+                slices=asyncio.Semaphore(MAX_ACTIVE_SLICES),
+            )
         return all_jobs
 
     async def _exhaust_query(
@@ -400,32 +408,46 @@ class EuresScraper(BaseScraper):
         *,
         base: dict[str, Any],
         absorb: Callable[[list[dict[str, Any]]], Awaitable[None]],
+        slices: asyncio.Semaphore | None = None,
     ) -> None:
         """Pull every job matching ``base``, splitting it while it is
-        above the pagination cap."""
-        first = await self._search(fetcher, sem, base=base, page=1)
-        total = int(first.get("numberRecords") or 0)
+        above the pagination cap. ``slices`` bounds how many slices read
+        their pages at once."""
+        if slices is None:
+            slices = asyncio.Semaphore(MAX_ACTIVE_SLICES)
+
+        async def read(total: int, first_page: list[dict[str, Any]] | None = None) -> None:
+            async with slices:
+                await self._fan_out_pages(
+                    fetcher, sem, base=base, total=total, absorb=absorb,
+                    first_page=first_page,
+                )
+
+        payload = await self._search(fetcher, sem, base=base, page=1)
+        total = int(payload.get("numberRecords") or 0)
         if total == 0:
             return
-        await absorb(first.get("jvs") or [])
+        items = payload.get("jvs") or []
+        await absorb(items)
+        facets = payload.get("facets") or {}
+        first_page = _slim(items) if total <= PAGINATION_CAP else None
+        # Full rows would stay in memory for as long as this slice waits
+        # for its turn or for its children.
+        del payload, items
 
-        if total <= PAGINATION_CAP:
-            await self._fan_out_pages(
-                fetcher, sem, base=base, total=total, absorb=absorb,
-                first_page=first.get("jvs") or [],
-            )
+        if first_page is not None:
+            await read(total, first_page)
             return
 
-        split = _plan_split(first.get("facets") or {}, base, total)
+        split = _plan_split(facets, base, total)
+        del facets
         if split is None:
             log.warning(
                 "EURES slice %s holds %d vacancies and cannot be split "
                 "further; %d beyond the first %d are not reachable",
                 _describe(base), total, total - PAGINATION_CAP, PAGINATION_CAP,
             )
-            await self._fan_out_pages(
-                fetcher, sem, base=base, total=PAGINATION_CAP, absorb=absorb,
-            )
+            await read(PAGINATION_CAP)
             return
 
         dimension = split.dimension
@@ -462,14 +484,12 @@ class EuresScraper(BaseScraper):
             self._exhaust_query(
                 fetcher, sem,
                 base={**base, dimension.field: list(child.values)},
-                absorb=absorb,
+                absorb=absorb, slices=slices,
             )
             for child in split.children
         ]
         if read_slice:
-            tasks.append(self._fan_out_pages(
-                fetcher, sem, base=base, total=PAGINATION_CAP, absorb=absorb,
-            ))
+            tasks.append(read(PAGINATION_CAP))
         await _gather_tolerant(tasks, label=dimension.name)
 
     async def _fan_out_pages(
@@ -489,17 +509,13 @@ class EuresScraper(BaseScraper):
         around them are read again (``_rereads``).
         """
         page_count = min((total + PAGE_SIZE - 1) // PAGE_SIZE, PAGE_LIMIT)
-        # Only ids and timestamps: many slices are read at once, and full
-        # rows (descriptions included) would defeat streaming.
         pages: dict[int, list[dict[str, Any]]] = {}
         seen: set[str] = set()
 
         def keep(page: int | None, items: list[dict[str, Any]]) -> None:
-            slim = [
-                {"id": str(item.get("id")),
-                 "lastModificationDate": item.get("lastModificationDate")}
-                for item in items
-            ]
+            if first_page is None:
+                return
+            slim = _slim(items)
             if page is not None:
                 pages[page] = slim
             seen.update(item["id"] for item in slim)
@@ -880,6 +896,15 @@ async def _gather_tolerant(
     for r in results:
         if isinstance(r, BaseException):
             log.warning("EURES %s subtask failed: %s", label, r)
+
+
+def _slim(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ids and timestamps only, all ``_rereads`` needs of a page."""
+    return [
+        {"id": str(item.get("id")),
+         "lastModificationDate": item.get("lastModificationDate")}
+        for item in items
+    ]
 
 
 def _rereads(pages: dict[int, list[dict[str, Any]]]) -> list[tuple[int, int | None]]:

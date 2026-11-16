@@ -264,7 +264,7 @@ def _fake_exhaust(items_to_emit):
     """Build a coroutine that mimics ``_exhaust_query``'s contract:
     it calls the supplied ``absorb`` callback with a single batch of
     items, then returns."""
-    async def _fake(fetcher, sem, *, base, absorb):
+    async def _fake(fetcher, sem, *, base, absorb, slices=None):
         await absorb(items_to_emit)
     return _fake
 
@@ -334,7 +334,7 @@ def test_fetch_stream_raises_when_the_portal_query_fails(monkeypatch) -> None:
     top-level query means nothing was collected and must surface."""
     scraper = EuresScraper("eures")
 
-    async def boom(fetcher, sem, *, base, absorb):
+    async def boom(fetcher, sem, *, base, absorb, slices=None):
         raise ScraperError("network down")
 
     monkeypatch.setattr(scraper, "_exhaust_query", boom)

@@ -499,6 +499,34 @@ def test_slice_is_read_when_the_occupation_coverage_check_fails(
     )
 
 
+def test_slices_reading_pages_at_once_are_bounded(
+    httpx_mock, small_pages, monkeypatch,
+) -> None:
+    monkeypatch.setattr(eures, "MAX_ACTIVE_SLICES", 2, raising=False)
+    vacancies = [
+        _Vacancy(f"{c}{i}", c, f"{c}1") for c in ("at", "be", "cz", "dk", "ee", "fi")
+        for i in range(4)
+    ]
+    _serve(httpx_mock, _FakePortal(vacancies, max_results=4))
+    active = {"now": 0, "peak": 0}
+    read_pages = EuresScraper._fan_out_pages
+
+    async def counted(self, *args, **kwargs):
+        active["now"] += 1
+        active["peak"] = max(active["peak"], active["now"])
+        try:
+            await read_pages(self, *args, **kwargs)
+        finally:
+            active["now"] -= 1
+
+    monkeypatch.setattr(EuresScraper, "_fan_out_pages", counted)
+
+    jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {v.id for v in vacancies}
+    assert active["peak"] == 2
+
+
 def test_warns_when_a_slice_cannot_be_split_below_the_cap(
     httpx_mock, small_pages, caplog,
 ) -> None:
