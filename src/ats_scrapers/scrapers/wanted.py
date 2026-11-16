@@ -25,11 +25,13 @@ cross-ATS dedup still works.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._throttle import Throttle
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -37,11 +39,16 @@ if TYPE_CHECKING:
 
     from ats_scrapers.fetch import Fetcher
 
+logger = logging.getLogger(__name__)
+
 API_ROOT = "https://www.wanted.co.kr"
 JOBS_PATH = "/api/v4/jobs"
 DETAIL_PATH_TEMPLATE = "/api/v4/jobs/{job_id}"
 PER_PAGE = 100  # API hard-caps limit at 100 (>100 → 422).
 MAX_CONCURRENCY = 4
+# The WAF 403s an address's detail requests for about five minutes once it
+# has sent roughly 300 of them in five minutes; blocked requests count too.
+DETAIL_INTERVAL_S = 1.25
 
 # Countries the v4 jobs endpoint accepts. The API returns 422 for codes
 # outside this set (probed: sg/tw/hk/vn/my/th/id/cn/us/gb all 422 or 0).
@@ -60,8 +67,10 @@ class WantedScraper(BaseScraper):
     """
 
     ats = ATSType.WANTED
+    # The CloudFront WAF 403s some bot-like User-Agents, including a bare
+    # ``Mozilla/5.0`` and curl's default.
     default_headers: ClassVar[dict[str, str]] = {
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": "Mozilla/5.0 (compatible; ats-scrapers/1.0)",
         "Accept": "application/json",
     }
 
@@ -89,8 +98,7 @@ class WantedScraper(BaseScraper):
 
         async def run() -> str | None:
             async with self.make_fetcher() as fetch:
-                sem = asyncio.Semaphore(1)
-                await self._enrich_description(fetch, sem, copy)
+                await self._enrich_description(fetch, Throttle(1, 0), copy, asyncio.Event())
             return copy.description
 
         return self._run_sync(run())
@@ -135,21 +143,48 @@ class WantedScraper(BaseScraper):
 
             await asyncio.gather(*(per_country(cc) for cc in self.country_codes))
             if self.include_descriptions and jobs:
-                await asyncio.gather(*(self._enrich_description(fetch, sem, j) for j in jobs))
+                throttle = Throttle(MAX_CONCURRENCY, DETAIL_INTERVAL_S)
+                blocked = asyncio.Event()
+                pending = iter(jobs)
+
+                async def worker() -> None:
+                    for job in pending:
+                        if blocked.is_set():
+                            return
+                        await self._enrich_description(fetch, throttle, job, blocked)
+
+                await asyncio.gather(*(worker() for _ in range(MAX_CONCURRENCY)))
+                if blocked.is_set():
+                    logger.warning(
+                        "Wanted blocked the description requests (403); %d of %d jobs "
+                        "have no description",
+                        sum(1 for j in jobs if not j.description), len(jobs),
+                    )
         return jobs
 
     async def _enrich_description(
         self,
         fetch: Fetcher,
-        sem: asyncio.Semaphore,
+        throttle: Throttle,
         job: Job,
+        blocked: asyncio.Event,
     ) -> None:
-        if not job.ats_id:
+        """Fill ``job.description``; after a 403 the remaining jobs are skipped."""
+        if not job.ats_id or blocked.is_set():
             return
         url = f"{API_ROOT}{DETAIL_PATH_TEMPLATE.format(job_id=job.ats_id)}"
-        try:
-            payload = await self._request_json(fetch, sem, url)
-        except ScraperError:
+        async with throttle:
+            if blocked.is_set():
+                return
+            try:
+                response = await fetch.request("GET", url, handled={403})
+                payload = response.json() if response.status_code != 403 else {}
+            except ScraperError:
+                return
+        if response.status_code == 403:
+            blocked.set()
+            return
+        if not isinstance(payload, dict):
             return
         detail = ((payload.get("job") or {}).get("detail") or {})
         description = _compose_description(detail)
