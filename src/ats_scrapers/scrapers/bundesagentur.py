@@ -18,16 +18,19 @@ The API caps pagination at ``size × page = 10,000`` results per query
 
 To collect the full ~1M jobs we subdivide *recursively* using only facets
 whose bucket counts form an exact, non-overlapping partition of the current
-query. If the API exposes no such partition for an oversized leaf, we build
-an overlapping cover from every official sort order plus high-cardinality
-facets, deduplicate by reference number, and accept it only when its unique
-row count reaches the API's advertised total. Otherwise the scrape fails
-closed and preserves the previous complete dataset.
+query. If the API exposes no such partition for an oversized leaf, we split
+it by region (``wo=<Land> (Bundesland)`` for each German state, then
+``wo=<Staat> (Land)`` for postings abroad), deduplicate by reference number,
+and check that the union reaches the leaf's advertised total. A region that
+is still oversized gets an overlapping cover from every official sort order
+plus high-cardinality facets, accepted only when its unique row count
+reaches the advertised total. Otherwise the scrape fails closed and
+preserves the previous complete dataset.
 
-The earlier version subdivided by Bundesland names, but the API's
-``arbeitsort`` filter expects *city* names (e.g. ``"Berlin"``,
-``"München"``), not states (``"Bayern"`` returns 0) — that bug capped
-output at ~301k.
+The ``arbeitsort`` filter expects *city* names (e.g. ``"Berlin"``,
+``"München"``); a state name there returns 0. A bare state name in ``wo``
+can also resolve to a town (``"Hessen"`` is Hessen bei Halberstadt), so
+regions always carry the ``(Bundesland)`` / ``(Land)`` suffix.
 
 Single-tenant scraper: ``company_slug`` is informational and ignored.
 The output rows carry the German employer name as ``company`` so the
@@ -117,6 +120,92 @@ _COVER_FACETS = ("beruf", "arbeitsort", "weitereberufe")
 MAX_COVER_TOTAL = 25_000
 MAX_COVER_ATTEMPTS = 3
 COVER_ABSORB_BATCH_SIZE = 500
+
+# A posting with locations in several regions matches each of them, so the
+# regions overlap and only work as a deduplicated cover.
+_BUNDESLAENDER = (
+    "Baden-Württemberg",
+    "Bayern",
+    "Berlin",
+    "Brandenburg",
+    "Bremen",
+    "Hamburg",
+    "Hessen",
+    "Mecklenburg-Vorpommern",
+    "Niedersachsen",
+    "Nordrhein-Westfalen",
+    "Rheinland-Pfalz",
+    "Saarland",
+    "Sachsen",
+    "Sachsen-Anhalt",
+    "Schleswig-Holstein",
+    "Thüringen",
+)
+DOMESTIC_REGION = "Deutschland (Land)"
+# Countries the ``wo`` search resolves, most postings first. Only queried
+# while a leaf still misses postings that are not in Germany.
+_FOREIGN_COUNTRIES = (
+    "Österreich",
+    "Schweiz",
+    "Niederlande",
+    "Luxemburg",
+    "Vereinigte Staaten",
+    "Frankreich",
+    "Belgien",
+    "Spanien",
+    "Portugal",
+    "Italien",
+    "Polen",
+    "Großbritannien",
+    "Dänemark",
+    "Norwegen",
+    "Schweden",
+    "Griechenland",
+    "Ungarn",
+    "Bulgarien",
+    "Indien",
+    "Tschechien",
+    "Liechtenstein",
+    "China",
+    "Rumänien",
+    "Kroatien",
+    "Irland",
+    "Finnland",
+    "Slowenien",
+    "Slowakei",
+    "Türkei",
+    "Ukraine",
+    "Vereinigte Arabische Emirate",
+    "Vietnam",
+    "Malta",
+    "Japan",
+    "Estland",
+    "Lettland",
+    "Litauen",
+    "Zypern",
+    "Island",
+    "Serbien",
+    "Kanada",
+    "Australien",
+    "Singapur",
+    "Thailand",
+    "Malaysia",
+    "Usbekistan",
+    "Russische Föderation",
+    "Peru",
+    "Nigeria",
+    "Marokko",
+    "Kosovo",
+    "Kenia",
+    "Kamerun",
+    "Kambodscha",
+    "Jordanien",
+    "Grönland",
+    "Ghana",
+)
+# Postings close and open while a region cover runs, so its union may fall
+# this fraction short of the leaf total without failing the scrape.
+REGION_COVER_TOLERANCE = 0.002
 
 
 class _PageFetchExhaustedError(ScraperError):
@@ -327,8 +416,8 @@ class BundesagenturScraper(BaseScraper):
         """Recursively pull all jobs matching ``base_params``.
 
         Pagination caps at 10k. If the query exceeds that, use an exact
-        facet partition when available, then fall back to a verified
-        overlapping cover. ``depth`` bounds recursive facet subdivision.
+        facet partition when available, then a region cover, then a verified
+        sort-order cover. ``depth`` bounds recursive facet subdivision.
         """
         first = await self._fetch_page(
             client, sem, params={**base_params, "size": 1, "page": 1},
@@ -349,6 +438,16 @@ class BundesagenturScraper(BaseScraper):
         applied = set(base_params.keys())
         partition = _select_partition(first, total=total, applied=applied)
         if partition is None or depth >= MAX_SUBDIVISION_DEPTH:
+            if "wo" not in base_params:
+                await self._collect_region_cover(
+                    client,
+                    sem,
+                    base_params=base_params,
+                    total=total,
+                    depth=depth,
+                    absorb=absorb,
+                )
+                return
             await self._collect_verified_cover(
                 client,
                 sem,
@@ -371,6 +470,88 @@ class BundesagenturScraper(BaseScraper):
         await asyncio.gather(
             *(child_bucket(v, c) for v, c in bucket_counts.items())
         )
+
+    async def _collect_region_cover(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        *,
+        base_params: dict[str, Any],
+        total: int,
+        depth: int,
+        absorb: Callable[[list[dict[str, Any]]], Awaitable[None]],
+    ) -> None:
+        """Split an oversized leaf without an exact facet partition by region.
+
+        Every German state is exhausted like any other query. Countries
+        abroad are then queried only until the union holds as many
+        non-German postings as the leaf has. Postings located only as
+        "Deutschland" match no state, so the official sort orders of the
+        whole leaf fill what is still missing. The union must reach the
+        leaf's advertised total, less ``REGION_COVER_TOLERANCE`` for churn.
+        """
+        references: set[str] = set()
+
+        async def record(items: list[dict[str, Any]]) -> None:
+            references.update(
+                reference
+                for item in items
+                if (reference := _item_reference(item))
+            )
+            await absorb(items)
+
+        async def exhaust_region(region: str) -> None:
+            await self._exhaust_query(
+                client,
+                sem,
+                base_params={**base_params, "wo": region},
+                depth=depth + 1,
+                absorb=record,
+            )
+
+        domestic = await self._fetch_page(
+            client,
+            sem,
+            params={**base_params, "wo": DOMESTIC_REGION, "size": 1, "page": 1},
+        )
+        abroad = total - _result_total(domestic)
+        await asyncio.gather(
+            *(exhaust_region(f"{land} (Bundesland)") for land in _BUNDESLAENDER)
+        )
+        found_in_germany = len(references)
+        for country in _FOREIGN_COUNTRIES:
+            if len(references) - found_in_germany >= abroad:
+                break
+            await exhaust_region(f"{country} (Land)")
+
+        page_count = min((total + PAGE_SIZE - 1) // PAGE_SIZE, PAGE_LIMIT)
+        for sort in _COVER_SORTS:
+            for page in range(1, page_count + 1):
+                if len(references) >= total:
+                    break
+                payload = await self._fetch_page(
+                    client,
+                    sem,
+                    params={
+                        **base_params,
+                        "sort": sort,
+                        "size": PAGE_SIZE,
+                        "page": page,
+                    },
+                )
+                await record(_result_items(payload))
+
+        end = await self._fetch_page(
+            client,
+            sem,
+            params={**base_params, "size": 1, "page": 1},
+        )
+        expected = min(total, _result_total(end))
+        if len(references) < expected - int(expected * REGION_COVER_TOLERANCE):
+            raise ScraperError(
+                f"Bundesagentur regions covered {len(references)} of "
+                f"{expected} jobs for params={base_params}"
+            )
 
     async def _collect_verified_cover(
         self,
@@ -765,6 +946,9 @@ _SALARY_PERIODS: dict[str, SalaryPeriod] = {
 
 def _result_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
     items = payload.get("ergebnisliste")
+    # An empty result omits the list.
+    if items is None and payload.get("maxErgebnisse") == 0:
+        return []
     if not isinstance(items, list):
         raise ScraperError("Bundesagentur v6 response is missing ergebnisliste")
     if not all(isinstance(item, dict) for item in items):

@@ -78,6 +78,10 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   included, without Firecrawl. Listings imported from an ATS are skipped unless
   `include_ats_imports=True`. `firecrawl_api_key` stays available; the
   `FIRECRAWL_API_KEY` variable alone no longer enables it.
+- Bundesagentur: a search slice above the API's 10,000-result cap with no
+  exact facet split is collected by German state and country, and the
+  official sort orders fill in postings located only as "Deutschland". Full
+  scrapes no longer stop on such a slice.
 - Meta, Tesla: `cloakbrowser` is pinned to 0.6.5, the last release that
   launches without a license key, with `playwright<1.65`.
 - Meta: reads the renamed `job_search_with_featured_jobs_v2` field.
