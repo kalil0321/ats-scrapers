@@ -60,8 +60,10 @@ class WantedScraper(BaseScraper):
     """
 
     ats = ATSType.WANTED
+    # The CloudFront WAF 403s some bot-like User-Agents, including a bare
+    # ``Mozilla/5.0`` and curl's default.
     default_headers: ClassVar[dict[str, str]] = {
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": "Mozilla/5.0 (compatible; ats-scrapers/1.0)",
         "Accept": "application/json",
     }
 

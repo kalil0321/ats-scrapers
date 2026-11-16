@@ -100,6 +100,12 @@ def test_registry_resolves_wanted() -> None:
     assert ScraperRegistry.get(ATSType.WANTED) is WantedScraper
 
 
+def test_user_agent_is_not_a_bare_mozilla_token(httpx_mock) -> None:
+    httpx_mock.add_response(url=_API_RE, json=_page([]))
+    WantedScraper("any", country_codes=["kr"]).fetch()
+    assert httpx_mock.get_request().headers["User-Agent"] != "Mozilla/5.0"
+
+
 # --- happy path -------------------------------------------------------------
 
 
