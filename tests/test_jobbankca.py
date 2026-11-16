@@ -387,7 +387,7 @@ def test_fetch_accepts_postings_closed_during_the_scrape(
 
 
 @pytest.mark.usefixtures("_two_per_page")
-def test_fetch_follows_a_count_that_grows_between_passes(httpx_mock) -> None:
+def test_fetch_follows_a_count_that_grows_during_a_pass(httpx_mock) -> None:
     served = _serve_pages(
         httpx_mock,
         {
@@ -400,7 +400,32 @@ def test_fetch_follows_a_count_that_grows_between_passes(httpx_mock) -> None:
     jobs = JobBankCAScraper("any").fetch()
 
     assert sorted(job.ats_id for job in jobs) == ["11", "12", "13", "14", "15"]
-    assert served == {1: 2, 2: 2, 3: 1}
+    assert served == {1: 2, 2: 2, 3: 2}
+
+
+def test_fetch_reads_the_page_a_small_growth_adds(
+    httpx_mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """200 results grow to 201 while page 2 is read. The 200 collected
+    already meet the coverage threshold, but the new last page must still
+    be read."""
+    import ats_scrapers.scrapers.jobbankca as jb
+
+    monkeypatch.setattr(jb, "PAGE_SIZE", 100)
+    served = _serve_pages(
+        httpx_mock,
+        {
+            1: [_ids(*(str(1000 + i) for i in range(100)), total="200")],
+            2: [_ids(*(str(2000 + i) for i in range(100)), total="201")],
+            3: [_ids("3000", total="201")],
+        },
+    )
+
+    jobs = JobBankCAScraper("any").fetch()
+
+    assert len(jobs) == 201
+    assert "3000" in {job.ats_id for job in jobs}
+    assert served == {1: 1, 2: 1, 3: 1}
 
 
 @pytest.mark.usefixtures("_two_per_page")

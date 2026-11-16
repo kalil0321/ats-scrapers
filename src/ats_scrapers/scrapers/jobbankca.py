@@ -213,13 +213,18 @@ class JobBankCAScraper(BaseScraper):
                         f"Job Bank announced {announced} results, beyond its "
                         f"{MAX_PAGES}-page safety limit"
                     )
-                for page_announced, page_jobs in await self._read_pages(
-                    client, sem, pages
-                ):
-                    if page_announced is not None:
-                        announced = page_announced
-                    for job in page_jobs:
-                        jobs.setdefault(job.ats_id, job)
+                # The count can grow while a pass runs; the pages it adds
+                # belong to the same pass.
+                while pages:
+                    for page_announced, page_jobs in await self._read_pages(
+                        client, sem, pages
+                    ):
+                        if page_announced is not None:
+                            announced = page_announced
+                        for job in page_jobs:
+                            jobs.setdefault(job.ats_id, job)
+                    last_page = min(_page_count(announced), self.max_pages)
+                    pages = range(pages.stop, last_page + 1)
                 logger.info(
                     "Job Bank pass %d: %d of %d announced results collected",
                     pass_number, len(jobs), announced,
