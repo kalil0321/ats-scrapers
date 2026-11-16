@@ -385,3 +385,17 @@ def test_get_description_reads_the_job_page(httpx_mock) -> None:
 )
 def test_parse_salary(compensation: str | None, expected: tuple) -> None:
     assert _parse_salary(compensation) == expected
+
+
+def test_get_description_of_a_failing_posting_is_none(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://wellfound.com/jobs/2-designer", status_code=403, is_reusable=True,
+    )
+    job = Job(
+        url="https://wellfound.com/jobs/2-designer",
+        title="Designer",
+        company="Acme",
+        ats_type=ATSType.WELLFOUND,
+        ats_id="2",
+    )
+    assert _scraper().get_description(job) is None

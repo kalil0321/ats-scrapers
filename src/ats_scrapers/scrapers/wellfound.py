@@ -188,7 +188,12 @@ class WellfoundScraper(BaseScraper):
                 page = await self._get_page(fetch, str(job.url))
             return _posting_description(page) if page else None
 
-        return self._run_sync(run())
+        # A description is optional: one posting that fails leaves the
+        # others to be enriched.
+        try:
+            return self._run_sync(run())
+        except ScraperError:
+            return None
 
     async def _read_role(
         self, fetch: Fetcher, throttle: Throttle, role: str
