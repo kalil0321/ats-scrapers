@@ -149,11 +149,12 @@ class MetaScraper(BaseScraper):
         contract, so we tolerate a few aliases.
         """
         data = payload.get("data") or {}
-        # Primary shape (as of 2026-05): job_search_with_featured_jobs.all_jobs
-        jobs = (data.get("job_search_with_featured_jobs") or {}).get("all_jobs") or []
-        if jobs:
-            yield from jobs
-            return
+        # Primary shape: job_search_with_featured_jobs(_v2).all_jobs
+        for key in ("job_search_with_featured_jobs_v2", "job_search_with_featured_jobs"):
+            jobs = (data.get(key) or {}).get("all_jobs") or []
+            if jobs:
+                yield from jobs
+                return
         # Fallback shapes seen in older responses or A/B variants.
         for key in ("job_search_results", "jobSearchResults"):
             results = (data.get(key) or {}).get("results") or []

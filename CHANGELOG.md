@@ -28,6 +28,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 - Meta, Tesla: `cloakbrowser` is pinned to 0.6.5, the last release that
   launches without a license key, with `playwright<1.65`.
+- Meta: reads the renamed `job_search_with_featured_jobs_v2` field.
 - Pipeline: a few failed boards no longer hold back ADP, Jobvite, Keka, PageUp, Paycom or Varbi.
 - Lever, Gem, Recruitee: a board whose public page is closed is reported as not found.
 - Phenom: job links open the posting.
