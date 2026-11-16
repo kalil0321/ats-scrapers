@@ -346,7 +346,7 @@ def _regional_catalogue(
             return True
         name = wo.removesuffix(" (Bundesland)").removesuffix(" (Land)")
         if name == "Deutschland":
-            return not abroad.issuperset(regions)
+            return not regions or not abroad.issuperset(regions)
         return name in regions
 
     def serve(request: httpx.Request) -> httpx.Response:
@@ -405,6 +405,15 @@ def test_oversized_leaf_is_covered_by_region(httpx_mock, monkeypatch) -> None:
     assert not any("sort" in params for params in requests)
 
 
+def _countries_queried(requests: list[dict[str, list[str]]]) -> list[str]:
+    return [
+        params["wo"][0]
+        for params in requests
+        if params.get("wo", [""])[0].endswith(" (Land)")
+        and params["wo"][0] != "Deutschland (Land)"
+    ]
+
+
 def test_region_cover_skips_countries_when_leaf_is_domestic(
     httpx_mock, monkeypatch
 ) -> None:
@@ -417,11 +426,7 @@ def test_region_cover_skips_countries_when_leaf_is_domestic(
     jobs = BundesagenturScraper("any").fetch()
 
     assert sorted(job.ats_id for job in jobs) == ["A", "B", "C"]
-    assert not any(
-        params.get("wo", [""])[0].endswith(" (Land)")
-        and params["wo"][0] != "Deutschland (Land)"
-        for params in requests
-    )
+    assert _countries_queried(requests) == []
 
 
 def test_region_cover_fills_nationwide_postings_from_sort_orders(
@@ -438,6 +443,22 @@ def test_region_cover_fills_nationwide_postings_from_sort_orders(
     assert sorted(job.ats_id for job in jobs) == ["A", "B", "nationwide"]
     sorts = [params["sort"][0] for params in requests if "sort" in params]
     assert sorts == ["relevanz", "veroeffdatum", "moddatum"]
+
+
+def test_region_cover_skips_countries_for_deutschland_only_postings(
+    httpx_mock, monkeypatch
+) -> None:
+    """A posting located only as "Deutschland" counts as domestic, so the
+    states leaving it out does not send the cover abroad."""
+    requests = _regional_catalogue(
+        httpx_mock,
+        monkeypatch,
+        {"A": ("Berlin",), "B": ("Bayern",), "nationwide": ()},
+    )
+
+    BundesagenturScraper("any").fetch()
+
+    assert _countries_queried(requests) == []
 
 
 # The sort orders only reach the first and last page, so the middle
