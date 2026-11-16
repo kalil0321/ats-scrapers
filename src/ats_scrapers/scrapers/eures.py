@@ -942,20 +942,22 @@ def _plan_split(
             continue
         else:
             counted = _counted(_facet_entries(facets, dimension.facet))
+        children = [
+            _Child(_filter_values(dimension, code), count)
+            for code, count in counted
+        ]
         counts = [count for _, count in counted]
+        if dimension is _LANGUAGE:
+            # The vacancies no listed language covers need an unlisted one.
+            children.append(_unlisted_languages(facets))
+            counts.append(max(0, total - sum(counts)))
         if len(counts) < 2 or max(counts) >= total:
             continue
         volume = sum(counts)
         overflow = sum(max(0, count - PAGINATION_CAP) for count in counts)
         duplicates = max(0, volume - total)
         key = (int(volume < total), overflow + duplicates, len(counts), priority)
-        children = tuple(
-            _Child(_filter_values(dimension, code), count)
-            for code, count in counted
-        )
-        if dimension is _LANGUAGE:
-            children += (_unlisted_languages(facets),)
-        candidates.append((key, _Split(dimension, children)))
+        candidates.append((key, _Split(dimension, tuple(children))))
     if candidates:
         return min(candidates, key=lambda c: c[0])[1]
 

@@ -171,6 +171,17 @@ def test_language_split_adds_one_child_for_languages_the_facet_omits() -> None:
     assert unlisted.count is None
 
 
+def test_one_listed_language_and_the_unlisted_rest_still_split_the_slice() -> None:
+    # 3,000 of the 12,000 require only languages the facet does not list.
+    facets = {"LANGUAGE_SKILLS": _entries({"nl": 9_000, "de": 0})}
+
+    split = _plan_split(facets, {"locationCodes": ["nl36"]}, 12_000)
+
+    assert split is not None
+    assert split.dimension.field == "requiredLanguages"
+    assert len(split.children) == 2
+
+
 def test_falls_back_to_the_isco_tree_down_to_unit_groups() -> None:
     split = _plan_split({}, {"locationCodes": ["nl36"]}, 12_000)
     assert split is not None
