@@ -6,7 +6,7 @@ manager, PerimeterX, …). Drop-in Playwright API: same ``page.goto`` /
 ``page.evaluate`` / ``page.mouse`` surface, just imported from
 ``cloakbrowser`` instead of ``playwright``. The library auto-downloads
 the patched Chromium on first ``launch()`` and caches it under
-``~/.cache/cloakbrowser`` — no separate ``playwright install`` step.
+``~/.cloakbrowser`` — no separate ``playwright install`` step.
 
 Two scrapers use cloakbrowser today:
 
@@ -40,6 +40,10 @@ from typing import Any
 from ats_scrapers.exceptions import ScraperError
 
 log = logging.getLogger(__name__)
+
+# Keep the binary the pinned wrapper ships with: a background update could
+# switch to a newer build that requires a license key.
+os.environ.setdefault("CLOAKBROWSER_AUTO_UPDATE", "false")
 
 
 def is_enabled() -> bool:
