@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections import Counter
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -147,11 +148,21 @@ def test_partition_uses_exact_profession_buckets() -> None:
     )
 
 
+def _single_region(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One region that mirrors the whole catalogue, so a leaf that stays
+    oversized inside it reaches the sort-order cover."""
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "_BUNDESLAENDER", ("Berlin",))
+    monkeypatch.setattr(ba, "_FOREIGN_COUNTRIES", ())
+
+
 def test_oversize_query_without_verified_cover_crashes(
     httpx_mock, monkeypatch
 ) -> None:
     import ats_scrapers.scrapers.bundesagentur as ba
 
+    _single_region(monkeypatch)
     monkeypatch.setattr(ba, "PAGE_SIZE", 1)
     monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
     monkeypatch.setattr(ba, "PAGINATION_CAP", 1)
@@ -174,6 +185,7 @@ def test_oversize_query_uses_verified_overlapping_cover(
 ) -> None:
     import ats_scrapers.scrapers.bundesagentur as ba
 
+    _single_region(monkeypatch)
     monkeypatch.setattr(ba, "PAGE_SIZE", 2)
     monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
     monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
@@ -214,6 +226,7 @@ def test_oversize_query_uses_verified_overlapping_cover(
 def test_verified_cover_retries_catalogue_churn(httpx_mock, monkeypatch) -> None:
     import ats_scrapers.scrapers.bundesagentur as ba
 
+    _single_region(monkeypatch)
     monkeypatch.setattr(ba, "PAGE_SIZE", 2)
     monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
     monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
@@ -266,6 +279,10 @@ def test_verified_cover_retries_catalogue_churn(httpx_mock, monkeypatch) -> None
 def test_verified_cover_retries_catalogue_shrink(httpx_mock, monkeypatch) -> None:
     import ats_scrapers.scrapers.bundesagentur as ba
 
+    _single_region(monkeypatch)
+    # The slice loses a third of its jobs, far beyond the region cover's churn
+    # tolerance; widen it so the sort-order cover's own handling is tested.
+    monkeypatch.setattr(ba, "REGION_COVER_TOLERANCE", 0.5)
     monkeypatch.setattr(ba, "PAGE_SIZE", 2)
     monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
     monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
@@ -277,7 +294,8 @@ def test_verified_cover_retries_catalogue_shrink(httpx_mock, monkeypatch) -> Non
         size = int(params.get("size", ["1"])[0])
         if size == 1:
             probe_number += 1
-            total = 3 if probe_number <= 2 else 2
+            # Root, domestic count, region and first cover probe see 3 jobs.
+            total = 3 if probe_number <= 4 else 2
             items = [_job("A", "Job A")]
         else:
             total = 2
@@ -296,7 +314,262 @@ def test_verified_cover_retries_catalogue_shrink(httpx_mock, monkeypatch) -> Non
     jobs = BundesagenturScraper("any").fetch()
 
     assert {job.ats_id for job in jobs} == {"A", "B"}
-    assert probe_number == 7
+    assert probe_number == 10
+
+
+def _regional_catalogue(
+    httpx_mock,
+    monkeypatch,
+    jobs: dict[str, tuple[str, ...]],
+    professions: dict[str, str] | None = None,
+) -> list[dict[str, list[str]]]:
+    """Serve ``jobs`` (reference -> regions) with no exact facet partition.
+
+    A region is a German state or a country abroad; a reference whose regions
+    name no state is a posting located only as "Deutschland". Sorting by
+    ``moddatum`` reverses the order. ``professions`` (reference -> beruf) feeds
+    the ``beruf`` facet and filter. Returns the query parameters of every
+    request served.
+    """
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "_BUNDESLAENDER", ("Berlin", "Bayern"))
+    monkeypatch.setattr(ba, "_FOREIGN_COUNTRIES", ("Österreich", "Schweiz"))
+    monkeypatch.setattr(ba, "PAGE_SIZE", 2)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
+    abroad = {"Österreich", "Schweiz"}
+    seen: list[dict[str, list[str]]] = []
+
+    def matches(regions: tuple[str, ...], wo: str | None) -> bool:
+        if wo is None:
+            return True
+        name = wo.removesuffix(" (Bundesland)").removesuffix(" (Land)")
+        if name == "Deutschland":
+            return not regions or not abroad.issuperset(regions)
+        return name in regions
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        params = parse_qs(urlparse(str(request.url)).query)
+        seen.append(params)
+        wo = params.get("wo", [None])[0]
+        refs = [ref for ref, regions in jobs.items() if matches(regions, wo)]
+        profession = params.get("beruf", [None])[0]
+        if profession is not None:
+            refs = [ref for ref in refs if (professions or {}).get(ref) == profession]
+        if params.get("sort") == ["moddatum"]:
+            refs.reverse()
+        size = int(params["size"][0])
+        page = int(params["page"][0])
+        items = [
+            _job(ref, f"Job {ref}")
+            for ref in refs[(page - 1) * size:page * size]
+        ]
+        counts = Counter(
+            (professions or {})[ref] for ref in refs if ref in (professions or {})
+        )
+        payload: dict = {
+            "maxErgebnisse": len(refs),
+            "facetten": {"beruf": {"counts": dict(counts)}} if counts else {},
+        }
+        if refs:
+            payload["ergebnisliste"] = items
+        return httpx.Response(200, json=payload)
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+    return seen
+
+
+def test_oversized_leaf_is_covered_by_region(httpx_mock, monkeypatch) -> None:
+    requests = _regional_catalogue(
+        httpx_mock,
+        monkeypatch,
+        {
+            "A": ("Berlin",),
+            "B": ("Bayern",),
+            "C": ("Berlin", "Bayern"),
+            "D": ("Österreich",),
+        },
+    )
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["A", "B", "C", "D"]
+    regions = {params["wo"][0] for params in requests if "wo" in params}
+    assert regions == {
+        "Deutschland (Land)",
+        "Berlin (Bundesland)",
+        "Bayern (Bundesland)",
+        "Österreich (Land)",
+    }
+    assert not any("sort" in params for params in requests)
+
+
+def _countries_queried(requests: list[dict[str, list[str]]]) -> list[str]:
+    return [
+        params["wo"][0]
+        for params in requests
+        if params.get("wo", [""])[0].endswith(" (Land)")
+        and params["wo"][0] != "Deutschland (Land)"
+    ]
+
+
+def test_region_cover_skips_countries_when_leaf_is_domestic(
+    httpx_mock, monkeypatch
+) -> None:
+    requests = _regional_catalogue(
+        httpx_mock,
+        monkeypatch,
+        {"A": ("Berlin",), "B": ("Bayern",), "C": ("Bayern",)},
+    )
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["A", "B", "C"]
+    assert _countries_queried(requests) == []
+
+
+def test_region_cover_fills_nationwide_postings_from_sort_orders(
+    httpx_mock, monkeypatch
+) -> None:
+    requests = _regional_catalogue(
+        httpx_mock,
+        monkeypatch,
+        {"A": ("Berlin",), "B": ("Bayern",), "nationwide": ()},
+    )
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["A", "B", "nationwide"]
+    sorts = [params["sort"][0] for params in requests if "sort" in params]
+    assert sorts == ["relevanz", "veroeffdatum", "moddatum"]
+
+
+def test_region_cover_skips_countries_for_deutschland_only_postings(
+    httpx_mock, monkeypatch
+) -> None:
+    """A posting located only as "Deutschland" counts as domestic, so the
+    states leaving it out does not send the cover abroad."""
+    requests = _regional_catalogue(
+        httpx_mock,
+        monkeypatch,
+        {"A": ("Berlin",), "B": ("Bayern",), "nationwide": ()},
+    )
+
+    BundesagenturScraper("any").fetch()
+
+    assert _countries_queried(requests) == []
+
+
+# The sort orders only reach the first and last page, so the middle
+# posting stays out of every query.
+_UNREACHABLE_MIDDLE = {
+    "A": ("Berlin",),
+    "B": ("Bayern",),
+    "nationwide": (),
+    "C": ("Berlin",),
+    "D": ("Bayern",),
+}
+
+
+def test_region_cover_finds_postings_beyond_the_sort_orders_by_facet(
+    httpx_mock, monkeypatch
+) -> None:
+    requests = _regional_catalogue(
+        httpx_mock,
+        monkeypatch,
+        _UNREACHABLE_MIDDLE,
+        professions={"nationwide": "Verkäufer/in"},
+    )
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == [
+        "A", "B", "C", "D", "nationwide",
+    ]
+    assert [params["beruf"][0] for params in requests if "beruf" in params] == [
+        "Verkäufer/in"
+    ]
+
+
+def test_region_cover_missing_postings_fails(httpx_mock, monkeypatch) -> None:
+    _regional_catalogue(httpx_mock, monkeypatch, _UNREACHABLE_MIDDLE)
+
+    with pytest.raises(ScraperError, match="regions covered 4 of 5 jobs"):
+        BundesagenturScraper("any").fetch()
+
+
+def test_region_cover_tolerates_churn_within_limit(
+    httpx_mock, monkeypatch
+) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "REGION_COVER_TOLERANCE", 0.2)
+    requests = _regional_catalogue(
+        httpx_mock,
+        monkeypatch,
+        _UNREACHABLE_MIDDLE,
+        professions={"nationwide": "Verkäufer/in"},
+    )
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["A", "B", "C", "D"]
+    assert not any("beruf" in params for params in requests)
+
+
+def _end_count(monkeypatch: pytest.MonkeyPatch, end_total: int) -> None:
+    """Answer the region cover's closing count of the whole slice with
+    ``end_total``; the root count is the first such probe."""
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    probes = 0
+    fetch_page = ba.BundesagenturScraper._fetch_page
+
+    async def counted(self, client, sem, *, params):
+        nonlocal probes
+        if params.get("size") == 1 and "wo" not in params:
+            probes += 1
+            if probes == 2:
+                return {"maxErgebnisse": end_total, "ergebnisliste": []}
+        return await fetch_page(self, client, sem, params=params)
+
+    monkeypatch.setattr(ba.BundesagenturScraper, "_fetch_page", counted)
+
+
+def test_region_cover_rejects_a_slice_count_that_moved(
+    httpx_mock, monkeypatch
+) -> None:
+    _regional_catalogue(httpx_mock, monkeypatch, _UNREACHABLE_MIDDLE)
+    _end_count(monkeypatch, 0)
+
+    with pytest.raises(ScraperError, match="changed from 5 to 0 jobs"):
+        BundesagenturScraper("any").fetch()
+
+
+def test_region_cover_accepts_a_slice_count_moved_within_tolerance(
+    httpx_mock, monkeypatch
+) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "REGION_COVER_TOLERANCE", 0.2)
+    _regional_catalogue(httpx_mock, monkeypatch, _UNREACHABLE_MIDDLE)
+    _end_count(monkeypatch, 4)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["A", "B", "C", "D"]
+
+
+def test_empty_payload_without_list_is_retried_outside_regions(
+    httpx_mock,
+) -> None:
+    httpx_mock.add_response(
+        url=_API_RE, json={"maxErgebnisse": 0}, is_reusable=True
+    )
+
+    with pytest.raises(ScraperError, match="invalid 200 payload"):
+        BundesagenturScraper("any").fetch()
 
 
 def test_missing_result_total_is_a_contract_break(httpx_mock) -> None:

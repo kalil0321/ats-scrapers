@@ -1,20 +1,23 @@
 """Tests for the Job Bank Canada scraper.
 
 The scraper parses server-rendered HTML — no JSON API. Fixtures here
-mirror the live ``jobsearch?searchstring=&sort=M&page=N`` markup so
+mirror the live ``jobsearch?searchstring=&sort=D&page=N`` markup so
 parsing regressions surface immediately.
 """
 
 from __future__ import annotations
 
 import re
+from collections import Counter
 
+import httpx
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import JobBankCAScraper, ScraperRegistry
 from ats_scrapers.scrapers.jobbankca import (
+    SEARCH_URL,
     _infer_country_iso,
     _infer_is_remote,
     _parse_date,
@@ -277,152 +280,210 @@ def test_parse_page_empty_returns_empty_list() -> None:
 # --- pagination via fetch (httpx_mock) --------------------------------------
 
 
-def test_fetch_paginates_until_empty_page(httpx_mock) -> None:
-    """The scraper iterates pages and stops at the first empty one."""
-    httpx_mock.add_response(
-        url="https://www.jobbank.gc.ca/jobsearch/jobsearch",
-        match_params={"searchstring": "", "sort": "M", "page": "1"},
-        html=_page([_article(job_id="1001"), _article(job_id="1002")]),
-    )
-    httpx_mock.add_response(
-        url="https://www.jobbank.gc.ca/jobsearch/jobsearch",
-        match_params={"searchstring": "", "sort": "M", "page": "2"},
-        html=_page([_article(job_id="2001")]),
-    )
-    httpx_mock.add_response(
-        url="https://www.jobbank.gc.ca/jobsearch/jobsearch",
-        match_params={"searchstring": "", "sort": "M", "page": "3"},
-        html=_page([]),  # empty — termination signal
-    )
-    jobs = JobBankCAScraper("any").fetch()
-    assert {j.ats_id for j in jobs} == {"1001", "1002", "2001"}
+@pytest.fixture
+def _two_per_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ats_scrapers.scrapers.jobbankca as jb
+    monkeypatch.setattr(jb, "PAGE_SIZE", 2)
 
 
-def test_fetch_deduplicates_repeated_ats_id(httpx_mock) -> None:
-    """Same ats_id appearing on two consecutive pages (timing race) is
-    only emitted once."""
-    httpx_mock.add_response(
-        url="https://www.jobbank.gc.ca/jobsearch/jobsearch",
-        match_params={"searchstring": "", "sort": "M", "page": "1"},
-        html=_page([_article(job_id="9999")]),
-    )
-    httpx_mock.add_response(
-        url="https://www.jobbank.gc.ca/jobsearch/jobsearch",
-        match_params={"searchstring": "", "sort": "M", "page": "2"},
-        html=_page([_article(job_id="9999")]),
-    )
-    httpx_mock.add_response(
-        url="https://www.jobbank.gc.ca/jobsearch/jobsearch",
-        match_params={"searchstring": "", "sort": "M", "page": "3"},
-        html=_page([]),
-    )
-    jobs = JobBankCAScraper("any").fetch()
-    assert [j.ats_id for j in jobs] == ["9999"]
+def _serve_pages(httpx_mock, pages: dict[int, list[str]]) -> Counter[int]:
+    """Answer each page with its versions in turn, repeating the last one.
 
+    A page with several versions stands for the index replicas that order
+    postings differently. Returns how often each page was requested.
+    """
+    served: Counter[int] = Counter()
 
-def _mock_pages(httpx_mock, pages: dict[int, str]) -> None:
-    for number, html_text in pages.items():
-        httpx_mock.add_response(
-            url="https://www.jobbank.gc.ca/jobsearch/jobsearch",
-            match_params={"searchstring": "", "sort": "M", "page": str(number)},
-            html=html_text,
+    def serve(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        versions = pages[page]
+        served[page] += 1
+        return httpx.Response(
+            200, text=versions[min(served[page], len(versions)) - 1]
         )
 
+    httpx_mock.add_callback(serve, url=_SEARCH_RE, is_reusable=True)
+    return served
 
-def test_repeated_last_page_ends_the_walk(httpx_mock) -> None:
-    """Job Bank answers a page past the end with its last page again. The
-    site announces 26 results: page 2 is the last one, pages 3 and 4 repeat it."""
-    first = [_article(job_id=str(i)) for i in range(1, 26)]
-    last = [_article(job_id="26")]
-    _mock_pages(
+
+def _ids(*ids: str, total: str) -> str:
+    return _page([_article(job_id=job_id) for job_id in ids], total=total)
+
+
+def test_fetch_orders_results_by_posting_date(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=SEARCH_URL,
+        match_params={"searchstring": "", "sort": "D", "page": "1"},
+        html=_ids("1", total="1"),
+    )
+
+    assert [job.ats_id for job in JobBankCAScraper("any").fetch()] == ["1"]
+
+
+@pytest.mark.usefixtures("_two_per_page")
+def test_fetch_reads_every_announced_page(httpx_mock) -> None:
+    served = _serve_pages(
         httpx_mock,
         {
-            1: _page(first, total="26"),
-            2: _page(last, total="26"),
-            3: _page(last, total="26"),
-            4: _page(last, total="26"),
+            1: [_ids("1001", "1002", total="5")],
+            2: [_ids("2001", "2002", total="5")],
+            3: [_ids("3001", total="5")],
         },
     )
 
     jobs = JobBankCAScraper("any").fetch()
 
-    assert [job.ats_id for job in jobs] == [str(i) for i in range(1, 27)]
+    assert [job.ats_id for job in jobs] == ["1001", "1002", "2001", "2002", "3001"]
+    assert served == {1: 1, 2: 1, 3: 1}
 
 
-def test_repeated_last_page_with_a_few_postings_closed_ends_the_walk(httpx_mock) -> None:
-    """28 results announced, 26 collected: postings closed during the walk."""
-    first = [_article(job_id=str(i)) for i in range(1, 26)]
-    last = [_article(job_id="26")]
-    _mock_pages(
+@pytest.mark.usefixtures("_two_per_page")
+def test_fetch_rereads_pages_until_the_announced_count_is_reached(
+    httpx_mock,
+) -> None:
+    """Page 2 first comes from a replica that orders 12 after 13 and repeats
+    12, so 14 is skipped until the pages are read again."""
+    served = _serve_pages(
         httpx_mock,
         {
-            1: _page(first, total="28"),
-            2: _page(last, total="28"),
-            3: _page(last, total="28"),
-            4: _page(last, total="28"),
+            1: [_ids("11", "12", total="4")],
+            2: [_ids("12", "13", total="4"), _ids("13", "14", total="4")],
         },
     )
 
-    assert len(JobBankCAScraper("any").fetch()) == 26
+    jobs = JobBankCAScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["11", "12", "13", "14"]
+    assert served == {1: 2, 2: 2}
 
 
-def test_page_served_twice_before_the_end_fails(httpx_mock) -> None:
-    """A proxy or cache serving a known page again in the middle of the
-    results is not the end: the site announces 62,139 results."""
-    page = _page([_article(job_id="9999")])
-    _mock_pages(httpx_mock, {1: page, 2: page, 3: page})
+@pytest.mark.usefixtures("_two_per_page")
+def test_fetch_fails_when_every_pass_stays_short(httpx_mock) -> None:
+    _serve_pages(
+        httpx_mock,
+        {1: [_ids("11", "12", total="4")], 2: [_ids("12", "13", total="4")]},
+    )
 
     with pytest.raises(
         ScraperError,
-        match="pages 2 and 3 with 1 of the 62139 announced results collected",
+        match="collected 3 of the 4 announced results after 4 passes",
     ):
         JobBankCAScraper("any").fetch()
 
 
-def test_repeat_after_the_last_page_with_most_results_missing_fails(httpx_mock) -> None:
-    """The repeat starts after the page where 20 results end, but only 1
-    was collected: most of what the site announces was never seen."""
-    page = _page([_article(job_id="100")], total="20")
-    _mock_pages(httpx_mock, {1: page, 2: page, 3: page})
+@pytest.mark.usefixtures("_two_per_page")
+def test_fetch_accepts_postings_closed_during_the_scrape(
+    httpx_mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import ats_scrapers.scrapers.jobbankca as jb
 
-    with pytest.raises(ScraperError, match="1 of the 20 announced results"):
+    monkeypatch.setattr(jb, "MIN_COVERAGE", 0.75)
+    _serve_pages(
+        httpx_mock,
+        {1: [_ids("11", "12", total="4")], 2: [_ids("13", total="4")]},
+    )
+
+    assert len(JobBankCAScraper("any").fetch()) == 3
+
+
+@pytest.mark.usefixtures("_two_per_page")
+def test_fetch_follows_a_count_that_grows_during_a_pass(httpx_mock) -> None:
+    served = _serve_pages(
+        httpx_mock,
+        {
+            1: [_ids("11", "12", total="4"), _ids("11", "12", total="5")],
+            2: [_ids("12", "13", total="5"), _ids("13", "14", total="5")],
+            3: [_ids("15", total="5")],
+        },
+    )
+
+    jobs = JobBankCAScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["11", "12", "13", "14", "15"]
+    assert served == {1: 2, 2: 2, 3: 2}
+
+
+@pytest.mark.usefixtures("_two_per_page")
+def test_fetch_measures_a_pass_against_its_highest_count(httpx_mock) -> None:
+    """The last page comes from a replica announcing 6 of the 8 results the
+    other pages announce. The 7 collected meet 6 but not 8, so the pages
+    are read again and the replica that skipped 14 is not trusted."""
+    served = _serve_pages(
+        httpx_mock,
+        {
+            1: [_ids("11", "12", total="8")],
+            2: [_ids("12", "13", total="8"), _ids("13", "14", total="8")],
+            3: [_ids("15", "16", total="8")],
+            4: [_ids("17", "18", total="6")],
+        },
+    )
+
+    jobs = JobBankCAScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == [str(n) for n in range(11, 19)]
+    assert served == {1: 2, 2: 2, 3: 2, 4: 2}
+
+
+def test_fetch_reads_the_page_a_small_growth_adds(
+    httpx_mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """200 results grow to 201 while page 2 is read. The 200 collected
+    already meet the coverage threshold, but the new last page must still
+    be read."""
+    import ats_scrapers.scrapers.jobbankca as jb
+
+    monkeypatch.setattr(jb, "PAGE_SIZE", 100)
+    served = _serve_pages(
+        httpx_mock,
+        {
+            1: [_ids(*(str(1000 + i) for i in range(100)), total="200")],
+            2: [_ids(*(str(2000 + i) for i in range(100)), total="201")],
+            3: [_ids("3000", total="201")],
+        },
+    )
+
+    jobs = JobBankCAScraper("any").fetch()
+
+    assert len(jobs) == 201
+    assert "3000" in {job.ats_id for job in jobs}
+    assert served == {1: 1, 2: 1, 3: 1}
+
+
+@pytest.mark.usefixtures("_two_per_page")
+def test_failed_page_fails_the_scrape(httpx_mock) -> None:
+    def serve(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        if page == 2:
+            return httpx.Response(500)
+        return httpx.Response(200, text=_ids(f"{page}1", f"{page}2", total="8"))
+
+    httpx_mock.add_callback(serve, url=_SEARCH_RE, is_reusable=True)
+
+    with pytest.raises(ScraperError, match="returned 500 on page=2"):
         JobBankCAScraper("any").fetch()
-
-
-def test_repeat_without_an_announced_count_fails(httpx_mock) -> None:
-    page = _page([_article(job_id="100")]).replace('id="results-count"', 'id="other"')
-    _mock_pages(httpx_mock, {1: page, 2: page, 3: page})
-
-    with pytest.raises(ScraperError, match="None announced results"):
-        JobBankCAScraper("any").fetch()
-
-
-@pytest.mark.parametrize(
-    ("markup", "expected"),
-    [
-        ('<span class="found" id="results-count">68,763</span> results', 68763),
-        ('<span class="found" id="results-count"> 68\u00a0763 </span>', 68763),
-        ('<span id="results-count">0</span>', 0),
-        ('<span id="results-count"></span>', None),
-        ("<html></html>", None),
-    ],
-)
-def test_announced_total(markup: str, expected: int | None) -> None:
-    from ats_scrapers.scrapers.jobbankca import _announced_total
-
-    assert _announced_total(markup) == expected
 
 
 def test_fetch_respects_max_pages_cap(httpx_mock) -> None:
     """``max_pages=1`` stops after a single page even if more remain."""
-    httpx_mock.add_response(
-        url="https://www.jobbank.gc.ca/jobsearch/jobsearch",
-        match_params={"searchstring": "", "sort": "M", "page": "1"},
-        html=_page([_article(job_id="42")]),
-    )
-    # Page 2 must NOT be requested — httpx_mock would error if it is.
+    served = _serve_pages(httpx_mock, {1: [_ids("42", total="62,139")]})
+
     jobs = JobBankCAScraper("any", max_pages=1).fetch()
+
     assert [j.ats_id for j in jobs] == ["42"]
+    assert served == {1: 1}
+
+
+@pytest.mark.usefixtures("_two_per_page")
+def test_bounded_fetch_reads_its_pages_once(httpx_mock) -> None:
+    served = _serve_pages(
+        httpx_mock,
+        {1: [_ids("11", "12", total="40")], 2: [_ids("12", "13", total="40")]},
+    )
+
+    jobs = JobBankCAScraper("any", max_pages=2).fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["11", "12", "13"]
+    assert served == {1: 1, 2: 1}
 
 
 def test_default_full_run_fails_at_safety_limit(
@@ -434,6 +495,54 @@ def test_default_full_run_fails_at_safety_limit(
     httpx_mock.add_response(url=_SEARCH_RE, html=_page([_article(job_id="42")]))
     with pytest.raises(ScraperError, match="safety limit"):
         JobBankCAScraper("any").fetch()
+
+
+def test_count_crossing_the_safety_limit_during_a_pass_fails(
+    httpx_mock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """200 results fill the 2-page limit; 201 announced on page 2 would need
+    a third page. The 200 collected meet the coverage threshold, but the
+    catalogue no longer fits and the scrape must not pass as complete."""
+    import ats_scrapers.scrapers.jobbankca as jobbank
+
+    monkeypatch.setattr(jobbank, "MAX_PAGES", 2)
+    monkeypatch.setattr(jobbank, "PAGE_SIZE", 100)
+    _serve_pages(
+        httpx_mock,
+        {
+            1: [_ids(*(str(1000 + i) for i in range(100)), total="200")],
+            2: [_ids(*(str(2000 + i) for i in range(100)), total="201")],
+        },
+    )
+
+    with pytest.raises(ScraperError, match="201 results, beyond its 2-page"):
+        JobBankCAScraper("any").fetch()
+
+
+def test_page_without_an_announced_count_raises(httpx_mock) -> None:
+    html_text = _page([_article(job_id="1")]).replace(
+        '>62,139<', '><'
+    )
+    httpx_mock.add_response(url=_SEARCH_RE, html=html_text)
+
+    with pytest.raises(ScraperError, match="announced no result count"):
+        JobBankCAScraper("any").fetch()
+
+
+@pytest.mark.parametrize(
+    ("markup", "expected"),
+    [
+        ('<span class="found" id="results-count">68,763</span> results', 68763),
+        ('<span class="found" id="results-count"> 68 763 </span>', 68763),
+        ('<span id="results-count">0</span>', 0),
+        ('<span id="results-count"></span>', None),
+        ("<html></html>", None),
+    ],
+)
+def test_announced_total(markup: str, expected: int | None) -> None:
+    from ats_scrapers.scrapers.jobbankca import _announced_total
+
+    assert _announced_total(markup) == expected
 
 
 def test_unparseable_articles_raise_instead_of_ending(httpx_mock) -> None:
