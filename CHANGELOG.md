@@ -78,6 +78,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   exponential backoff, and retries 5xx responses with linear delays. It stops
   the per-job detail calls for the rest of the run after a 403 or 405 block,
   or after a 429 that asks to wait more than a minute.
+- Paycom: a retired portal ("Job board does not exist") is reported as not found.
 
 ## [0.3.0] — 2026-09-02
 
