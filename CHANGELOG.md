@@ -43,6 +43,11 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   Avature company row points at its own portal (`careers.avature.net/en_US/main`).
 - PageUp: a tenant that moved to PageUp's newer career site is read from its
   RSS feed, with complete descriptions, instead of failing.
+- Jobvite: a board that redirects away from Jobvite is reported as not found, a
+  board that shows "No results found." is empty, job pages that the employer
+  redirects to its own site are read on Jobvite, and a job that the unstable
+  list order hides at a page boundary is fetched again. The catalogue drops
+  Jobvite's demo tenant `piedpiper`.
 - Phenom: job links open the posting.
 - Oracle: job links open the posting.
 - Amazon: job links open the posting.

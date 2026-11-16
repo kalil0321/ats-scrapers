@@ -10,11 +10,11 @@ import logging
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 from pydantic import HttpUrl, ValidationError
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -25,6 +25,10 @@ if TYPE_CHECKING:
 
 BASE_URL = "https://jobs.jobvite.com"
 DETAIL_CONCURRENCY = 8
+SEAM_RETRIES = 5
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_DETAIL_HANDLED = _REDIRECT_STATUSES | {404, 410}
+_NO_JOBS_MARKERS = ("no jobs", "no positions", "no openings", "no results found")
 _TENANT_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _JOB_ID_RE = re.compile(r"/job/([A-Za-z0-9_-]+)(?:[/?#]|$)")
 _PAGE_TEXT_RE = re.compile(r"^\s*(\d+)-(\d+)\s+of\s+(\d+)\s*$", re.IGNORECASE)
@@ -92,59 +96,9 @@ class JobviteScraper(BaseScraper):
         self.base_url = f"{BASE_URL}/{self.tenant_path}"
 
     async def afetch(self) -> list[Job]:
-        jobs: list[Job] = []
-        seen_ids: set[str] = set()
-        page = 0
-        expected_start = 1
-        reported_total: int | None = None
-
-        async with self.make_fetcher() as fetch:
-            while True:
-                listing_url = f"{self.base_url}/search?p={page}"
-                listing_html = await fetch.get_text(listing_url)
-                page_jobs, start, end, total = self._parse_listing(listing_html)
-                if total == 0:
-                    if page == 0 and not jobs:
-                        return []
-                    raise ScraperError(
-                        f"Jobvite ({self.tenant_path}) catalogue became empty "
-                        "during pagination"
-                    )
-                if reported_total is None:
-                    reported_total = total
-                elif total != reported_total:
-                    raise ScraperError(
-                        "Jobvite total changed during pagination "
-                        f"({reported_total} to {total})"
-                    )
-                if start != expected_start:
-                    raise ScraperError(
-                        "Jobvite pagination gap "
-                        f"(expected row {expected_start}, got {start})"
-                    )
-                if len(page_jobs) != end - start + 1:
-                    raise ScraperError(
-                        "Jobvite listing count did not match pagination range "
-                        f"({len(page_jobs)} rows for {start}-{end})"
-                    )
-                for job in page_jobs:
-                    if not job.ats_id or job.ats_id in seen_ids:
-                        raise ScraperError(
-                            f"Jobvite returned duplicate job id {job.ats_id!r}"
-                        )
-                    seen_ids.add(job.ats_id)
-                    jobs.append(job)
-                if end >= total:
-                    break
-                expected_start = end + 1
-                page += 1
-
-            if reported_total is None or len(jobs) != reported_total:
-                raise ScraperError(
-                    "Jobvite catalogue ended before the reported total "
-                    f"({len(jobs)}/{reported_total})"
-                )
-            if not self.include_descriptions:
+        async with self.make_fetcher(follow_redirects=False) as fetch:
+            jobs = await self._fetch_listing(fetch)
+            if not self.include_descriptions or not jobs:
                 return jobs
 
             semaphore = asyncio.Semaphore(DETAIL_CONCURRENCY)
@@ -165,12 +119,108 @@ class JobviteScraper(BaseScraper):
         copy = job.model_copy(deep=True)
 
         async def run() -> str | None:
-            async with self.make_fetcher() as fetch:
+            async with self.make_fetcher(follow_redirects=False) as fetch:
                 semaphore = asyncio.Semaphore(1)
                 enriched = await self._enrich_detail(fetch, semaphore, copy)
             return enriched.description if enriched is not None else None
 
         return self._run_sync(run())
+
+    async def _fetch_listing(self, fetch: Fetcher) -> list[Job]:
+        jobs: dict[str, Job] = {}
+        seams: set[int] = set()
+        page = 0
+        expected_start = 1
+        reported_total: int | None = None
+        while True:
+            page_jobs, start, end, total = await self._listing_page(fetch, page)
+            if total == 0:
+                if page == 0 and not jobs:
+                    return []
+                raise ScraperError(
+                    f"Jobvite ({self.tenant_path}) catalogue became empty "
+                    "during pagination"
+                )
+            if reported_total is None:
+                reported_total = total
+            elif total != reported_total:
+                raise ScraperError(
+                    "Jobvite total changed during pagination "
+                    f"({reported_total} to {total})"
+                )
+            if start != expected_start:
+                raise ScraperError(
+                    "Jobvite pagination gap "
+                    f"(expected row {expected_start}, got {start})"
+                )
+            if len(page_jobs) != end - start + 1:
+                raise ScraperError(
+                    "Jobvite listing count did not match pagination range "
+                    f"({len(page_jobs)} rows for {start}-{end})"
+                )
+            for job in page_jobs:
+                if job.ats_id in jobs:
+                    seams.add(page)
+                else:
+                    jobs[str(job.ats_id)] = job
+            if end >= total:
+                break
+            expected_start = end + 1
+            page += 1
+
+        # Jobvite sorts the list without a tie-breaker. Where a page boundary
+        # falls inside a run of equal titles, one job can show on both pages
+        # while another shows on neither. Asking again for the two pages
+        # around that boundary brings the missing job back.
+        retry_pages = sorted({p for seam in seams for p in (seam - 1, seam)})
+        for _ in range(SEAM_RETRIES):
+            if len(jobs) >= reported_total:
+                break
+            for retry_page in retry_pages:
+                page_jobs, _, _, total = await self._listing_page(fetch, retry_page)
+                if total != reported_total:
+                    raise ScraperError(
+                        "Jobvite total changed during pagination "
+                        f"({reported_total} to {total})"
+                    )
+                for job in page_jobs:
+                    jobs.setdefault(str(job.ats_id), job)
+
+        if len(jobs) != reported_total:
+            raise ScraperError(
+                "Jobvite catalogue ended before the reported total "
+                f"({len(jobs)}/{reported_total})"
+            )
+        return list(jobs.values())
+
+    async def _listing_page(
+        self, fetch: Fetcher, page: int,
+    ) -> tuple[list[Job], int, int, int]:
+        page_jobs, start, end, total = self._parse_listing(
+            await self._get_listing(fetch, page)
+        )
+        page_ids = [job.ats_id for job in page_jobs]
+        if len(set(page_ids)) != len(page_ids):
+            raise ScraperError(
+                f"Jobvite ({self.tenant_path}) listed a job twice on page {page}"
+            )
+        return page_jobs, start, end, total
+
+    async def _get_listing(self, fetch: Fetcher, page: int) -> str:
+        url = f"{self.base_url}/search?p={page}"
+        response = await fetch.request("GET", url, handled=_REDIRECT_STATUSES)
+        if response.status_code not in _REDIRECT_STATUSES:
+            return response.text
+        target = urljoin(url, response.headers.get("location", ""))
+        if not _is_trusted_jobvite_url(target):
+            # Jobvite sends a closed board to search.jobvite.com?invalid=1, or
+            # to the employer's new careers site.
+            raise CompanyNotFoundError(
+                f"Jobvite ({self.tenant_path}) board redirects to {target}"
+            )
+        raise ScraperError(
+            f"Jobvite ({self.tenant_path}) redirected its job list to {target}"
+        )
 
     async def _enrich_detail(
         self,
@@ -181,10 +231,23 @@ class JobviteScraper(BaseScraper):
         try:
             async with semaphore:
                 response = await fetch.request(
-                    "GET",
-                    str(job.url),
-                    handled={404, 410},
+                    "GET", str(job.url), handled=_DETAIL_HANDLED,
                 )
+                if response.status_code in _REDIRECT_STATUSES:
+                    target = urljoin(
+                        str(job.url), response.headers.get("location", ""),
+                    )
+                    if _is_trusted_jobvite_url(target):
+                        # A closed job redirects to the job list.
+                        return None
+                    # The employer sends its job pages to its own site.
+                    # ``nl=1`` asks Jobvite to serve the posting itself.
+                    job.url = HttpUrl(_without_employer_redirect(str(job.url)))
+                    response = await fetch.request(
+                        "GET", str(job.url), handled=_DETAIL_HANDLED,
+                    )
+                    if response.status_code in _REDIRECT_STATUSES:
+                        return None
         except ScraperError as exc:
             logger.warning(
                 "Retaining Jobvite job %s without detail metadata after "
@@ -212,16 +275,17 @@ class JobviteScraper(BaseScraper):
         soup = _parse_html(html_text)
         container = soup.select_one(".jv-job-list")
         if container is None:
+            # A board without openings renders "No results found." in the
+            # page body instead of an empty list.
+            body = soup.select_one(".jv-page-body")
+            if body is not None and _says_no_jobs(body.get_text(" ", strip=True)):
+                return [], 0, 0, 0
             raise ScraperError(
                 f"Jobvite ({self.tenant_path}) omitted the job-list container"
             )
         anchors = container.select('a[href*="/job/"]')
         if not anchors:
-            lowered = _clean_text(container.get_text(" ", strip=True)).lower()
-            if any(
-                marker in lowered
-                for marker in ("no jobs", "no positions", "no openings")
-            ):
+            if _says_no_jobs(container.get_text(" ", strip=True)):
                 return [], 0, 0, 0
             raise ScraperError(
                 f"Jobvite ({self.tenant_path}) returned an empty job list"
@@ -420,6 +484,17 @@ def _parse_html(html_text: str) -> BeautifulSoup:
             "install `ats-scrapers[scrapers]`"
         ) from exc
     return BeautifulSoup(html_text, "html.parser")
+
+
+def _says_no_jobs(text: str) -> bool:
+    lowered = _clean_text(text).lower()
+    return any(marker in lowered for marker in _NO_JOBS_MARKERS)
+
+
+def _without_employer_redirect(url: str) -> str:
+    parsed = urlparse(url)
+    query = f"{parsed.query}&nl=1" if parsed.query else "nl=1"
+    return urlunparse(parsed._replace(query=query))
 
 
 def _is_trusted_jobvite_url(value: str) -> bool:
