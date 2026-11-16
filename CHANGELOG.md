@@ -82,6 +82,11 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   exact facet split is collected by German state and country, and the
   official sort orders fill in postings located only as "Deutschland". Full
   scrapes no longer stop on such a slice.
+- Job Bank Canada: full scrapes read every result page the announced count
+  implies, then read them again while postings are missing. The site's
+  search replicas order postings of the same date differently from one
+  request to the next, so a single walk repeated some postings and skipped
+  others, and stopped partway.
 - Meta, Tesla: `cloakbrowser` is pinned to 0.6.5, the last release that
   launches without a license key, with `playwright<1.65`.
 - Meta: reads the renamed `job_search_with_featured_jobs_v2` field.

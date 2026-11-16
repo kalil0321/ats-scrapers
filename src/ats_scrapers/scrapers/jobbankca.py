@@ -7,7 +7,14 @@ no public JSON API surfaced by the site.
 
 The search endpoint paginates 25 results per page:
 
-    GET https://www.jobbank.gc.ca/jobsearch/jobsearch?searchstring=&sort=M&page=N
+    GET https://www.jobbank.gc.ca/jobsearch/jobsearch?searchstring=&sort=D&page=N
+
+Every page the announced count implies can be requested directly. The
+search is served by several index replicas that order postings sharing a
+sort key differently, and each request can land on any of them, so one pass
+over the pages repeats some postings and skips others. The scraper reads
+every page, then reads them all again while the collected set is short of
+the announced count.
 
 Each result is a ``<article id="article-{id}">`` block containing the
 title (``.noctitle``), employer (``.business``), location
@@ -50,7 +57,14 @@ SEARCH_URL = "https://www.jobbank.gc.ca/jobsearch/jobsearch"
 POSTING_URL_TEMPLATE = "https://www.jobbank.gc.ca/jobsearch/jobposting/{id}"
 PAGE_SIZE = 25  # Server renders 25 results per page; not configurable.
 MAX_PAGES = 5000
-MAX_CONCURRENCY = 4
+# More simultaneous connections from one address time out while connecting.
+MAX_CONCURRENCY = 2
+# A pass reads every result page once. Later passes run only while the
+# collected set is short of the announced count.
+MAX_PASSES = 4
+# Postings open and close while the pages are read, so a complete scrape can
+# end slightly short of the count the site announces.
+MIN_COVERAGE = 0.995
 MAX_RETRIES = 4
 RETRY_BASE_DELAY = 1.5
 DEFAULT_USER_AGENT = "Mozilla/5.0"
@@ -70,9 +84,6 @@ _ARTICLE_OPEN_RE = re.compile(r'<article\s+id="article-(\d+)"', re.IGNORECASE)
 _RESULTS_COUNT_RE = re.compile(
     r'id="results-count"[^>]*>\s*(\d[\d,.\s\u00a0\u202f]*)<', re.IGNORECASE
 )
-# Postings close while the pages are read, so the walk can end a little short
-# of the count the site announces.
-MIN_TAIL_COVERAGE = 0.9
 _RESULT_HREF_RE = re.compile(
     r'<a\b(?=[^>]*\bclass=["\'][^"\']*\bresultJobItem\b[^"\']*["\'])'
     r'[^>]*\bhref=["\']([^"\']+)["\']',
@@ -172,10 +183,7 @@ class JobBankCAScraper(BaseScraper):
         return self._run_sync(self.afetch())
 
     async def _fetch_async(self) -> list[Job]:
-        seen: set[str] = set()
-        jobs: list[Job] = []
-        repeated_pages = 0
-        exhausted = False
+        jobs: dict[str, Job] = {}
         sem = asyncio.Semaphore(MAX_CONCURRENCY)
         async with httpx.AsyncClient(
             timeout=self.timeout, follow_redirects=True,
@@ -186,80 +194,82 @@ class JobBankCAScraper(BaseScraper):
                 "Accept-Language": "en-CA,en;q=0.9",
             },
         ) as client:
-            # Sequential paging: the cheapest termination signal is "this
-            # page returned 0 articles", which we can only observe in
-            # order. ~2,500 pages at PAGE_SIZE=25 — the per-page cost
-            # dominates, but parallel pre-fetching past the unknown last
-            # page would just waste work.
-            page = 1
-            while page <= self.max_pages:
-                html_text = await self._fetch_page(client, sem, page)
-                fetched = datetime.now(tz=UTC)
-                page_jobs = self._parse_page(html_text, fetched_at=fetched)
-                article_count = sum(
-                    1 for _ in _ARTICLE_OPEN_RE.finditer(html_text)
-                )
-                if len(page_jobs) != article_count:
+            announced, first_jobs = await self._read_page(client, sem, 1)
+            if not first_jobs:
+                if self._full_catalogue:
                     raise ScraperError(
-                        f"Job Bank page={page} contained {article_count} "
-                        f"articles but parsed {len(page_jobs)}"
+                        "Job Bank full-catalogue scrape returned no jobs"
                     )
-                if not page_jobs:
-                    if 'id="results-count"' not in html_text:
-                        raise ScraperError(
-                            f"Job Bank page={page} lacked result markup"
-                        )
-                    if _ARTICLE_OPEN_RE.search(html_text):
-                        raise ScraperError(
-                            f"Job Bank page={page} contained unparseable articles"
-                        )
-                    exhausted = True
-                    break
-                added = 0
-                for job in page_jobs:
-                    if job.ats_id in seen:
-                        continue
-                    seen.add(job.ats_id)
-                    jobs.append(job)
-                    added += 1
-                logger.debug(
-                    "jobbankca page=%d parsed=%d new=%d cumulative=%d",
-                    page, len(page_jobs), added, len(jobs),
+                return []
+            if announced is None:
+                raise ScraperError("Job Bank page=1 announced no result count")
+            for job in first_jobs:
+                jobs.setdefault(job.ats_id, job)
+
+            pages = range(2, min(_page_count(announced), self.max_pages) + 1)
+            for pass_number in range(1, MAX_PASSES + 1):
+                if self._full_catalogue and _page_count(announced) > MAX_PAGES:
+                    raise ScraperError(
+                        f"Job Bank announced {announced} results, beyond its "
+                        f"{MAX_PAGES}-page safety limit"
+                    )
+                for page_announced, page_jobs in await self._read_pages(
+                    client, sem, pages
+                ):
+                    if page_announced is not None:
+                        announced = page_announced
+                    for job in page_jobs:
+                        jobs.setdefault(job.ats_id, job)
+                logger.info(
+                    "Job Bank pass %d: %d of %d announced results collected",
+                    pass_number, len(jobs), announced,
                 )
-                repeated_pages = repeated_pages + 1 if added == 0 else 0
-                if repeated_pages >= 2:
-                    # Job Bank answers a page past the end with its last
-                    # page again. Two pages of known jobs are that tail only
-                    # where the count the site announces says the results
-                    # end; anywhere else a page was served twice and the
-                    # walk is not complete.
-                    announced = _announced_total(html_text)
-                    if not _repeat_is_the_tail(
-                        announced, first_repeat=page - 1, collected=len(jobs)
-                    ):
-                        raise ScraperError(
-                            "Job Bank repeated only known jobs on pages "
-                            f"{page - 1} and {page} with {len(jobs)} of the "
-                            f"{announced} announced results collected"
-                        )
-                    logger.info(
-                        "Job Bank repeated its last page from page %d on; "
-                        "%d of %d announced results collected",
-                        page - 1, len(jobs), announced,
-                    )
-                    exhausted = True
-                    break
-                page += 1
-        if self._full_catalogue and not jobs:
+                if not self._full_catalogue or (
+                    len(jobs) >= math.ceil(announced * MIN_COVERAGE)
+                ):
+                    return list(jobs.values())
+                pages = range(1, _page_count(announced) + 1)
+        raise ScraperError(
+            f"Job Bank collected {len(jobs)} of the {announced} announced "
+            f"results after {MAX_PASSES} passes"
+        )
+
+    async def _read_pages(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        pages: range,
+    ) -> list[tuple[int | None, list[Job]]]:
+        tasks = [
+            asyncio.create_task(self._read_page(client, sem, page))
+            for page in pages
+        ]
+        try:
+            return await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+    async def _read_page(
+        self,
+        client: httpx.AsyncClient,
+        sem: asyncio.Semaphore,
+        page: int,
+    ) -> tuple[int | None, list[Job]]:
+        """Fetch one result page and return its announced count and jobs."""
+        html_text = await self._fetch_page(client, sem, page)
+        page_jobs = self._parse_page(html_text, fetched_at=datetime.now(tz=UTC))
+        article_count = sum(1 for _ in _ARTICLE_OPEN_RE.finditer(html_text))
+        if len(page_jobs) != article_count:
             raise ScraperError(
-                "Job Bank full-catalogue scrape returned no jobs"
+                f"Job Bank page={page} contained {article_count} "
+                f"articles but parsed {len(page_jobs)}"
             )
-        if self._full_catalogue and not exhausted:
-            raise ScraperError(
-                f"Job Bank reached its {MAX_PAGES}-page safety limit before "
-                "detecting the end of results"
-            )
-        return jobs
+        if 'id="results-count"' not in html_text:
+            raise ScraperError(f"Job Bank page={page} lacked result markup")
+        return _announced_total(html_text), page_jobs
 
     async def _fetch_page(
         self,
@@ -269,7 +279,7 @@ class JobBankCAScraper(BaseScraper):
     ) -> str:
         params: dict[str, Any] = {
             "searchstring": "",
-            "sort": "M",  # ``M`` = most recent.
+            "sort": "D",  # Date posted; ``M`` is best match.
             "page": page,
         }
         if self.language == "fr":
@@ -418,21 +428,8 @@ def _announced_total(html_text: str) -> int | None:
     return int(digits) if digits else None
 
 
-def _repeat_is_the_tail(
-    announced: int | None, *, first_repeat: int, collected: int
-) -> bool:
-    """Whether pages of known jobs starting at ``first_repeat`` are the end.
-
-    They are when they start after the last page the announced count fills
-    and nearly all announced results were collected on the way.
-    """
-    if announced is None:
-        return False
-    last_page = math.ceil(announced / PAGE_SIZE)
-    return (
-        first_repeat > last_page
-        and collected >= math.ceil(announced * MIN_TAIL_COVERAGE)
-    )
+def _page_count(announced: int) -> int:
+    return max(1, math.ceil(announced / PAGE_SIZE))
 
 
 def _posting_url(chunk: str, ats_id: str) -> str:
