@@ -1,349 +1,387 @@
-"""Tests for the Wellfound scraper.
-
-The site is gated behind Akamai — every direct fetch 403s. The
-library uses Firecrawl (paid, opt-in) as the rendering backend, so
-the tests focus on:
-
-- Default behaviour without a Firecrawl key (raise with hint)
-- Markdown parser (Wellfound's bullet-separated meta line is
-  particularly format-fragile)
-- Salary / remote / location / posted-date inference from the
-  meta line
-- Multi-role fan-out + dedup of the per-job IDs across roles
-
-"""
+"""Tests for the Wellfound scraper (role pages with embedded Apollo data)."""
 
 from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime
+from typing import Any
 
-import httpx
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers import ScraperRegistry, WellfoundScraper
-from ats_scrapers.scrapers.wellfound import (
-    DEFAULT_ROLE_SLUGS,
-    _parse_job_window,
-    _parse_relative,
-    _parse_salary,
-)
+from ats_scrapers.scrapers.wellfound import _parse_salary
 
-_FIRECRAWL_RE = re.compile(r"^https://api\.firecrawl\.dev/v1/scrape$")
+_ROLE_RE = re.compile(r"^https://wellfound\.com/role/")
+_FIRECRAWL_URL = "https://api.firecrawl.dev/v1/scrape"
 
 
-def _markdown_with_jobs(jobs: list[dict], company: str = "Acme") -> str:
-    """Build a Wellfound-shaped markdown blob with N job cards under
-    a single company header — the exact layout the live site emits.
-    """
-    co_url = f"https://wellfound.com/company/{company.lower().replace(' ', '-')}"
-    lines = [
-        f"[**{company}**]({co_url})",
-        "",
-        "Actively Hiring",
-        "",
-        "Some company description51-200 Employees",
-        "",
-    ]
-    for j in jobs:
-        title = j["title"]
-        ats_id = j["id"]
-        slug = j.get("slug", title.lower().replace(" ", "-"))
-        salary = j.get("salary", "$100k – $150k")
-        location = j.get("location", "Remote • United States")
-        posted = j.get("posted", "today")
-        lines.append(f"[{title}](https://wellfound.com/jobs/{ats_id}-{slug}) Full-time")
-        lines.append("")
-        lines.append(salary)
-        lines.append("")
-        lines.append(location)
-        lines.append("")
-        lines.append(posted)
-        lines.append("")
-        lines.append(f"{posted}Save")
-        lines.append("")
-        lines.append("Apply")
-        lines.append("")
-    return "\n".join(lines)
+def _listing(job_id: int, **overrides: Any) -> dict[str, Any]:
+    listing = {
+        "__typename": "JobListingSearchResult",
+        "id": str(job_id),
+        "slug": f"engineer-{job_id}",
+        "title": f"Engineer {job_id}",
+        "description": f"Build things ({job_id}).",
+        "locationNames": ["San Francisco", "New York"],
+        "acceptedRemoteLocationNames": [],
+        "remote": False,
+        "compensation": "$120k – $160k • 0.1% – 0.5%",
+        "jobType": "full-time",
+        "liveStartAt": 1793665422,
+        "yearsExperienceMin": 3,
+        "yearsExperienceMax": None,
+        "primaryRoleTitle": "Software Engineer",
+        "atsSource": None,
+        "autoPosted": False,
+    }
+    listing.update(overrides)
+    return listing
 
 
-def _firecrawl_response(jobs: list[dict]) -> dict:
-    return {"data": {"markdown": _markdown_with_jobs(jobs)}}
+def _role_page(
+    role: str,
+    page: int = 1,
+    *,
+    page_count: int = 1,
+    startups: list[tuple[str, list[dict[str, Any]]]] | None = None,
+) -> str:
+    """A role page as Wellfound renders it: the Apollo cache in __NEXT_DATA__."""
+    if startups is None:
+        startups = [("Acme", [_listing(page)])]
+    cache: dict[str, Any] = {}
+    startup_refs = []
+    for index, (name, listings) in enumerate(startups):
+        key = f"StartupResult:{page}{index}"
+        for listing in listings:
+            cache[f"JobListingSearchResult:{listing['id']}"] = listing
+        cache[key] = {
+            "id": f"{page}{index}",
+            "name": name,
+            "slug": name.lower(),
+            "highlightedJobListings": [
+                {"__ref": f"JobListingSearchResult:{listing['id']}"} for listing in listings
+            ],
+        }
+        startup_refs.append({"__ref": key})
+    args = json.dumps({"page": page, "role": role}, separators=(",", ":"))
+    cache["ROOT_QUERY"] = {
+        "talent": {
+            f"seoLandingPageJobSearchResults({args})": {
+                "totalJobCount": 999,
+                "pageCount": page_count,
+                "perPage": 20,
+                "startups": startup_refs,
+            }
+        }
+    }
+    data = {"props": {"pageProps": {"apolloState": {"data": cache}}}}
+    return (
+        '<html><script id="__NEXT_DATA__" type="application/json">'
+        f"{json.dumps(data)}</script></html>"
+    )
 
 
-# --- registry / wiring ------------------------------------------------------
+def _role_url(role: str, page: int = 1) -> str:
+    url = f"https://wellfound.com/role/{role}"
+    return url if page == 1 else f"{url}?page={page}"
+
+
+def _scraper(*roles: str, **kwargs: Any) -> WellfoundScraper:
+    return WellfoundScraper(
+        "any", role_slugs=roles or ("software-engineer",), request_interval=0, **kwargs
+    )
 
 
 def test_registry_resolves_wellfound() -> None:
     assert ScraperRegistry.get(ATSType.WELLFOUND) is WellfoundScraper
 
 
-# --- gating: no key → ScraperError ------------------------------------------
+def test_parses_a_listing(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_role_url("software-engineer"), text=_role_page("software-engineer")
+    )
+
+    [job] = _scraper().fetch()
+
+    assert str(job.url) == "https://wellfound.com/jobs/1-engineer-1"
+    assert job.ats_id == "1"
+    assert job.title == "Engineer 1"
+    assert job.company == "Acme"
+    assert job.location == "San Francisco, New York"
+    assert job.is_remote is False
+    assert job.salary_summary == "$120k – $160k • 0.1% – 0.5%"
+    assert (job.salary_currency, job.salary_min, job.salary_max) == ("USD", 120_000, 160_000)
+    assert job.salary_period == "YEAR"
+    assert job.employment_type == "FULL_TIME"
+    assert job.experience == 3
+    assert job.description == "Build things (1)."
+    assert job.posted_at == datetime.fromtimestamp(1793665422, UTC)
+    assert job.raw == {"company_slug": "acme", "company_id": "10", "role": "Software Engineer"}
 
 
-def test_raises_without_firecrawl_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Library default has no Firecrawl key — must raise with a clear
-    config hint, not silently return []."""
-    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
-    with pytest.raises(ScraperError, match="Firecrawl"):
-        WellfoundScraper("any").fetch()
+def test_user_agent_is_not_the_httpx_default(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_role_url("software-engineer"), text=_role_page("software-engineer")
+    )
+    _scraper().fetch()
+    assert not httpx_mock.get_request().headers["User-Agent"].startswith("python-httpx")
 
 
-def test_get_description_without_firecrawl_key_returns_none(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+def test_reads_every_page_and_dedupes_across_roles(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_role_url("software-engineer"),
+        text=_role_page("software-engineer", 1, page_count=3),
+    )
+    httpx_mock.add_response(
+        url=_role_url("software-engineer", 2),
+        text=_role_page("software-engineer", 2, page_count=3),
+    )
+    httpx_mock.add_response(
+        url=_role_url("software-engineer", 3),
+        text=_role_page("software-engineer", 3, page_count=3),
+    )
+    httpx_mock.add_response(
+        url=_role_url("data-engineer"),
+        text=_role_page(
+            "data-engineer", startups=[("Beta", [_listing(2), _listing(9)])]
+        ),
+    )
+
+    jobs = _scraper("software-engineer", "data-engineer").fetch()
+
+    assert [job.ats_id for job in jobs] == ["1", "2", "3", "9"]
+
+
+def test_a_page_past_the_last_one_ends_the_role(httpx_mock) -> None:
+    # The page count on page 1 can be stale; later pages then redirect to page 1.
+    httpx_mock.add_response(
+        url=_role_url("software-engineer"),
+        text=_role_page("software-engineer", 1, page_count=3),
+    )
+    httpx_mock.add_response(
+        url=_role_url("software-engineer", 2),
+        text=_role_page("software-engineer", 2, page_count=2),
+    )
+    httpx_mock.add_response(
+        url=_role_url("software-engineer", 3),
+        status_code=303,
+        headers={"Location": _role_url("software-engineer")},
+    )
+
+    jobs = _scraper().fetch()
+
+    assert [job.ats_id for job in jobs] == ["1", "2"]
+
+
+def test_max_pages_limits_the_pages_read(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_role_url("software-engineer"),
+        text=_role_page("software-engineer", 1, page_count=50),
+    )
+    httpx_mock.add_response(
+        url=_role_url("software-engineer", 2),
+        text=_role_page("software-engineer", 2, page_count=50),
+    )
+
+    jobs = _scraper(max_pages=2).fetch()
+
+    assert [job.ats_id for job in jobs] == ["1", "2"]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"atsSource": "AtsIntegration::Greenhouse::Listing"}, {"autoPosted": True}],
+)
+def test_ats_imports_are_skipped_unless_asked_for(httpx_mock, overrides) -> None:
+    page = _role_page(
+        "software-engineer", startups=[("Acme", [_listing(1), _listing(2, **overrides)])]
+    )
+    httpx_mock.add_response(url=_role_url("software-engineer"), text=page, is_reusable=True)
+
+    assert [job.ats_id for job in _scraper().fetch()] == ["1"]
+    kept = _scraper(include_ats_imports=True).fetch()
+    assert [job.ats_id for job in kept] == ["1", "2"]
+    assert kept[1].raw is not None
+    assert kept[1].raw.get("ats_source") or kept[1].raw.get("auto_posted")
+
+
+def test_descriptions_can_be_left_out(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_role_url("software-engineer"), text=_role_page("software-engineer")
+    )
+    [job] = _scraper(include_descriptions=False).fetch()
+    assert job.description is None
+
+
+def test_remote_listing_without_an_office(httpx_mock) -> None:
+    listing = _listing(
+        1,
+        locationNames=[],
+        acceptedRemoteLocationNames=["United States", "United States"],
+        remote=True,
+        compensation=None,
+        jobType="contract",
+        yearsExperienceMin=None,
+        liveStartAt=None,
+    )
+    httpx_mock.add_response(
+        url=_role_url("software-engineer"),
+        text=_role_page("software-engineer", startups=[("Acme", [listing])]),
+    )
+
+    [job] = _scraper().fetch()
+
+    assert job.location == "United States"
+    assert job.is_remote is True
+    assert job.salary_currency is None
+    assert job.salary_min is None
+    assert job.employment_type == "CONTRACT"
+    assert job.experience is None
+    assert job.posted_at is None
+
+
+def test_listings_without_identity_are_dropped(httpx_mock) -> None:
+    listings = [_listing(1), _listing(2, title=" "), _listing(3, slug=None), _listing(4, id="x")]
+    httpx_mock.add_response(
+        url=_role_url("software-engineer"),
+        text=_role_page("software-engineer", startups=[("Acme", listings), ("", [_listing(5)])]),
+    )
+    assert [job.ats_id for job in _scraper().fetch()] == ["1"]
+
+
+def test_a_missing_role_is_skipped(httpx_mock) -> None:
+    httpx_mock.add_response(url=_role_url("gone-role"), status_code=404)
+    httpx_mock.add_response(
+        url=_role_url("software-engineer"), text=_role_page("software-engineer")
+    )
+    assert [job.ats_id for job in _scraper("gone-role", "software-engineer").fetch()] == ["1"]
+
+
+def test_all_roles_missing_is_an_error(httpx_mock) -> None:
+    httpx_mock.add_response(url=_ROLE_RE, status_code=404, is_reusable=True)
+    with pytest.raises(ScraperError, match="none of the role pages"):
+        _scraper("a-role", "b-role").fetch()
+
+
+def test_no_roles_returns_nothing() -> None:
+    assert WellfoundScraper("any", role_slugs=()).fetch() == []
+
+
+def test_blocked_page_is_an_error(httpx_mock) -> None:
+    httpx_mock.add_response(url=_ROLE_RE, status_code=403, is_reusable=True)
+    with pytest.raises(ScraperError, match="403"):
+        _scraper().fetch()
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        "<html>Just a moment...</html>",
+        '<script id="__NEXT_DATA__" type="application/json">{"props": {}}</script>',
+        _role_page("another-role"),
+    ],
+)
+def test_page_without_job_data_is_an_error(httpx_mock, page: str) -> None:
+    httpx_mock.add_response(url=_role_url("software-engineer"), text=page)
+    with pytest.raises(ScraperError, match="no job"):
+        _scraper().fetch()
+
+
+def test_environment_firecrawl_key_is_not_used(httpx_mock, monkeypatch) -> None:
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-env")
+    httpx_mock.add_response(
+        url=_role_url("software-engineer"), text=_role_page("software-engineer")
+    )
+    assert len(_scraper().fetch()) == 1
+
+
+def test_firecrawl_key_routes_pages_through_firecrawl(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_FIRECRAWL_URL,
+        method="POST",
+        json={
+            "success": True,
+            "data": {
+                "rawHtml": _role_page("software-engineer"),
+                "metadata": {"statusCode": 200},
+            },
+        },
+    )
+
+    [job] = _scraper(firecrawl_api_key="fc-key").fetch()
+
+    assert job.ats_id == "1"
+    request = httpx_mock.get_request()
+    assert request.headers["Authorization"] == "Bearer fc-key"
+    assert json.loads(request.content) == {
+        "url": "https://wellfound.com/role/software-engineer",
+        "formats": ["rawHtml"],
+    }
+
+
+def test_firecrawl_page_past_the_last_one_ends_the_role(httpx_mock) -> None:
+    def firecrawl(page: int, page_count: int) -> dict[str, Any]:
+        html = _role_page("software-engineer", page, page_count=page_count)
+        return {"success": True, "data": {"rawHtml": html, "metadata": {"statusCode": 200}}}
+
+    httpx_mock.add_response(url=_FIRECRAWL_URL, method="POST", json=firecrawl(1, 2))
+    # Firecrawl follows the redirect and returns the first page.
+    httpx_mock.add_response(url=_FIRECRAWL_URL, method="POST", json=firecrawl(1, 1))
+
+    jobs = _scraper(firecrawl_api_key="fc-key").fetch()
+
+    assert [job.ats_id for job in jobs] == ["1"]
+
+
+def test_firecrawl_without_credits_is_an_error(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_FIRECRAWL_URL,
+        method="POST",
+        status_code=402,
+        json={"success": False, "code": "insufficient_credits"},
+    )
+    with pytest.raises(ScraperError, match="Firecrawl returned 402"):
+        _scraper(firecrawl_api_key="fc-key").fetch()
+
+
+def test_get_description_reads_the_job_page(httpx_mock) -> None:
+    posting = {
+        "@context": "http://schema.org/",
+        "@type": "JobPosting",
+        "title": "Engineer",
+        "description": "<h3>About</h3><p>Build things.</p><ul><li>Ship</li></ul>",
+    }
+    httpx_mock.add_response(
+        url="https://wellfound.com/jobs/1-engineer",
+        text=f'<script type="application/ld+json">{json.dumps(posting)}</script>',
+    )
     job = Job(
-        url="https://wellfound.com/jobs/1",
+        url="https://wellfound.com/jobs/1-engineer",
         title="Engineer",
         company="Acme",
         ats_type=ATSType.WELLFOUND,
         ats_id="1",
     )
-
-    assert WellfoundScraper("any").get_description(job) is None
-
-
-def test_uses_env_var_when_no_constructor_arg(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FIRECRAWL_API_KEY", "env-key")
-    s = WellfoundScraper("any", role_slugs=())
-    assert s.firecrawl_api_key == "env-key"
+    assert _scraper().get_description(job) == "About\nBuild things.\nShip"
 
 
-def test_constructor_arg_overrides_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FIRECRAWL_API_KEY", "env-key")
-    s = WellfoundScraper("any", role_slugs=(), firecrawl_api_key="ctor-key")
-    assert s.firecrawl_api_key == "ctor-key"
-
-
-# --- happy path -------------------------------------------------------------
-
-
-def test_parses_jobs_from_firecrawl_markdown(httpx_mock) -> None:
-    """One role, one job. End-to-end markdown parse → Job."""
-    md = _markdown_with_jobs(
-        [{
-            "id": "4173486",
-            "title": "Staff Software Engineer",
-            "salary": "$290k – $370k",
-            "location": "San Francisco",
-            "posted": "2 days ago",
-        }],
-        company="Atomus",
-    )
-    httpx_mock.add_response(
-        url=_FIRECRAWL_RE,
-        json={"data": {"markdown": md}},
-        is_reusable=True,
-    )
-
-    jobs = WellfoundScraper(
-        "any",
-        firecrawl_api_key="test-key",
-        role_slugs=("software-engineer",),
-    ).fetch()
-    j = jobs[0]
-    assert j.ats_type is ATSType.WELLFOUND
-    assert j.ats_id == "4173486"
-    assert j.title == "Staff Software Engineer"
-    assert j.company == "Atomus"
-    assert j.location == "San Francisco"
-    assert j.salary_currency == "USD"
-    assert j.salary_min == 290000
-    assert j.salary_max == 370000
-    assert j.posted_at is not None
-    assert str(j.url) == "https://wellfound.com/jobs/4173486-staff-software-engineer"
-
-
-def test_enriches_description_from_job_page_markdown(httpx_mock) -> None:
-    listing = _markdown_with_jobs([{"id": "1001", "title": "Founding Engineer"}])
-    detail = "\n".join([
-        "# Founding Engineer",
-        "",
-        "Build the core product for startup customers.",
-        "",
-        "You will own backend systems.",
-    ])
-
-    def serve(request: httpx.Request) -> httpx.Response:
-        url = json.loads(request.content)["url"]
-        markdown = detail if "/jobs/1001-" in url else listing
-        return httpx.Response(200, json={"data": {"markdown": markdown}})
-
-    httpx_mock.add_callback(serve, url=_FIRECRAWL_RE, is_reusable=True)
-
-    jobs = WellfoundScraper(
-        "any",
-        firecrawl_api_key="test-key",
-        role_slugs=(),
-    ).fetch()
-
-    assert jobs[0].description == (
-        "Build the core product for startup customers.\n\n"
-        "You will own backend systems."
-    )
-
-
-def test_detail_firecrawl_permanent_error_keeps_listing_job(httpx_mock) -> None:
-    listing = _markdown_with_jobs([{"id": "1001", "title": "Founding Engineer"}])
-
-    def serve(request: httpx.Request) -> httpx.Response:
-        url = json.loads(request.content)["url"]
-        if "/jobs/1001-" in url:
-            return httpx.Response(402, text='{"error":"payment_required"}')
-        return httpx.Response(200, json={"data": {"markdown": listing}})
-
-    httpx_mock.add_callback(serve, url=_FIRECRAWL_RE, is_reusable=True)
-
-    jobs = WellfoundScraper(
-        "any",
-        firecrawl_api_key="test-key",
-        role_slugs=(),
-    ).fetch()
-
-    assert len(jobs) == 1
-    assert jobs[0].ats_id == "1001"
-    assert jobs[0].description is None
-
-
-# --- multi-role fan-out + dedup --------------------------------------------
-
-
-def test_dedupes_jobs_present_on_multiple_role_pages(httpx_mock) -> None:
-    """A startup with both software-engineer and engineering-manager
-    roles shows the same job on both role pages — dedup on ats_id."""
-    md = _markdown_with_jobs([{"id": "1001", "title": "Founding Eng"}])
-    httpx_mock.add_response(
-        url=_FIRECRAWL_RE,
-        json={"data": {"markdown": md}},
-        is_reusable=True,
-    )
-    jobs = WellfoundScraper(
-        "any",
-        firecrawl_api_key="test-key",
-        role_slugs=("software-engineer", "engineering-manager"),
-    ).fetch()
-    # 1 unique id across overall /jobs + 2 role pages = still 1.
-    assert len(jobs) == 1
-
-
-# --- meta-line parser ------------------------------------------------------
-
-
-def test_parse_job_window_full_fields() -> None:
-    """Wellfound emits one field per line. The window scanner should
-    bind salary / location / posted / experience by *shape* (dollar
-    sign, 'Remote' prefix, etc.), not by position — different roles
-    drop different fields."""
-    window = (
-        "$290k – $370k\n\n"
-        "San Francisco\n\n"
-        "7years of exp\n\n"
-        "2 days ago\n\n"
-        "2 days agoSave\n\nApply\n\n"
-    )
-    loc, remote, lo, hi, posted, exp = _parse_job_window(window)
-    assert loc == "San Francisco"
-    assert remote is None  # no 'In office' / 'Remote' line
-    assert (lo, hi) == (290_000, 370_000)
-    assert exp == 7
-    assert posted is not None
-
-
-def test_parse_job_window_remote_only() -> None:
-    """``Remote only • United States`` → is_remote=True, location='United States'."""
-    window = "$80k – $130k\n\nRemote only • United States\n\nyesterday\n\n"
-    loc, remote, lo, hi, _posted, _ = _parse_job_window(window)
-    assert remote is True
-    assert loc == "United States"
-    assert (lo, hi) == (80_000, 130_000)
-
-
-def test_parse_job_window_no_salary_no_remote() -> None:
-    """Cards with neither salary nor remote info — keep what's there."""
-    window = "Boston\n\n3 days ago\n\n"
-    loc, remote, lo, hi, posted, _ = _parse_job_window(window)
-    assert loc == "Boston"
-    assert remote is None
-    assert (lo, hi) == (None, None)
-    assert posted is not None
-
-
-def test_posted_date_not_misclassified_as_location() -> None:
-    """Regression for the live-run bug where 'yesterday' / '2 days ago'
-    leaked into the location field."""
-    window = "$100k – $150k\n\nyesterday\n\nyesterdaySave\n\nApply"
-    loc, _, _, _, posted, _ = _parse_job_window(window)
-    assert loc is None  # no real location in this window
-    assert posted is not None
-
-
-def test_parse_salary_range_and_single() -> None:
-    assert _parse_salary("$75k – $125k") == (75_000, 125_000)
-    assert _parse_salary("$180k - $250k") == (180_000, 250_000)
-    assert _parse_salary("$120k") == (120_000, 120_000)
-    assert _parse_salary("Equity only") is None
-    assert _parse_salary("") is None
-
-
-def test_parse_relative_time() -> None:
-    """``2 days ago`` / ``today`` / ``yesterday`` all yield recent datetimes."""
-    assert _parse_relative("2 days ago") is not None
-    assert _parse_relative("today") is not None
-    assert _parse_relative("yesterday") is not None
-    # Garbage falls through.
-    assert _parse_relative("unknown phrase") is None
-
-
-# --- error handling ---------------------------------------------------------
-
-
-def test_firecrawl_500_returns_empty_for_role_not_crash(httpx_mock) -> None:
-    """A single failing role mustn't crash the whole run — soft-fail
-    on transient Firecrawl errors and keep going for other roles.
-    Test by stubbing a 500 response and verifying the scraper
-    returns [] (no jobs from this role) rather than raising."""
-    httpx_mock.add_response(
-        url=_FIRECRAWL_RE,
-        status_code=500,
-        is_reusable=True,
-    )
-    jobs = WellfoundScraper(
-        "any",
-        firecrawl_api_key="test-key",
-        role_slugs=("software-engineer",),
-    ).fetch()
-    assert jobs == []
-
-
-def test_firecrawl_402_payment_required_raises(httpx_mock) -> None:
-    """402 / 401 / 403 from Firecrawl are *permanent* failures (bad
-    key, quota exhausted) — surface them as ScraperError so the
-    user notices, instead of returning [] for the whole board."""
-    httpx_mock.add_response(
-        url=_FIRECRAWL_RE,
-        status_code=402,
-        text='{"error":"payment_required"}',
-        is_reusable=True,
-    )
-    with pytest.raises(ScraperError, match="402"):
-        WellfoundScraper(
-            "any",
-            firecrawl_api_key="test-key",
-            role_slugs=("software-engineer",),
-        ).fetch()
-
-
-# --- defaults --------------------------------------------------------------
-
-
-def test_default_role_slugs_cover_tech_and_product() -> None:
-    """Sanity check on the default role list — should include the core
-    tech/product roles a US startup would post."""
-    assert "software-engineer" in DEFAULT_ROLE_SLUGS
-    assert "product-manager" in DEFAULT_ROLE_SLUGS
-    assert "designer" in DEFAULT_ROLE_SLUGS
-    assert "founding-engineer" in DEFAULT_ROLE_SLUGS
-    assert len(DEFAULT_ROLE_SLUGS) >= 15
+@pytest.mark.parametrize(
+    ("compensation", "expected"),
+    [
+        ("$120k – $160k", ("USD", 120_000, 160_000)),
+        ("$90k – $120k CAD • No equity", ("CAD", 90_000, 120_000)),
+        ("₹10L – ₹25L", ("INR", 1_000_000, 2_500_000)),
+        ("₹5,00,000 – ₹8,00,000 • No equity", ("INR", 500_000, 800_000)),
+        ("€50k – €70k", ("EUR", 50_000, 70_000)),
+        ("£45k", ("GBP", 45_000, 45_000)),
+        ("Up to $150k", ("USD", None, 150_000)),
+        ("No equity", (None, None, None)),
+        ("0.5% – 1.0%", (None, None, None)),
+        (None, (None, None, None)),
+    ],
+)
+def test_parse_salary(compensation: str | None, expected: tuple) -> None:
+    assert _parse_salary(compensation) == expected
