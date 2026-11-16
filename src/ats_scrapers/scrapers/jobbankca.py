@@ -207,6 +207,9 @@ class JobBankCAScraper(BaseScraper):
                 jobs.setdefault(job.ats_id, job)
 
             pages = range(2, min(_page_count(announced), self.max_pages) + 1)
+            # Pages can announce different counts. The highest one seen in a
+            # pass sets the pages it reads and the coverage it must reach.
+            counts = [announced]
             for pass_number in range(1, MAX_PASSES + 1):
                 if self._full_catalogue and _page_count(announced) > MAX_PAGES:
                     raise ScraperError(
@@ -220,9 +223,10 @@ class JobBankCAScraper(BaseScraper):
                         client, sem, pages
                     ):
                         if page_announced is not None:
-                            announced = page_announced
+                            counts.append(page_announced)
                         for job in page_jobs:
                             jobs.setdefault(job.ats_id, job)
+                    announced = max(counts, default=announced)
                     last_page = min(_page_count(announced), self.max_pages)
                     pages = range(pages.stop, last_page + 1)
                 logger.info(
@@ -234,6 +238,7 @@ class JobBankCAScraper(BaseScraper):
                 ):
                     return list(jobs.values())
                 pages = range(1, _page_count(announced) + 1)
+                counts = []
         raise ScraperError(
             f"Job Bank collected {len(jobs)} of the {announced} announced "
             f"results after {MAX_PASSES} passes"

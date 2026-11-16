@@ -403,6 +403,27 @@ def test_fetch_follows_a_count_that_grows_during_a_pass(httpx_mock) -> None:
     assert served == {1: 2, 2: 2, 3: 2}
 
 
+@pytest.mark.usefixtures("_two_per_page")
+def test_fetch_measures_a_pass_against_its_highest_count(httpx_mock) -> None:
+    """The last page comes from a replica announcing 6 of the 8 results the
+    other pages announce. The 7 collected meet 6 but not 8, so the pages
+    are read again and the replica that skipped 14 is not trusted."""
+    served = _serve_pages(
+        httpx_mock,
+        {
+            1: [_ids("11", "12", total="8")],
+            2: [_ids("12", "13", total="8"), _ids("13", "14", total="8")],
+            3: [_ids("15", "16", total="8")],
+            4: [_ids("17", "18", total="6")],
+        },
+    )
+
+    jobs = JobBankCAScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == [str(n) for n in range(11, 19)]
+    assert served == {1: 2, 2: 2, 3: 2, 4: 2}
+
+
 def test_fetch_reads_the_page_a_small_growth_adds(
     httpx_mock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
