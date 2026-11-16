@@ -441,8 +441,11 @@ def test_collects_every_vacancy_through_nested_splits(
     assert _ids(jobs) == {v.id for v in vacancies}
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
     assert any(b["occupationUris"] for b in portal.bodies)
-    # Each split was checked with one query ORing all of its children.
-    assert any(len(b["locationCodes"]) > 1 for b in portal.bodies)
+    # Each split was checked with one query ORing all of its children,
+    # which only needs the count.
+    unions = [b for b in portal.bodies if len(b["locationCodes"]) > 1]
+    assert unions
+    assert all(b["resultsPerPage"] == 1 for b in unions)
 
 
 @pytest.fixture

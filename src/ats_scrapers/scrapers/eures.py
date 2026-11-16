@@ -480,7 +480,7 @@ class EuresScraper(BaseScraper):
             union = await self._search(
                 fetcher, sem,
                 base={**base, dimension.field: split.union_values()},
-                page=1,
+                page=1, size=1,
             )
         except ScraperError as exc:
             log.warning(
@@ -490,6 +490,8 @@ class EuresScraper(BaseScraper):
             read_slice = dimension is _OCCUPATION
         else:
             covered = int(union.get("numberRecords") or 0)
+            # Its facets are not kept while the children are read.
+            del union
             if covered < total:
                 log.warning(
                     "EURES split of %s by %s covers %d of %d vacancies; "
