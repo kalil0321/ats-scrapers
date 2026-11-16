@@ -39,6 +39,9 @@ MAX_OFFSET = 2_000  # Larger offsets answer 400.
 WINDOW_CAP = MAX_OFFSET + PAGE_SIZE  # Most ads one query can return.
 MAX_CONCURRENCY = 8
 _DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
+# A walk over today's board takes well under a hundred windows; a search
+# that ignores the date filter would split until one-second windows.
+MAX_DATE_WINDOWS = 1_000
 
 
 @ScraperRegistry.register(ATSType.ARBETSFORMEDLINGEN)
@@ -82,8 +85,30 @@ class ArbetsformedlingenScraper(BaseScraper):
             # Bounds are whole seconds: the newest ad may carry a fraction
             # past ``end``, so the window ends one second later.
             end += timedelta(seconds=1)
+            await self._check_date_filter(fetch, sem, end)
+            self._windows = 0
             await self._walk_window(fetch, sem, start, end, absorb)
         return all_jobs
+
+    async def _check_date_filter(
+        self, fetch: Fetcher, sem: asyncio.Semaphore, end: datetime,
+    ) -> None:
+        """Raise unless a day in 1990 and a day a year ahead hold no ads.
+
+        A search that ignores either bound would match ads there.
+        """
+        for start in (datetime(1990, 1, 1), end + timedelta(days=365)):
+            window = {
+                "published-after": start.strftime(_DATE_FORMAT),
+                "published-before": (start + timedelta(days=1)).strftime(_DATE_FORMAT),
+                "limit": 0,
+            }
+            payload = await self._fetch_page(fetch, sem, params=window)
+            if (payload.get("total") or {}).get("value"):
+                raise ScraperError(
+                    f"Arbetsförmedlingen matched ads in the empty window {window}; "
+                    "the search no longer filters by publication date"
+                )
 
     async def _walk_window(
         self,
@@ -94,6 +119,12 @@ class ArbetsformedlingenScraper(BaseScraper):
         absorb: Callable[[list[dict[str, Any]]], None],
     ) -> None:
         """Read every ad published in ``[start, end]``."""
+        self._windows += 1
+        if self._windows > MAX_DATE_WINDOWS:
+            raise ScraperError(
+                f"Arbetsförmedlingen: the publication-date walk passed "
+                f"{MAX_DATE_WINDOWS} windows; refusing to go on"
+            )
         window = {
             "published-after": start.strftime(_DATE_FORMAT),
             "published-before": end.strftime(_DATE_FORMAT),

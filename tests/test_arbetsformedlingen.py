@@ -8,7 +8,9 @@ from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
+import pytest
 
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.scrapers import ArbetsformedlingenScraper
 
 _API_RE = re.compile(r"^https://jobsearch\.api\.jobtechdev\.se/search")
@@ -85,6 +87,33 @@ def test_newest_ad_stamped_with_a_fraction_of_a_second_is_read(httpx_mock) -> No
     jobs = ArbetsformedlingenScraper("arbetsformedlingen").fetch()
 
     assert {j.ats_id for j in jobs} == {"0", "1", "late"}
+
+
+def test_search_that_ignores_the_date_filter_raises(httpx_mock) -> None:
+    ads = _ads([datetime(2026, 1, 1) + timedelta(minutes=i) for i in range(5_000)])
+    serve = _fake_api(ads)
+
+    def ignore_dates(request: httpx.Request) -> httpx.Response:
+        url = httpx.URL(str(request.url)).copy_remove_param("published-after")
+        return serve(httpx.Request("GET", url.copy_remove_param("published-before")))
+
+    httpx_mock.add_callback(ignore_dates, url=_API_RE, is_reusable=True)
+
+    with pytest.raises(ScraperError, match="no longer filters by publication date"):
+        ArbetsformedlingenScraper("arbetsformedlingen").fetch()
+
+    assert len(httpx_mock.get_requests()) < 10
+
+
+def test_date_walk_stops_at_its_window_ceiling(httpx_mock, monkeypatch) -> None:
+    from ats_scrapers.scrapers import arbetsformedlingen
+
+    monkeypatch.setattr(arbetsformedlingen, "MAX_DATE_WINDOWS", 3)
+    ads = _ads([datetime(2026, 1, 1) + timedelta(minutes=i) for i in range(5_000)])
+    httpx_mock.add_callback(_fake_api(ads), url=_API_RE, is_reusable=True)
+
+    with pytest.raises(ScraperError, match="passed 3 windows"):
+        ArbetsformedlingenScraper("arbetsformedlingen").fetch()
 
 
 def test_empty_board(httpx_mock) -> None:
