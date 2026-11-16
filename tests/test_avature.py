@@ -319,6 +319,21 @@ def test_pages_follow_the_host_a_portal_redirects_to(httpx_mock) -> None:
     assert len(jobs) == 25
 
 
+def test_page_guard_raises_instead_of_truncating(httpx_mock, monkeypatch) -> None:
+    import ats_scrapers.scrapers.avature as av
+
+    monkeypatch.setattr(av, "MAX_PAGES", 2)
+    for offset in (0, 12):
+        anchors = "".join(
+            f'<a href="/careers/JobDetail/Job/{i}">Job {i}</a>'
+            for i in range(offset, offset + 12)
+        )
+        httpx_mock.add_response(url=_url("acme", offset), text=f"<html><body>{anchors}</body></html>")
+
+    with pytest.raises(ScraperError, match="after 2 pages"):
+        AvatureScraper("acme").fetch()
+
+
 def test_relative_page_links_follow_the_host_that_served_the_page(httpx_mock) -> None:
     """After the redirect, a relative link names a path on the new host."""
     new_search = "https://jobs.acme.example/en_US/SearchJobs/"

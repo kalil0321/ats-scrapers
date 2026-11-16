@@ -305,6 +305,8 @@ class AvatureScraper(BaseScraper):
             if following is None:
                 break
             offset, url = following
+        else:
+            raise _page_guard_error(base, len(all_jobs))
 
         # Same TLS fingerprint for detail enrichment so we don't lose
         # the descriptions we just unlocked. Best-effort — a single
@@ -397,6 +399,8 @@ class AvatureScraper(BaseScraper):
                 if following is None:
                     break
                 offset, url = following
+            else:
+                raise _page_guard_error(base, len(all_jobs))
 
             # Per-job detail fetch — Avature's search-results page has
             # only title/location/department; everything else (description,
@@ -500,6 +504,8 @@ class AvatureScraper(BaseScraper):
                     if following is None:
                         break
                     offset, url = following
+                else:
+                    raise _page_guard_error(base, len(all_jobs))
 
                 if self.include_descriptions:
                     # Detail pages — small parallel batch on extra tabs.
@@ -766,6 +772,13 @@ def _paginated_search_url(base: str, offset: int) -> str:
 
 def _page_size(base: str) -> int:
     return MAP_PAGE_SIZE if _is_map_search(base) else PAGE_SIZE
+
+
+def _page_guard_error(base: str, found: int) -> ScraperError:
+    return ScraperError(
+        f"Avature ({base}) still lists new jobs after {MAX_PAGES} pages "
+        f"({found} jobs); refusing to return a partial list"
+    )
 
 
 def _next_page(
