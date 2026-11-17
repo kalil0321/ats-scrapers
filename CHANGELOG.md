@@ -185,6 +185,23 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   Electrolux's site. A site whose search page redirects to a page that is not
   Phenom's (KBR, SEI, Morningstar), or whose host no longer resolves, is
   reported as not found. The catalogue gains Trinzic.
+- Fetcher: `missing_host_not_found` also covers a host whose CDN can no
+  longer resolve the origin (Akamai's 503 "DNS failure" page on the last
+  attempt).
+- Oracle: a retired pod, whose host no longer resolves or whose CDN answers
+  "DNS failure", is reported as not found.
+- iCIMS: a portal that asks for a password, closed to the public, is reported
+  as not found.
+- Darwinbox: a tenant that Darwinbox does not host ("Invalid subdomain") is
+  reported as not found.
+- Beisen: a portal switched off with the notice 企业已暂停招聘 ("recruiting
+  paused") is reported as not found; another notice is quoted in the error.
+- Eightfold: a host whose company group no longer exists ("Group ID not
+  found") is reported as not found.
+- Paycom: a page that comes back one row short, followed by a page that
+  repeats a row, no longer fails the count check; jobs are counted once.
+- Catalogue: Sapiens leaves SuccessFactors; `careers.sapiens.com` now
+  redirects to HiBob.
 
 ## [0.3.0] — 2026-09-02
 

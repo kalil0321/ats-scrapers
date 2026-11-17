@@ -247,8 +247,21 @@ def test_search_count_mismatch_fails_closed(httpx_mock) -> None:
 def test_duplicate_job_ids_fail_closed(httpx_mock) -> None:
     _mock_listing(httpx_mock, [_preview(1), _preview(1)])
 
-    with pytest.raises(ScraperError, match="duplicate job IDs"):
+    with pytest.raises(ScraperError, match="expected 2 jobs but received 1"):
         PaycomScraper(TOKEN, include_descriptions=False).fetch()
+
+
+def test_short_page_followed_by_a_repeated_row_is_complete(httpx_mock) -> None:
+    first_page = [_preview(index) for index in range(1, 100)]
+    second_page = [_preview(99), _preview(100), _preview(101)]
+    httpx_mock.add_response(url=PORTAL_URL, text=_bootstrap())
+    httpx_mock.add_response(url=SEARCH_URL, json=_search(first_page, count=101))
+    httpx_mock.add_response(url=SEARCH_URL, json=_search(second_page, count=101))
+
+    jobs = PaycomScraper(TOKEN, include_descriptions=False).fetch()
+
+    assert len(jobs) == 101
+    assert len({job.ats_id for job in jobs}) == 101
 
 
 def test_detail_retries_transient_statuses(httpx_mock) -> None:

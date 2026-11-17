@@ -167,7 +167,7 @@ class OracleScraper(BaseScraper):
         api = f"{base}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
 
         jobs: dict[str, Job] = {}
-        async with self.make_fetcher() as fetch:
+        async with self.make_fetcher(missing_host_not_found=True) as fetch:
             total = await self._collect(fetch, api, base, site, jobs)
             if isinstance(total, int) and len(jobs) < total:
                 logger.warning(

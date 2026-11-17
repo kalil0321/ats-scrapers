@@ -261,17 +261,17 @@ class PaycomScraper(BaseScraper):
                     )
                 previews.append(item)
             skip += len(page)
-        if expected_total != len(previews):
+        # A page can come back one row short, and the next page then repeats
+        # a row of the previous one. The count is of distinct jobs.
+        unique: dict[int, dict[str, Any]] = {}
+        for item in previews:
+            unique.setdefault(_job_id(item.get("jobId")), item)
+        if expected_total != len(unique):
             raise ScraperError(
                 f"Paycom ({self.portal_token}) expected {expected_total} jobs "
-                f"but received {len(previews)}"
+                f"but received {len(unique)}"
             )
-        ids = [_job_id(item.get("jobId")) for item in previews]
-        if len(ids) != len(set(ids)):
-            raise ScraperError(
-                f"Paycom ({self.portal_token}) returned duplicate job IDs"
-            )
-        return previews
+        return list(unique.values())
 
     def _parse_preview(
         self,
