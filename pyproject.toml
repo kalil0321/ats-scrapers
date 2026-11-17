@@ -94,7 +94,7 @@ Documentation = "https://github.com/kalil0321/ats-scrapers#readme"
 Repository = "https://github.com/kalil0321/ats-scrapers"
 Issues = "https://github.com/kalil0321/ats-scrapers/issues"
 Changelog = "https://github.com/kalil0321/ats-scrapers/blob/main/CHANGELOG.md"
-Dataset = "https://storage.stapply.ai/jobhive/v1/manifest.json"
+Dataset = "https://storage.stapply.ai/jobs/v1/manifest.json"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ats_scrapers"]

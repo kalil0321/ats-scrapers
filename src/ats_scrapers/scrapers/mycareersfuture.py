@@ -6,12 +6,17 @@ The portal publishes every open posting through one public JSON feed::
 
 Each page carries the full posting, text included, so no detail request is
 needed. ``company_slug`` is ignored: the feed is one source for the country.
+
+The feed refuses an address once it has served it about 400 pages within ten
+minutes, so pages are requested 1.6 s apart and a full read takes about 25
+minutes.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
@@ -28,7 +33,12 @@ if TYPE_CHECKING:
 API = "https://api.mycareersfuture.gov.sg/v2/jobs"
 SITE = "https://www.mycareersfuture.gov.sg"
 PAGE_SIZE = 100
-MAX_CONCURRENCY = 4
+REQUEST_INTERVAL = 1.6
+MAX_CONCURRENCY = 2
+# Long enough to outlast one refusal (15 + 30 + 60 + 120 + 240 + 240 s).
+RETRIES = 7
+RETRY_BASE_DELAY = 15.0
+MAX_RETRY_DELAY = 240.0
 MAX_PAGES = 5_000
 # Postings open and close while the feed is read, so a few are missed or
 # seen twice. Far fewer than announced means the read went wrong.
@@ -78,8 +88,13 @@ class MyCareersFutureScraper(BaseScraper):
                 if job is not None and job.ats_id:
                     jobs.setdefault(job.ats_id, job)
 
-        async with self.make_fetcher() as fetch:
-            first, total = await _page(fetch, 0)
+        async with self.make_fetcher(
+            retries=RETRIES,
+            retry_base_delay=RETRY_BASE_DELAY,
+            max_retry_delay=MAX_RETRY_DELAY,
+        ) as fetch:
+            pace = _Pace(REQUEST_INTERVAL)
+            first, total = await _page(fetch, 0, pace)
             absorb(first)
             if not first:
                 if total:
@@ -90,14 +105,14 @@ class MyCareersFutureScraper(BaseScraper):
 
             async def read(number: int) -> None:
                 async with semaphore:
-                    items, _ = await _page(fetch, number)
+                    items, _ = await _page(fetch, number, pace)
                 absorb(items)
 
             await asyncio.gather(*(read(number) for number in range(1, last)))
             # The feed may have grown while it was read.
             number = last
             while number < MAX_PAGES:
-                items, _ = await _page(fetch, number)
+                items, _ = await _page(fetch, number, pace)
                 if not items:
                     break
                 absorb(items)
@@ -168,8 +183,27 @@ class MyCareersFutureScraper(BaseScraper):
         )
 
 
-async def _page(fetch: Fetcher, number: int) -> tuple[list[dict[str, Any]], int]:
+class _Pace:
+    """Starts requests at least ``interval`` seconds apart, across tasks."""
+
+    def __init__(self, interval: float) -> None:
+        self._interval = interval
+        self._lock = asyncio.Lock()
+        self._next = 0.0
+
+    async def __call__(self) -> None:
+        async with self._lock:
+            delay = self._next - time.monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._next = time.monotonic() + self._interval
+
+
+async def _page(
+    fetch: Fetcher, number: int, pace: _Pace
+) -> tuple[list[dict[str, Any]], int]:
     """One page of postings and the total the feed announces."""
+    await pace()
     data = await fetch.get_json(API, params={"limit": PAGE_SIZE, "page": number})
     results = data.get("results") if isinstance(data, dict) else None
     total = data.get("total") if isinstance(data, dict) else None

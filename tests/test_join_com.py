@@ -277,3 +277,13 @@ def test_join_com_404(httpx_mock) -> None:
     httpx_mock.add_response(url="https://join.com/companies/missing", status_code=404)
     with pytest.raises(CompanyNotFoundError):
         JoinComScraper("missing").fetch()
+
+
+def test_join_com_deleted_company_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://join.com/companies/gone",
+        status_code=410,
+        text="<h3>Resource deleted</h3><div>(410)</div>",
+    )
+    with pytest.raises(CompanyNotFoundError, match="deleted"):
+        JoinComScraper("gone").fetch()

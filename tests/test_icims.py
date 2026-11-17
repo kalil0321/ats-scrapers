@@ -266,6 +266,31 @@ def test_raises_company_not_found_on_404(httpx_mock) -> None:
         iCIMSScraper("missing").fetch()
 
 
+_PASSWORD_PAGE = (
+    "<html><head><title>iCIMS Portal</title></head><body><form method=\"POST\">"
+    "<label for=\"loginToAccessPortalPassword\">Password</label>"
+    "<input type=\"password\" id=\"loginToAccessPortalPassword\" "
+    "name=\"loginToAccessPortalPassword\" /></form></body></html>"
+)
+
+
+@pytest.mark.parametrize("status", [403, 503])
+def test_portal_behind_a_password_is_not_found(httpx_mock, status) -> None:
+    httpx_mock.add_response(url=_page_url("acme", 0), status_code=status, text=_PASSWORD_PAGE)
+    with pytest.raises(CompanyNotFoundError, match="password"):
+        iCIMSScraper("acme").fetch()
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_other_403_stays_an_error(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_page_url("acme", 0), status_code=403, text="Forbidden", is_reusable=True
+    )
+    with pytest.raises(ScraperError, match="403") as exc_info:
+        iCIMSScraper("acme").fetch()
+    assert not isinstance(exc_info.value, CompanyNotFoundError)
+
+
 def test_5xx_retries(httpx_mock) -> None:
     httpx_mock.add_response(url=_page_url("acme", 0), status_code=503)
     httpx_mock.add_response(

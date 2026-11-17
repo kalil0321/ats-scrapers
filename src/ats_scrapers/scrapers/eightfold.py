@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Literal
 
 import httpx
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -52,6 +52,9 @@ RETRY_BASE_DELAY = 1.5  # seconds; exponential for 429, linear for 5xx
 # hours for descriptions it is refusing to serve anyway.
 DETAIL_MAX_RETRY_WAIT = 60.0
 SLOW_REQUEST_THRESHOLD = 5.0  # log a warning for any single request slower than this
+# Eightfold's 404 page for a host whose company group no longer exists. A live
+# tenant asked with a wrong ``domain`` answers a plain "Page Not Found".
+_GROUP_NOT_FOUND = "Group ID not found"
 
 _TAG_RE_EF = re.compile(r"<[^>]+>")
 
@@ -396,6 +399,7 @@ class EightfoldScraper(BaseScraper):
                     )
                 await asyncio.sleep(RETRY_BASE_DELAY * attempt)
                 continue
+            self._raise_if_group_gone(response)
             # Non-retryable status (404, etc.)
             raise ScraperError(
                 f"Eightfold ({self.company_name}) returned {response.status_code} at start={start}"
@@ -520,12 +524,21 @@ class EightfoldScraper(BaseScraper):
                 f"Eightfold ({self.company_name}) httpcloak failed at start={start}: {exc}"
             ) from exc
         if response.status_code != 200:
+            self._raise_if_group_gone(response)
             raise ScraperError(
                 f"Eightfold ({self.company_name}) httpcloak returned {response.status_code} at start={start}"
             )
         return response.json().get("data") or {}
 
     # --- shared helpers -------------------------------------------------
+
+    def _raise_if_group_gone(self, response: Any) -> None:
+        """Takes an httpx or an httpcloak response."""
+        if response.status_code == 404 and _GROUP_NOT_FOUND in response.text:
+            raise CompanyNotFoundError(
+                f"Eightfold ({self.company_name}) has no company group "
+                f"{self.domain} any more (Group ID not found)"
+            )
 
     def _collect(
         self,

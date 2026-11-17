@@ -221,6 +221,25 @@ def test_missing_portal_id_raises_clear_error(httpx_mock) -> None:
         BeisenScraper("fixturecorp").fetch()
 
 
+def test_paused_portal_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=REGISTER_URL,
+        text='<script>var BSGlobal = { "Message": "企业已暂停招聘","BrowerIcon":"/italent.ico"};</script>',
+    )
+    with pytest.raises(CompanyNotFoundError, match="switched its portal off"):
+        BeisenScraper("fixturecorp").fetch()
+
+
+def test_other_portal_notice_stays_an_error(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=REGISTER_URL,
+        text='<script>var BSGlobal = { "Message": "系统维护中"};</script>',
+    )
+    with pytest.raises(ScraperError, match="系统维护中") as exc_info:
+        BeisenScraper("fixturecorp").fetch()
+    assert not isinstance(exc_info.value, CompanyNotFoundError)
+
+
 def test_company_not_found_from_register_404(httpx_mock) -> None:
     httpx_mock.add_response(url=REGISTER_URL, status_code=404)
     with pytest.raises(CompanyNotFoundError):

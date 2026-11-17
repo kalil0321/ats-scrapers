@@ -47,7 +47,7 @@ import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -58,6 +58,9 @@ if TYPE_CHECKING:
 # Runaway guard. The largest boards list 500+ pages of 20 jobs.
 MAX_PAGES = 2_000
 DETAIL_CONCURRENCY = 8  # per-tenant cap on detail-page fetches
+# An employer that closes its portal to the public leaves a password form,
+# served with 403 or 503.
+_PASSWORD_FIELD = 'name="loginToAccessPortalPassword"'
 
 _EMPLOYMENT_TYPE_MAP = {
     "FULL_TIME": "FULL_TIME",
@@ -224,6 +227,14 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
     async def _fetch_page(self, fetch: Fetcher, *, page: int) -> str:
         url = f"{self.base_url}/jobs/search"
         params = {"ss": "1", "pr": page, "in_iframe": "1"}
+        response = await fetch.request("GET", url, params=params, handled={403, 503})
+        if response.status_code not in (403, 503):
+            return response.text
+        if _PASSWORD_FIELD in response.text:
+            raise CompanyNotFoundError(
+                f"iCIMS portal {self.base_url} asks for a password: it is "
+                "closed to the public"
+            )
         return await fetch.get_text(url, params=params)
 
     def _parse_page(self, html_text: str) -> list[Job]:

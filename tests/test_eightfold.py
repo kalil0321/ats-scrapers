@@ -26,7 +26,7 @@ from typing import Any
 import httpx
 import pytest
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import (
     EightfoldScraper,
@@ -883,6 +883,16 @@ def test_retries_exhausted_raises(monkeypatch, httpx_mock) -> None:
         EightfoldScraper("dolby").fetch()
 
 
+def test_company_group_that_no_longer_exists_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        status_code=404,
+        text="<html><body>&nbsp;Eightfold Group ID not found: dolby.com</body></html>",
+    )
+    with pytest.raises(CompanyNotFoundError, match=r"dolby\.com"):
+        EightfoldScraper("dolby").fetch()
+
+
 def test_404_does_not_trigger_retries(monkeypatch, httpx_mock) -> None:
     """404 means "this tenant doesn't exist" — retrying is wasted time."""
     import ats_scrapers.scrapers.eightfold as ef
@@ -1060,6 +1070,21 @@ def test_httpcloak_non_200_raises(monkeypatch) -> None:
     )
     monkeypatch.setitem(sys.modules, "httpcloak", fake_httpcloak)
     with pytest.raises(ScraperError, match=r"Dolby.*503"):
+        EightfoldScraper("dolby", client_kind="httpcloak").fetch()
+
+
+def test_httpcloak_company_group_that_no_longer_exists_is_not_found(
+    monkeypatch,
+) -> None:
+    fake_httpcloak = SimpleNamespace(
+        get=lambda url, params, headers, timeout: SimpleNamespace(
+            status_code=404,
+            text="<html><body>&nbsp;Eightfold Group ID not found: dolby.com</body></html>",
+            json=lambda: {},
+        )
+    )
+    monkeypatch.setitem(sys.modules, "httpcloak", fake_httpcloak)
+    with pytest.raises(CompanyNotFoundError, match=r"dolby\.com"):
         EightfoldScraper("dolby", client_kind="httpcloak").fetch()
 
 

@@ -477,7 +477,7 @@ class WorkdayScraper(BaseScraper):
         # Workday 403s when we burst — also retryable. 401 means CSRF-protected
         # tenant (some need an init handshake; we don't currently support those).
         retryable_statuses = {403, 429, 502, 503, 504}
-        last_exc: Exception | None = None
+        last_error = "no response"
         for attempt in range(MAX_RETRIES):
             self._check_deadline()
             async with sem:
@@ -486,13 +486,22 @@ class WorkdayScraper(BaseScraper):
                         api, json=body, headers={"Content-Type": "application/json"}
                     )
                 except httpx.HTTPError as exc:
-                    last_exc = exc
+                    last_error = (
+                        f"{type(exc).__name__}: {exc}" if str(exc)
+                        else type(exc).__name__
+                    )
                     await asyncio.sleep(min(MAX_RETRY_DELAY, RETRY_BACKOFF ** attempt))
                     continue
             if response.status_code == 404:
                 raise CompanyNotFoundError(
                     f"Workday site not found: {self.company_slug}"
                 )
+            if offset == 0 and not applied_facets:
+                gone = _tenant_gone(response)
+                if gone:
+                    raise CompanyNotFoundError(
+                        f"Workday tenant {self.company_slug} {gone}"
+                    )
             if response.status_code == 200:
                 try:
                     payload = response.json()
@@ -501,7 +510,7 @@ class WorkdayScraper(BaseScraper):
                         "Content-Type",
                         "unknown",
                     )
-                    last_exc = ScraperError(
+                    last_error = (
                         "Workday returned a non-JSON success response for "
                         f"{self.company_slug} (offset={offset}, "
                         f"content-type={content_type})"
@@ -511,7 +520,7 @@ class WorkdayScraper(BaseScraper):
                     )
                     continue
                 if not isinstance(payload, dict):
-                    last_exc = ScraperError(
+                    last_error = (
                         "Workday returned an unexpected JSON payload for "
                         f"{self.company_slug} (offset={offset})"
                     )
@@ -521,6 +530,7 @@ class WorkdayScraper(BaseScraper):
                     continue
                 return payload
             if response.status_code in retryable_statuses:
+                last_error = f"HTTP {response.status_code}"
                 # Exponential backoff respects Retry-After when present.
                 retry_after = response.headers.get("Retry-After")
                 delay = (
@@ -535,7 +545,7 @@ class WorkdayScraper(BaseScraper):
                 f"(offset={offset})"
             )
         raise ScraperError(
-            f"Workday gave up after {MAX_RETRIES} retries at offset={offset}: {last_exc}"
+            f"Workday gave up after {MAX_RETRIES} retries at offset={offset}: {last_error}"
         )
 
     def _parse_job(
@@ -662,6 +672,27 @@ def _job_identity(base_url: str, canonical_path: object) -> str | None:
     if not host:
         return None
     return f"{host.casefold()}{path}"
+
+
+def _tenant_gone(response: Any) -> str | None:
+    """Why the first search shows the tenant is not served from this host.
+
+    A tenant that moved to another data center answers 410
+    ``ERR_TENANT_MIGRATED``. A host that serves no such tenant answers 422
+    ``HTTP_422``; Workday answers a malformed search with 400 instead.
+    """
+    if response.status_code not in (410, 422):
+        return None
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    code = payload.get("errorCode") if isinstance(payload, dict) else None
+    if response.status_code == 410 and code == "ERR_TENANT_MIGRATED":
+        return "moved to another Workday data center"
+    if response.status_code == 422 and code == "HTTP_422":
+        return "is not served from this host: it moved or left Workday"
+    return None
 
 
 def _requisition(

@@ -16,7 +16,7 @@ from urllib.parse import quote
 
 from pydantic import HttpUrl
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -30,6 +30,9 @@ MAX_PAGES = 1000
 
 _TENANT_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _BSGLOBAL_RE = re.compile(r"var\s+BSGlobal\s*=\s*(\{)", re.DOTALL)
+# The notice a switched-off portal shows instead of its config:
+# "the company has paused recruiting".
+_RECRUITING_PAUSED = "企业已暂停招聘"
 _TENANT_ID_RE = re.compile(
     r"(?:stcms\.beisen\.com/image|portal-oss\.zhiye\.com)/(\d+)"
 )
@@ -164,8 +167,15 @@ class BeisenScraper(BaseScraper):
 
         portal_id = _clean_text(config.get("PortalId"))
         if not portal_id:
+            notice = _clean_text(config.get("Message"))
+            if notice == _RECRUITING_PAUSED:
+                raise CompanyNotFoundError(
+                    f"Beisen tenant {self.slug!r} switched its portal off "
+                    f"({notice})"
+                )
             raise ScraperError(
                 f"Beisen tenant {self.slug!r} is missing PortalId in BSGlobal"
+                + (f" ({notice})" if notice else "")
             )
         tenant_ids = _TENANT_ID_RE.findall(text)
         self.portal_id = portal_id
