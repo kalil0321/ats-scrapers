@@ -399,11 +399,7 @@ class EightfoldScraper(BaseScraper):
                     )
                 await asyncio.sleep(RETRY_BASE_DELAY * attempt)
                 continue
-            if response.status_code == 404 and _GROUP_NOT_FOUND in response.text:
-                raise CompanyNotFoundError(
-                    f"Eightfold ({self.company_name}) has no company group "
-                    f"{self.domain} any more (Group ID not found)"
-                )
+            self._raise_if_group_gone(response)
             # Non-retryable status (404, etc.)
             raise ScraperError(
                 f"Eightfold ({self.company_name}) returned {response.status_code} at start={start}"
@@ -528,12 +524,21 @@ class EightfoldScraper(BaseScraper):
                 f"Eightfold ({self.company_name}) httpcloak failed at start={start}: {exc}"
             ) from exc
         if response.status_code != 200:
+            self._raise_if_group_gone(response)
             raise ScraperError(
                 f"Eightfold ({self.company_name}) httpcloak returned {response.status_code} at start={start}"
             )
         return response.json().get("data") or {}
 
     # --- shared helpers -------------------------------------------------
+
+    def _raise_if_group_gone(self, response: Any) -> None:
+        """Takes an httpx or an httpcloak response."""
+        if response.status_code == 404 and _GROUP_NOT_FOUND in response.text:
+            raise CompanyNotFoundError(
+                f"Eightfold ({self.company_name}) has no company group "
+                f"{self.domain} any more (Group ID not found)"
+            )
 
     def _collect(
         self,

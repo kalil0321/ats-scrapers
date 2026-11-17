@@ -1073,6 +1073,21 @@ def test_httpcloak_non_200_raises(monkeypatch) -> None:
         EightfoldScraper("dolby", client_kind="httpcloak").fetch()
 
 
+def test_httpcloak_company_group_that_no_longer_exists_is_not_found(
+    monkeypatch,
+) -> None:
+    fake_httpcloak = SimpleNamespace(
+        get=lambda url, params, headers, timeout: SimpleNamespace(
+            status_code=404,
+            text="<html><body>&nbsp;Eightfold Group ID not found: dolby.com</body></html>",
+            json=lambda: {},
+        )
+    )
+    monkeypatch.setitem(sys.modules, "httpcloak", fake_httpcloak)
+    with pytest.raises(CompanyNotFoundError, match=r"dolby\.com"):
+        EightfoldScraper("dolby", client_kind="httpcloak").fetch()
+
+
 # --- Detail enrichment: backoff and block handling --------------------------
 
 DETAIL_URL = re.compile(r"https://dolby\.eightfold\.ai/api/pcsx/position_details\?.*")
