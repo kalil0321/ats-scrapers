@@ -135,3 +135,22 @@ def test_the_connection_closes_with_the_scraper(monkeypatch: pytest.MonkeyPatch)
     del scraper
 
     assert client.is_closed
+
+
+def test_close_releases_the_connection_and_can_be_repeated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    site = _Site(monkeypatch, lambda request: _detail("Role"))
+    scraper = WorkdayScraper(URL)
+    scraper.close()
+    scraper.get_description(_job())
+    client = scraper._detail_http
+    assert client is not None
+
+    scraper.close()
+    scraper.close()
+
+    assert client.is_closed
+    assert scraper.get_description(_job()) == "Role"
+    assert len(site.opened) == 2
+    assert scraper._detail_http is not client

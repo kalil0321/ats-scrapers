@@ -167,6 +167,7 @@ class WorkdayScraper(BaseScraper):
         )
         self._deadline: float | None = None
         self._detail_http: httpx.Client | None = None
+        self._detail_finalizer: weakref.finalize | None = None
         self._detail_lock = threading.Lock()
 
     @classmethod
@@ -259,7 +260,8 @@ class WorkdayScraper(BaseScraper):
 
         Callers ask for one job at a time. Every job of a site lives on the
         same host, so the connection is kept between calls instead of being
-        opened again for each job. It closes with the scraper.
+        opened again for each job. :meth:`close` releases it, and so does
+        discarding the scraper.
         """
         with self._detail_lock:
             if self._detail_http is None:
@@ -272,9 +274,21 @@ class WorkdayScraper(BaseScraper):
                         keepalive_expiry=DETAIL_KEEPALIVE_SECONDS,
                     ),
                 )
-                weakref.finalize(self, client.close)
+                self._detail_finalizer = weakref.finalize(self, client.close)
                 self._detail_http = client
             return self._detail_http
+
+    def close(self) -> None:
+        """Release the connection ``get_description`` keeps open.
+
+        Safe to call more than once. A later ``get_description`` opens a
+        new connection.
+        """
+        with self._detail_lock:
+            finalizer, self._detail_finalizer = self._detail_finalizer, None
+            self._detail_http = None
+        if finalizer is not None:
+            finalizer()
 
     async def _fetch_all(
         self,

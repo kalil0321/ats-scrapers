@@ -41,7 +41,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   as `ats-scrapers/<version>` in the `User-Agent` header. A client you pass in
   keeps its own headers.
 - Workday: `get_description` keeps its connection to the site open between
-  jobs.
+  jobs. `close()` releases it.
 
 ### Removed
 
