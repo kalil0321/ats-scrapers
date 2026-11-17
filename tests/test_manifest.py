@@ -61,6 +61,20 @@ def test_manifest_accepts_source_without_local_scraper_enum(
     assert m.url_for_ats("beisen") == "https://example.com/beisen.csv"
 
 
+def test_manifest_accepts_prefix_migration_keys(
+    sample_manifest_dict: dict[str, Any],
+) -> None:
+    sample_manifest_dict["canonical_prefix"] = "jobs/v1"
+    sample_manifest_dict["deprecated_prefixes"] = {
+        "jobhive/v1": {
+            "replaced_by": "jobs/v1",
+            "manifest": "https://storage.stapply.ai/jobhive/v1/manifest.json",
+        }
+    }
+    m = Manifest.model_validate(sample_manifest_dict)
+    assert m.url_for_all() == "https://example.com/all.parquet"
+
+
 def test_url_for_all_returns_parquet_by_default(sample_manifest_dict: dict[str, Any]) -> None:
     m = Manifest.model_validate(sample_manifest_dict)
     assert m.url_for_all() == "https://example.com/all.parquet"
@@ -114,6 +128,15 @@ def test_fetch_identifies_the_library(
     assert httpx_mock.get_request().headers["user-agent"] == USER_AGENT
     assert USER_AGENT.startswith("ats-scrapers/")
 
+
+
+def test_fetch_reads_the_jobs_v1_manifest_by_default(
+    httpx_mock, sample_manifest_dict: dict[str, Any]
+) -> None:
+    httpx_mock.add_response(
+        url="https://storage.stapply.ai/jobs/v1/manifest.json", json=sample_manifest_dict
+    )
+    assert Manifest.fetch().stats.total_jobs == 1000
 
 def test_fetch_raises_on_http_error(httpx_mock) -> None:
     httpx_mock.add_response(url="https://example.com/manifest.json", status_code=500)
