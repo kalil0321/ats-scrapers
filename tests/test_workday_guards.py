@@ -6,10 +6,14 @@ import asyncio
 import time
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.scrapers.workday import WorkdayScraper
+
+URL = "https://acme.wd5.myworkdayjobs.com/External"
+API = "https://acme.wd5.myworkdayjobs.com/wday/cxs/acme/External/jobs"
 
 
 def test_workday_deadline_raises() -> None:
@@ -44,7 +48,7 @@ def test_workday_retry_after_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     async def run() -> None:
-        with pytest.raises(ScraperError, match="gave up"):
+        with pytest.raises(ScraperError, match=r"gave up .*: HTTP 429"):
             await scraper._request(
                 FakeClient(),
                 "https://example.com/wday/cxs/accenture/site/jobs",
@@ -180,3 +184,91 @@ def test_workday_catalogue_lists_each_career_site_once() -> None:
             )
         )
     assert len(set(sites)) == len(sites)
+
+
+def test_workday_tenant_missing_from_its_host_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=API,
+        status_code=422,
+        json={"errorCode": "HTTP_422", "httpStatus": 422, "message": ""},
+    )
+    with pytest.raises(CompanyNotFoundError, match="moved or left Workday"):
+        WorkdayScraper(URL, include_descriptions=False).fetch()
+
+
+def test_workday_migrated_tenant_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=API,
+        status_code=410,
+        json={"errorCode": "ERR_TENANT_MIGRATED", "httpStatus": 410},
+    )
+    with pytest.raises(CompanyNotFoundError, match="another Workday data center"):
+        WorkdayScraper(URL, include_descriptions=False).fetch()
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (422, {"errorCode": "S22", "message": "invalid facet"}),
+        (410, {"errorCode": "HTTP_410"}),
+        (422, None),
+    ],
+)
+def test_workday_other_410_and_422_stay_errors(httpx_mock, status, body) -> None:
+    if body is None:
+        httpx_mock.add_response(method="POST", url=API, status_code=status, text="<html>")
+    else:
+        httpx_mock.add_response(method="POST", url=API, status_code=status, json=body)
+    with pytest.raises(ScraperError, match=f"returned {status}") as exc_info:
+        WorkdayScraper(URL, include_descriptions=False).fetch()
+    assert not isinstance(exc_info.value, CompanyNotFoundError)
+
+
+def test_workday_422_on_a_filtered_search_stays_an_error() -> None:
+    class FakeClient:
+        async def post(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                status_code=422,
+                headers={},
+                json=lambda: {"errorCode": "HTTP_422"},
+            )
+
+    scraper = WorkdayScraper(URL)
+
+    async def run() -> None:
+        with pytest.raises(ScraperError, match="returned 422") as exc_info:
+            await scraper._request(
+                FakeClient(),
+                API,
+                asyncio.Semaphore(1),
+                applied_facets={"timeType": ["ft"]},
+                offset=0,
+            )
+        assert not isinstance(exc_info.value, CompanyNotFoundError)
+
+    asyncio.run(run())
+
+
+def test_workday_network_failure_names_the_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_sleep(_delay: float) -> None:
+        return None
+
+    class FakeClient:
+        async def post(self, *_args, **_kwargs):
+            raise httpx.ReadTimeout("")
+
+    monkeypatch.setattr("ats_scrapers.scrapers.workday.asyncio.sleep", fake_sleep)
+
+    async def run() -> None:
+        with pytest.raises(ScraperError, match=r"offset=20: ReadTimeout$"):
+            await WorkdayScraper(URL)._request(
+                FakeClient(),
+                API,
+                asyncio.Semaphore(1),
+                applied_facets={},
+                offset=20,
+            )
+
+    asyncio.run(run())

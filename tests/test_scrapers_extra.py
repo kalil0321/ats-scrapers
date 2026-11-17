@@ -281,6 +281,50 @@ def test_personio_falls_back_to_careers_api(httpx_mock) -> None:
     assert jobs[0].location == "Berlin"
 
 
+def test_personio_board_without_openings_is_empty(httpx_mock) -> None:
+    httpx_mock.add_response(url="https://acme.jobs.personio.com/search.json", json=[])
+    httpx_mock.add_response(
+        url="https://acme.jobs.personio.com/api/careers/jobs/list/", status_code=404
+    )
+    assert PersonioScraper("acme").fetch() == []
+
+
+def test_personio_missing_site_is_not_found(httpx_mock) -> None:
+    for path in ("search.json", "api/careers/jobs/list/"):
+        httpx_mock.add_response(
+            url=f"https://gone.jobs.personio.com/{path}", status_code=404
+        )
+    with pytest.raises(CompanyNotFoundError, match="no careers site"):
+        PersonioScraper("gone").fetch()
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_personio_blocked_board_is_an_error(httpx_mock, status) -> None:
+    httpx_mock.add_response(
+        url="https://acme.jobs.personio.com/search.json",
+        status_code=status,
+        is_reusable=True,
+    )
+    httpx_mock.add_response(
+        url="https://acme.jobs.personio.com/api/careers/jobs/list/", status_code=404
+    )
+    with pytest.raises(ScraperError, match=str(status)) as exc_info:
+        PersonioScraper("acme").fetch()
+    assert not isinstance(exc_info.value, CompanyNotFoundError)
+
+
+def test_personio_html_instead_of_json_is_an_error(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://acme.jobs.personio.com/search.json", text="<html>challenge</html>"
+    )
+    httpx_mock.add_response(
+        url="https://acme.jobs.personio.com/api/careers/jobs/list/", status_code=404
+    )
+    with pytest.raises(ScraperError, match="not JSON") as exc_info:
+        PersonioScraper("acme").fetch()
+    assert not isinstance(exc_info.value, CompanyNotFoundError)
+
+
 def test_personio_accepts_full_url(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://custom.example.com/search.json",

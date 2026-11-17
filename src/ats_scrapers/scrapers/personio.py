@@ -100,7 +100,8 @@ class PersonioScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         base = self._resolve_base_url()
-        last_error: Exception | None = None
+        last_error: ScraperError | None = None
+        answered = False
         jobs: list[Job] = []
         async with self.make_fetcher() as fetch:
             for path in ENDPOINTS:
@@ -114,12 +115,19 @@ class PersonioScraper(BaseScraper):
                 if response.status_code == 404:
                     continue
                 if response.status_code != 200:
-                    last_error = ScraperError(f"Personio returned {response.status_code}")
+                    last_error = ScraperError(
+                        f"Personio tenant {self.company_slug}: {path} returned "
+                        f"{response.status_code}"
+                    )
                     continue
                 try:
                     payload = response.json()
                 except ValueError:
+                    last_error = ScraperError(
+                        f"Personio tenant {self.company_slug}: {path} is not JSON"
+                    )
                     continue
+                answered = True
                 items = _normalize_items(payload)
                 if items:
                     jobs = [self._parse_job(item, base) for item in items]
@@ -131,11 +139,14 @@ class PersonioScraper(BaseScraper):
                         self._enrich_description(fetch, sem, j) for j in jobs
                     ))
                 return jobs
+        if answered:
+            return []
         if last_error:
-            raise CompanyNotFoundError(
-                f"Personio tenant {self.company_slug} did not respond on any known endpoint"
-            ) from last_error
-        return []
+            raise last_error
+        # Personio answers 404 on every path of a careers site that does not exist.
+        raise CompanyNotFoundError(
+            f"Personio tenant {self.company_slug} has no careers site (404)"
+        )
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
