@@ -1200,6 +1200,19 @@ def test_oracle_listing_summary_survives_an_unusable_detail(
     assert job.description == "One-line summary."
 
 
+def test_oracle_retired_pod_is_not_found(httpx_mock) -> None:
+    """A retired pod still resolves to Akamai, which can no longer find the
+    origin and answers 503 "DNS failure"."""
+    base = "https://acme.fa.us2.oraclecloud.com"
+    httpx_mock.add_response(
+        status_code=503,
+        text="<H1>Service Unavailable - DNS failure</H1>",
+        is_reusable=True,
+    )
+    with pytest.raises(CompanyNotFoundError, match="DNS failure"):
+        OracleScraper(base, include_descriptions=False).fetch()
+
+
 def test_oracle_keeps_short_description_without_enrichment(httpx_mock) -> None:
     base = "https://acme.fa.us2.oraclecloud.com"
     api = f"{base}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"

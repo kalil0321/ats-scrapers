@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 import ats_scrapers.scrapers.darwinbox as darwinbox_module
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import DarwinboxScraper, ScraperRegistry
 
@@ -264,3 +264,27 @@ def test_non_object_payload_raises(fake_httpcloak) -> None:
     responses.append(FakeResponse([]))
     with pytest.raises(ScraperError, match="non-object"):
         DarwinboxScraper("airtel").fetch()
+
+
+def test_unknown_tenant_is_not_found(fake_httpcloak) -> None:
+    responses, calls = fake_httpcloak
+    responses.append(
+        FakeResponse(
+            {
+                "status": "error",
+                "data": {"message": "Internal Server Error - Invalid subdomain: airtel"},
+            },
+            status_code=500,
+        )
+    )
+    with pytest.raises(CompanyNotFoundError, match="invalid subdomain"):
+        DarwinboxScraper("airtel").fetch()
+    assert len(calls) == 1
+
+
+def test_other_500_is_retried(fake_httpcloak) -> None:
+    responses, calls = fake_httpcloak
+    responses.append(FakeResponse({"status": "error"}, status_code=500))
+    responses.append(FakeResponse(payload([listing()])))
+    assert len(DarwinboxScraper("airtel").fetch()) == 1
+    assert len(calls) == 2

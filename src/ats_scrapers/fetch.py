@@ -177,10 +177,11 @@ class Fetcher:
         ``ATS_SCRAPERS_PROXY`` / legacy ``PROXY`` from the environment.
     missing_host_not_found:
         Raise :class:`CompanyNotFoundError` when the last attempt failed
-        because the host name does not resolve or presents a certificate
-        for another name. Only for scrapers whose host belongs to the
-        tenant (its own subdomain or custom domain), where either means
-        the board was taken down.
+        because the host name does not resolve, presents a certificate
+        for another name, or sits behind a CDN that can no longer resolve
+        its origin. Only for scrapers whose host belongs to the tenant
+        (its own subdomain or custom domain), where each means the board
+        was taken down.
     """
 
     def __init__(
@@ -373,6 +374,11 @@ class Fetcher:
             if status in _RETRYABLE_STATUSES:
                 last_error = f"HTTP {status}"
                 if attempt == retries:
+                    if self.missing_host_not_found and _cdn_origin_missing(response):
+                        raise CompanyNotFoundError(
+                            f"{self.label}: {urlparse(url).hostname} has no "
+                            f"origin left behind its CDN (DNS failure)"
+                        )
                     raise RetryExhaustedError(
                         f"{self.label}: {url} returned {status} after "
                         f"{retries} attempts"
@@ -477,6 +483,13 @@ def _missing_host_reason(exc: BaseException, *, via_proxy: bool) -> str | None:
             return None
         current = current.__cause__ or current.__context__
     return None
+
+
+def _cdn_origin_missing(response: FetchResponse) -> bool:
+    """Akamai's answer when the origin name behind a host no longer resolves."""
+    return response.status_code == 503 and (
+        "Service Unavailable - DNS failure" in response.text
+    )
 
 
 def _cloak_available() -> bool:
