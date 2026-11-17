@@ -141,7 +141,7 @@ def test_a_page_refused_for_a_while_is_read_once_the_feed_answers(
 
 
 def test_pages_are_requested_apart(httpx_mock, monkeypatch) -> None:
-    monkeypatch.setattr(mycareersfuture, "REQUEST_INTERVAL", 0.1)
+    monkeypatch.setattr(mycareersfuture, "REQUEST_INTERVAL", 0.3)
     pages = [
         [_posting(number) for number in range(1, 101)],
         [_posting(number) for number in range(101, 201)],
@@ -161,8 +161,9 @@ def test_pages_are_requested_apart(httpx_mock, monkeypatch) -> None:
     # Pages 1 and 2 are read concurrently: the spacing holds across tasks.
     gaps = [later - earlier for earlier, later in pairwise(starts)]
     assert len(gaps) == 3
-    # Margin for the client set-up before the first request.
-    assert min(gaps) >= 0.07
+    # The mock sees a request after the pacing releases it; leave room for that
+    # latency to vary between requests on a busy runner.
+    assert min(gaps) >= 0.2
 
 
 def test_an_empty_feed(httpx_mock) -> None:
