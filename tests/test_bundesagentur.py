@@ -628,6 +628,298 @@ def test_page_failure_crashes(httpx_mock, monkeypatch) -> None:
         BundesagenturScraper("any").fetch()
 
 
+# --- Refused requests: cool off and resume the same page --------------------
+
+
+def _three_pages_refusing(
+    httpx_mock,
+    monkeypatch: pytest.MonkeyPatch,
+    refusals: dict[int, int],
+    *,
+    error: type[httpx.TransportError] | None = None,
+) -> Counter[int]:
+    """Serve three one-row pages. Page ``n`` is refused ``refusals[n]``
+    times (403, or ``error`` raised) before it is served. Returns the
+    number of requests per page."""
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 1)
+    requests: Counter[int] = Counter()
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        page = int(parse_qs(urlparse(str(request.url)).query)["page"][0])
+        requests[page] += 1
+        if requests[page] <= refusals.get(page, 0):
+            if error is not None:
+                raise error("refused", request=request)
+            return httpx.Response(403)
+        return httpx.Response(
+            200,
+            json={
+                "ergebnisliste": [_job(str(page), f"Page-{page} row")],
+                "maxErgebnisse": 3,
+            },
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+    return requests
+
+
+def test_refused_page_resumes_after_cool_off(
+    httpx_mock, monkeypatch, caplog
+) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "MAX_BLOCKED_ATTEMPTS", 6)
+    requests = _three_pages_refusing(httpx_mock, monkeypatch, {2: 5})
+    scraper = BundesagenturScraper("any")
+
+    with caplog.at_level("WARNING", logger=ba.__name__):
+        jobs = scraper.fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["1", "2", "3"]
+    assert requests[2] == 6
+    assert scraper.transient_failures == {"403": 5}
+    assert "retried 5 transient failures" in caplog.text
+
+
+def test_page_refused_for_every_attempt_fails_closed(
+    httpx_mock, monkeypatch
+) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "MAX_BLOCKED_ATTEMPTS", 6)
+    requests = _three_pages_refusing(httpx_mock, monkeypatch, {2: 6})
+
+    with pytest.raises(ba._PageFetchExhaustedError, match=r"403 .* after 6 attempts"):
+        BundesagenturScraper("any").fetch()
+    assert requests[2] == 6
+
+
+def test_network_errors_are_retried_like_refusals(httpx_mock, monkeypatch) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "MAX_BLOCKED_ATTEMPTS", 6)
+    _three_pages_refusing(
+        httpx_mock, monkeypatch, {2: 4}, error=httpx.ConnectError
+    )
+    scraper = BundesagenturScraper("any")
+
+    jobs = scraper.fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["1", "2", "3"]
+    assert scraper.transient_failures == {"ConnectError": 4}
+
+
+def test_refusals_beyond_the_run_budget_fail_closed(
+    httpx_mock, monkeypatch
+) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "MAX_TRANSIENT_FAILURES", 3)
+    # Every page recovers on its own, but the run as a whole meets four.
+    _three_pages_refusing(httpx_mock, monkeypatch, {2: 2, 3: 2})
+
+    with pytest.raises(ba._PageFetchExhaustedError, match="4 transient failures"):
+        BundesagenturScraper("any").fetch()
+
+
+def test_refused_page_does_not_hold_a_request_slot(
+    httpx_mock, monkeypatch
+) -> None:
+    """With one request slot, a slice refused until another slice is served
+    only recovers if its cool-off leaves the slot free."""
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(ba, "PAGE_SIZE", 2)
+    monkeypatch.setattr(ba, "PAGE_LIMIT", 1)
+    monkeypatch.setattr(ba, "PAGINATION_CAP", 2)
+    served: list[str] = []
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        params = parse_qs(urlparse(str(request.url)).query)
+        bucket = params.get("befristung", [""])[0]
+        if bucket == "1" and "2" not in served:
+            return httpx.Response(403)
+        served.append(bucket)
+        if not bucket:
+            return httpx.Response(
+                200,
+                json={
+                    "ergebnisliste": [_job("1-a", "Probe")],
+                    "maxErgebnisse": 4,
+                    "facetten": {"befristung": {"counts": {"1": 2, "2": 2}}},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "ergebnisliste": [
+                    _job(f"{bucket}-a", "Job a"),
+                    _job(f"{bucket}-b", "Job b"),
+                ],
+                "maxErgebnisse": 2,
+            },
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["1-a", "1-b", "2-a", "2-b"]
+    assert served.index("2") < served.index("1")
+
+
+def test_refusal_backoff_is_capped_and_lasts_minutes(monkeypatch) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "RETRY_BASE_DELAY", 2.0)
+    waits = [ba._retry_delay(n) for n in range(1, ba.MAX_BLOCKED_ATTEMPTS)]
+
+    assert max(waits) == ba.RETRY_MAX_DELAY
+    assert 15 * 60 <= sum(waits) <= 25 * 60
+    assert ba._retry_delay(1, retry_after="30") == 30.0
+
+
+# --- Proxy routes: a refused route rests, the next one carries on -----------
+
+
+def test_refused_route_rests_while_the_next_route_carries_on(
+    httpx_mock, monkeypatch
+) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 1)
+    routes: list[tuple[int, int]] = []
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        page = int(parse_qs(urlparse(str(request.url)).query)["page"][0])
+        route = request.extensions["route"]
+        routes.append((route, page))
+        if route == 0 and page == 2:
+            return httpx.Response(403)
+        if route == 1:
+            raise httpx.ConnectError("proxy down", request=request)
+        return httpx.Response(
+            200,
+            json={
+                "ergebnisliste": [_job(str(page), f"Page-{page} row")],
+                "maxErgebnisse": 3,
+            },
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+    scraper = BundesagenturScraper(
+        "any", proxies=[None, "http://a.example:3128", "http://b.example:3128"]
+    )
+
+    jobs = scraper.fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["1", "2", "3"]
+    assert scraper.transient_failures == {"403": 1, "ConnectError": 1}
+    refused = routes.index((0, 2))
+    assert routes[refused + 1:] == [(1, 2), (2, 2), (2, 3)]
+
+
+def test_routes_prefer_the_first_one_not_resting(monkeypatch) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    clock = [1_000.0]
+    monkeypatch.setattr(ba.time, "monotonic", lambda: clock[0])
+    routes = ba._Routes([None, "http://a.example:3128", "http://b.example:3128"])
+
+    assert routes._pick() == 0
+    routes._rest(0)
+    assert routes._pick() == 1
+    clock[0] += 10
+    routes._rest(1)
+    clock[0] += 10
+    routes._rest(2)
+    # All resting: the route whose rest ends first.
+    assert routes._pick() == 0
+    clock[0] = 1_000.0 + ba.ROUTE_COOL_OFF
+    assert routes._pick() == 0
+
+
+def test_without_proxies_requests_go_direct(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_API_RE,
+        json={"ergebnisliste": [_job("1", "Probe")], "maxErgebnisse": 1},
+        is_reusable=True,
+    )
+
+    BundesagenturScraper("any").fetch()
+
+    assert all("route" not in r.extensions for r in httpx_mock.get_requests())
+
+
+# --- Slices that change while they are paged --------------------------------
+
+
+def _shrinking_slice(httpx_mock, monkeypatch, *, shrinks_at: int) -> Counter[int]:
+    """Three one-row pages, of which the last closes once page ``shrinks_at``
+    is requested. Past the end, the API answers without a list."""
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 1)
+    requests: Counter[int] = Counter()
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        page = int(parse_qs(urlparse(str(request.url)).query)["page"][0])
+        requests[page] += 1
+        total = 2 if page >= shrinks_at else 3
+        if page > total:
+            return httpx.Response(200, json={"maxErgebnisse": total})
+        return httpx.Response(
+            200,
+            json={
+                "ergebnisliste": [_job(str(page), f"Page-{page} row")],
+                "maxErgebnisse": total,
+            },
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+    return requests
+
+
+def test_slice_that_shrinks_while_paged_stops_at_its_new_end(
+    httpx_mock, monkeypatch
+) -> None:
+    requests = _shrinking_slice(httpx_mock, monkeypatch, shrinks_at=2)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["1", "2"]
+    assert 3 not in requests
+
+
+def test_page_past_the_new_end_is_the_last_page_not_an_error(
+    httpx_mock, monkeypatch
+) -> None:
+    requests = _shrinking_slice(httpx_mock, monkeypatch, shrinks_at=3)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["1", "2"]
+    assert requests[3] == 1
+
+
+@pytest.mark.parametrize("region", [{}, {"wo": "Niedersachsen (Bundesland)"}])
+def test_payload_without_list_past_the_end_is_empty(region) -> None:
+    from ats_scrapers.scrapers.bundesagentur import _checked_payload
+
+    past_the_end = httpx.Response(200, json={"maxErgebnisse": 1583})
+    params = {**region, "size": 100}
+
+    assert _checked_payload(past_the_end, {**params, "page": 17}) == {
+        "maxErgebnisse": 1583,
+        "ergebnisliste": [],
+    }
+    with pytest.raises(ScraperError, match="missing ergebnisliste"):
+        _checked_payload(past_the_end, {**params, "page": 16})
+
+
 # --- Contract-break failures: must crash, not soft-fail --------------------
 #
 # Codex review on #14: the broad ``except ScraperError`` in ``_exhaust_query``

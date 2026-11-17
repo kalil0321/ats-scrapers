@@ -28,6 +28,10 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   shortcode with all its locations and its URL unchanged. Workable shares the
   feed address on request (`feed_url` or `ATS_SCRAPERS_WORKABLE_FEED_URL`) and
   asks for at most one download per hour.
+- Bundesagentur: `proxies` takes routes in order of preference, `None` for a
+  direct connection. A route that meets a 403, a 429 or a network error rests
+  for five minutes while the next one carries the requests. A single `proxy`
+  is used as well.
 
 ### Removed
 
@@ -42,6 +46,14 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
+- Bundesagentur: a request refused with 403 or 429, a server error or a network
+  error is retried with backoff capped at two minutes, up to 14 attempts (about
+  18 minutes), while other pages go on, so one refused page no longer ends a full
+  scrape. The scrape still fails when a page stays refused that long or a run
+  meets 5,000 such failures. `transient_failures` counts them by type.
+- Bundesagentur: a slice that shrinks while it is read stops at its new end. A
+  page past the end of the results counts as the last page instead of an invalid
+  response that failed the whole scrape.
 - Phenom: a board with more than 9,900 jobs is split by category and state, so every
   job is collected instead of the first 9,900.
 - Oracle: a site with more than 10,000 jobs is read in two parts by posting date, so
