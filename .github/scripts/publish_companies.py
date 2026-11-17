@@ -4,16 +4,22 @@ Triggered by `.github/workflows/publish-ats-companies.yml` whenever a
 tenant CSV under ``ats-companies/`` lands on ``main``. Behaviour:
 
 1. For each ``ats-companies/<ats>.csv`` upload to
-   ``s3://<bucket>/jobhive/v1/<ats>/companies.csv``.
+   ``s3://<bucket>/<prefix>/<ats>/companies.csv``.
 2. Build an aggregated ``companies.{csv,parquet}`` that concatenates
    every per-ATS file with an extra ``ats`` column. Upload to
-   ``s3://<bucket>/jobhive/v1/companies.{csv,parquet}``.
-3. Patch ``manifest.json`` in place: refresh the top-level
+   ``s3://<bucket>/<prefix>/companies.{csv,parquet}``.
+3. Patch ``<prefix>/manifest.json`` in place: refresh the top-level
    ``companies`` entry and the per-ATS ``by_ats_companies`` map. Other
    fields (``by_ats`` for jobs, ``all``, ``stats``…) are preserved
    untouched — they're owned by the publisher pipeline, not the CI.
+   A prefix without a manifest is skipped rather than seeded with a
+   partial one.
 4. Delete the now-obsolete legacy paths
    (``companies/all.csv`` + ``companies/by-ats/*``).
+
+Every step runs for each prefix in ``PREFIXES``: the canonical
+``jobs/v1`` and its deprecated mirror ``jobhive/v1``. Manifest URLs in
+both point to ``jobs/v1``.
 
 Notes:
 - The script is idempotent. Running it twice in a row produces the
@@ -50,13 +56,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import boto3
 import pandas as pd
-from botocore.exceptions import ClientError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ATS_COMPANIES_DIR = REPO_ROOT / "ats-companies"
-PREFIX = "jobhive/v1"
+CANONICAL_PREFIX = "jobs/v1"
+# Deprecated prefixes kept as full mirrors of the canonical one.
+MIRROR_PREFIXES = ("jobhive/v1",)
+PREFIXES = (CANONICAL_PREFIX, *MIRROR_PREFIXES)
 # Lowest manifest version this script knows how to write. Treat as a
 # floor: bump existing manifests up to it, never down. If the
 # jobs-side publisher independently moves the manifest to a newer
@@ -72,6 +79,9 @@ def env(name: str) -> str:
 
 
 def make_client():
+    # Lazy import: tests load this module without boto3 installed.
+    import boto3
+
     return boto3.client(
         "s3",
         endpoint_url=env("R2_ENDPOINT_URL"),
@@ -155,28 +165,48 @@ def build_aggregated(ats_files: dict[str, bytes]) -> tuple[bytes, bytes, int]:
     return csv_buf.getvalue(), parquet_buf.getvalue(), len(combined)
 
 
-def fetch_existing_manifest(client, bucket: str) -> dict[str, Any]:
-    """Return the manifest if it exists, else a fresh-template dict."""
-    key = f"{PREFIX}/manifest.json"
+def fetch_existing_manifest(client, bucket: str, prefix: str) -> dict[str, Any] | None:
+    """Return the manifest under ``prefix``, or ``None`` if there is none."""
+    key = f"{prefix}/manifest.json"
     try:
         obj = client.get_object(Bucket=bucket, Key=key)
-    except ClientError as exc:
+    except client.exceptions.ClientError as exc:
         code = exc.response.get("Error", {}).get("Code", "")
         if code in ("NoSuchKey", "404"):
-            print("  no existing manifest — starting fresh")
-            return {}
+            return None
         raise
     return json.loads(obj["Body"].read().decode("utf-8"))
 
 
-def delete_legacy(client, bucket: str) -> None:
+def patch_manifest(
+    manifest: dict[str, Any],
+    *,
+    companies: dict[str, Any],
+    by_ats_companies: dict[str, dict[str, Any]],
+    updated_at: str,
+) -> dict[str, Any]:
+    """Return a copy of ``manifest`` with the companies block replaced."""
+    patched = dict(manifest)
+    patched["companies"] = companies
+    patched["by_ats_companies"] = by_ats_companies
+    patched["updated_at"] = updated_at
+    # Version floor: raise to MIN_MANIFEST_VERSION, never lower a newer one.
+    if _parse_version(patched.get("version")) < _parse_version(MIN_MANIFEST_VERSION):
+        patched["version"] = MIN_MANIFEST_VERSION
+    # Legacy companies field whose files `delete_legacy` removes; its name is
+    # one underscore away from `by_ats_companies`.
+    patched.pop("companies_by_ats", None)
+    return patched
+
+
+def delete_legacy(client, bucket: str, prefix: str) -> None:
     """One-shot cleanup of the old companies layout. Idempotent — if
     the prefix is already empty the loop is a no-op."""
     legacy_prefixes = [
-        f"{PREFIX}/companies/by-ats/",
-        f"{PREFIX}/companies/all.csv",
-        f"{PREFIX}/ats-companies/",  # transient prefix from an earlier draft
-        f"{PREFIX}/seek/companies.csv",  # disabled scheduled source
+        f"{prefix}/companies/by-ats/",
+        f"{prefix}/companies/all.csv",
+        f"{prefix}/ats-companies/",  # transient prefix from an earlier draft
+        f"{prefix}/seek/companies.csv",  # disabled scheduled source
     ]
     paginator = client.get_paginator("list_objects_v2")
     for prefix in legacy_prefixes:
@@ -250,19 +280,26 @@ def main() -> None:
         ats = path.stem
         data = read_csv(path)
         ats_files[ats] = data
-        key = f"{PREFIX}/{ats}/companies.csv"
-        upload(client, bucket, key, data, "text/csv")
-        by_ats_entries[ats] = file_entry(public_url(bucket, key), data=data)
+        for prefix in PREFIXES:
+            upload(client, bucket, f"{prefix}/{ats}/companies.csv", data, "text/csv")
+        by_ats_entries[ats] = file_entry(
+            public_url(bucket, f"{CANONICAL_PREFIX}/{ats}/companies.csv"), data=data
+        )
 
     print("\n== Step 2: build + upload aggregated companies.{csv,parquet}")
     agg_csv, agg_parquet, agg_rows = build_aggregated(ats_files)
-    csv_key = f"{PREFIX}/companies.csv"
-    parquet_key = f"{PREFIX}/companies.parquet"
-    upload(client, bucket, csv_key, agg_csv, "text/csv")
-    upload(client, bucket, parquet_key, agg_parquet, "application/vnd.apache.parquet")
+    for prefix in PREFIXES:
+        upload(client, bucket, f"{prefix}/companies.csv", agg_csv, "text/csv")
+        upload(
+            client,
+            bucket,
+            f"{prefix}/companies.parquet",
+            agg_parquet,
+            "application/vnd.apache.parquet",
+        )
     aggregate_entry = {
-        "csv": public_url(bucket, csv_key),
-        "parquet": public_url(bucket, parquet_key),
+        "csv": public_url(bucket, f"{CANONICAL_PREFIX}/companies.csv"),
+        "parquet": public_url(bucket, f"{CANONICAL_PREFIX}/companies.parquet"),
         "rows": agg_rows,
         "size_bytes": len(agg_csv),
         "sha256": sha256_bytes(agg_csv),
@@ -270,45 +307,36 @@ def main() -> None:
         "parquet_sha256": sha256_bytes(agg_parquet),
     }
 
-    print("\n== Step 3: patch manifest.json")
-    manifest = fetch_existing_manifest(client, bucket)
-    manifest["companies"] = aggregate_entry
-    manifest["by_ats_companies"] = by_ats_entries
-    manifest["updated_at"] = datetime.now(tz=UTC).isoformat(
-        timespec="seconds"
-    ).replace("+00:00", "Z")
-    # Monotonic floor: bump up to MIN_MANIFEST_VERSION if absent or
-    # below, leave anything higher untouched. Prevents this script
-    # from silently downgrading a manifest that a newer publisher
-    # has already moved forward (e.g. publisher moves to "3.0",
-    # next companies-side run preserves it).
-    existing_version = manifest.get("version")
-    if existing_version is None or _parse_version(existing_version) < _parse_version(
-        MIN_MANIFEST_VERSION
-    ):
-        manifest["version"] = MIN_MANIFEST_VERSION
-    # Drop the legacy companies-side field. It pointed at
-    # `<prefix>/companies/by-ats/<ats>.csv` URLs that we deleted in
-    # `delete_legacy(...)` below, and its name is one underscore away
-    # from `by_ats_companies` so leaving it behind invites confusion.
-    # Jobs-side legacy fields (`by_date`) are publisher-owned — that
-    # cleanup happens in DatasetPublisher.
-    manifest.pop("companies_by_ats", None)
-    manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
-    upload(
-        client,
-        bucket,
-        f"{PREFIX}/manifest.json",
-        manifest_bytes,
-        "application/json",
-    )
+    print("\n== Step 3: patch manifests")
+    updated_at = datetime.now(tz=UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    patched_count = 0
+    for prefix in PREFIXES:
+        manifest = fetch_existing_manifest(client, bucket, prefix)
+        if manifest is None:
+            print(f"  no manifest under {prefix}, skipped")
+            continue
+        patched = patch_manifest(
+            manifest,
+            companies=aggregate_entry,
+            by_ats_companies=by_ats_entries,
+            updated_at=updated_at,
+        )
+        upload(
+            client,
+            bucket,
+            f"{prefix}/manifest.json",
+            json.dumps(patched, indent=2, sort_keys=True).encode("utf-8"),
+            "application/json",
+        )
+        patched_count += 1
 
     print("\n== Step 4: cleanup legacy paths")
-    delete_legacy(client, bucket)
+    for prefix in PREFIXES:
+        delete_legacy(client, bucket, prefix)
 
     print(
         f"\nDone. {len(csvs)} ATSes, {agg_rows:,} aggregated rows, "
-        f"manifest patched."
+        f"{patched_count} manifest(s) patched."
     )
 
 

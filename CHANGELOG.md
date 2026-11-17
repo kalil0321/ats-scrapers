@@ -29,6 +29,11 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   feed address on request (`feed_url` or `ATS_SCRAPERS_WORKABLE_FEED_URL`) and
   asks for at most one download per hour.
 
+### Changed
+
+- The hosted dataset moves to `https://storage.stapply.ai/jobs/v1/`, the new
+  default manifest URL. `jobhive/v1` keeps working as a mirror.
+
 ### Removed
 
 - The dataset pipeline (`scripts/`, `pipeline/`) and the snapshot archive

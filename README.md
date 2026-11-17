@@ -19,10 +19,10 @@
 </p>
 
 <p align="center">
-  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.total_jobs&label=live%20jobs&color=3b82f6&cacheSeconds=300" alt="Live jobs"></a>
-  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.total_companies&label=companies&color=3b82f6&cacheSeconds=300" alt="Companies"></a>
-  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.stats.ats_count&label=sources&color=3b82f6&cacheSeconds=300" alt="Sources"></a>
-  <a href="https://storage.stapply.ai/jobhive/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobhive%2Fv1%2Fmanifest.json&query=%24.generated_at&label=snapshot&color=3b82f6&cacheSeconds=300" alt="Dataset snapshot"></a>
+  <a href="https://storage.stapply.ai/jobs/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobs%2Fv1%2Fmanifest.json&query=%24.stats.total_jobs&label=live%20jobs&color=3b82f6&cacheSeconds=300" alt="Live jobs"></a>
+  <a href="https://storage.stapply.ai/jobs/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobs%2Fv1%2Fmanifest.json&query=%24.stats.total_companies&label=companies&color=3b82f6&cacheSeconds=300" alt="Companies"></a>
+  <a href="https://storage.stapply.ai/jobs/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobs%2Fv1%2Fmanifest.json&query=%24.stats.ats_count&label=sources&color=3b82f6&cacheSeconds=300" alt="Sources"></a>
+  <a href="https://storage.stapply.ai/jobs/v1/manifest.json"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fstorage.stapply.ai%2Fjobs%2Fv1%2Fmanifest.json&query=%24.generated_at&label=snapshot&color=3b82f6&cacheSeconds=300" alt="Dataset snapshot"></a>
   <a href="https://pypi.org/project/ats-scrapers/"><img src="https://img.shields.io/pypi/v/ats-scrapers?color=3b82f6" alt="PyPI version"></a>
   <a href="https://pypi.org/project/ats-scrapers/"><img src="https://img.shields.io/pypi/pyversions/ats-scrapers" alt="Python versions"></a>
   <a href="https://github.com/kalil0321/ats-scrapers/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
@@ -135,12 +135,12 @@ query needs:
 
 ```bash
 duckdb -c "SELECT company, title, location, apply_url
-  FROM 'https://storage.stapply.ai/jobhive/v1/all.parquet'
+  FROM 'https://storage.stapply.ai/jobs/v1/all.parquet'
   WHERE title ILIKE '%machine learning%' AND location ILIKE '%paris%'
   LIMIT 20"
 ```
 
-**Download it.** The [manifest](https://storage.stapply.ai/jobhive/v1/manifest.json)
+**Download it.** The [manifest](https://storage.stapply.ai/jobs/v1/manifest.json)
 lists the full snapshot and every per-source slice as Parquet and CSV, with
 row counts, sizes and checksums.
 
