@@ -193,10 +193,10 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   Mellon (two sites), Comcast, Kohl's, Lilly (two sites), Lithia & Driveway,
   OneDigital, Petco, Saab and USIC point at their current data center, and a
   duplicate Stanford Health Care row is removed.
-- Personio: a board that answers 403, 429 or a page that is not JSON raises
-  an error instead of being reported as not found, a careers site that answers
-  404 on every path is reported as not found instead of empty, and a board
-  with no openings is empty.
+- Personio: a board that answers 403, 429 or anything but a JSON job list on
+  one of its paths raises an error instead of being reported as not found or
+  empty, a careers site that answers 404 on every path is reported as not
+  found instead of empty, and a board with no openings is empty.
 - join.com: a company that join.com deleted (410 "Resource deleted") is
   reported as not found.
 

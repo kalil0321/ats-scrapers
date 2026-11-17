@@ -6,6 +6,8 @@ ATS protocol supports it. We mock httpx so no network traffic.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
@@ -323,6 +325,73 @@ def test_personio_html_instead_of_json_is_an_error(httpx_mock) -> None:
     with pytest.raises(ScraperError, match="not JSON") as exc_info:
         PersonioScraper("acme").fetch()
     assert not isinstance(exc_info.value, CompanyNotFoundError)
+
+
+_NO_JOB_LIST = [
+    None,
+    {"success": False, "error": {"code": 403, "message": "Forbidden"}},
+    {"error": "Too many requests"},
+    {"data": None},
+    ["blocked"],
+]
+
+
+@pytest.mark.parametrize("body", _NO_JOB_LIST)
+def test_personio_json_without_job_list_is_an_error(httpx_mock, body) -> None:
+    httpx_mock.add_response(
+        url="https://acme.jobs.personio.com/search.json", text=json.dumps(body)
+    )
+    httpx_mock.add_response(
+        url="https://acme.jobs.personio.com/api/careers/jobs/list/", status_code=404
+    )
+    with pytest.raises(ScraperError, match="no job list") as exc_info:
+        PersonioScraper("acme").fetch()
+    assert not isinstance(exc_info.value, CompanyNotFoundError)
+
+
+@pytest.mark.parametrize("body", _NO_JOB_LIST)
+@pytest.mark.parametrize("status", [403, 429])
+def test_personio_blocked_board_with_unusable_fallback_is_an_error(
+    httpx_mock, status, body
+) -> None:
+    httpx_mock.add_response(
+        url="https://acme.jobs.personio.com/search.json",
+        status_code=status,
+        is_reusable=True,
+    )
+    httpx_mock.add_response(
+        url="https://acme.jobs.personio.com/api/careers/jobs/list/",
+        text=json.dumps(body),
+    )
+    with pytest.raises(ScraperError, match=str(status)) as exc_info:
+        PersonioScraper("acme").fetch()
+    assert not isinstance(exc_info.value, CompanyNotFoundError)
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_personio_empty_list_beside_a_blocked_path_is_an_error(
+    httpx_mock, status
+) -> None:
+    httpx_mock.add_response(url="https://acme.jobs.personio.com/search.json", json=[])
+    httpx_mock.add_response(
+        url="https://acme.jobs.personio.com/api/careers/jobs/list/",
+        status_code=status,
+        is_reusable=True,
+    )
+    with pytest.raises(ScraperError, match=str(status)) as exc_info:
+        PersonioScraper("acme").fetch()
+    assert not isinstance(exc_info.value, CompanyNotFoundError)
+
+
+def test_personio_empty_careers_api_envelope_is_empty(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://acme.jobs.personio.com/search.json", status_code=404
+    )
+    httpx_mock.add_response(
+        url="https://acme.jobs.personio.com/api/careers/jobs/list/",
+        json={"success": True, "data": []},
+    )
+    assert PersonioScraper("acme").fetch() == []
 
 
 def test_personio_accepts_full_url(httpx_mock) -> None:
