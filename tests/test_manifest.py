@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from ats_scrapers.exceptions import ManifestError
-from ats_scrapers.manifest import Manifest, _pick_url
+from ats_scrapers.manifest import USER_AGENT, Manifest, _pick_url
 from ats_scrapers.models import ATSType
 
 
@@ -104,6 +104,15 @@ def test_fetch_uses_provided_http_client(
     with httpx.Client() as client:
         manifest = Manifest.fetch("https://example.com/manifest.json", client=client)
     assert manifest.stats.total_jobs == 1000
+
+
+def test_fetch_identifies_the_library(
+    httpx_mock, sample_manifest_dict: dict[str, Any]
+) -> None:
+    httpx_mock.add_response(url="https://example.com/manifest.json", json=sample_manifest_dict)
+    Manifest.fetch("https://example.com/manifest.json")
+    assert httpx_mock.get_request().headers["user-agent"] == USER_AGENT
+    assert USER_AGENT.startswith("ats-scrapers/")
 
 
 def test_fetch_raises_on_http_error(httpx_mock) -> None:

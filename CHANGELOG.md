@@ -34,6 +34,12 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - The dataset pipeline (`scripts/`, `pipeline/`) and the snapshot archive
   workflow. The library and the company lists are unchanged.
 
+### Changed
+
+- Dataset downloads (`search`, `Client`, `Manifest.fetch`) identify themselves
+  as `ats-scrapers/<version>` in the `User-Agent` header. A client you pass in
+  keeps its own headers.
+
 ### Fixed
 
 - Phenom: a board with more than 9,900 jobs is split by category and state, so every
