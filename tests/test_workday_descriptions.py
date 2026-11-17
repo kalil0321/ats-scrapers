@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
@@ -68,6 +69,7 @@ def test_descriptions_of_a_site_share_one_connection(
     assert len(site.opened) == 1
     assert site.opened[0]["proxy"] == "http://user:pass@proxy.test:8080"
     assert site.opened[0]["limits"].keepalive_expiry == workday.DETAIL_KEEPALIVE_SECONDS
+    assert site.opened[0]["limits"].max_keepalive_connections == 8
 
 
 def test_a_known_description_needs_no_request(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -154,3 +156,15 @@ def test_close_releases_the_connection_and_can_be_repeated(
     assert scraper.get_description(_job()) == "Role"
     assert len(site.opened) == 2
     assert scraper._detail_http is not client
+
+
+def test_several_jobs_can_be_read_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    site = _Site(monkeypatch, lambda request: _detail(f"Role {request.url.path[-2:]}"))
+    scraper = WorkdayScraper(URL)
+    jobs = [_job(f"/job/Paris/Engineer_R{number}") for number in range(1, 9)]
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        texts = list(pool.map(scraper.get_description, jobs))
+
+    assert texts == [f"Role R{number}" for number in range(1, 9)]
+    assert len(site.opened) == 1
