@@ -129,6 +129,15 @@ def test_fetch_identifies_the_library(
     assert USER_AGENT.startswith("ats-scrapers/")
 
 
+
+def test_fetch_reads_the_jobs_v1_manifest_by_default(
+    httpx_mock, sample_manifest_dict: dict[str, Any]
+) -> None:
+    httpx_mock.add_response(
+        url="https://storage.stapply.ai/jobs/v1/manifest.json", json=sample_manifest_dict
+    )
+    assert Manifest.fetch().stats.total_jobs == 1000
+
 def test_fetch_raises_on_http_error(httpx_mock) -> None:
     httpx_mock.add_response(url="https://example.com/manifest.json", status_code=500)
     with pytest.raises(ManifestError):
