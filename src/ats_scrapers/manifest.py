@@ -18,7 +18,7 @@ from ats_scrapers._version import __version__
 from ats_scrapers.exceptions import ManifestError
 from ats_scrapers.models import ATSType
 
-DEFAULT_MANIFEST_URL = "https://storage.stapply.ai/jobhive/v1/manifest.json"
+DEFAULT_MANIFEST_URL = "https://storage.stapply.ai/jobs/v1/manifest.json"
 
 # Lets the dataset host tell library downloads apart from other httpx traffic.
 USER_AGENT = f"ats-scrapers/{__version__} (+https://github.com/kalil0321/ats-scrapers)"

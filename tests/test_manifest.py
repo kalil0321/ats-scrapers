@@ -61,6 +61,20 @@ def test_manifest_accepts_source_without_local_scraper_enum(
     assert m.url_for_ats("beisen") == "https://example.com/beisen.csv"
 
 
+def test_manifest_accepts_prefix_migration_keys(
+    sample_manifest_dict: dict[str, Any],
+) -> None:
+    sample_manifest_dict["canonical_prefix"] = "jobs/v1"
+    sample_manifest_dict["deprecated_prefixes"] = {
+        "jobhive/v1": {
+            "replaced_by": "jobs/v1",
+            "manifest": "https://storage.stapply.ai/jobhive/v1/manifest.json",
+        }
+    }
+    m = Manifest.model_validate(sample_manifest_dict)
+    assert m.url_for_all() == "https://example.com/all.parquet"
+
+
 def test_url_for_all_returns_parquet_by_default(sample_manifest_dict: dict[str, Any]) -> None:
     m = Manifest.model_validate(sample_manifest_dict)
     assert m.url_for_all() == "https://example.com/all.parquet"
