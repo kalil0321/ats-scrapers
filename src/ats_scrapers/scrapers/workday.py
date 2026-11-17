@@ -100,8 +100,9 @@ MAX_RETRIES = 3
 RETRY_BACKOFF = 1.5
 MAX_RETRY_DELAY = 30.0
 DETAIL_HEADERS = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
-# ``get_description`` keeps its connection to the site open between jobs.
-DETAIL_KEEPALIVE_CONNECTIONS = 2
+# ``get_description`` keeps its connections to the site open between jobs,
+# enough of them for a caller that reads several jobs at once.
+DETAIL_KEEPALIVE_CONNECTIONS = 8
 DETAIL_KEEPALIVE_SECONDS = 60.0
 
 # When a Workday job spans multiple offices, the search endpoint returns a
