@@ -22,7 +22,7 @@ import httpx
 import pandas as pd
 
 from ats_scrapers.exceptions import StorageError
-from ats_scrapers.manifest import DEFAULT_MANIFEST_URL, Manifest
+from ats_scrapers.manifest import DEFAULT_MANIFEST_URL, USER_AGENT, Manifest
 from ats_scrapers.models import ATSType
 
 if TYPE_CHECKING:
@@ -48,7 +48,7 @@ class Client:
         self._manifest_url = manifest_url
         self._prefer_parquet = _has_parquet_engine() if prefer_parquet is None else prefer_parquet
         self._http_client = http_client or httpx.Client(
-            timeout=120.0, follow_redirects=True
+            timeout=120.0, follow_redirects=True, headers={"User-Agent": USER_AGENT}
         )
         self._owns_http = http_client is None
         self._manifest: Manifest | None = None

@@ -313,6 +313,12 @@ def test_download_csv_via_httpx_mock(httpx_mock) -> None:
     assert df.iloc[0]["title"] == "Engineer"
 
 
+def test_download_identifies_the_library(httpx_mock) -> None:
+    httpx_mock.add_response(url="https://example.com/data.csv", content=b"url,title\n")
+    Client()._download("https://example.com/data.csv")
+    assert httpx_mock.get_request().headers["user-agent"].startswith("ats-scrapers/")
+
+
 def test_download_parquet_via_httpx_mock(httpx_mock) -> None:
     df_in = pd.DataFrame([{"url": "https://x.com/1", "title": "X"}])
     buffer = BytesIO()

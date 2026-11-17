@@ -14,10 +14,14 @@ from typing import Self
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from ats_scrapers._version import __version__
 from ats_scrapers.exceptions import ManifestError
 from ats_scrapers.models import ATSType
 
 DEFAULT_MANIFEST_URL = "https://storage.stapply.ai/jobhive/v1/manifest.json"
+
+# Lets the dataset host tell library downloads apart from other httpx traffic.
+USER_AGENT = f"ats-scrapers/{__version__} (+https://github.com/kalil0321/ats-scrapers)"
 
 
 class FileEntry(BaseModel):
@@ -81,7 +85,9 @@ class Manifest(BaseModel):
     ) -> Self:
         """Fetch and validate the manifest from a URL."""
         owns_client = client is None
-        client = client or httpx.Client(timeout=timeout, follow_redirects=True)
+        client = client or httpx.Client(
+            timeout=timeout, follow_redirects=True, headers={"User-Agent": USER_AGENT}
+        )
         try:
             response = client.get(url)
             response.raise_for_status()
