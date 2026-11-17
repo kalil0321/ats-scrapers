@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 
 from pydantic import HttpUrl
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
 
 PAGE_SIZE = 10
+# Darwinbox answers 500 with this message for a tenant it does not host.
+_INVALID_SUBDOMAIN = "Invalid subdomain"
 MAX_PAGES = 500
 _DEFAULT_TLD = "in"
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -197,16 +199,24 @@ class DarwinboxScraper(BaseScraper):
         api_url: str,
         page: int,
     ) -> dict[str, Any]:
-        payload = await fetch.post_json(
-            api_url,
-            params={"companyId": "main"},
-            json={
-                "companyId": "main",
-                "page": page,
-                "sort_option": "new",
-                "limit": PAGE_SIZE,
-            },
+        body = {
+            "companyId": "main",
+            "page": page,
+            "sort_option": "new",
+            "limit": PAGE_SIZE,
+        }
+        params = {"companyId": "main"}
+        response = await fetch.request(
+            "POST", api_url, params=params, json=body, handled={500}
         )
+        if response.status_code == 500:
+            if _INVALID_SUBDOMAIN in response.text:
+                raise CompanyNotFoundError(
+                    f"Darwinbox has no tenant {self.company_slug!r} "
+                    "(invalid subdomain)"
+                )
+            response = await fetch.request("POST", api_url, params=params, json=body)
+        payload = response.json()
         if not isinstance(payload, dict):
             raise ScraperError(f"Darwinbox returned a non-object payload at page={page}")
         if payload.get("status") != "success":

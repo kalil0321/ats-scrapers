@@ -219,6 +219,42 @@ async def test_expired_certificate_is_not_a_missing_host(httpx_mock) -> None:
             await fetch.get_text(URL)
 
 
+_AKAMAI_DNS_FAILURE = (
+    "<HTML><HEAD><TITLE>Service Unavailable</TITLE></HEAD><BODY>"
+    "<H1>Service Unavailable - DNS failure</H1>"
+    "The server is temporarily unable to service your request.</BODY></HTML>"
+)
+
+
+async def test_cdn_without_origin_is_not_found_when_enabled(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL, status_code=503, text=_AKAMAI_DNS_FAILURE, is_reusable=True)
+    async with _fetcher(missing_host_not_found=True) as fetch:
+        with pytest.raises(CompanyNotFoundError, match="no origin left behind its CDN"):
+            await fetch.get_text(URL)
+    assert len(httpx_mock.get_requests()) == 3
+
+
+async def test_cdn_without_origin_is_retried_by_default(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL, status_code=503, text=_AKAMAI_DNS_FAILURE, is_reusable=True)
+    async with _fetcher() as fetch:
+        with pytest.raises(RetryExhaustedError):
+            await fetch.get_text(URL)
+
+
+async def test_cdn_origin_that_comes_back_is_fetched(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL, status_code=503, text=_AKAMAI_DNS_FAILURE)
+    httpx_mock.add_response(url=URL, text="ok")
+    async with _fetcher(missing_host_not_found=True) as fetch:
+        assert await fetch.get_text(URL) == "ok"
+
+
+async def test_other_503_is_not_a_missing_host(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL, status_code=503, text="Service Unavailable", is_reusable=True)
+    async with _fetcher(missing_host_not_found=True) as fetch:
+        with pytest.raises(RetryExhaustedError):
+            await fetch.get_text(URL)
+
+
 async def test_retries_config_is_respected(httpx_mock) -> None:
     httpx_mock.add_response(url=URL, status_code=500)
     async with _fetcher(retries=1) as fetch:
