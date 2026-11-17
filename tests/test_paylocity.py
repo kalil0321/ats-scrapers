@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
+import httpx
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
+from ats_scrapers.scrapers import paylocity
 from ats_scrapers.scrapers.paylocity import (
     PaylocityScraper,
     _extract_page_data,
@@ -140,6 +143,29 @@ def test_fetches_external_jobs_and_hydrates_details(httpx_mock) -> None:
     assert job.salary_currency == "USD"
     assert job.salary_period == "YEAR"
     assert str(job.apply_url).endswith("/Recruiting/Jobs/Apply/4363000")
+
+
+def test_job_pages_of_a_board_are_read_together(httpx_mock) -> None:
+    rows = [_row(4363000 + number) for number in range(20)]
+    httpx_mock.add_response(url=LISTING_URL, text=_listing(rows))
+    open_requests = 0
+    most_open = 0
+
+    async def page(request: httpx.Request) -> httpx.Response:
+        nonlocal open_requests, most_open
+        open_requests += 1
+        most_open = max(most_open, open_requests)
+        await asyncio.sleep(0.01)
+        open_requests -= 1
+        return httpx.Response(200, text=_detail())
+
+    httpx_mock.add_callback(page, is_reusable=True)
+
+    jobs = PaylocityScraper(BOARD_ID, company_name="Acme").fetch()
+
+    assert len(jobs) == 20
+    assert all(job.description for job in jobs)
+    assert most_open == paylocity.DETAIL_CONCURRENCY == 8
 
 
 def test_hydrates_legacy_detail_sections_without_json_ld(httpx_mock) -> None:

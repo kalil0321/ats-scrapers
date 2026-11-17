@@ -23,7 +23,9 @@ if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
 
 BASE_URL = "https://recruiting.paylocity.com"
-DETAIL_CONCURRENCY = 2
+# A job page often takes several seconds to answer, so a board's pages are
+# read eight at a time.
+DETAIL_CONCURRENCY = 8
 _PAGE_DATA_RE = re.compile(r"\bwindow\.pageData\s*=\s*")
 _EMPLOYMENT_TYPE_MAP: dict[str, EmploymentType] = {
     "FULL_TIME": "FULL_TIME",

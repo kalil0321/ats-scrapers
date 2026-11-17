@@ -42,6 +42,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   keeps its own headers.
 - Workday: `get_description` keeps its connection to the site open between
   jobs. `close()` releases it.
+- Paylocity reads the job pages of a board eight at a time instead of two.
 
 ### Removed
 
