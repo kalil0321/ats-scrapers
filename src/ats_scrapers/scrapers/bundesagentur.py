@@ -41,8 +41,18 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
+import logging
 import random
-from collections.abc import AsyncGenerator, Awaitable, Callable
+import time
+from collections import Counter
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Sequence,
+)
 from datetime import UTC, datetime
 from typing import Any
 
@@ -52,6 +62,8 @@ from pydantic import HttpUrl
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
+
+logger = logging.getLogger(__name__)
 
 API_URL = "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v6/jobs"
 DETAIL_URL_TEMPLATE = (
@@ -69,16 +81,27 @@ PAGINATION_CAP = PAGE_SIZE * PAGE_LIMIT
 #   34 = PRAKTIKUM_TRAINEE (internships & trainee programs)
 #   4  = AUSBILDUNG (vocational training)
 ANGEBOTSART_PRAKTIKUM_TRAINEE = "34"
-# The recursive fan-out issues 10k+ requests for a full scrape. The
-# arbeitsagentur API has an Akamai-style WAF that returns 403 under
-# burst load. A shared global semaphore at 2 + sequential page fan-out
-# within each leaf keeps the request pace below the WAF threshold while
-# still parallelizing across the recursion tree.
+# The recursive fan-out issues 10k+ requests for a full scrape. The API's
+# gateway answers 403 under burst load. A shared global semaphore at 2 +
+# sequential page fan-out within each leaf keeps the request pace below that
+# threshold while still parallelizing across the recursion tree.
 MAX_CONCURRENCY = 2
 MAX_RETRIES = 6
 RETRY_BASE_DELAY = 2.0
 RETRY_JITTER = 0.5  # ± fraction added to each backoff so concurrent
 # retries don't synchronize and re-trigger the WAF in lockstep.
+# The gateway refuses single requests with 403 while the requests around them
+# go through, and accepts the same request again later. A refused page waits
+# with backoff capped at RETRY_MAX_DELAY, about 16 minutes over
+# MAX_BLOCKED_ATTEMPTS, without holding a request slot, so other pages go on.
+# The scrape still fails closed when one page is refused that long or the run
+# meets MAX_TRANSIENT_FAILURES, as it does when the API is down.
+MAX_BLOCKED_ATTEMPTS = 14
+RETRY_MAX_DELAY = 120.0
+MAX_TRANSIENT_FAILURES = 5_000
+# With several proxies, a route that met a 403, a 429 or a network error
+# rests this long, and requests go through the next route in the meantime.
+ROUTE_COOL_OFF = 300.0
 
 # Candidate subdivision facets. At each node we only use a facet when its
 # bucket counts sum exactly to that node's total, then pick the candidate
@@ -211,13 +234,81 @@ REGION_COVER_TOLERANCE = 0.002
 
 class _PageFetchExhaustedError(ScraperError):
     """Internal signal that ``_fetch_page`` exhausted its retry budget on
-    a *transient* failure class (persistent 403 / 429 / 5xx, or a network
-    error that didn't resolve before MAX_RETRIES).
+    a *transient* failure class (403 / 429 / 5xx or a network error that
+    lasted MAX_BLOCKED_ATTEMPTS, or more than MAX_TRANSIENT_FAILURES of them
+    in one run).
 
     Distinguished from ``ScraperError`` so logs preserve the retry-exhausted
     failure class. It is deliberately not swallowed: publishing a partial
     federal catalogue is less safe than preserving the previous complete run.
     """
+
+
+class _RouteBody(httpx.AsyncByteStream):
+    """A response body that rests its route when it breaks off."""
+
+    def __init__(
+        self, stream: httpx.AsyncByteStream, rest: Callable[[], None]
+    ) -> None:
+        self._stream = stream
+        self._rest = rest
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        try:
+            async for chunk in self._stream:
+                yield chunk
+        except httpx.TransportError:
+            self._rest()
+            raise
+
+    async def aclose(self) -> None:
+        await self._stream.aclose()
+
+
+class _Routes(httpx.AsyncBaseTransport):
+    """Send each request through the first route, in the given order, that
+    is not resting. ``None`` is a direct connection."""
+
+    def __init__(self, proxies: Sequence[str | None]) -> None:
+        self._transports = [
+            httpx.AsyncHTTPTransport(proxy=proxy) for proxy in proxies
+        ]
+        self._resting_until = [0.0] * len(self._transports)
+
+    def _pick(self) -> int:
+        now = time.monotonic()
+        for index, until in enumerate(self._resting_until):
+            if until <= now:
+                return index
+        return min(
+            range(len(self._resting_until)),
+            key=self._resting_until.__getitem__,
+        )
+
+    def _rest(self, index: int) -> None:
+        self._resting_until[index] = time.monotonic() + ROUTE_COOL_OFF
+        logger.debug("Bundesagentur route %d rests", index)
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        index = self._pick()
+        request.extensions["route"] = index
+        try:
+            response = await self._transports[index].handle_async_request(request)
+        except httpx.TransportError:
+            self._rest(index)
+            raise
+        if response.status_code in (403, 429):
+            self._rest(index)
+        # HTTPX reads the body after this returns.
+        if isinstance(response.stream, httpx.AsyncByteStream):
+            response.stream = _RouteBody(
+                response.stream, functools.partial(self._rest, index)
+            )
+        return response
+
+    async def aclose(self) -> None:
+        for transport in self._transports:
+            await transport.aclose()
 
 
 @ScraperRegistry.register(ATSType.BUNDESAGENTUR)
@@ -234,6 +325,7 @@ class BundesagenturScraper(BaseScraper):
         timeout: float = 30.0,
         include_descriptions: bool = True,
         proxy: str | None = None,
+        proxies: Sequence[str | None] | None = None,
         angebotsart: str | None = None,
     ) -> None:
         super().__init__(
@@ -251,6 +343,11 @@ class BundesagenturScraper(BaseScraper):
         # name. ``None`` (default) sends no filter — full catalogue, zero
         # behaviour change.
         self.angebotsart = angebotsart
+        # Routes in order of preference. ``None`` is a direct connection.
+        self.proxies: list[str | None] = list(proxies) if proxies else [proxy]
+        # Retried 403 / 429 / 5xx responses by status, and network errors by
+        # exception name, for the last run.
+        self.transient_failures: Counter[str] = Counter()
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -258,12 +355,19 @@ class BundesagenturScraper(BaseScraper):
         copy = job.model_copy()
 
         async def run() -> str | None:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with self._client() as client:
                 sem = asyncio.Semaphore(1)
                 await self._enrich_description(client, sem, copy)
             return copy.description
 
         return self._run_sync(run())
+
+    def _client(self) -> httpx.AsyncClient:
+        if self.proxies == [None]:
+            return httpx.AsyncClient(timeout=self.timeout)
+        return httpx.AsyncClient(
+            timeout=self.timeout, transport=_Routes(self.proxies)
+        )
 
     async def fetch_stream(self) -> AsyncGenerator[Job, None]:
         """Stream jobs as they're parsed.
@@ -361,7 +465,8 @@ class BundesagenturScraper(BaseScraper):
             else:
                 all_jobs.extend(new_jobs)
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        self.transient_failures = Counter()
+        async with self._client() as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             base_params: dict[str, Any] = {}
             if self.angebotsart:
@@ -370,6 +475,12 @@ class BundesagenturScraper(BaseScraper):
                 base_params["angebotsart"] = self.angebotsart
             await self._exhaust_query(
                 client, sem, base_params=base_params, depth=0, absorb=absorb,
+            )
+        if self.transient_failures:
+            logger.warning(
+                "Bundesagentur retried %d transient failures: %s",
+                self.transient_failures.total(),
+                dict(self.transient_failures),
             )
         return all_jobs
 
@@ -532,8 +643,7 @@ class BundesagenturScraper(BaseScraper):
             await exhaust_region(f"{country} (Land)")
 
         async def fill(params: dict[str, Any], count: int, target: int) -> None:
-            page_count = min((count + PAGE_SIZE - 1) // PAGE_SIZE, PAGE_LIMIT)
-            for page in range(1, page_count + 1):
+            for page in range(1, _page_count(count) + 1):
                 if len(references) >= target:
                     return
                 payload = await self._fetch_page(
@@ -541,7 +651,10 @@ class BundesagenturScraper(BaseScraper):
                     sem,
                     params={**params, "size": PAGE_SIZE, "page": page},
                 )
-                await record(_result_items(payload))
+                items = _result_items(payload)
+                if not items:
+                    return
+                await record(items)
 
         for sort in _COVER_SORTS:
             await fill({**base_params, "sort": sort}, total, total)
@@ -664,17 +777,16 @@ class BundesagenturScraper(BaseScraper):
         items_by_reference: dict[str, dict[str, Any]] = {}
 
         async def collect_pages(params: dict[str, Any], count: int) -> bool:
-            page_count = min(
-                (count + PAGE_SIZE - 1) // PAGE_SIZE,
-                PAGE_LIMIT,
-            )
-            for page in range(1, page_count + 1):
+            for page in range(1, _page_count(count) + 1):
                 payload = await self._fetch_page(
                     client,
                     sem,
                     params={**params, "size": PAGE_SIZE, "page": page},
                 )
-                for item in _result_items(payload):
+                items = _result_items(payload)
+                if not items:
+                    return False
+                for item in items:
                     reference = _item_reference(item)
                     if reference:
                         items_by_reference[reference] = item
@@ -714,17 +826,23 @@ class BundesagenturScraper(BaseScraper):
         total: int,
         absorb: Callable[[list[dict[str, Any]]], Awaitable[None]],
     ) -> None:
-        # We can fetch ``ceil(total / PAGE_SIZE)`` pages, capped at PAGE_LIMIT.
-        page_count = min((total + PAGE_SIZE - 1) // PAGE_SIZE, PAGE_LIMIT)
-
         # Sequential page fan-out within a single leaf — the recursion
         # tree provides cross-leaf parallelism via the global semaphore.
         # Bursting 50+ page requests for one leaf was the WAF trigger we
         # saw at concurrency=3.
-        for page in range(1, page_count + 1):
+        # Paging one leaf can take minutes while postings open and close, so
+        # each page's own total sets how far to read.
+        page_count = _page_count(total)
+        page = 1
+        while page <= page_count:
             params = {**base_params, "size": PAGE_SIZE, "page": page}
             payload = await self._fetch_page(client, sem, params=params)
-            await absorb(_result_items(payload))
+            items = _result_items(payload)
+            if not items:
+                return
+            await absorb(items)
+            page_count = _page_count(_result_total(payload))
+            page += 1
 
     async def _fetch_page(
         self,
@@ -733,8 +851,11 @@ class BundesagenturScraper(BaseScraper):
         *,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        last_exc: Exception | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
+        invalid_payloads = 0
+        transient_attempts = 0
+        while True:
+            r: httpx.Response | None = None
+            network_error: httpx.HTTPError | None = None
             async with sem:
                 try:
                     r = await client.get(
@@ -747,83 +868,74 @@ class BundesagenturScraper(BaseScraper):
                         },
                     )
                 except httpx.HTTPError as exc:
-                    last_exc = exc
-                    await asyncio.sleep(RETRY_BASE_DELAY * attempt)
-                    continue
-            if r.status_code == 200:
+                    network_error = exc
+            if r is not None and r.status_code == 200:
                 try:
-                    payload = r.json()
-                except ValueError as exc:
-                    last_exc = exc
-                else:
-                    if not isinstance(payload, dict):
-                        last_exc = ScraperError(
-                            "Bundesagentur returned a non-object payload"
-                        )
-                    else:
-                        # A region with no postings omits the list. Elsewhere
-                        # results are expected, so that payload is retried.
-                        if (
-                            "wo" in params
-                            and payload.get("maxErgebnisse") == 0
-                            and "ergebnisliste" not in payload
-                        ):
-                            payload["ergebnisliste"] = []
-                        try:
-                            _result_items(payload)
-                            _result_total(payload)
-                        except ScraperError as exc:
-                            last_exc = exc
-                        else:
-                            return payload
-                if attempt == MAX_RETRIES:
-                    raise ScraperError(
-                        "Bundesagentur returned an invalid 200 payload for "
-                        f"{params} after {MAX_RETRIES} retries: {last_exc}"
-                    ) from last_exc
-                base = RETRY_BASE_DELAY * (2 ** attempt)
-                delay = base * (
-                    1 + random.uniform(-RETRY_JITTER, RETRY_JITTER)
-                )
-                await asyncio.sleep(delay)
+                    return _checked_payload(r, params)
+                except (ScraperError, ValueError) as exc:
+                    invalid_payloads += 1
+                    if invalid_payloads >= MAX_RETRIES:
+                        raise ScraperError(
+                            "Bundesagentur returned an invalid 200 payload for "
+                            f"{params} after {MAX_RETRIES} retries: {exc}"
+                        ) from exc
+                await asyncio.sleep(_retry_delay(invalid_payloads))
                 continue
-            if r.status_code == 400:
+            if r is not None and r.status_code == 400:
                 raise ScraperError(
                     f"Bundesagentur rejected query {params}: {r.text[:120]}"
                 )
-            # 403 here is a transient Akamai/WAF rate-limit, not a real
-            # auth failure (the API key never expires); back off and retry.
-            if r.status_code in (403, 429) or 500 <= r.status_code < 600:
-                if attempt == MAX_RETRIES:
-                    # Persistent WAF/server failure aborts the scrape. The
-                    # pipeline removes its temporary CSV and preserves the
-                    # previous complete provider output.
-                    raise _PageFetchExhaustedError(
-                        f"Bundesagentur returned {r.status_code} for {params} "
-                        f"after {MAX_RETRIES} retries"
-                    )
-                retry_after = r.headers.get("Retry-After")
-                base = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BASE_DELAY * (2 ** attempt)
+            if r is not None and not _is_transient(r.status_code):
+                # 401, 404 and other 4xx are contract breaks: crash rather
+                # than publish an undercount.
+                raise ScraperError(
+                    f"Bundesagentur returned {r.status_code} for {params}: "
+                    f"{r.text[:120]}"
                 )
-                # Jitter: ± up to RETRY_JITTER × base, so concurrent retries
-                # don't synchronize and re-trigger the WAF together.
-                delay = base * (1 + random.uniform(-RETRY_JITTER, RETRY_JITTER))
-                await asyncio.sleep(delay)
-                continue
-            # Non-retryable status (401 auth break, 404 endpoint moved,
-            # 4xx other than 403/429, etc.) — these are contract breaks,
-            # not transient. Raise plain ``ScraperError`` so callers do
-            # The scrape crashes loudly rather than producing an undercount.
-            raise ScraperError(
-                f"Bundesagentur returned {r.status_code} for {params}: "
-                f"{r.text[:120]}"
+            transient_attempts += 1
+            self._count_transient_failure(r, network_error, params)
+            if transient_attempts >= MAX_BLOCKED_ATTEMPTS:
+                # The pipeline removes its temporary CSV and preserves the
+                # previous complete provider output.
+                if r is None:
+                    raise _PageFetchExhaustedError(
+                        f"Bundesagentur exhausted retries for {params}: "
+                        f"{network_error!r}"
+                    ) from network_error
+                raise _PageFetchExhaustedError(
+                    f"Bundesagentur returned {r.status_code} for {params} "
+                    f"after {transient_attempts} attempts"
+                )
+            retry_after = r.headers.get("Retry-After") if r is not None else None
+            await asyncio.sleep(_retry_delay(transient_attempts, retry_after))
+
+    def _count_transient_failure(
+        self,
+        response: httpx.Response | None,
+        network_error: httpx.HTTPError | None,
+        params: dict[str, Any],
+    ) -> None:
+        if response is not None:
+            self.transient_failures[str(response.status_code)] += 1
+            logger.debug(
+                "Bundesagentur returned %d for %s (Via=%s, X-API-BLOCKED=%s, "
+                "Retry-After=%s, body=%r)",
+                response.status_code,
+                params,
+                response.headers.get("Via"),
+                response.headers.get("X-API-BLOCKED"),
+                response.headers.get("Retry-After"),
+                response.text[:200],
             )
-        # Network errors exhausted the retry budget; preserve the old output.
-        raise _PageFetchExhaustedError(
-            f"Bundesagentur exhausted retries for {params}: {last_exc}"
-        )
+        else:
+            self.transient_failures[type(network_error).__name__] += 1
+            logger.debug("Bundesagentur request for %s failed: %r", params, network_error)
+        total = self.transient_failures.total()
+        if total > MAX_TRANSIENT_FAILURES:
+            raise _PageFetchExhaustedError(
+                f"Bundesagentur met {total} transient failures in one run "
+                f"({dict(self.transient_failures)}), the last for {params}"
+            )
 
     def _parse(self, item: dict[str, Any]) -> Job | None:
         ats_id = _item_reference(item)
@@ -975,6 +1087,50 @@ _SALARY_PERIODS: dict[str, SalaryPeriod] = {
     "MONATSGEHALT": "MONTH",
     "JAHRESGEHALT": "YEAR",
 }
+
+
+def _checked_payload(
+    response: httpx.Response, params: dict[str, Any]
+) -> dict[str, Any]:
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ScraperError("Bundesagentur returned a non-object payload")
+    total = _result_total(payload)
+    page = int(params.get("page", 1))
+    start = (page - 1) * int(params.get("size", PAGE_SIZE))
+    # The API omits the list for a region with no postings and for a page
+    # that starts past the end of the results. Elsewhere results are
+    # expected, so that payload is retried.
+    if "ergebnisliste" not in payload and (
+        (page > 1 and start >= total) or ("wo" in params and total == 0)
+    ):
+        payload["ergebnisliste"] = []
+    # Paging stops at the first empty page, so only the end may be empty.
+    if not _result_items(payload) and start < total:
+        raise ScraperError(
+            f"Bundesagentur returned no jobs from position {start} of {total}"
+        )
+    return payload
+
+
+def _page_count(total: int) -> int:
+    return min((total + PAGE_SIZE - 1) // PAGE_SIZE, PAGE_LIMIT)
+
+
+def _is_transient(status: int) -> bool:
+    return status in (403, 429) or 500 <= status < 600
+
+
+def _retry_delay(attempt: int, retry_after: str | None = None) -> float:
+    """Backoff before retry ``attempt + 1``, jittered so concurrent retries
+    don't fall back into step, and at most RETRY_MAX_DELAY, a Retry-After
+    included."""
+    if retry_after and retry_after.isdigit():
+        base = float(retry_after)
+    else:
+        base = min(RETRY_BASE_DELAY * (2 ** attempt), RETRY_MAX_DELAY)
+    jittered = base * (1 + random.uniform(-RETRY_JITTER, RETRY_JITTER))
+    return min(jittered, RETRY_MAX_DELAY)
 
 
 def _result_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
