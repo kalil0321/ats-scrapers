@@ -31,7 +31,9 @@ import asyncio
 import html as html_mod
 import logging
 import re
+import threading
 import time
+import weakref
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
@@ -97,6 +99,10 @@ MAX_CONCURRENCY = 10
 MAX_RETRIES = 3
 RETRY_BACKOFF = 1.5
 MAX_RETRY_DELAY = 30.0
+DETAIL_HEADERS = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
+# ``get_description`` keeps its connection to the site open between jobs.
+DETAIL_KEEPALIVE_CONNECTIONS = 2
+DETAIL_KEEPALIVE_SECONDS = 60.0
 
 # When a Workday job spans multiple offices, the search endpoint returns a
 # rollup string in ``locationsText`` like "2 Locations" / "5 Locations"
@@ -160,6 +166,9 @@ class WorkdayScraper(BaseScraper):
             else None
         )
         self._deadline: float | None = None
+        self._detail_http: httpx.Client | None = None
+        self._detail_finalizer: weakref.finalize | None = None
+        self._detail_lock = threading.Lock()
 
     @classmethod
     def from_url(cls, url: str, **kwargs: Any) -> WorkdayScraper:
@@ -227,17 +236,59 @@ class WorkdayScraper(BaseScraper):
         instance = match.group("instance")
         site = match.group("site")
         detail_prefix = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}"
-        jobs = [job.model_copy()]
+        external_path = (job.raw or {}).get("externalPath") or _external_path(job.url)
+        if not external_path:
+            return None
+        try:
+            response = self._detail_client().get(
+                f"{detail_prefix}{external_path}", headers=DETAIL_HEADERS
+            )
+        except httpx.HTTPError:
+            return None
+        if response.status_code != 200:
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        info = payload.get("jobPostingInfo") if isinstance(payload, dict) else None
+        description = _extract_description(info) if isinstance(info, dict) else None
+        return description[:25_000] if description else None
 
-        async def run() -> str | None:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=True, proxy=self.proxy,
-            ) as client:
-                sem = asyncio.Semaphore(1)
-                await self._enrich_details(client, sem, detail_prefix, jobs)
-            return jobs[0].description
+    def _detail_client(self) -> httpx.Client:
+        """The client ``get_description`` reads with, opened on first use.
 
-        return self._run_sync(run())
+        Callers ask for one job at a time. Every job of a site lives on the
+        same host, so the connection is kept between calls instead of being
+        opened again for each job. :meth:`close` releases it, and so does
+        discarding the scraper.
+        """
+        with self._detail_lock:
+            if self._detail_http is None:
+                client = httpx.Client(
+                    timeout=self.timeout,
+                    follow_redirects=True,
+                    proxy=self.proxy,
+                    limits=httpx.Limits(
+                        max_keepalive_connections=DETAIL_KEEPALIVE_CONNECTIONS,
+                        keepalive_expiry=DETAIL_KEEPALIVE_SECONDS,
+                    ),
+                )
+                self._detail_finalizer = weakref.finalize(self, client.close)
+                self._detail_http = client
+            return self._detail_http
+
+    def close(self) -> None:
+        """Release the connection ``get_description`` keeps open.
+
+        Safe to call more than once. A later ``get_description`` opens a
+        new connection.
+        """
+        with self._detail_lock:
+            finalizer, self._detail_finalizer = self._detail_finalizer, None
+            self._detail_http = None
+        if finalizer is not None:
+            finalizer()
 
     async def _fetch_all(
         self,
@@ -311,13 +362,7 @@ class WorkdayScraper(BaseScraper):
             url = f"{detail_prefix}{external_path}"
             async with sem:
                 try:
-                    response = await client.get(
-                        url,
-                        headers={
-                            "Accept": "application/json",
-                            "User-Agent": "Mozilla/5.0",
-                        },
-                    )
+                    response = await client.get(url, headers=DETAIL_HEADERS)
                 except httpx.HTTPError:
                     return
             if response.status_code != 200:
