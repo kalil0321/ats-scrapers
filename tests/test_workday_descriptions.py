@@ -1,0 +1,137 @@
+"""``WorkdayScraper.get_description`` reads one job at a time on one connection."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+import pytest
+
+from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers import workday
+from ats_scrapers.scrapers.workday import WorkdayScraper
+
+URL = "https://acme.wd5.myworkdayjobs.com/External"
+DETAIL = "https://acme.wd5.myworkdayjobs.com/wday/cxs/acme/External"
+
+
+def _job(path: str | None = "/job/Paris/Engineer_R1", **fields: Any) -> Job:
+    values: dict[str, Any] = {
+        "url": f"{URL}{path or ''}",
+        "title": "Engineer",
+        "company": "Acme",
+        "ats_type": ATSType.WORKDAY,
+        "ats_id": "R1",
+        "raw": {"externalPath": path} if path else None,
+    }
+    values.update(fields)
+    return Job(**values)
+
+
+class _Site:
+    """Stands in for ``httpx.Client`` and records how it was used."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
+        self.opened: list[dict[str, Any]] = []
+        self.requests: list[httpx.Request] = []
+        real = httpx.Client
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            self.requests.append(request)
+            return handler(request)
+
+        def client(**kwargs: Any) -> httpx.Client:
+            self.opened.append(kwargs)
+            return real(transport=httpx.MockTransport(answer))
+
+        monkeypatch.setattr(workday.httpx, "Client", client)
+
+
+def _detail(text: str) -> httpx.Response:
+    return httpx.Response(200, json={"jobPostingInfo": {"jobDescription": text}})
+
+
+def test_descriptions_of_a_site_share_one_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    site = _Site(monkeypatch, lambda request: _detail(f"<p>Role {request.url.path[-2:]}</p>"))
+    scraper = WorkdayScraper(URL, proxy="http://user:pass@proxy.test:8080")
+
+    first = scraper.get_description(_job("/job/Paris/Engineer_R1"))
+    second = scraper.get_description(_job("/job/Lyon/Designer_R2"))
+
+    assert (first, second) == ("Role R1", "Role R2")
+    assert [str(request.url) for request in site.requests] == [
+        f"{DETAIL}/job/Paris/Engineer_R1",
+        f"{DETAIL}/job/Lyon/Designer_R2",
+    ]
+    assert len(site.opened) == 1
+    assert site.opened[0]["proxy"] == "http://user:pass@proxy.test:8080"
+    assert site.opened[0]["limits"].keepalive_expiry == workday.DETAIL_KEEPALIVE_SECONDS
+
+
+def test_a_known_description_needs_no_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    site = _Site(monkeypatch, lambda request: _detail("unused"))
+
+    assert WorkdayScraper(URL).get_description(_job(description="Already here")) == "Already here"
+    assert site.opened == []
+
+
+def test_the_path_falls_back_to_the_job_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    site = _Site(monkeypatch, lambda request: _detail("From the URL"))
+    job = _job("/job/Paris/Engineer_R1", raw=None)
+
+    assert WorkdayScraper(URL).get_description(job) == "From the URL"
+    assert str(site.requests[0].url) == f"{DETAIL}/job/Paris/Engineer_R1"
+
+
+def test_a_job_without_a_detail_path_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    site = _Site(monkeypatch, lambda request: _detail("unused"))
+
+    assert WorkdayScraper(URL).get_description(_job(None)) is None
+    assert site.requests == []
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(429, text="<html>challenge</html>"),
+        httpx.Response(200, text="<html>not json</html>"),
+        httpx.Response(200, json=["unexpected"]),
+        httpx.Response(200, json={"jobPostingInfo": None}),
+        httpx.Response(200, json={"jobPostingInfo": {"jobDescription": "  "}}),
+    ],
+)
+def test_an_unusable_answer_gives_no_description(
+    monkeypatch: pytest.MonkeyPatch, response: httpx.Response
+) -> None:
+    _Site(monkeypatch, lambda request: response)
+
+    assert WorkdayScraper(URL).get_description(_job()) is None
+
+
+def test_a_failed_connection_gives_no_description(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    _Site(monkeypatch, refuse)
+
+    assert WorkdayScraper(URL).get_description(_job()) is None
+
+
+def test_a_long_description_is_cut(monkeypatch: pytest.MonkeyPatch) -> None:
+    _Site(monkeypatch, lambda request: _detail("x" * 30_000))
+
+    assert len(WorkdayScraper(URL).get_description(_job()) or "") == 25_000
+
+
+def test_the_connection_closes_with_the_scraper(monkeypatch: pytest.MonkeyPatch) -> None:
+    _Site(monkeypatch, lambda request: _detail("Role"))
+    scraper = WorkdayScraper(URL)
+    scraper.get_description(_job())
+    client = scraper._detail_http
+    assert client is not None and not client.is_closed
+
+    del scraper
+
+    assert client.is_closed
