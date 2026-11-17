@@ -187,6 +187,20 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   Electrolux's site. A site whose search page redirects to a page that is not
   Phenom's (KBR, SEI, Morningstar), or whose host no longer resolves, is
   reported as not found. The catalogue gains Trinzic.
+- Workday: a tenant that Workday reports as moved to another data center
+  (410 `ERR_TENANT_MIGRATED`), or that its host no longer serves (422
+  `HTTP_422` on the first search), is reported as not found. A search that
+  gives up after its retries names the last status or network error instead
+  of `None`. Catalogue: Advocate Health, Alight, CliftonLarsonAllen, Carnegie
+  Mellon (two sites), Comcast, Kohl's, Lilly (two sites), Lithia & Driveway,
+  OneDigital, Petco, Saab and USIC point at their current data center, and a
+  duplicate Stanford Health Care row is removed.
+- Personio: a board that answers 403, 429 or anything but a JSON job list on
+  one of its paths raises an error instead of being reported as not found or
+  empty, a careers site that answers 404 on every path is reported as not
+  found instead of empty, and a board with no openings is empty.
+- join.com: a company that join.com deleted (410 "Resource deleted") is
+  reported as not found.
 - Fetcher: `missing_host_not_found` also covers a host whose CDN can no
   longer resolve the origin (Akamai's 503 "DNS failure" page on the last
   attempt).

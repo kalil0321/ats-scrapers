@@ -144,7 +144,15 @@ class JoinComScraper(BaseScraper):
         _apply_jsonld_to_job(job, response.text)
 
     async def _resolve_company_id(self, fetch: Fetcher) -> str:
-        body = await fetch.get_text(f"{BASE_URL}/companies/{self.company_slug}")
+        response = await fetch.request(
+            "GET", f"{BASE_URL}/companies/{self.company_slug}", handled={410}
+        )
+        # join.com answers 410 "Resource deleted" for a company it removed.
+        if response.status_code == 410:
+            raise CompanyNotFoundError(
+                f"join.com company {self.company_slug!r} was deleted (410)"
+            )
+        body = response.text
         # The page embeds the same Next.js page data several times. The
         # *first* numeric ``"id"`` in the body is **not** the company id
         # — that's the first department/category in the picker (e.g.

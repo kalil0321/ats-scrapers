@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import html as html_mod
+import json
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
 
 ENDPOINTS = ("/search.json", "/api/careers/jobs/list/")
+_LIST_KEYS = ("data", "jobs", "results", "items")
 DETAIL_CONCURRENCY = 8
 
 # Endpoint fallback (listing) and per-job detail fetches are both
@@ -100,7 +102,8 @@ class PersonioScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         base = self._resolve_base_url()
-        last_error: Exception | None = None
+        error: ScraperError | None = None
+        answered = False
         jobs: list[Job] = []
         async with self.make_fetcher() as fetch:
             for path in ENDPOINTS:
@@ -109,18 +112,31 @@ class PersonioScraper(BaseScraper):
                         "GET", f"{base}{path}", handled=_HANDLED_STATUSES,
                     )
                 except ScraperError as exc:
-                    last_error = exc
+                    error = error or exc
                     continue
                 if response.status_code == 404:
                     continue
                 if response.status_code != 200:
-                    last_error = ScraperError(f"Personio returned {response.status_code}")
+                    error = error or ScraperError(
+                        f"Personio tenant {self.company_slug}: {path} returned "
+                        f"{response.status_code}"
+                    )
                     continue
                 try:
                     payload = response.json()
                 except ValueError:
+                    error = error or ScraperError(
+                        f"Personio tenant {self.company_slug}: {path} is not JSON"
+                    )
                     continue
-                items = _normalize_items(payload)
+                items = _job_items(payload)
+                if items is None:
+                    error = error or ScraperError(
+                        f"Personio tenant {self.company_slug}: {path} returned "
+                        f"no job list: {json.dumps(payload)[:200]}"
+                    )
+                    continue
+                answered = True
                 if items:
                     jobs = [self._parse_job(item, base) for item in items]
                     break
@@ -131,11 +147,15 @@ class PersonioScraper(BaseScraper):
                         self._enrich_description(fetch, sem, j) for j in jobs
                     ))
                 return jobs
-        if last_error:
-            raise CompanyNotFoundError(
-                f"Personio tenant {self.company_slug} did not respond on any known endpoint"
-            ) from last_error
-        return []
+        # A path that failed may hold openings the paths that answered do not list.
+        if error:
+            raise error
+        if answered:
+            return []
+        # Personio answers 404 on every path of a careers site that does not exist.
+        raise CompanyNotFoundError(
+            f"Personio tenant {self.company_slug} has no careers site (404)"
+        )
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -253,15 +273,21 @@ def _extract_description(html: str) -> str | None:
     return re.sub(r"\n{3,}", "\n\n", text).strip() or None
 
 
-def _normalize_items(payload: Any) -> list[dict[str, Any]]:
-    if isinstance(payload, list):
-        return [p for p in payload if isinstance(p, dict)]
+def _job_items(payload: Any) -> list[dict[str, Any]] | None:
+    """The job entries of a listing payload, or None when it holds no job list."""
     if isinstance(payload, dict):
-        for key in ("data", "jobs", "results", "items"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return [p for p in value if isinstance(p, dict)]
-    return []
+        if payload.get("success") is False:
+            return None
+        payload = next(
+            (payload[key] for key in _LIST_KEYS if isinstance(payload.get(key), list)),
+            None,
+        )
+    if not isinstance(payload, list):
+        return None
+    items = [p for p in payload if isinstance(p, dict)]
+    if payload and not items:
+        return None
+    return items
 
 
 def _extract_location(item: dict[str, Any]) -> str | None:
