@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import time
 from datetime import UTC, datetime
+from itertools import pairwise
 
+import httpx
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
@@ -139,14 +140,29 @@ def test_a_page_refused_for_a_while_is_read_once_the_feed_answers(
     assert len(MyCareersFutureScraper("all").fetch()) == 1
 
 
-def test_pages_are_requested_apart() -> None:
-    async def three() -> float:
-        pace = mycareersfuture._Pace(0.05)
-        start = time.monotonic()
-        await asyncio.gather(pace(), pace(), pace())
-        return time.monotonic() - start
+def test_pages_are_requested_apart(httpx_mock, monkeypatch) -> None:
+    monkeypatch.setattr(mycareersfuture, "REQUEST_INTERVAL", 0.1)
+    pages = [
+        [_posting(number) for number in range(1, 101)],
+        [_posting(number) for number in range(101, 201)],
+        [_posting(201)],
+        [],
+    ]
+    starts: list[float] = []
+    for number, page in enumerate(pages):
 
-    assert asyncio.run(three()) >= 0.1
+        def respond(request: httpx.Request, page: list[dict] = page) -> httpx.Response:
+            starts.append(time.monotonic())
+            return httpx.Response(200, json={"results": page, "total": 201})
+
+        httpx_mock.add_callback(respond, url=f"{API}?limit=100&page={number}")
+
+    assert len(MyCareersFutureScraper("all").fetch()) == 201
+    # Pages 1 and 2 are read concurrently: the spacing holds across tasks.
+    gaps = [later - earlier for earlier, later in pairwise(starts)]
+    assert len(gaps) == 3
+    # Margin for the client set-up before the first request.
+    assert min(gaps) >= 0.07
 
 
 def test_an_empty_feed(httpx_mock) -> None:
