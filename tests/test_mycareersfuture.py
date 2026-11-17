@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, datetime
 
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
-from ats_scrapers.scrapers import MyCareersFutureScraper
+from ats_scrapers.scrapers import MyCareersFutureScraper, mycareersfuture
 from ats_scrapers.scrapers.base import ScraperRegistry
 
 API = "https://api.mycareersfuture.gov.sg/v2/jobs"
 SITE = "https://www.mycareersfuture.gov.sg"
+
+
+@pytest.fixture(autouse=True)
+def _no_pacing(monkeypatch) -> None:
+    monkeypatch.setattr(mycareersfuture, "REQUEST_INTERVAL", 0.0)
 
 
 def _posting(number: int = 1, **fields: object) -> dict:
@@ -119,6 +126,27 @@ def test_reads_on_when_the_feed_grew(httpx_mock) -> None:
     _feed(httpx_mock, [first, [_posting(101)], []], total=100)
 
     assert len(MyCareersFutureScraper("all").fetch()) == 101
+
+
+def test_a_page_refused_for_a_while_is_read_once_the_feed_answers(
+    httpx_mock, monkeypatch
+) -> None:
+    monkeypatch.setattr(mycareersfuture, "RETRY_BASE_DELAY", 0.0)
+    for _ in range(mycareersfuture.RETRIES - 1):
+        httpx_mock.add_response(url=f"{API}?limit=100&page=0", status_code=429)
+    _feed(httpx_mock, [[_posting(1)], []])
+
+    assert len(MyCareersFutureScraper("all").fetch()) == 1
+
+
+def test_pages_are_requested_apart() -> None:
+    async def three() -> float:
+        pace = mycareersfuture._Pace(0.05)
+        start = time.monotonic()
+        await asyncio.gather(pace(), pace(), pace())
+        return time.monotonic() - start
+
+    assert asyncio.run(three()) >= 0.1
 
 
 def test_an_empty_feed(httpx_mock) -> None:
