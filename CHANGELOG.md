@@ -40,6 +40,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - Dataset downloads (`search`, `Client`, `Manifest.fetch`) identify themselves
   as `ats-scrapers/<version>` in the `User-Agent` header. A client you pass in
   keeps its own headers.
+- Paylocity reads the job pages of a board eight at a time instead of two.
 
 ### Removed
 
