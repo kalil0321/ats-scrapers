@@ -782,6 +782,18 @@ def test_refusal_backoff_is_capped_and_lasts_minutes(monkeypatch) -> None:
     assert ba._retry_delay(1, retry_after="30") == 30.0
 
 
+def test_jittered_wait_stays_within_the_cap(monkeypatch) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "RETRY_BASE_DELAY", 2.0)
+    monkeypatch.setattr(ba, "RETRY_JITTER", 0.5)
+    monkeypatch.setattr(ba.random, "uniform", lambda low, high: high)
+
+    assert ba._retry_delay(1) == 6.0
+    assert ba._retry_delay(ba.MAX_BLOCKED_ATTEMPTS) == ba.RETRY_MAX_DELAY
+    assert ba._retry_delay(1, retry_after="3600") == ba.RETRY_MAX_DELAY
+
+
 # --- Proxy routes: a refused route rests, the next one carries on -----------
 
 
@@ -820,6 +832,42 @@ def test_refused_route_rests_while_the_next_route_carries_on(
     assert scraper.transient_failures == {"403": 1, "ConnectError": 1}
     refused = routes.index((0, 2))
     assert routes[refused + 1:] == [(1, 2), (2, 2), (2, 3)]
+
+
+class _BodyThatBreaksOff(httpx.AsyncByteStream):
+    def __init__(self, request: httpx.Request) -> None:
+        self._request = request
+
+    async def __aiter__(self):
+        yield b'{"ergebnisliste": ['
+        raise httpx.ReadTimeout("body stalled", request=self._request)
+
+
+def test_route_that_fails_mid_body_rests(httpx_mock, monkeypatch) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "MAX_BLOCKED_ATTEMPTS", 3)
+    routes: list[int] = []
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        routes.append(request.extensions["route"])
+        if request.extensions["route"] == 0:
+            return httpx.Response(200, stream=_BodyThatBreaksOff(request))
+        return httpx.Response(
+            200,
+            json={"ergebnisliste": [_job("1", "Probe")], "maxErgebnisse": 1},
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+    scraper = BundesagenturScraper(
+        "any", proxies=[None, "http://a.example:3128"]
+    )
+
+    jobs = scraper.fetch()
+
+    assert [job.ats_id for job in jobs] == ["1"]
+    assert routes == [0, 1, 1]
+    assert scraper.transient_failures == {"ReadTimeout": 1}
 
 
 def test_routes_prefer_the_first_one_not_resting(monkeypatch) -> None:
@@ -903,6 +951,47 @@ def test_page_past_the_new_end_is_the_last_page_not_an_error(
 
     assert sorted(job.ats_id for job in jobs) == ["1", "2"]
     assert requests[3] == 1
+
+
+def _slice_with_an_empty_page(
+    httpx_mock, monkeypatch, *, empty_answers: int
+) -> Counter[int]:
+    """Three one-row pages. Page 2 comes back with an empty list, while the
+    total still counts its row, for its first ``empty_answers`` requests."""
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    monkeypatch.setattr(ba, "PAGE_SIZE", 1)
+    requests: Counter[int] = Counter()
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        page = int(parse_qs(urlparse(str(request.url)).query)["page"][0])
+        requests[page] += 1
+        empty = page == 2 and requests[page] <= empty_answers
+        rows = [] if empty else [_job(str(page), f"Page-{page} row")]
+        return httpx.Response(
+            200, json={"ergebnisliste": rows, "maxErgebnisse": 3}
+        )
+
+    httpx_mock.add_callback(serve, url=_API_RE, is_reusable=True)
+    return requests
+
+
+def test_empty_page_before_the_end_is_retried(httpx_mock, monkeypatch) -> None:
+    requests = _slice_with_an_empty_page(httpx_mock, monkeypatch, empty_answers=1)
+
+    jobs = BundesagenturScraper("any").fetch()
+
+    assert sorted(job.ats_id for job in jobs) == ["1", "2", "3"]
+    assert requests[2] == 2
+
+
+def test_page_that_stays_empty_before_the_end_fails_closed(
+    httpx_mock, monkeypatch
+) -> None:
+    _slice_with_an_empty_page(httpx_mock, monkeypatch, empty_answers=99)
+
+    with pytest.raises(ScraperError, match="invalid 200 payload"):
+        BundesagenturScraper("any").fetch()
 
 
 @pytest.mark.parametrize("region", [{}, {"wo": "Niedersachsen (Bundesland)"}])

@@ -41,11 +41,18 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import logging
 import random
 import time
 from collections import Counter
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Sequence,
+)
 from datetime import UTC, datetime
 from typing import Any
 
@@ -85,7 +92,7 @@ RETRY_JITTER = 0.5  # ± fraction added to each backoff so concurrent
 # retries don't synchronize and re-trigger the WAF in lockstep.
 # The gateway refuses single requests with 403 while the requests around them
 # go through, and accepts the same request again later. A refused page waits
-# with backoff capped at RETRY_MAX_DELAY, about 18 minutes over
+# with backoff capped at RETRY_MAX_DELAY, about 16 minutes over
 # MAX_BLOCKED_ATTEMPTS, without holding a request slot, so other pages go on.
 # The scrape still fails closed when one page is refused that long or the run
 # meets MAX_TRANSIENT_FAILURES, as it does when the API is down.
@@ -237,6 +244,27 @@ class _PageFetchExhaustedError(ScraperError):
     """
 
 
+class _RouteBody(httpx.AsyncByteStream):
+    """A response body that rests its route when it breaks off."""
+
+    def __init__(
+        self, stream: httpx.AsyncByteStream, rest: Callable[[], None]
+    ) -> None:
+        self._stream = stream
+        self._rest = rest
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        try:
+            async for chunk in self._stream:
+                yield chunk
+        except httpx.TransportError:
+            self._rest()
+            raise
+
+    async def aclose(self) -> None:
+        await self._stream.aclose()
+
+
 class _Routes(httpx.AsyncBaseTransport):
     """Send each request through the first route, in the given order, that
     is not resting. ``None`` is a direct connection."""
@@ -271,6 +299,11 @@ class _Routes(httpx.AsyncBaseTransport):
             raise
         if response.status_code in (403, 429):
             self._rest(index)
+        # HTTPX reads the body after this returns.
+        if isinstance(response.stream, httpx.AsyncByteStream):
+            response.stream = _RouteBody(
+                response.stream, functools.partial(self._rest, index)
+            )
         return response
 
     async def aclose(self) -> None:
@@ -1063,16 +1096,20 @@ def _checked_payload(
     if not isinstance(payload, dict):
         raise ScraperError("Bundesagentur returned a non-object payload")
     total = _result_total(payload)
+    page = int(params.get("page", 1))
+    start = (page - 1) * int(params.get("size", PAGE_SIZE))
     # The API omits the list for a region with no postings and for a page
     # that starts past the end of the results. Elsewhere results are
     # expected, so that payload is retried.
-    page = int(params.get("page", 1))
-    past_the_end = page > 1 and (page - 1) * int(params.get("size", PAGE_SIZE)) >= total
     if "ergebnisliste" not in payload and (
-        past_the_end or ("wo" in params and total == 0)
+        (page > 1 and start >= total) or ("wo" in params and total == 0)
     ):
         payload["ergebnisliste"] = []
-    _result_items(payload)
+    # Paging stops at the first empty page, so only the end may be empty.
+    if not _result_items(payload) and start < total:
+        raise ScraperError(
+            f"Bundesagentur returned no jobs from position {start} of {total}"
+        )
     return payload
 
 
@@ -1086,12 +1123,14 @@ def _is_transient(status: int) -> bool:
 
 def _retry_delay(attempt: int, retry_after: str | None = None) -> float:
     """Backoff before retry ``attempt + 1``, jittered so concurrent retries
-    don't fall back into step."""
+    don't fall back into step, and at most RETRY_MAX_DELAY, a Retry-After
+    included."""
     if retry_after and retry_after.isdigit():
         base = float(retry_after)
     else:
         base = min(RETRY_BASE_DELAY * (2 ** attempt), RETRY_MAX_DELAY)
-    return base * (1 + random.uniform(-RETRY_JITTER, RETRY_JITTER))
+    jittered = base * (1 + random.uniform(-RETRY_JITTER, RETRY_JITTER))
+    return min(jittered, RETRY_MAX_DELAY)
 
 
 def _result_items(payload: dict[str, Any]) -> list[dict[str, Any]]:

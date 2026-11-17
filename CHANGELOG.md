@@ -48,7 +48,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 - Bundesagentur: a request refused with 403 or 429, a server error or a network
   error is retried with backoff capped at two minutes, up to 14 attempts (about
-  18 minutes), while other pages go on, so one refused page no longer ends a full
+  16 minutes), while other pages go on, so one refused page no longer ends a full
   scrape. The scrape still fails when a page stays refused that long or a run
   meets 5,000 such failures. `transient_failures` counts them by type.
 - Bundesagentur: a slice that shrinks while it is read stops at its new end. A
