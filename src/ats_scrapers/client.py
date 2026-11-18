@@ -270,6 +270,18 @@ def _compensation_cell(value: object) -> object:
     return value
 
 
+def _archived_category(value: object) -> str | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    label = value.get("label") if isinstance(value, dict) else None
+    if isinstance(label, str):
+        return label.strip() or None
+    return None
+
+
 def _source_times(values: pd.Series) -> pd.Series:
     if isinstance(values.dtype, pd.DatetimeTZDtype):
         normalized: pd.Series = values.dt.tz_convert("UTC")
@@ -290,6 +302,9 @@ def _normalize_dataset(df: pd.DataFrame) -> pd.DataFrame:
     if not {"ats_type", "ats_id"}.issubset(df.columns):
         return df
     df = df.copy(deep=False)
+    if "occupation" in df:
+        labels = df.pop("occupation").map(_archived_category)
+        df["job_category"] = df["job_category"].fillna(labels) if "job_category" in df else labels
     for name, decode in (
         ("workload_percentages", _workload_cell), ("compensation_components", _compensation_cell),
         ("education_requirements", _nested_cell),

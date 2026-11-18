@@ -228,6 +228,21 @@ def test_nested_columns_and_source_timestamps_read_the_same(httpx_mock, suffix: 
     assert frame["source_updated_at"].isna().all()
 
 
+def test_client_reads_only_the_label_from_an_archived_category() -> None:
+    data = pd.DataFrame({
+        "ats_type": ["custom"] * 4, "ats_id": ["1", "2", "3", "4"],
+        "occupation": [{"label": "Old"}, '{"label":"Sales","code":"007"}', {"code": "007"}, "invalid"],
+        "job_category": ["Current", None, None, None],
+    })
+    frame = client_module._normalize_dataset(data)
+    assert "occupation" not in frame
+    assert frame["job_category"][:2].tolist() == ["Current", "Sales"]
+    assert frame["job_category"][2:].isna().all()
+    legacy = client_module._normalize_dataset(data.drop(columns="job_category"))
+    assert legacy["job_category"][:2].tolist() == ["Old", "Sales"]
+    assert legacy["job_category"][2:].isna().all()
+
+
 @pytest.mark.parametrize("suffix", ["csv", "parquet"])
 def test_loads_workload_forms_and_typed_lists(httpx_mock, suffix) -> None:
     if suffix == "parquet":
