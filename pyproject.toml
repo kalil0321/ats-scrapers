@@ -71,8 +71,13 @@ scrapers = [
 parquet = [
     "pyarrow>=15.0",
 ]
+# Playwright drives the hosted browsers in ats_scrapers.cloud_browser over CDP;
+# the browsers themselves run at the provider, so no local browser is needed.
+cloud-browser = [
+    "playwright>=1.53",
+]
 all = [
-    "ats-scrapers[scrapers,parquet]",
+    "ats-scrapers[scrapers,parquet,cloud-browser]",
 ]
 test = [
     "ats-scrapers[all]",

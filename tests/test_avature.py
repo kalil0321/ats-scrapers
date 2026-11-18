@@ -25,6 +25,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from ats_scrapers import CloudBrowser, RenderedPage, get_scraper_for_url
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import AvatureScraper, ScraperRegistry, get_scraper
@@ -601,7 +602,7 @@ def test_searchjobs_maps_query_params_are_preserved(httpx_mock) -> None:
     )
 
 
-def test_browserbase_pagination_url_preserves_searchjobs_maps_query_params() -> None:
+def test_paginated_search_url_preserves_searchjobs_maps_query_params() -> None:
     base = "https://company.example.com/en_US/jobs/SearchJobsMaps?folderId=abc&lang=en"
 
     url = _paginated_search_url(base, 30)
@@ -694,37 +695,106 @@ def refused_to_httpcloak(monkeypatch: pytest.MonkeyPatch, httpx_mock) -> None:
     httpx_mock.add_response(url=_url("acme", 0), status_code=406)
 
 
-def test_refused_board_without_browserbase_raises(monkeypatch, refused_to_httpcloak) -> None:
-    monkeypatch.delenv("BROWSERBASE_API_KEY", raising=False)
-    monkeypatch.delenv("BROWSERBASE_PROJECT_ID", raising=False)
-    monkeypatch.delenv("ATS_SCRAPERS_DISABLE_BROWSERBASE", raising=False)
+class FakeBrowser(CloudBrowser):
+    """Serves ``pages`` by URL and raises for any other address."""
 
-    with pytest.raises(ScraperError, match=r"refused the listing \(406\)"):
+    def __init__(self, pages: dict[str, RenderedPage]) -> None:
+        self.pages = pages
+        self.requested: list[str] = []
+
+    async def render(self, url: str) -> RenderedPage:
+        self.requested.append(url)
+        if url not in self.pages:
+            raise RuntimeError(f"no page at {url}")
+        return self.pages[url]
+
+
+def _detail_page(text: str) -> str:
+    return (
+        '<div class="article--details"><div class="article__content__view__field">'
+        f'<div class="article__content__view__field__value">{text}</div>'
+        "</div></div>"
+    )
+
+
+def test_refused_board_without_a_cloud_browser_raises(refused_to_httpcloak) -> None:
+    with pytest.raises(ScraperError, match=r"refused the listing \(406\).*cloud_browser"):
         AvatureScraper("acme").fetch()
 
 
-def test_refused_board_with_browserbase_disabled_raises(monkeypatch, refused_to_httpcloak) -> None:
-    monkeypatch.setenv("ATS_SCRAPERS_DISABLE_BROWSERBASE", "1")
+def test_refused_board_is_read_through_the_cloud_browser(refused_to_httpcloak) -> None:
+    jobs_url = "https://acme.avature.net/en_US/careers"
+    browser = FakeBrowser({
+        # Redirected: the next-page link is relative to the address that answered.
+        _url("acme", 0): RenderedPage(
+            html=(
+                f'<a href="{jobs_url}/JobDetail/Engineer/1">Engineer</a>'
+                f'<a href="{jobs_url}/JobDetail/Designer/2">Designer</a>'
+                '<a href="?jobOffset=12&amp;jobRecordsPerPage=12">Next</a>'
+            ),
+            url=f"{jobs_url}/SearchJobs/?jobOffset=0",
+        ),
+        f"{jobs_url}/SearchJobs/?jobOffset=12&jobRecordsPerPage=12": RenderedPage(
+            html=f'<a href="{jobs_url}/JobDetail/Analyst/3">Analyst</a>',
+            url=f"{jobs_url}/SearchJobs/?jobOffset=12&jobRecordsPerPage=12",
+        ),
+        f"{jobs_url}/JobDetail/Engineer/1": RenderedPage(
+            html=_detail_page("Build the scraper."), url=f"{jobs_url}/JobDetail/Engineer/1",
+        ),
+    })
 
-    with pytest.raises(ScraperError, match="disabled"):
-        AvatureScraper("acme").fetch()
+    jobs = AvatureScraper("acme", cloud_browser=browser).fetch()
+
+    assert [(j.ats_id, j.description) for j in jobs] == [
+        ("1", "Build the scraper."), ("2", None), ("3", None),
+    ]
 
 
-def test_refused_board_whose_browserbase_fallback_fails_raises(
-    monkeypatch, refused_to_httpcloak,
-) -> None:
+def test_refused_board_whose_cloud_browser_fails_raises(refused_to_httpcloak) -> None:
+    browser = FakeBrowser({})
+
+    with pytest.raises(ScraperError, match=r"cloud browser failed: no page at"):
+        AvatureScraper("acme", cloud_browser=browser).fetch()
+    assert browser.requested == [_url("acme", 0)]
+
+
+def test_cloud_browser_is_left_alone_when_httpx_reads_the_board(httpx_mock) -> None:
+    httpx_mock.add_response(url=_url("acme", 0), text=ANCHOR_ONLY_PAGE)
+    browser = FakeBrowser({})
+
+    jobs = AvatureScraper("acme", cloud_browser=browser).fetch()
+
+    assert len(jobs) == 2
+    assert browser.requested == []
+
+
+def test_get_description_falls_back_to_the_cloud_browser(monkeypatch, httpx_mock) -> None:
     import ats_scrapers.scrapers.avature as av
-    monkeypatch.setenv("BROWSERBASE_API_KEY", "key")
-    monkeypatch.setenv("BROWSERBASE_PROJECT_ID", "project")
-    monkeypatch.delenv("ATS_SCRAPERS_DISABLE_BROWSERBASE", raising=False)
+    url = "https://acme.avature.net/careers/JobDetail/Engineer/1"
+    httpx_mock.add_response(url=url, status_code=406)
+    monkeypatch.setattr(av.AvatureScraper, "_http_get_via_httpcloak_sync", lambda self, u: None)
+    browser = FakeBrowser({url: RenderedPage(html=_detail_page("Build the scraper."), url=url)})
+    scraper = AvatureScraper("acme", cloud_browser=browser)
+    [job] = scraper._parse_page(
+        '<a href="/careers/JobDetail/Engineer/1">Engineer</a>', "https://acme.avature.net", "acme",
+    )
 
-    async def fails(self, base: str, company: str) -> list:
-        raise ScraperError("Browserbase session create failed: 402")
+    assert scraper.get_description(job) == "Build the scraper."
 
-    monkeypatch.setattr(av.AvatureScraper, "_fetch_via_browserbase", fails)
 
-    with pytest.raises(ScraperError, match=r"Browserbase fallback failed: .*402"):
-        AvatureScraper("acme").fetch()
+def test_cloud_browser_must_be_a_cloud_browser() -> None:
+    with pytest.raises(TypeError, match="CloudBrowser"):
+        AvatureScraper("acme", cloud_browser="wss://browser.example")  # type: ignore[arg-type]
+
+
+def test_cloud_browser_passes_through_the_factories() -> None:
+    browser = FakeBrowser({})
+
+    by_ats = get_scraper("avature", "acme", cloud_browser=browser)
+    by_url = get_scraper_for_url("https://acme.avature.net/careers", cloud_browser=browser)
+
+    assert by_ats.cloud_browser is browser
+    assert by_url.cloud_browser is browser
 
 
 # --- proxy ------------------------------------------------------------------

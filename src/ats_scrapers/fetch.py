@@ -22,12 +22,11 @@ httpcloak once and stick with it for the rest of the fetcher's life.
 Everything else stays on plain httpx so real errors surface instead
 of being silently retried through a slower engine.
 
-Browser-shaped fetching (cloakbrowser, Browserbase) is deliberately
-*not* part of this interface — a rendered-page workflow shares no
-request/response semantics with JSON APIs. See
-:mod:`ats_scrapers.scrapers._browserbase` and
-:mod:`ats_scrapers.scrapers._cloakbrowser` for the two scrapers that
-need a real browser.
+Browser-shaped fetching is deliberately *not* part of this interface:
+a rendered-page workflow shares no request/response semantics with JSON
+APIs. See :mod:`ats_scrapers.scrapers._cloakbrowser` for the scrapers
+that drive a local browser and :class:`ats_scrapers.CloudBrowser` for
+the remote browser a caller can hand to a scraper.
 
 Usage::
 
