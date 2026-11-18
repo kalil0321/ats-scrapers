@@ -254,7 +254,7 @@ def test_missing_title_still_drops_row() -> None:
 #
 # Memory model: projection from a 10 k FR sample showed the legacy
 # list-accumulating ``afetch`` would peak at ~10 GB RSS on the
-# ~2.7 M-job full corpus — over the 7.6 GB VPS RAM. The streaming
+# ~2.7 M-job full corpus, more than an 8 GB server has. The streaming
 # variant pushes each parsed Job to an async callback (or asyncio.Queue
 # in the ``fetch_stream`` wrapper) instead of accumulating, leaving
 # only the ``seen`` ID set in memory (~100 MB at full scale).

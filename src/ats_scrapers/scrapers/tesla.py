@@ -108,7 +108,7 @@ class TeslaScraper(BaseScraper):
 
     def _browser_proxy(self) -> str | dict[str, Any] | None:
         # cloakbrowser reads the credentials out of a proxy URL itself.
-        return self.proxy or cb.evomi_proxy_from_env()
+        return self.proxy or cb.proxy_from_env()
 
     async def _fetch_via_cloakbrowser(self) -> list[Job]:
         from cloakbrowser import launch_async
