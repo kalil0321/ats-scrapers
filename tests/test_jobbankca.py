@@ -722,3 +722,20 @@ def test_jobbank_detail_classifies_only_role_properties(httpx_mock, term, hours,
             (" ".join(labels), status)
         ]
     assert len(httpx_mock.get_requests()) == 1
+
+
+def test_unavailable_postings_leave_the_rest_of_the_batch_described(httpx_mock) -> None:
+    scraper = JobBankCAScraper("jobbankca")
+    timed_out, refused, served = (scraper._parse_job(_article(job_id=i)) for i in "123")
+    assert timed_out is not None and refused is not None and served is not None
+    httpx_mock.add_exception(httpx.ReadTimeout("timed out"), url=str(timed_out.url))
+    httpx_mock.add_response(url=str(refused.url), status_code=503)
+    httpx_mock.add_response(url=str(served.url), text=(
+        '<div class="job-posting-details-body">'
+        '<span property="description">Weld frames.</span></div>'
+    ))
+
+    scraper.enrich_descriptions([timed_out, refused, served])
+
+    assert (timed_out.description, refused.description) == (None, None)
+    assert served.description == "Weld frames."

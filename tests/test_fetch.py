@@ -321,14 +321,14 @@ async def test_403_escalates_to_cloak_when_enabled(httpx_mock, monkeypatch) -> N
         monkeypatch, calls, _FakeCloakResponse(text='{"jobs": []}')
     )
     httpx_mock.add_response(url=URL, status_code=406)
-    async with _fetcher(escalate=True) as fetch:
+    async with _fetcher(escalate=True, timeout=2.5) as fetch:
         payload = await fetch.get_json(URL)
     assert payload == {"jobs": []}
     assert calls and calls[0]["url"] == URL
     # The fetcher stays escalated: the next request goes straight to cloak.
     async with asyncio.timeout(5):
         await fetch.get_json(URL)
-    assert len(calls) == 2
+    assert [call["timeout"] for call in calls] == [2.5, 2.5]
 
 
 async def test_escalation_gets_fresh_attempt_budget(httpx_mock, monkeypatch) -> None:
@@ -354,7 +354,7 @@ async def test_pinned_cloak_engine_never_touches_httpx(monkeypatch) -> None:
     async with _fetcher(engine="cloak") as fetch:
         assert await fetch.get_json(URL) == [1]
     assert len(calls) == 1
-    assert calls[0]["timeout"] == 30_000
+    assert calls[0]["timeout"] == 30
 
 
 # --- proxy config -----------------------------------------------------------

@@ -202,3 +202,13 @@ def test_detail_reports_each_location_and_attendance(monkeypatch: pytest.MonkeyP
         ("Basel, CH", "CH", True), ("Nice, France", None, False),
     ]
     assert len(site.requests) == 1
+
+
+def test_entity_encoded_description_is_read_as_markup() -> None:
+    info = {"jobDescription": "&lt;p&gt;Build APIs.&lt;/p&gt;"}
+    assert workday._extract_description(info) == "Build APIs."
+
+
+def test_entity_encoded_empty_description_falls_through_to_the_external_one() -> None:
+    info = {"jobDescription": "&lt;p&gt;&lt;/p&gt;", "externalJobDescription": "<p>Ship it.</p>"}
+    assert workday._extract_description(info) == "Ship it."

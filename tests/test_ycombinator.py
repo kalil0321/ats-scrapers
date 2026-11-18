@@ -19,6 +19,7 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import ScraperRegistry, YCombinatorScraper
 from ats_scrapers.scrapers.ycombinator import (
+    _compose_description,
     _employment_from_type,
     _extract_balanced_array,
     _parse_min_experience,
@@ -455,3 +456,13 @@ def test_detail_components_preserve_listing_equity_and_displayed_currency(httpx_
     assert (salary.currency, salary.period, salary.minimum) == ("INR", "YEAR", 600000)
     assert equity.minimum == equity.maximum == .25
     assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ('<b>Build</b> <a href="https://example.com">APIs</a>.', "Build APIs."),
+    ("Use List<String> and **Kotlin**.", "Use List<String> and Kotlin."),
+    ("&lt;p&gt;Build APIs.&lt;/p&gt;", "Build APIs."),
+    ("Use List&lt;String&gt;.", "Use List<String>."),
+])
+def test_description_reads_inline_html_and_keeps_markdown_text(value: str, expected: str) -> None:
+    assert _compose_description({"description": value}) == expected

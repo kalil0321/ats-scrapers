@@ -44,9 +44,22 @@ def job_posting(page: str) -> dict[str, Any]:
     return {}
 
 
+_ENCODED_TAG = re.compile(r"&lt;\s*/?\s*[A-Za-z][A-Za-z0-9:-]*(?:\s[^<>]*?)?\s*/?\s*&gt;")
+
+
+def decode_encoded_tags(value: str) -> str:
+    """Decode markup sent entity-encoded (``&lt;p&gt;``) so it is cleaned as
+    HTML. Real markup, whose encoded tags are literal text, and plain text
+    with a lone ``&lt;`` are returned as they are."""
+    if "<" in value or not _ENCODED_TAG.search(value):
+        return value
+    return html.unescape(value)
+
+
 def body_text(value: object) -> str:
     if not isinstance(value, str) or not value.strip():
         return ""
+    value = decode_encoded_tags(value)
     if "<" in value:
         return parse_html(value).lines()
     return html.unescape(value).strip()

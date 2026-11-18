@@ -452,8 +452,7 @@ class Fetcher:
         kwargs: dict[str, Any] = {
             "params": params,
             "headers": merged_headers or None,
-            # Fetcher exposes seconds like httpx; httpcloak expects ms.
-            "timeout": int(self.timeout * 1000),
+            "timeout": self.timeout,
         }
         if self.proxy:
             kwargs["proxy"] = self.proxy

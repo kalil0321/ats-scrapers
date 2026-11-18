@@ -30,7 +30,12 @@ from typing import TYPE_CHECKING, ClassVar
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, CompensationComponent, Job, normalize_compensation_period
 from ats_scrapers.scrapers._htmltree import parse_html
-from ats_scrapers.scrapers._posting_detail import body_text, fill_missing, job_posting
+from ats_scrapers.scrapers._posting_detail import (
+    body_text,
+    decode_encoded_tags,
+    fill_missing,
+    job_posting,
+)
 from ats_scrapers.scrapers._posting_fields import finite_number
 from ats_scrapers.scrapers._skill_tags import skill_tags
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -525,8 +530,17 @@ def _compose_description(item: dict[str, Any]) -> str | None:
     return "\n\n".join(parts)[:25_000] or None
 
 
+# Known tags only, so Markdown such as ``List<String>`` is not read as HTML.
+_HTML_TAG = re.compile(
+    r"</?(?:a|abbr|b|blockquote|br|code|div|em|h[1-6]|hr|i|li|ol|p|pre|s|small|span"
+    r"|strong|sub|sup|table|tbody|td|th|thead|tr|u|ul)\b[^<>]*>",
+    re.IGNORECASE,
+)
+
+
 def _clean_description_text(value: str) -> str:
-    if re.search(r"</?(?:p|div|ul|li|br|strong|h[1-6])\b", value, re.I):
+    value = decode_encoded_tags(value)
+    if _HTML_TAG.search(value):
         return body_text(value)
     # Strip Markdown formatting while preserving names such as C# and foo_bar.
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)

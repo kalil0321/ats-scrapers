@@ -55,6 +55,7 @@ from ats_scrapers import fetch as fetch_mod
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._engagement import engagement_from_label
+from ats_scrapers.scrapers._posting_detail import decode_encoded_tags
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -822,7 +823,7 @@ def _extract_detail_description(payload: object) -> str | None:
 
 
 def _clean_description_text(value: str) -> str | None:
-    text = re.sub(r"<br\s*/?>", "\n", value, flags=re.IGNORECASE)
+    text = re.sub(r"<br\s*/?>", "\n", decode_encoded_tags(value), flags=re.IGNORECASE)
     text = re.sub(r"</?[A-Za-z][A-Za-z0-9:-]*(?:\s[^<>]*)?\s*/?>", " ", text)
     text = re.sub(r"[\u200b\ufeff]", "", html.unescape(text))
     text = re.sub(r"[ \t\r\f\v]+", " ", text)

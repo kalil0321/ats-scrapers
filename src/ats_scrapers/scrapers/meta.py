@@ -47,6 +47,13 @@ class MetaScraper(BaseScraper):
 
     ats = ATSType.META
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # (URL, description) once the posting's detail page was read: a job
+        # still holding that description needs no second read, even when the
+        # detail added nothing to the listing.
+        self._details_read: set[tuple[str, str | None]] = set()
+
     async def afetch(self) -> list[Job]:
         if not cb.is_enabled():
             cb.warn_disabled("Meta")
@@ -54,7 +61,7 @@ class MetaScraper(BaseScraper):
         return await self._fetch_via_cloakbrowser()
 
     def get_description(self, job: Job) -> str | None:
-        if not _needs_detail(job):
+        if not self._needs_detail(job):
             return job.description
         self.enrich_descriptions([job])
         return job.description
@@ -188,6 +195,10 @@ class MetaScraper(BaseScraper):
         parts = [_section(entry, *keys) or _section(fallback or {}, *keys) for keys in sections]
         return "\n\n".join(dict.fromkeys(part for part in parts if part))[:25_000] or None
 
+    def _needs_detail(self, job: Job) -> bool:
+        read = (str(job.url), job.description) in self._details_read
+        return not read and _listing_incomplete(job)
+
     async def _enrich_detail_descriptions(self, jobs: list[Job]) -> None:
         """Fetch Meta detail pages for descriptions missing from listing GraphQL.
 
@@ -195,7 +206,7 @@ class MetaScraper(BaseScraper):
         public detail page embeds Schema.org ``JobPosting`` JSON-LD with the
         full body, so this path avoids another browser session per job.
         """
-        targets = [job for job in jobs if _needs_detail(job)]
+        targets = [job for job in jobs if self._needs_detail(job)]
         if not targets:
             return
 
@@ -227,6 +238,7 @@ class MetaScraper(BaseScraper):
             return
         # Preserve sections from the listing when the detail omits them.
         job.description = self._description(posting, fallback=job.raw) or job.description
+        self._details_read.add((str(job.url), job.description))
 
 
 __all__ = ["MetaScraper"]
@@ -242,7 +254,7 @@ def _section(entry: dict[str, Any], *keys: str) -> str:
     return ""
 
 
-def _needs_detail(job: Job) -> bool:
+def _listing_incomplete(job: Job) -> bool:
     if not job.description:
         return True
     entry = job.raw or {}
