@@ -8,6 +8,7 @@ constructed canonical English URL otherwise).
 
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import datetime, timedelta
 from typing import Any
@@ -264,18 +265,153 @@ def _fake_search(docs: list[dict[str, Any]]):
     return respond
 
 
-def test_splits_publication_dates_past_the_row_window(httpx_mock) -> None:
+def _dated_docs(count: int) -> list[dict[str, Any]]:
+    """``count`` postings first published one minute apart from 2026-01-01."""
     first = datetime(2026, 1, 1)
     docs = []
-    for i in range(4_500):
+    for i in range(count):
         doc = _doc(job_id=f"j{i}", title=f"Job {i}")
         doc["_published"] = (first + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S")
         docs.append(doc)
-    httpx_mock.add_callback(_fake_search(docs), url=_API_RE, is_reusable=True)
+    return docs
+
+
+def test_splits_publication_dates_past_the_row_window(httpx_mock) -> None:
+    httpx_mock.add_callback(_fake_search(_dated_docs(4_500)), url=_API_RE, is_reusable=True)
 
     jobs = JobsChScraper("any", include_descriptions=False).fetch()
 
     assert len(jobs) == 4_500
+
+
+# --- 403 blocks -------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_block_pauses(monkeypatch) -> None:
+    from ats_scrapers.scrapers import jobsch
+
+    monkeypatch.setattr(jobsch, "BLOCK_PAUSES", (0.0,) * 5)
+    monkeypatch.setattr(jobsch, "PACED_RATES", (1e6,))
+    monkeypatch.delenv("ATS_SCRAPERS_PROXY", raising=False)
+    monkeypatch.delenv("PROXY", raising=False)
+
+
+@pytest.fixture
+def _proxy_env(monkeypatch) -> None:
+    monkeypatch.setenv("PROXY", "http://proxy.example:8080:user:secret")
+
+
+def _blocking(serve, refuse):
+    """Answer 403 when ``refuse(params, index, repeat)`` holds, else ``serve``.
+
+    ``index`` counts every earlier request, ``repeat`` the earlier ones with
+    the same query string.
+    """
+    asked: dict[str, int] = {}
+    count = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal count
+        params = {k: v[0] for k, v in parse_qs(urlsplit(str(request.url)).query).items()}
+        key = str(request.url.query)
+        index, repeat = count, asked.get(key, 0)
+        count += 1
+        asked[key] = repeat + 1
+        if refuse(params, index, repeat):
+            return httpx.Response(403, text="<html>blocked</html>")
+        return serve(request)
+
+    return respond
+
+
+def test_window_refused_through_the_proxy_is_retried(httpx_mock, _proxy_env) -> None:
+    """The direct probe is refused, then two asks for each newer window's
+    first page: the windows that hold most of the board are read anyway."""
+
+    def refuse(params: dict[str, str], index: int, repeat: int) -> bool:
+        newer_window = "2026-01-02" <= params.get("publication-date-from", "") < "2026-02"
+        return index == 0 or (newer_window and params["start"] == "0" and repeat < 2)
+
+    respond = _blocking(_fake_search(_dated_docs(4_500)), refuse)
+    httpx_mock.add_callback(respond, url=_API_RE, is_reusable=True)
+
+    jobs = JobsChScraper("any", include_descriptions=False).fetch()
+
+    assert len(jobs) == 4_500
+
+
+def test_page_refused_through_the_proxy_is_retried(httpx_mock, _proxy_env) -> None:
+    def refuse(params: dict[str, str], index: int, repeat: int) -> bool:
+        return index == 0 or (params["start"] == "40" and repeat == 0)
+
+    respond = _blocking(_fake_search(_dated_docs(4_500)), refuse)
+    httpx_mock.add_callback(respond, url=_API_RE, is_reusable=True)
+
+    jobs = JobsChScraper("any", include_descriptions=False).fetch()
+
+    assert len(jobs) == 4_500
+
+
+def test_block_that_outlasts_every_pause_fails_the_fetch(httpx_mock, _proxy_env) -> None:
+    from ats_scrapers.scrapers import jobsch
+
+    def refuse(params: dict[str, str], index: int, repeat: int) -> bool:
+        return index == 0 or "publication-date-from" in params
+
+    respond = _blocking(_fake_search(_dated_docs(4_500)), refuse)
+    httpx_mock.add_callback(respond, url=_API_RE, is_reusable=True)
+
+    with pytest.raises(ScraperError, match="for the block to lift"):
+        JobsChScraper("any", include_descriptions=False).fetch()
+
+    dated = [
+        r for r in httpx_mock.get_requests(url=_API_RE)
+        if b"publication-date-from" in r.url.query
+    ]
+    assert len(dated) == len(jobsch.BLOCK_PAUSES) + 1
+
+
+def test_block_after_the_first_answer_is_waited_out_without_a_proxy(httpx_mock) -> None:
+    def refuse(params: dict[str, str], index: int, repeat: int) -> bool:
+        return 150 <= index < 155
+
+    respond = _blocking(_fake_search(_dated_docs(4_500)), refuse)
+    httpx_mock.add_callback(respond, url=_API_RE, is_reusable=True)
+
+    jobs = JobsChScraper("any", include_descriptions=False).fetch()
+
+    assert len(jobs) == 4_500
+
+
+def test_refused_first_request_without_a_proxy_raises_at_once(httpx_mock) -> None:
+    httpx_mock.add_response(url=_API_RE, status_code=403, is_reusable=True)
+
+    with pytest.raises(ScraperError, match="no PROXY env var is set"):
+        JobsChScraper("any", include_descriptions=False).fetch()
+
+    assert len(httpx_mock.get_requests(url=_API_RE)) == 1
+
+
+async def test_pauses_grow_until_a_request_sent_after_one_is_answered(monkeypatch) -> None:
+    from ats_scrapers.scrapers import jobsch
+
+    monkeypatch.setattr(jobsch, "BLOCK_PAUSES", (1.0, 2.0, 3.0))
+    monkeypatch.setattr(jobsch, "PACED_RATES", (2.0, 1.0))
+    now = asyncio.get_running_loop().time
+    throttle = jobsch._Throttle()
+
+    assert throttle.pause() == 1.0
+    assert throttle.paused_since(-1.0)
+    throttle.passed(sent_at=-1.0)
+    assert throttle.pause() == 2.0
+    assert throttle.interval == 0.5
+
+    throttle.passed(sent_at=now())
+    assert throttle.pause() == 1.0
+    assert throttle.interval == 1.0
+    assert (throttle.pause(), throttle.pause()) == (2.0, 3.0)
+    assert throttle.spent
 
 
 def _undated_board(date_status: int = 200):
@@ -312,13 +448,7 @@ def test_date_walk_stops_at_its_window_ceiling(httpx_mock, monkeypatch) -> None:
     from ats_scrapers.scrapers import jobsch
 
     monkeypatch.setattr(jobsch, "MAX_DATE_WINDOWS", 3)
-    first = datetime(2026, 1, 1)
-    docs = []
-    for i in range(4_500):
-        doc = _doc(job_id=f"j{i}", title=f"Job {i}")
-        doc["_published"] = (first + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S")
-        docs.append(doc)
-    httpx_mock.add_callback(_fake_search(docs), url=_API_RE, is_reusable=True)
+    httpx_mock.add_callback(_fake_search(_dated_docs(4_500)), url=_API_RE, is_reusable=True)
 
     with pytest.raises(ScraperError, match="passed 3 windows"):
         JobsChScraper("any", include_descriptions=False).fetch()
