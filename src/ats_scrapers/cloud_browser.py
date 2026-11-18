@@ -111,6 +111,7 @@ class CDPCloudBrowser(CloudBrowser):
                 )
             finally:
                 _stop_worker(*worker)
+                self._session_lock = None
 
     def close(self) -> None:
         """Synchronous :meth:`aclose`."""
@@ -120,6 +121,7 @@ class CDPCloudBrowser(CloudBrowser):
                 asyncio.run_coroutine_threadsafe(self._end_session(), worker[0]).result()
             finally:
                 _stop_worker(*worker)
+                self._session_lock = None
 
     def __enter__(self) -> Self:
         return self
@@ -142,6 +144,9 @@ class CDPCloudBrowser(CloudBrowser):
         return str(value)
 
     def _submit(self, coro: Coroutine[Any, Any, T]) -> Future[T]:
+        return asyncio.run_coroutine_threadsafe(coro, self._ensure_worker())
+
+    def _ensure_worker(self) -> asyncio.AbstractEventLoop:
         with self._worker_lock:
             if self._worker is None:
                 loop = asyncio.new_event_loop()
@@ -150,13 +155,14 @@ class CDPCloudBrowser(CloudBrowser):
                 )
                 thread.start()
                 self._worker = (loop, thread)
-            loop = self._worker[0]
-        return asyncio.run_coroutine_threadsafe(coro, loop)
+            return self._worker[0]
 
     def _take_worker(self) -> tuple[asyncio.AbstractEventLoop, threading.Thread] | None:
+        # A session whose stop failed still needs a loop to release it.
+        if self._session_id is not None:
+            self._ensure_worker()
         with self._worker_lock:
             worker, self._worker = self._worker, None
-        self._session_lock = None
         return worker
 
     # Everything below runs on the worker thread's loop.
@@ -182,31 +188,39 @@ class CDPCloudBrowser(CloudBrowser):
         async with self._session_lock:
             if self._browser is not None and not self._browser.is_connected():
                 with contextlib.suppress(Exception):
-                    await self._end_session()
+                    await self._end_session_now()
             if self._browser is None:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     self._session_id, cdp_url = await self.start_session(client)
                 try:
                     self._playwright, self._browser = await _connect_over_cdp(cdp_url)
                 except BaseException:
-                    await self._end_session()
+                    await self._end_session_now()
                     raise
             return self._browser
 
     async def _end_session(self) -> None:
-        session_id, playwright, browser = self._session_id, self._playwright, self._browser
-        self._session_id = self._playwright = self._browser = None
-        try:
-            if session_id is not None:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    await self.stop_session(client, session_id)
-        finally:
-            if browser is not None:
-                with contextlib.suppress(Exception):
-                    await browser.close()
-            if playwright is not None:
-                with contextlib.suppress(Exception):
-                    await playwright.stop()
+        # Waits for a session being started, so closing never strands it.
+        if self._session_lock is None:
+            await self._end_session_now()
+            return
+        async with self._session_lock:
+            await self._end_session_now()
+
+    async def _end_session_now(self) -> None:
+        playwright, browser = self._playwright, self._browser
+        self._playwright = self._browser = None
+        if browser is not None:
+            with contextlib.suppress(Exception):
+                await browser.close()
+        if playwright is not None:
+            with contextlib.suppress(Exception):
+                await playwright.stop()
+        if self._session_id is not None:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                await self.stop_session(client, self._session_id)
+            # Kept until the provider confirms, so a later close can retry.
+            self._session_id = None
 
 
 class BrowserbaseBrowser(CDPCloudBrowser):

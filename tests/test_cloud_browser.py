@@ -274,6 +274,48 @@ async def test_failed_cdp_connection_stops_the_session(httpx_mock, cdp: FakeCDP)
     assert [r.method for r in httpx_mock.get_requests()] == ["POST", "POST"]
 
 
+
+async def test_a_failed_stop_is_retried_on_the_next_close(httpx_mock, cdp: FakeCDP) -> None:
+    provider = PROVIDERS[3].values[0]
+    method, url, status, payload = provider.start
+    httpx_mock.add_response(method=method, url=url, status_code=status, json=payload)
+    stop_method, stop_url, _, _ = provider.stop
+    httpx_mock.add_response(method=stop_method, url=stop_url, status_code=503)
+    httpx_mock.add_response(method=stop_method, url=stop_url, json={})
+    browser = NotteBrowser("key")
+    await browser.render("https://acme.example/jobs")
+
+    with pytest.raises(ScraperError, match="503"):
+        await browser.aclose()
+    await browser.aclose()
+
+    assert [r.method for r in httpx_mock.get_requests()] == ["POST", "DELETE", "DELETE"]
+
+
+async def test_closing_during_a_session_start_stops_that_session(
+    httpx_mock, cdp: FakeCDP, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_sessions(httpx_mock, PROVIDERS[3].values[0])
+    browser = NotteBrowser("key")
+    started = asyncio.Event()
+    start = browser.start_session
+    loop = asyncio.get_running_loop()
+
+    async def slow_start(client):
+        loop.call_soon_threadsafe(started.set)
+        await asyncio.sleep(0.2)
+        return await start(client)
+
+    monkeypatch.setattr(browser, "start_session", slow_start)
+    render = asyncio.ensure_future(browser.render("https://acme.example/jobs"))
+    await started.wait()
+
+    await browser.aclose()
+    # Bounded so a render stranded by close fails the test instead of hanging it.
+    await asyncio.wait_for(asyncio.gather(render, return_exceptions=True), timeout=5)
+
+    assert [r.method for r in httpx_mock.get_requests()] == ["POST", "DELETE"]
+
 def test_one_browser_serves_sync_calls_across_event_loops(httpx_mock, cdp: FakeCDP) -> None:
     _mock_sessions(httpx_mock, PROVIDERS[0].values[0])
 
