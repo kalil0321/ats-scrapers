@@ -142,7 +142,7 @@ def test_parses_current_alljobs_payload(fake_httpcloak) -> None:
     assert calls[0]["url"] == API
     assert calls[0]["params"] == {"companyId": "main"}
     assert calls[0]["json"]["page"] == 1
-    assert calls[0]["timeout"] == 30_000
+    assert calls[0]["timeout"] == 30
 
 
 def test_uses_catalog_company_name(fake_httpcloak) -> None:
