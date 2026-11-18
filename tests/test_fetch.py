@@ -565,3 +565,17 @@ def test_host_pacer_needs_a_positive_rate() -> None:
 
     with pytest.raises(ValueError, match="positive"):
         HostPacer(0)
+
+
+def test_a_transport_runs_a_cloak_scraper_on_httpx() -> None:
+    import httpx
+
+    from ats_scrapers.scrapers.darwinbox import DarwinboxScraper
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={}))
+    scraper = DarwinboxScraper("acme")
+    scraper.transport = transport
+
+    fetcher = scraper.make_fetcher()
+
+    assert fetcher.engine == "httpx"

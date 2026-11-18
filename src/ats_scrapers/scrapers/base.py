@@ -107,7 +107,8 @@ class BaseScraper(ABC):
         config: dict[str, Any] = {
             "label": f"{type(self).__name__}({self.company_slug!r})",
             "timeout": self.timeout,
-            "engine": type(self).fetch_engine,
+            # A caller's transport carries the requests, so the httpx engine.
+            "engine": "httpx" if self.transport is not None else type(self).fetch_engine,
             "escalate": type(self).fetch_escalate,
             "headers": type(self).default_headers,
             "proxy": self.proxy,
