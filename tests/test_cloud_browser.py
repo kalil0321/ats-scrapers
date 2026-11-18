@@ -316,6 +316,54 @@ async def test_closing_during_a_session_start_stops_that_session(
 
     assert [r.method for r in httpx_mock.get_requests()] == ["POST", "DELETE"]
 
+
+async def test_a_dropped_session_is_released_before_another_is_rented(
+    httpx_mock, cdp: FakeCDP
+) -> None:
+    provider = PROVIDERS[3].values[0]
+    method, url, status, payload = provider.start
+    stop_method, stop_url, _, _ = provider.stop
+    httpx_mock.add_response(method=method, url=url, status_code=status, json=payload)
+    httpx_mock.add_response(method=stop_method, url=stop_url, status_code=503)
+    httpx_mock.add_response(method=stop_method, url=stop_url, json={})
+    httpx_mock.add_response(method=method, url=url, status_code=status, json=payload)
+    httpx_mock.add_response(method=stop_method, url=stop_url, json={})
+
+    async with NotteBrowser("key") as browser:
+        await browser.render("https://acme.example/jobs")
+        cdp.connections[0].connected = False
+        with pytest.raises(ScraperError, match="503"):
+            await browser.render("https://acme.example/jobs")
+        await browser.render("https://acme.example/jobs")
+
+    assert [r.method for r in httpx_mock.get_requests()] == [
+        "POST", "DELETE", "DELETE", "POST", "DELETE",
+    ]
+
+
+async def test_a_render_during_close_is_refused(
+    httpx_mock, cdp: FakeCDP, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_sessions(httpx_mock, PROVIDERS[3].values[0])
+    browser = NotteBrowser("key")
+    await browser.render("https://acme.example/jobs")
+    stopping = asyncio.Event()
+    stop = browser.stop_session
+    loop = asyncio.get_running_loop()
+
+    async def slow_stop(client, session_id):
+        loop.call_soon_threadsafe(stopping.set)
+        await asyncio.sleep(0.2)
+        await stop(client, session_id)
+
+    monkeypatch.setattr(browser, "stop_session", slow_stop)
+    closing = asyncio.ensure_future(browser.aclose())
+    await stopping.wait()
+
+    with pytest.raises(ScraperError, match="closing"):
+        await browser.render("https://acme.example/jobs/1")
+    await asyncio.wait_for(closing, timeout=5)
+
 def test_one_browser_serves_sync_calls_across_event_loops(httpx_mock, cdp: FakeCDP) -> None:
     _mock_sessions(httpx_mock, PROVIDERS[0].values[0])
 

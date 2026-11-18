@@ -86,6 +86,7 @@ class CDPCloudBrowser(CloudBrowser):
         self.timeout = timeout
         self._worker: tuple[asyncio.AbstractEventLoop, threading.Thread] | None = None
         self._worker_lock = threading.Lock()
+        self._closing = False
         self._session_lock: asyncio.Lock | None = None
         self._session_id: str | None = None
         self._playwright: Any = None
@@ -104,24 +105,22 @@ class CDPCloudBrowser(CloudBrowser):
 
     async def aclose(self) -> None:
         worker = self._take_worker()
-        if worker is not None:
-            try:
+        try:
+            if worker is not None:
                 await asyncio.wrap_future(
                     asyncio.run_coroutine_threadsafe(self._end_session(), worker[0])
                 )
-            finally:
-                _stop_worker(*worker)
-                self._session_lock = None
+        finally:
+            self._closed(worker)
 
     def close(self) -> None:
         """Synchronous :meth:`aclose`."""
         worker = self._take_worker()
-        if worker is not None:
-            try:
+        try:
+            if worker is not None:
                 asyncio.run_coroutine_threadsafe(self._end_session(), worker[0]).result()
-            finally:
-                _stop_worker(*worker)
-                self._session_lock = None
+        finally:
+            self._closed(worker)
 
     def __enter__(self) -> Self:
         return self
@@ -144,10 +143,19 @@ class CDPCloudBrowser(CloudBrowser):
         return str(value)
 
     def _submit(self, coro: Coroutine[Any, Any, T]) -> Future[T]:
-        return asyncio.run_coroutine_threadsafe(coro, self._ensure_worker())
+        try:
+            loop = self._ensure_worker()
+        except ScraperError:
+            coro.close()
+            raise
+        return asyncio.run_coroutine_threadsafe(coro, loop)
 
-    def _ensure_worker(self) -> asyncio.AbstractEventLoop:
+    def _ensure_worker(self, *, closing: bool = False) -> asyncio.AbstractEventLoop:
         with self._worker_lock:
+            # A render during close would get a loop of its own and wait forever
+            # on a session lock held by the closing one.
+            if self._closing and not closing:
+                raise ScraperError(f"{self.provider}: the browser is closing")
             if self._worker is None:
                 loop = asyncio.new_event_loop()
                 thread = threading.Thread(
@@ -158,12 +166,21 @@ class CDPCloudBrowser(CloudBrowser):
             return self._worker[0]
 
     def _take_worker(self) -> tuple[asyncio.AbstractEventLoop, threading.Thread] | None:
+        with self._worker_lock:
+            self._closing = True
         # A session whose stop failed still needs a loop to release it.
         if self._session_id is not None:
-            self._ensure_worker()
+            self._ensure_worker(closing=True)
         with self._worker_lock:
             worker, self._worker = self._worker, None
         return worker
+
+    def _closed(self, worker: tuple[asyncio.AbstractEventLoop, threading.Thread] | None) -> None:
+        if worker is not None:
+            _stop_worker(*worker)
+        self._session_lock = None
+        with self._worker_lock:
+            self._closing = False
 
     # Everything below runs on the worker thread's loop.
 
@@ -187,9 +204,11 @@ class CDPCloudBrowser(CloudBrowser):
             self._session_lock = asyncio.Lock()
         async with self._session_lock:
             if self._browser is not None and not self._browser.is_connected():
-                with contextlib.suppress(Exception):
-                    await self._end_session_now()
+                await self._end_session_now()
             if self._browser is None:
+                if self._session_id is not None:
+                    # Release a session whose stop failed before renting another.
+                    await self._end_session_now()
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     self._session_id, cdp_url = await self.start_session(client)
                 try:
