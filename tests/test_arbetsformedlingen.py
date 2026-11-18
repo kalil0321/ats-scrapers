@@ -176,3 +176,17 @@ def test_jobtech_missing_or_unlabelled_concepts() -> None:
     })
     job = ArbetsformedlingenScraper("arbetsformedlingen")._parse(row)
     assert job.occupation is None and job.education_requirements is None
+
+
+def test_native_skill_groups_set_priority_independently_of_weights() -> None:
+    row = _ads([datetime(2026, 11, 18)])[0]
+    row.update({
+        "must_have": {"skills": [{"label": "C#", "weight": None}, {"label": " C# "}, {"concept_id": "s1"}],
+                      "languages": [{"label": "English"}]},
+        "nice_to_have": {"skills": [{"label": "SQL", "weight": 10}], "education": [{"label": "Diploma"}]},
+    })
+    job = ArbetsformedlingenScraper("any")._parse(row)
+    assert [(s.label, s.requirement) for s in job.skill_requirements] == [
+        ("C#", "required"), ("SQL", "preferred"),
+    ]
+    assert [(q.label, q.requirement) for q in job.education_requirements] == [("Diploma", "preferred")]

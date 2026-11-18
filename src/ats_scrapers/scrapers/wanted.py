@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._skill_tags import skill_tags
 from ats_scrapers.scrapers._throttle import Throttle
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -99,6 +100,7 @@ class WantedScraper(BaseScraper):
         async def run() -> str | None:
             async with self.make_fetcher() as fetch:
                 await self._enrich_description(fetch, Throttle(1, 0), copy, asyncio.Event())
+            job.skill_requirements = copy.skill_requirements
             return copy.description
 
         return self._run_sync(run())
@@ -192,6 +194,9 @@ class WantedScraper(BaseScraper):
             return
         if posting.get("id") is not None and str(posting["id"]) != job.ats_id:
             return
+        job.skill_requirements = skill_tags(
+            posting.get("skill_tags"), label_key="text", existing=job.skill_requirements,
+        )
         detail = posting.get("detail")
         if not isinstance(detail, dict):
             return

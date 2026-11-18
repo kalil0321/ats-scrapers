@@ -94,6 +94,9 @@ def test_fetches_structured_public_jobs(httpx_mock) -> None:
     assert job.commitment == "Full Time"
     assert job.experience == 7
     assert job.department == "Marketing"
+    assert [(s.label, s.requirement) for s in job.skill_requirements] == [
+        ("Communication", "unspecified"), ("Marketing", "unspecified"),
+    ]
     assert job.requisition_id == "BF220"
     assert job.description == "About us\nBuild social impact."
     assert job.salary_min == 300000.0

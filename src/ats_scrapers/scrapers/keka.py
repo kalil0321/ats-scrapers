@@ -22,6 +22,7 @@ from urllib.parse import urljoin, urlparse
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
+from ats_scrapers.scrapers._skill_tags import skill_tags
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 _HOST_RE = re.compile(
@@ -273,6 +274,7 @@ class KekaScraper(BaseScraper):
             if value not in (None, "", [])
         }
         return Job(
+            skill_requirements=skill_tags(item.get("skillNames")),
             url=job_url,
             title=title,
             company=company,

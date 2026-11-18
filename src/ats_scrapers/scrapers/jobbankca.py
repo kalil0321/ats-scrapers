@@ -44,7 +44,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, EducationRequirement, Job, SalaryPeriod
+from ats_scrapers.models import ATSType, EducationRequirement, Job, RequirementLevel, SalaryPeriod
 from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers._job_classification import classification_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -512,10 +512,12 @@ def _apply_classification(job: Job, posting: Node) -> None:
         labels.append(label)
         if not classification_label(label) or label.casefold().rstrip(".") in _NO_EDUCATION:
             continue
-        preferred = re.search(r"\b(?:preferred|an asset|un atout|souhaitée?)\b", label, re.I)
-        requirements.append(EducationRequirement(
-            label=label, requirement="preferred" if preferred else "required",
-        ))
+        level: RequirementLevel = "required"
+        if re.search(r"\b(?:optional|facultati(?:f|ve)|optionnel(?:le)?)\b", label, re.I):
+            level = "optional"
+        elif re.search(r"\b(?:preferred|an asset|un atout|souhaitée?)\b", label, re.I):
+            level = "preferred"
+        requirements.append(EducationRequirement(label=label, requirement=level))
     if labels:
         raw["education_requirements"] = labels
         job.education_requirements = requirements or None

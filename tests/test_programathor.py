@@ -162,6 +162,9 @@ def test_parses_full_listing_card(httpx_mock) -> None:
     assert j.description == "Build Brazilian platforms."
     assert j.raw is not None
     assert j.raw["skills"] == ["Python", "API", "SQL"]
+    assert [(s.label, s.requirement) for s in j.skill_requirements] == [
+        ("Python", "unspecified"), ("API", "unspecified"), ("SQL", "unspecified"),
+    ]
     assert j.raw["company_type"] == "Startup"
     assert str(j.url) == "https://programathor.com.br/jobs/33458-engenheiro-qa-python"
 
@@ -378,6 +381,9 @@ def test_visible_sections_preserve_company_duties_requirements_and_skills(httpx_
     assert scraper.get_description(job) == (
         "Habilidades\nC++\nDescrição da empresa\nNossa empresa\nRequisitos\nCompiladores & redes"
     )
+    assert [(s.label, s.requirement) for s in job.skill_requirements] == [
+        ("Python", "unspecified"), ("Django", "unspecified"), ("C++", "unspecified"),
+    ]
 
 
 @pytest.mark.parametrize(("label", "expected"), [

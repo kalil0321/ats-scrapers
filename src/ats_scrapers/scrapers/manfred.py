@@ -25,7 +25,14 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, CompensationComponent, Job
+from ats_scrapers.models import (
+    ATSType,
+    CompensationComponent,
+    Job,
+    RequirementLevel,
+    SkillRequirement,
+)
+from ats_scrapers.scrapers._job_classification import classification_label
 from ats_scrapers.scrapers._posting_fields import finite_number
 from ats_scrapers.scrapers._source_timestamp import source_timestamp
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -105,6 +112,7 @@ class ManfredScraper(BaseScraper):
                 await self._enrich_description(fetch, sem, copy)
             if job.source_updated_at is None:
                 job.source_updated_at = copy.source_updated_at
+            job.skill_requirements = copy.skill_requirements
             return copy.description
 
         return self._run_sync(run())
@@ -147,8 +155,11 @@ class ManfredScraper(BaseScraper):
                 # Detail enrichment is best-effort — a missing or broken
                 # detail endpoint must not sink the listing row.
                 return
-        if isinstance(detail, dict) and job.source_updated_at is None:
-            job.source_updated_at = source_timestamp(detail.get("updatedAt"))
+        if isinstance(detail, dict):
+            if job.source_updated_at is None:
+                job.source_updated_at = source_timestamp(detail.get("updatedAt"))
+            if skills := _skills(detail):
+                job.skill_requirements = skills
         description = _compose_description(detail, self.lang)
         if description and not job.description:
             job.description = description[:25_000]
@@ -222,6 +233,28 @@ class ManfredScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+_SKILL_SECTIONS: dict[str, RequirementLevel] = {
+    "MUST": "required", "COULD": "preferred", "EXTRA": "optional",
+}
+
+
+def _skills(detail: dict[str, Any]) -> list[SkillRequirement] | None:
+    skills: list[SkillRequirement] = []
+    for key in ("techs", "softSkills"):
+        entries = detail.get(key)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict) or not (label := classification_label(entry.get("name"))):
+                continue
+            section = entry.get("section")
+            level = _SKILL_SECTIONS.get(section, "unspecified") if isinstance(section, str) else "unspecified"
+            skill = SkillRequirement(label=label, requirement=level)
+            if skill not in skills:
+                skills.append(skill)
+    return skills or None
 
 
 def _pay_components(item: dict[str, Any]) -> list[CompensationComponent] | None:

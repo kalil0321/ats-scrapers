@@ -45,6 +45,7 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers._posting_detail import body_text, job_posting
+from ats_scrapers.scrapers._skill_tags import skill_tags
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -243,7 +244,8 @@ class ProgramathorScraper(BaseScraper):
             text = await self._request_html(client, sem, str(job.url))
         except ScraperError:
             return
-        description = _extract_description(text)
+        description, skills = _detail_fields(text)
+        job.skill_requirements = skill_tags(skills, existing=job.skill_requirements)
         if description and not job.description:
             job.description = description[:25_000]
 
@@ -375,6 +377,7 @@ class ProgramathorScraper(BaseScraper):
             salary_min=salary_min,
             salary_max=salary_max,
             employment_type=employment_type,
+            skill_requirements=skill_tags(skills),
             engagement_type=_ENGAGEMENT.get(contract_raw.casefold()) if contract_raw else None,
             commitment=commitment,
             fetched_at=datetime.now(UTC),
@@ -398,7 +401,7 @@ def _strip_html(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
-def _extract_description(page: str) -> str | None:
+def _detail_fields(page: str) -> tuple[str | None, list[str]]:
     # The visible sections also include the employer introduction. The
     # structured version can omit it and relabel requirements as duties.
     root = parse_html(page)
@@ -418,7 +421,7 @@ def _extract_description(page: str) -> str | None:
             description = "Habilidades\n" + ", ".join(skills) + "\n" + description
     else:
         description = body_text(job_posting(page).get("description"))
-    return description[:25_000] or None
+    return description[:25_000] or None, skills
 
 
 def _normalize_location(raw: str) -> str | None:

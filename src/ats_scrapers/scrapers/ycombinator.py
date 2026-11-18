@@ -32,6 +32,7 @@ from ats_scrapers.models import ATSType, CompensationComponent, Job, normalize_c
 from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers._posting_detail import body_text, fill_missing, job_posting
 from ats_scrapers.scrapers._posting_fields import finite_number
+from ats_scrapers.scrapers._skill_tags import skill_tags
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -280,6 +281,7 @@ class YCombinatorScraper(BaseScraper):
             compensation_components=_pay_components(item.get("salaryRange"), item.get("equityRange")),
             salary_min=salary_min,
             salary_max=salary_max,
+            skill_requirements=skill_tags(item.get("skills")),
             experience=experience,
             employment_type=employment_type,
             commitment=item.get("type") if isinstance(item.get("type"), str) else None,
@@ -552,6 +554,8 @@ def _apply_detail(job: Job, page: str) -> None:
                 return
             props_job = candidate
             break
+
+    job.skill_requirements = skill_tags(props_job.get("skills"), existing=job.skill_requirements)
 
     if props_job or posting:
         listing = {part.kind: part.summary for part in job.compensation_components or []}

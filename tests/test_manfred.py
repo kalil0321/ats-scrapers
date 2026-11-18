@@ -254,6 +254,31 @@ def test_visible_detail_sections_and_technical_punctuation(httpx_mock) -> None:
         assert section in job.description
 
 
+@pytest.mark.parametrize("defer", [False, True])
+def test_tech_and_soft_skill_sections_survive_detail(httpx_mock, defer) -> None:
+    httpx_mock.add_response(url=_api_url(), json=[_offer()])
+    httpx_mock.add_response(url=_detail_url(), json={
+        "techs": [
+            {"name": "C#", "section": "MUST", "level": "BASIC"},
+            {"name": "SQL", "section": "COULD", "level": "ADVANCED"},
+            {"name": "Rust", "section": "EXTRA"}, {"name": "HTTP", "section": "NEW"},
+            {"name": " C# ", "section": "MUST"}, {"level": "ADVANCED"},
+        ],
+        "softSkills": [{"name": "Teamwork", "section": "COULD"}, {"name": "Mentoring"}],
+        "languages": [{"name": "English"}], "introduction": "Build products.",
+    })
+    scraper = ManfredScraper("any", include_descriptions=not defer)
+    job, = scraper.fetch()
+    if defer:
+        assert job.skill_requirements is None
+    assert scraper.get_description(job) == "Build products."
+    assert [(s.label, s.requirement) for s in job.skill_requirements] == [
+        ("C#", "required"), ("SQL", "preferred"), ("Rust", "optional"),
+        ("HTTP", "unspecified"), ("Teamwork", "preferred"), ("Mentoring", "unspecified"),
+    ]
+    assert len(httpx_mock.get_requests()) == 2
+
+
 @pytest.mark.parametrize("listing_clock", [None, "2026-05-09T15:00:00Z"])
 def test_detail_update_fills_missing_listing_clock(listing_clock, httpx_mock) -> None:
     scraper = ManfredScraper("any", include_descriptions=False)

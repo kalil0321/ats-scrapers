@@ -26,6 +26,7 @@ from pydantic import ValidationError
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EducationRequirement, Job, WorkloadPercentages
 from ats_scrapers.scrapers._job_classification import classification_label, occupation
+from ats_scrapers.scrapers._skill_tags import skill_tags
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from ats_scrapers.fetch import Fetcher
+    from ats_scrapers.models import SkillRequirement
 
 log = logging.getLogger(__name__)
 
@@ -313,6 +315,7 @@ class ArbetsformedlingenScraper(BaseScraper):
             description=description,
             occupation=primary_occupation,
             education_requirements=_education_requirements(item),
+            skill_requirements=_skill_requirements(item),
             department=department if isinstance(department, str) else None,
             employment_type=employment_type,
             commitment=commitment,
@@ -354,6 +357,18 @@ def _education_requirements(item: dict[str, Any]) -> list[EducationRequirement] 
                 if qualification not in qualifications:
                     qualifications.append(qualification)
     return qualifications or None
+
+
+def _skill_requirements(item: dict[str, Any]) -> list[SkillRequirement] | None:
+    skills: list[SkillRequirement] = []
+    for key in ("must_have", "nice_to_have"):
+        block = item.get(key)
+        if isinstance(block, dict):
+            skills.extend(skill_tags(
+                block.get("skills"), label_key="label",
+                requirement="required" if key == "must_have" else "preferred",
+            ) or [])
+    return skills or None
 
 
 # Swedish employment-type labels → our shared enum. The labels come from

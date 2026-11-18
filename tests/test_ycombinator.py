@@ -361,11 +361,12 @@ def test_persistent_500_on_companies_api_raises(httpx_mock) -> None:
 
 @pytest.mark.parametrize("defer", [True, False])
 def test_tagline_triggers_one_detail_after_dedupe(httpx_mock, defer) -> None:
-    item = _job(description="")
+    item = {**_job(description=""), "skills": ["C#", "  C# ", None]}
     httpx_mock.add_response(url=_COMPANIES_RE, json=_api_page(["acme"]))
     httpx_mock.add_response(url=_PAGE_RE, text=_company_page_html([item, item]))
-    props = {"props": {"job": {"id": item["id"], "interview_process": "Pair programming."},
-                       "relatedJobs": [{"description": "Another role."}]}}
+    props = {"props": {"job": {"id": item["id"], "interview_process": "Pair programming.",
+                               "skills": ["C#", "PostgreSQL"]},
+                       "relatedJobs": [{"description": "Another role.", "skills": ["Go"]}]}}
     posting = {"@type": "JobPosting", "description": "<p>Maintain C# &amp; PostgreSQL.</p>"}
     httpx_mock.add_response(url="https://www.ycombinator.com" + item["url"], text=(
         f'<script type="application/ld+json">{json.dumps(posting)}</script>'
@@ -376,6 +377,9 @@ def test_tagline_triggers_one_detail_after_dedupe(httpx_mock, defer) -> None:
     if defer:
         assert job.description is None and len(httpx_mock.get_requests()) == 2
     assert scraper.get_description(job) == "Maintain C# & PostgreSQL.\n\nPair programming."
+    assert [(s.label, s.requirement) for s in job.skill_requirements] == [
+        ("C#", "unspecified"), ("PostgreSQL", "unspecified"),
+    ]
     assert len(httpx_mock.get_requests()) == 3
 
 

@@ -694,6 +694,8 @@ def test_detail_fetch_preserves_route_and_language(httpx_mock, language, posting
     ("Permanent", "Temps plein", "permanent", ["Diplôme collégial"], "required"),
     ("", "Full time", None, ["No degree, certificate or diploma"], None),
     ("", "Part time", None, ["Diploma preferred"], "preferred"),
+    ("", "Part time", None, ["Diploma (optional)"], "optional"),
+    ("", "Temps partiel", None, ["Diplôme facultatif"], "optional"),
     ("Term or contract", "Full time", None, ["College/CEGEP"], "required"),
     ("Temporaire", "Temps partiel", "temporary", ["Aucun certificat, diplôme ou grade"], None),
 ])
