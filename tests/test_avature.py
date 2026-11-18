@@ -284,6 +284,7 @@ def test_board_that_says_it_has_no_jobs_is_empty(httpx_mock) -> None:
     "count",
     [
         '<div class="list-controls__text__legend" aria-label="432 results"></div>',
+        '<div aria-label="432 results" class="list-controls__text__legend"></div>',
         '<span class="jobPaginationLegend">1-20 of 169 results</span>',
     ],
 )

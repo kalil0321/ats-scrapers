@@ -116,9 +116,10 @@ _PAGE_LINK_RE = re.compile(
 # The result total a listing page states: ``aria-label="432 results"`` on the
 # results legend, or ``1-20 of 169 results`` in the pagination legend.
 _RESULT_COUNT_RES = (
-    re.compile(r'list-controls__text__legend[^>]*aria-label="\s*(\d[\d.,]*)'),
+    re.compile(r'<[^>]*\blist-controls__text__legend\b[^>]*>'),
     re.compile(r'jobPaginationLegend[^>]*>[^<]*?(\d[\d.,]*)\s*[^\d<]*<'),
 )
+_ARIA_COUNT_RE = re.compile(r'\baria-label="\s*(\d[\d.,]*)')
 
 # Names of the job page in detail links. Portals can rename it: Maximus calls
 # it ``Job-Description``.
@@ -844,13 +845,16 @@ def _check_empty_listing(html_text: str, page_url: str, base: str) -> None:
                 f"Avature ({base}) redirects to {page_url}, which is not an Avature site"
             )
         raise ScraperError(f"Avature ({base}) answered a page that is not an Avature listing")
-    for pattern in _RESULT_COUNT_RES:
-        match = pattern.search(html_text)
-        if match and int(re.sub(r"\D", "", match.group(1))) > 0:
-            raise ScraperError(
-                f"Avature ({base}) lists {match.group(1)} results on {page_url} "
-                "but no job link could be read"
-            )
+    legend, pagination = _RESULT_COUNT_RES
+    # The legend's attributes come in any order: read the count from its tag.
+    tag = legend.search(html_text)
+    stated = _ARIA_COUNT_RE.search(tag.group(0)) if tag else None
+    stated = stated or pagination.search(html_text)
+    if stated and int(re.sub(r"\D", "", stated.group(1))) > 0:
+        raise ScraperError(
+            f"Avature ({base}) lists {stated.group(1)} results on {page_url} "
+            "but no job link could be read"
+        )
 
 
 def _join_avature_url(base: str, href: str) -> str:
