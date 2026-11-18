@@ -38,6 +38,8 @@ from ats_scrapers.models import ATSType
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
+    import httpx
+
     from ats_scrapers.models import Job
 
 T = TypeVar("T")
@@ -65,6 +67,11 @@ class BaseScraper(ABC):
     #: Headers sent on every request (per-request headers merge over).
     default_headers: ClassVar[dict[str, str] | None] = None
 
+    #: Sends the requests of :meth:`make_fetcher` fetchers instead of a direct
+    #: connection or ``proxy`` (see :class:`ats_scrapers.fetch.Fetcher`).
+    #: Scrapers whose constructor does not take it accept it as an attribute.
+    transport: httpx.AsyncBaseTransport | None = None
+
     def __init__(
         self,
         company_slug: str,
@@ -72,11 +79,13 @@ class BaseScraper(ABC):
         timeout: float = 30.0,
         include_descriptions: bool = True,
         proxy: str | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.company_slug = company_slug
         self.timeout = timeout
         self.include_descriptions = include_descriptions
         self.proxy = proxy
+        self.transport = transport
 
     @abstractmethod
     async def afetch(self) -> list[Job]:
@@ -102,6 +111,7 @@ class BaseScraper(ABC):
             "escalate": type(self).fetch_escalate,
             "headers": type(self).default_headers,
             "proxy": self.proxy,
+            "transport": self.transport,
         }
         config.update(overrides)
         return Fetcher(**config)

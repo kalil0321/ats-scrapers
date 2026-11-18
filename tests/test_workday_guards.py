@@ -27,39 +27,143 @@ def test_workday_deadline_raises() -> None:
         scraper._check_deadline()
 
 
-def test_workday_retry_after_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
-    delays: list[float] = []
+class _Answers:
+    """Stands in for the listing client: the same answer to every search."""
 
-    async def fake_sleep(delay: float) -> None:
-        delays.append(delay)
+    def __init__(self, status: int, headers: dict[str, str]) -> None:
+        self.status = status
+        self.headers = headers
+        self.calls = 0
 
-    class FakeClient:
-        async def post(self, *_args, **_kwargs):
-            return SimpleNamespace(
-                status_code=429,
-                headers={"Retry-After": "3600"},
-            )
+    async def post(self, *_args, **_kwargs):
+        self.calls += 1
+        return SimpleNamespace(status_code=self.status, headers=self.headers)
 
-    monkeypatch.setattr("ats_scrapers.scrapers.workday.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr("ats_scrapers.scrapers.workday.MAX_RETRY_DELAY", 7.0)
 
-    scraper = WorkdayScraper(
-        "https://accenture.wd103.myworkdayjobs.com/accenturecareers",
-    )
-
+def _search(scraper: WorkdayScraper, client: object) -> None:
     async def run() -> None:
-        with pytest.raises(ScraperError, match=r"gave up .*: HTTP 429"):
-            await scraper._request(
-                FakeClient(),
-                "https://example.com/wday/cxs/accenture/site/jobs",
-                asyncio.Semaphore(1),
-                applied_facets={},
-                offset=0,
-            )
+        await scraper._request(
+            client, API, asyncio.Semaphore(1), applied_facets={}, offset=0,
+        )
 
     asyncio.run(run())
 
-    assert delays == [7.0, 7.0, 7.0]
+
+@pytest.fixture
+def delays(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    waited: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        waited.append(delay)
+
+    monkeypatch.setattr("ats_scrapers.scrapers.workday.asyncio.sleep", fake_sleep)
+    return waited
+
+
+def test_workday_retry_after_is_waited(delays: list[float]) -> None:
+    client = _Answers(429, {"Retry-After": "2"})
+
+    with pytest.raises(ScraperError, match=r"gave up after 3 retries at offset=0: HTTP 429$"):
+        _search(WorkdayScraper(URL), client)
+
+    assert client.calls == 3
+    assert delays == [2.0, 2.0]
+
+
+def test_workday_retry_after_above_the_cap_ends_the_board(
+    monkeypatch: pytest.MonkeyPatch, delays: list[float]
+) -> None:
+    monkeypatch.setattr("ats_scrapers.scrapers.workday.MAX_RETRY_DELAY", 7.0)
+    client = _Answers(429, {"Retry-After": "3600"})
+
+    with pytest.raises(ScraperError, match=r"offset=0: HTTP 429, Retry-After 3600 s"):
+        _search(WorkdayScraper(URL), client)
+
+    assert client.calls == 1
+    assert delays == []
+
+
+def test_workday_rate_limit_without_retry_after_backs_off_with_jitter(
+    delays: list[float],
+) -> None:
+    with pytest.raises(ScraperError, match=r"HTTP 403$"):
+        _search(WorkdayScraper(URL), _Answers(403, {}))
+
+    first, second = delays
+    assert 2.5 <= first <= 5.0
+    assert 5.0 <= second <= 10.0
+
+
+def test_workday_bot_challenge_is_not_retried(delays: list[float]) -> None:
+    client = _Answers(429, {"cf-mitigated": "challenge", "Content-Type": "text/html"})
+
+    with pytest.raises(ScraperError, match=r"offset=0: HTTP 429, a bot challenge$"):
+        _search(WorkdayScraper(URL), client)
+
+    assert client.calls == 1
+    assert delays == []
+
+
+def test_workday_does_not_wait_past_its_deadline(delays: list[float]) -> None:
+    scraper = WorkdayScraper(URL, max_fetch_seconds=60)
+    scraper._deadline = time.monotonic() + 5
+
+    with pytest.raises(ScraperError, match=r"max_fetch_seconds=60: .*\(waiting out HTTP 429\)"):
+        _search(scraper, _Answers(429, {"Retry-After": "10"}))
+
+    assert delays == []
+
+
+@pytest.mark.parametrize(
+    ("value", "seconds"),
+    [("12", 12.0), ("0.5", 0.5), ("-3", 0.0), ("soon", None), ("", None), (None, None)],
+)
+def test_workday_retry_after_values(value, seconds) -> None:
+    from ats_scrapers.scrapers.workday import _retry_after
+
+    assert _retry_after(value) == seconds
+
+
+def test_workday_retry_after_as_a_date() -> None:
+    from datetime import UTC, datetime, timedelta
+    from email.utils import format_datetime
+
+    from ats_scrapers.scrapers.workday import _retry_after
+
+    when = format_datetime(datetime.now(UTC) + timedelta(seconds=20), usegmt=True)
+
+    assert 15 <= (_retry_after(when) or 0) <= 20
+
+
+def test_workday_descriptions_stop_at_a_rate_limit(caplog) -> None:
+    from ats_scrapers.models import ATSType, Job
+
+    class Details:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get(self, *_args, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(status_code=429, headers={"cf-mitigated": "challenge"})
+
+    jobs = [
+        Job(url=f"{URL}/job/X/Job_R{n}", title="Job", company="Acme",
+            ats_type=ATSType.WORKDAY, ats_id=f"R{n}")
+        for n in range(4)
+    ]
+    client = Details()
+
+    async def run() -> None:
+        await WorkdayScraper(URL)._enrich_details(
+            client, asyncio.Semaphore(1), "https://acme.wd5.myworkdayjobs.com/x", jobs,
+        )
+
+    with caplog.at_level("WARNING", logger="ats_scrapers.scrapers.workday"):
+        asyncio.run(run())
+
+    assert client.calls == 1
+    assert all(job.description is None for job in jobs)
+    assert "got HTTP 429" in caplog.text
 
 
 def test_workday_retries_html_outage_response(
@@ -109,7 +213,8 @@ def test_workday_retries_html_outage_response(
     asyncio.run(run())
 
     assert calls == 2
-    assert delays == [1.0]
+    assert len(delays) == 1
+    assert 0.5 <= delays[0] <= 1.0
 
 
 def test_workday_persistent_html_outage_raises_scraper_error(
@@ -272,3 +377,62 @@ def test_workday_network_failure_names_the_error(monkeypatch: pytest.MonkeyPatch
             )
 
     asyncio.run(run())
+
+
+async def test_a_failed_search_stops_the_other_searches_first(httpx_mock) -> None:
+    """The other searches of the board end before the client closes."""
+    import json
+
+    other_started = asyncio.Event()
+    other_ended: list[str] = []
+
+    async def reply(request: httpx.Request) -> httpx.Response:
+        applied = json.loads(request.content)["appliedFacets"]
+        if not applied:
+            return httpx.Response(200, json={
+                "total": 2000,
+                "jobPostings": [],
+                "facets": [{"facetParameter": "jobFamilyGroup", "values": [
+                    {"id": "failing", "count": 1500}, {"id": "slow", "count": 1500},
+                ]}],
+            })
+        if applied["jobFamilyGroup"] == ["failing"]:
+            await other_started.wait()
+            return httpx.Response(400)
+        other_started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            other_ended.append("cancelled")
+            raise
+        return httpx.Response(200, json={"total": 45, "jobPostings": []})
+
+    httpx_mock.add_callback(reply, url=API, is_reusable=True)
+
+    with pytest.raises(ScraperError, match="returned 400"):
+        await asyncio.wait_for(WorkdayScraper(URL, include_descriptions=False).afetch(), 5)
+
+    assert other_ended == ["cancelled"]
+    assert [task for task in asyncio.all_tasks() if task is not asyncio.current_task()] == []
+
+
+async def test_run_all_raises_the_first_error_after_the_others_end() -> None:
+    from ats_scrapers.scrapers.workday import _run_all
+
+    ended: list[str] = []
+
+    async def fail() -> None:
+        await asyncio.sleep(0)
+        raise ScraperError("first")
+
+    async def wait() -> None:
+        try:
+            await asyncio.sleep(30)
+        finally:
+            ended.append("other")
+
+    with pytest.raises(ScraperError, match="first"):
+        await _run_all([fail(), wait(), wait()])
+
+    assert ended == ["other", "other"]
+    assert await _run_all([asyncio.sleep(0, result=n) for n in (1, 2)]) == [1, 2]

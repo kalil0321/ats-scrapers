@@ -49,6 +49,9 @@ import logging
 import os
 import socket
 import ssl
+import threading
+import time
+from collections.abc import Callable
 from types import TracebackType
 from typing import Any, Literal, Self
 from urllib.parse import urlparse
@@ -175,6 +178,12 @@ class Fetcher:
     proxy:
         Proxy URL for both engines. ``None`` reads
         ``ATS_SCRAPERS_PROXY`` / legacy ``PROXY`` from the environment.
+    transport:
+        An ``httpx.AsyncBaseTransport`` that sends every request instead
+        of a direct connection or a proxy, e.g. one that forwards requests
+        to another service. The fetcher never closes it, and never
+        escalates to httpcloak, which cannot use it. Use it from the event
+        loop it was made for.
     missing_host_not_found:
         Raise :class:`CompanyNotFoundError` when the last attempt failed
         because the host name does not resolve, presents a certificate
@@ -198,7 +207,10 @@ class Fetcher:
         retry_base_delay: float | None = None,
         max_retry_delay: float | None = None,
         missing_host_not_found: bool = False,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        if transport is not None and engine == "cloak":
+            raise ValueError(f"{label}: the cloak engine cannot send through a transport")
         self.label = label
         self.timeout = timeout
         self.engine: Engine = engine
@@ -210,12 +222,13 @@ class Fetcher:
         self._retry_base_delay = retry_base_delay
         self._max_retry_delay = max_retry_delay
         self.missing_host_not_found = missing_host_not_found
+        self.transport = transport
         self._client: httpx.AsyncClient | None = None
 
     def _uses_proxy(self) -> bool:
         """Whether requests go through a proxy, ours or one httpx reads from
-        the standard environment variables."""
-        return bool(self.proxy) or any(
+        the standard environment variables, or through a given transport."""
+        return self.transport is not None or bool(self.proxy) or any(
             os.environ.get(name)
             for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
         )
@@ -256,7 +269,9 @@ class Fetcher:
                 timeout=self.timeout,
                 follow_redirects=self.follow_redirects,
                 headers=self.headers or None,
-                proxy=self.proxy,
+                # httpx sends through a proxy before a given transport.
+                proxy=None if self.transport else self.proxy,
+                transport=borrowed_transport(self.transport) if self.transport else None,
             )
         return self._client
 
@@ -344,7 +359,7 @@ class Fetcher:
             if status == 404:
                 raise CompanyNotFoundError(f"{self.label} not found")
             if status in _BLOCKED_STATUSES and self.engine == "httpx":
-                if self.escalate and _cloak_available():
+                if self.escalate and self.transport is None and _cloak_available():
                     log.info(
                         "%s: %s blocked httpx (%d) — escalating to httpcloak",
                         self.label, url, status,
@@ -458,6 +473,76 @@ class Fetcher:
             context=f"{self.label}: {url}",
             url=str(final_url) if final_url else None,
         )
+
+
+class HostPacer:
+    """Starts requests to one host at least ``1 / per_second`` seconds apart.
+
+    One pacer can be shared by scrapers running at once, in threads or event
+    loops of their own. ``key`` maps a host name to the group paced together,
+    the host itself by default.
+    """
+
+    def __init__(self, per_second: float, *, key: Callable[[str], str] | None = None) -> None:
+        if per_second <= 0:
+            raise ValueError("per_second must be positive")
+        self._interval = 1.0 / per_second
+        self._key = key or (lambda host: host)
+        self._lock = threading.Lock()
+        self._next_start: dict[str, float] = {}
+
+    def reserve(self, url: str) -> float:
+        """Take the next start for ``url``'s group; the seconds until it."""
+        group = self._key(urlparse(url).hostname or "")
+        with self._lock:
+            now = time.monotonic()
+            start = max(now, self._next_start.get(group, now))
+            self._next_start[group] = start + self._interval
+        return start - now
+
+    async def wait(self, url: str) -> None:
+        delay = self.reserve(url)
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    def wait_sync(self, url: str) -> None:
+        delay = self.reserve(url)
+        if delay > 0:
+            time.sleep(delay)
+
+
+class _BorrowedTransport(httpx.AsyncBaseTransport, httpx.BaseTransport):
+    """A caller's transport, which the clients that send through it leave open."""
+
+    def __init__(self, transport: httpx.AsyncBaseTransport | httpx.BaseTransport) -> None:
+        self._transport = transport
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if not isinstance(self._transport, httpx.AsyncBaseTransport):
+            raise TypeError("this transport only sends synchronous requests")
+        return await self._transport.handle_async_request(request)
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        if not isinstance(self._transport, httpx.BaseTransport):
+            raise TypeError("this transport only sends asynchronous requests")
+        return self._transport.handle_request(request)
+
+    async def aclose(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+def borrowed_transport(
+    transport: httpx.AsyncBaseTransport | httpx.BaseTransport,
+) -> _BorrowedTransport:
+    """``transport`` for an httpx client that must not close it.
+
+    A client closes its transport when it closes. A transport shared by
+    several scrapers, or reused after one fetch, has to outlive them.
+    """
+    return _BorrowedTransport(transport)
 
 
 def _missing_host_reason(exc: BaseException, *, via_proxy: bool) -> str | None:

@@ -255,6 +255,14 @@ def _no_retry_delays(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _workday_on_httpx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Workday uses httpcloak when it is installed; the suite mocks httpx."""
+    from ats_scrapers.scrapers.workday import WorkdayScraper
+
+    monkeypatch.setattr(WorkdayScraper, "fetch_engine", "httpx")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_default_client_cache() -> Iterator[None]:
     """Reset the lru_cache on `_default_client` between tests so monkeypatched
     clients don't bleed across test modules."""
