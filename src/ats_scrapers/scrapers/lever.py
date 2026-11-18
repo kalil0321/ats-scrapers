@@ -24,12 +24,13 @@ the slug (``https://jobs.eu.lever.co/acme``). A bare slug is the US region.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from urllib.parse import quote, unquote, urlparse
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers._public_page import PAGE_CHECK_ATTEMPTS, page_is_gone
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -215,6 +216,7 @@ class LeverScraper(BaseScraper):
             is_remote = False
         # ``hybrid`` stays None — neither purely remote nor onsite.
 
+        created_at = _parse_ms(item.get("createdAt"))
         return Job(
             url=item["hostedUrl"],
             title=item["text"],
@@ -227,6 +229,7 @@ class LeverScraper(BaseScraper):
             team=categories.get("team"),
             commitment=commitment,
             employment_type=employment_type,
+            engagement_type=engagement_from_label(commitment),
             description=description,
             apply_url=item.get("applyUrl"),
             is_remote=is_remote,
@@ -234,7 +237,8 @@ class LeverScraper(BaseScraper):
             salary_max=salary_max,
             salary_currency=salary_currency,
             salary_period=salary_period,
-            posted_at=_parse_ms(item.get("createdAt")),
+            posted_at=created_at,
+            source_created_at=created_at,
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
@@ -275,12 +279,12 @@ def _parse_slug(value: str, region: str | None) -> tuple[str, str]:
     return unquote(segments[0]), found
 
 
-def _parse_ms(value: int | None) -> datetime | None:
-    if value is None:
+def _parse_ms(value: object) -> datetime | None:
+    if not isinstance(value, int) or isinstance(value, bool):
         return None
     try:
-        return datetime.fromtimestamp(value / 1000, tz=UTC)
-    except (ValueError, OSError):
+        return datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=value)
+    except OverflowError:
         return None
 
 

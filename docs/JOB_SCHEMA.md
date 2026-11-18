@@ -17,12 +17,12 @@ the Pydantic descriptions are the source of truth; please update both.
 |---|---|
 | **Identity** | `global_id`, `url`, `title`, `company`, `ats_type`, `ats_id` |
 | **Location** | `location`, `country_iso`, `region`, `lat`, `lon`, `is_remote` |
-| **Compensation** | `salary_currency`, `salary_period`, `salary_summary`, `salary_min`, `salary_max` |
-| **Classification** | `experience`, `employment_type`, `department`, `team`, `requisition_id`, `apply_url`, `commitment` |
-| **Content & timing** | `description`, `posted_at`, `fetched_at`, `application_deadline`, `language` |
+| **Compensation** | `salary_currency`, `salary_period`, `salary_summary`, `salary_min`, `salary_max`, `compensation_components` |
+| **Classification** | `experience`, `employment_type`, `department`, `team`, `requisition_id`, `apply_url`, `commitment`, `workload_percentages`, `occupation`, `engagement_type`, `education_requirements` |
+| **Content & timing** | `description`, `posted_at`, `source_created_at`, `source_updated_at`, `fetched_at`, `application_deadline`, `language` |
 | **Provider overflow** | `raw` |
 
-30 columns total in the published CSV.
+The library model has 37 fields. Older files can contain a subset of these columns.
 
 > **Heuristic vs LLM split.** The publisher's hardcoded inference is
 > intentionally narrow: title-only `is_remote` (returns `True` or
@@ -201,6 +201,21 @@ scraper from a structured ATS field, or derived from `salary_summary`.
 
 ## Classification
 
+### Structured pay and classification fields
+
+| Field | Public representation and meaning |
+|---|---|
+| `compensation_components` | List of components with `kind`, `source_label`, `unit`, `currency`, `period`, `minimum`, `maximum`, `tier` and `summary`. The cash salary, share grant, equity percentage and commission of an offer can be queried separately. An explicit zero is a value. A component can also carry just a source label or summary when its amount is undisclosed. |
+| `workload_percentages` | List of explicit percentages of a full-time position. For example, `[80, 85, 90, 95, 100]` records five selectable workloads. An interval in free text does not establish five selectable options. |
+| `occupation` | The primary source-assigned job family, function or occupation as `{label, code, taxonomy}`. Compare codes within the same taxonomy. `department` and `team` describe the employer's organization. |
+| `engagement_type` | Source-reported contractual arrangement. Values are `permanent`, `fixed_term`, `independent_contractor`, `temporary`, `apprenticeship` or `internship`. A permanent role can have part-time hours. |
+| `education_requirements` | List of source qualification labels, each accompanied by `required`, `preferred` or `unspecified`. An education label without a stated priority uses `unspecified`. Preserve the original qualification wording. |
+
+The four nested fields use JSON in CSV and native lists or structs in Parquet.
+Missing source evidence yields null. An empty list records an explicitly empty
+collection where the source gives it that meaning. Previously exported files
+may lack these columns entirely.
+
 ### `experience` &nbsp;`int | None`
 
 Required years of experience as an integer when the ATS exposes a
@@ -271,6 +286,13 @@ Truncated to ~10 kB when the source exceeds it.
 When the ATS reports the posting was first published. UTC. `None` when
 the ATS doesn't expose this — common on aggregator sites and some
 legacy ATSes.
+
+### `source_created_at` and `source_updated_at` &nbsp;`datetime | None`
+
+These fields describe creation and last modification of the posting record
+at its source. The record may exist before its first public listing
+(`posted_at`). Adapters normalize source instants to UTC when the offset or
+source time zone is known. The SDK returns null for a missing or ambiguous source timestamp.
 
 ### `fetched_at` &nbsp;`datetime | None`
 

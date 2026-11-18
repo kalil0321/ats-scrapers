@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 
@@ -112,6 +113,7 @@ def test_fetches_all_pages_and_enriches_details(
     assert jobs[0].employment_type == "FULL_TIME"
     assert jobs[0].department == "Engineering"
     assert jobs[0].description == "Build systems."
+    assert jobs[0].source_updated_at == datetime(2026, 7, 21, 12, tzinfo=UTC)
     assert jobs[0].salary_min == 100000
     assert jobs[0].salary_max == 125000
     assert jobs[0].salary_currency == "USD"
@@ -147,6 +149,21 @@ def test_include_descriptions_false_skips_detail(httpx_mock) -> None:
 
     assert len(jobs) == 1
     assert jobs[0].description is None
+
+
+def test_standalone_detail_returns_update_clock(httpx_mock) -> None:
+    job_id = "aaaaaaaa-1111-2222-3333-444444444444"
+    httpx_mock.add_response(url=BOARD, text=_board_page())
+    httpx_mock.add_response(method="POST", url=LOAD_URL, json={
+        "opportunities": [_listing(job_id)], "totalCount": 1,
+    })
+    scraper = UKGProScraper(BOARD, include_descriptions=False)
+    job = scraper.fetch()[0]
+    assert job.source_updated_at is None
+    httpx_mock.add_response(url=str(job.url), text=_detail(job_id))
+    assert scraper.get_description(job) == "Build systems."
+    assert job.source_updated_at == datetime(2026, 7, 21, 12, tzinfo=UTC)
+    assert job.source_created_at is None
 
 
 def test_internal_board_id_from_page_is_used(httpx_mock) -> None:

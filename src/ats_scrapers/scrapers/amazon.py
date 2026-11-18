@@ -40,6 +40,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._job_classification import occupation
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -213,6 +214,9 @@ class AmazonScraper(BaseScraper):
             item.get("job_category") or item.get("jobCategory")
             or item.get("teamCategory") or None
         )
+        family = occupation(item.get("job_family") or item.get("jobFamily"), taxonomy="Amazon job family")
+        if family is None:
+            family = occupation(item.get("job_category") or item.get("jobCategory"), taxonomy="Amazon job category")
         primary_location = (
             item.get("normalizedLocation")
             or item.get("normalized_location")
@@ -254,6 +258,7 @@ class AmazonScraper(BaseScraper):
                 ats_id=ats_id,
                 location=loc,
                 department=department,
+                occupation=family,
                 team=team_label,
                 description=description,
                 commitment=schedule,

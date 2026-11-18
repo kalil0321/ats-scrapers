@@ -175,6 +175,7 @@ def test_employment_types(httpx_mock, job_type: str | None, expected: str | None
 
     assert job.employment_type == expected
     assert job.commitment == job_type
+    assert job.engagement_type == {"Internship": "internship", "Temporary": "temporary"}.get(job_type)
 
 
 def test_remote_and_bare_fields(httpx_mock) -> None:

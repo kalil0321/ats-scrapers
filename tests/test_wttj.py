@@ -179,3 +179,9 @@ def test_wttj_in_registry() -> None:
     from ats_scrapers.scrapers import ScraperRegistry
 
     assert ScraperRegistry.get(ATSType.WELCOMETOTHEJUNGLE) is WTTJScraper
+
+
+def test_freelance_hits_preserve_the_contract_label():
+    job = WTTJScraper("openai")._parse_hit({**SAMPLE_HIT, "contract_type": "freelance"})
+    assert job.engagement_type == "independent_contractor"
+    assert job.raw["contract_type"] == "freelance"

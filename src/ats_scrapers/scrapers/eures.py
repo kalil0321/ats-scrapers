@@ -54,6 +54,7 @@ from typing import TYPE_CHECKING, ClassVar
 from ats_scrapers import fetch as fetch_mod
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -736,6 +737,7 @@ class EuresScraper(BaseScraper):
             ats_id=str(jv_id),
             location=location,
             employment_type=employment_type,
+            engagement_type=engagement_from_label(offering),
             commitment=commitment,
             description=_extract_description(item),
             posted_at=posted_at,

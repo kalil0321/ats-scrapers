@@ -12,6 +12,7 @@ Implementation notes:
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from importlib.util import find_spec
 from io import BytesIO
@@ -19,6 +20,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import httpx
+import numpy as np
 import pandas as pd
 
 from ats_scrapers.exceptions import StorageError
@@ -234,6 +236,23 @@ def _has_parquet_engine() -> bool:
     return find_spec("pyarrow") is not None or find_spec("fastparquet") is not None
 
 
+def _nested_cell(value: object) -> object:
+    if isinstance(value, str):
+        return json.loads(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return value
+
+
+def _source_times(values: pd.Series) -> pd.Series:
+    if isinstance(values.dtype, pd.DatetimeTZDtype):
+        normalized: pd.Series = values.dt.tz_convert("UTC")
+        return normalized
+    text = values.astype("string")
+    has_offset = text.str.contains(r"(?:Z|[+-]\d{2}:?\d{2})$", na=False)
+    return pd.to_datetime(text.where(has_offset), utc=True, format="ISO8601", errors="coerce")
+
+
 def _normalize_dataset(df: pd.DataFrame) -> pd.DataFrame:
     """Bring older hosted slices up to the current client schema.
 
@@ -242,7 +261,22 @@ def _normalize_dataset(df: pd.DataFrame) -> pd.DataFrame:
     hosted artifacts are phased out. Invalid identifiers receive the model's
     UUID fallback instead of producing malformed composite IDs.
     """
-    if "global_id" in df.columns or not {"ats_type", "ats_id"}.issubset(df.columns):
+    if not {"ats_type", "ats_id"}.issubset(df.columns):
+        return df
+    df = df.copy(deep=False)
+    for name in ("workload_percentages", "compensation_components", "occupation", "education_requirements"):
+        if name in df:
+            df[name] = df[name].map(_nested_cell, na_action="ignore")
+        else:
+            df[name] = None
+    if "engagement_type" not in df:
+        df["engagement_type"] = None
+    for name in ("source_created_at", "source_updated_at"):
+        if name in df:
+            df[name] = _source_times(df[name])
+        else:
+            df[name] = pd.Series(pd.NaT, index=df.index, dtype="datetime64[us, UTC]")
+    if "global_id" in df:
         return df
 
     ats_types = df["ats_type"].astype("string").str.strip()

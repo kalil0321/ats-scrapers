@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -245,6 +246,7 @@ class WTTJScraper(BaseScraper):
             salary_summary=_compose_salary_summary(salary_min, salary_max, hit.get("salary_currency")),
             experience=_to_int(hit.get("experience_level_minimum")),
             employment_type=CONTRACT_TYPE_MAP.get(hit.get("contract_type") or ""),
+            engagement_type=engagement_from_label(hit.get("contract_type")),
             department=department,
             commitment=hit.get("contract_type") if isinstance(hit.get("contract_type"), str) else None,
             requisition_id=hit.get("reference") if isinstance(hit.get("reference"), str) else None,

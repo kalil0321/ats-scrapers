@@ -325,3 +325,13 @@ def test_listing_uses_translation_if_original_contains_only_markup() -> None:
     })
     job = EuresScraper("eures")._parse(item)
     assert job.description == "E-Mail: <info@example.org>"
+
+
+@pytest.mark.parametrize(("code", "expected"), [
+    ("selfemployed", "independent_contractor"), ("apprenticeship", "apprenticeship"),
+    ("directhire", None), ("contracttohire", None),
+])
+def test_offering_code_is_separate_from_schedule(code, expected):
+    job = EuresScraper("eures")._parse(_base_item(positionOfferingCode=code, positionScheduleCodes=["parttime"]))
+    assert job.engagement_type == expected
+    assert job.commitment == code

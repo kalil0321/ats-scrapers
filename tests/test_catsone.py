@@ -452,6 +452,8 @@ def test_a_captured_portal_page_is_read(httpx_mock) -> None:
     assert job.company == "Visionpool Business Services"
     assert job.location == "Regina, SK, Canada"
     assert job.posted_at == datetime(2026, 11, 9, 15, 43, 8, tzinfo=UTC)
+    assert job.source_created_at == datetime(2026, 11, 9, 21, 43, 13, 737000, tzinfo=UTC)
+    assert job.source_updated_at == datetime(2026, 11, 12, 16, 32, 52, tzinfo=UTC)
     assert job.commitment == "hire"
     assert job.employment_type is None
     assert job.raw == {

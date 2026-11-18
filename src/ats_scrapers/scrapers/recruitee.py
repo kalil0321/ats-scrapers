@@ -22,8 +22,10 @@ from urllib.parse import urlparse
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers._public_page import PAGE_CHECK_ATTEMPTS, redirect_target
 from ats_scrapers.scrapers._slug import require_host_label, require_http_url
+from ats_scrapers.scrapers._source_timestamp import source_timestamp
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -152,7 +154,7 @@ class RecruiteeScraper(BaseScraper):
 
         raw: dict[str, Any] = {}
         for k in ("category", "experience", "education", "tags", "industry",
-                  "function", "kind", "schedule"):
+                  "function", "kind", "schedule", "employment_type", "employment_type_code"):
             v = offer.get(k)
             if v:
                 raw[k] = v
@@ -169,6 +171,7 @@ class RecruiteeScraper(BaseScraper):
             lon=_to_float(offer.get("lng") or loc_obj.get("lng")),
             is_remote=is_remote,
             employment_type=_map_employment_type(offer.get("employment_type_code") or offer.get("employment_type")),
+            engagement_type=engagement_from_label(offer.get("employment_type_code") or offer.get("employment_type")),
             department=offer.get("department") or offer.get("department_name"),
             commitment=commitment if isinstance(commitment, str) else None,
             apply_url=apply_url if isinstance(apply_url, str) and apply_url != url else None,
@@ -177,6 +180,8 @@ class RecruiteeScraper(BaseScraper):
             salary_currency=salary_obj.get("currency") if salary_obj else None,
             description=_compose_description(offer),
             posted_at=_parse_iso(offer.get("created_at") or offer.get("published_at")),
+            source_created_at=source_timestamp(offer.get("created_at")),
+            source_updated_at=source_timestamp(offer.get("updated_at")),
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )

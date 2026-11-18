@@ -23,7 +23,18 @@ from ats_scrapers.exceptions import (
 )
 from ats_scrapers.fetch import Fetcher, FetchResponse, MalformedJSONError
 from ats_scrapers.manifest import Manifest
-from ats_scrapers.models import ATSType, Company, EmploymentType, Job, Salary, SalaryPeriod
+from ats_scrapers.models import (
+    ATSType,
+    Company,
+    CompensationComponent,
+    EducationRequirement,
+    EmploymentType,
+    EngagementType,
+    Job,
+    Occupation,
+    Salary,
+    SalaryPeriod,
+)
 from ats_scrapers.resolve import ResolvedCareersUrl, get_scraper_for_url, resolve_careers_url
 
 __all__ = [
@@ -33,13 +44,17 @@ __all__ = [
     "CloudBrowser",
     "Company",
     "CompanyNotFoundError",
+    "CompensationComponent",
+    "EducationRequirement",
     "EmploymentType",
+    "EngagementType",
     "FetchResponse",
     "Fetcher",
     "Job",
     "MalformedJSONError",
     "Manifest",
     "ManifestError",
+    "Occupation",
     "RenderedPage",
     "ResolvedCareersUrl",
     "Salary",

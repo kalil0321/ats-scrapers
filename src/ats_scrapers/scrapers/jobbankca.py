@@ -44,12 +44,16 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, Job, SalaryPeriod
+from ats_scrapers.models import ATSType, EducationRequirement, Job, SalaryPeriod
 from ats_scrapers.scrapers._htmltree import parse_html
+from ats_scrapers.scrapers._job_classification import classification_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
+
+    from ats_scrapers.models import EngagementType
+    from ats_scrapers.scrapers._htmltree import Node
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +206,12 @@ class JobBankCAScraper(BaseScraper):
         if response.is_redirect or response.status_code in {404, 410}:
             return None
         response.raise_for_status()
-        job.description = _detail_description(response.text)
+        posting = next((node for node in parse_html(response.text).walk()
+                        if "job-posting-details-body" in node.classes), None)
+        if posting is None:
+            return None
+        _apply_classification(job, posting)
+        job.description = _detail_description(posting)
         return job.description
 
     async def _fetch_async(self) -> list[Job]:
@@ -456,11 +465,64 @@ class JobBankCAScraper(BaseScraper):
         )
 
 
-def _detail_description(page: str) -> str | None:
-    posting = next((node for node in parse_html(page).walk()
-                    if "job-posting-details-body" in node.classes), None)
-    if posting is None:
-        return None
+_NO_EDUCATION = {
+    "no degree, certificate or diploma", "aucun certificat, diplôme ou grade",
+    "no degree required", "not required", "no requirement", "equivalent experience",
+    "or equivalent experience", "expérience équivalente", "ou expérience équivalente",
+}
+
+_ENGAGEMENT_TERMS: dict[str, EngagementType] = {
+    "permanent employment": "permanent",
+    "permanent": "permanent",
+    "fixed term": "fixed_term",
+    "durée déterminée": "fixed_term",
+    "temporary": "temporary",
+    "temporaire": "temporary",
+    "apprenticeship": "apprenticeship",
+    "internship": "internship",
+    "stage": "internship",
+}
+
+
+def _rdfa_label(node: Node) -> str:
+    if content := node.attrs.get("content"):
+        return content.strip()
+    # Inline spans can contain a separately displayed qualification or work schedule.
+    parts = (child if isinstance(child, str) else child.text() for child in node.children)
+    return " ".join(" ".join(parts).split())
+
+
+def _apply_classification(job: Job, posting: Node) -> None:
+    raw = dict(job.raw or {})
+    labels: list[str] = []
+    requirements: list[EducationRequirement] = []
+    for node in posting.walk():
+        properties = node.attrs.get("property", "").split()
+        if "employmentType" in properties and (terms := _rdfa_label(node)):
+            raw["employment_terms"] = terms
+            job.commitment = terms
+            duration = re.sub(r"\b(?:full[ -]time|part[ -]time|temps plein|temps partiel)\b",
+                              "", terms.casefold()).strip()
+            job.engagement_type = _ENGAGEMENT_TERMS.get(duration)
+        if "educationRequirements" not in properties:
+            continue
+        label = _rdfa_label(node)
+        if not label or label in labels:
+            continue
+        labels.append(label)
+        if not classification_label(label) or label.casefold().rstrip(".") in _NO_EDUCATION:
+            continue
+        preferred = re.search(r"\b(?:preferred|an asset|un atout|souhaitée?)\b", label, re.I)
+        requirements.append(EducationRequirement(
+            label=label, requirement="preferred" if preferred else "required",
+        ))
+    if labels:
+        raw["education_requirements"] = labels
+        job.education_requirements = requirements or None
+    job.raw = raw or None
+
+
+def _detail_description(posting: Node) -> str | None:
     sections = []
     has_main_body = False
     fallback = ""

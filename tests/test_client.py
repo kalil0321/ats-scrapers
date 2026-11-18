@@ -6,6 +6,7 @@ exercise filtering and code paths without touching the network.
 
 from __future__ import annotations
 
+import json
 from io import BytesIO
 from typing import Any
 from uuid import UUID
@@ -198,6 +199,34 @@ def test_load_preserves_published_global_id(stub_client: Client) -> None:
     stub_client._download = lambda url: original_download(url).assign(global_id="existing")  # type: ignore[method-assign]
     df = stub_client.load(ats="greenhouse")
     assert set(df["global_id"]) == {"existing"}
+
+
+@pytest.mark.parametrize("suffix", ["csv", "parquet"])
+def test_nested_columns_and_source_timestamps_read_the_same(httpx_mock, suffix: str) -> None:
+    if suffix == "parquet":
+        pytest.importorskip("pyarrow")
+    url = f"https://example.com/jobs.{suffix}"
+    data = pd.DataFrame({
+        "ats_type": ["custom", "custom"], "ats_id": ["job-a", "job-b"],
+        "workload_percentages": [[80.0, 100.0], []],
+        "occupation": [{"code": "dev", "label": "Developer"}, None],
+        "source_created_at": ["2026-11-01T12:00:00+02:00", "2026-11-01T12:00:00"],
+    })
+    if suffix == "parquet":
+        body = data.to_parquet(index=False)
+    else:
+        for column in ("occupation", "workload_percentages"):
+            data[column] = data[column].map(lambda v: json.dumps(v) if v is not None else None)
+        body = data.to_csv(index=False).encode()
+    httpx_mock.add_response(url=url, content=body)
+    with Client() as client:
+        frame = client_module._normalize_dataset(client._download(url))
+    assert frame["workload_percentages"].tolist() == [[80, 100], []]
+    assert frame.at[0, "occupation"] == {"label": "Developer", "code": "dev"}
+    assert pd.isna(frame.at[1, "occupation"])
+    assert frame.at[0, "source_created_at"] == pd.Timestamp("2026-11-01T10:00:00Z")
+    assert pd.isna(frame.at[1, "source_created_at"])
+    assert frame["source_updated_at"].isna().all()
 
 
 def test_load_uses_uuid_for_invalid_legacy_ats_id(stub_client: Client) -> None:

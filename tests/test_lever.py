@@ -85,6 +85,21 @@ def test_posted_at_is_utc(httpx_mock) -> None:
     assert job.posted_at.tzinfo is UTC
 
 
+@pytest.mark.parametrize("value", [None, True, "2026-07-01", 10**30])
+def test_invalid_creation_clock_keeps_posting(value, httpx_mock) -> None:
+    httpx_mock.add_response(url=API, json=[{**_job(), "createdAt": value}])
+    job = LeverScraper("acme").fetch()[0]
+    assert job.source_created_at is None
+    assert job.source_updated_at is None
+
+
+def test_creation_clock_retains_epoch_milliseconds(httpx_mock) -> None:
+    httpx_mock.add_response(url=API, json=[{**_job(), "createdAt": 1714521600123}])
+    job = LeverScraper("acme").fetch()[0]
+    assert job.source_created_at == datetime(2024, 5, 1, 0, 0, 0, 123000, tzinfo=UTC)
+    assert job.source_updated_at is None
+
+
 @pytest.mark.parametrize(
     ("country", "expected"),
     [
@@ -280,3 +295,9 @@ def test_catalog_slugs_preserve_canonical_url_case() -> None:
     assert mismatches == []
     # A board is listed once, in one region.
     assert len(set(boards)) == len(boards)
+
+
+def test_contractual_commitment_is_preserved():
+    job = LeverScraper("acme")._parse_job({**_job(), "categories": {"commitment": "Fixed-term"}})
+    assert job.engagement_type == "fixed_term"
+    assert job.commitment == "Fixed-term"

@@ -578,3 +578,37 @@ def test_complete_template_in_api_avoids_page_fetch(httpx_mock) -> None:
     })
     assert scraper.get_description(job) == "Test systems.\nCollaborate."
     assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.parametrize(("grades", "ids", "percentages", "engagement"), [
+    ([80, 85, 90, 95, 100], ["5"], [80, 85, 90, 95, 100], "permanent"),
+    ([80, 100], ["1"], [80, 100], "temporary"),
+    ([62.5, 0, 62.5], [2], [62.5, 0], "independent_contractor"),
+    ([100], ["3"], [100], "internship"),
+    ([60], ["6"], [60], "apprenticeship"),
+    ("80–100%", ["4"], None, None),
+    ([20, True], ["5", "1"], None, None),
+    ([101], ["5", "unknown"], None, None),
+    ([-1], [], None, None),
+])
+def test_jobsch_normalizes_explicit_choices_only(grades, ids, percentages, engagement):
+    item = {**_doc(job_id="a", title="Engineer"), "employment_grades": grades,
+            "employment_type_ids": ids}
+    job = JobsChScraper("any")._parse(item)
+    assert job is not None
+    assert job.workload_percentages == percentages
+    assert job.engagement_type == engagement
+    assert job.raw["employment_grades"] == grades
+    if ids:
+        assert job.raw["employment_type_ids"] == ids
+
+
+def test_jobsch_reads_detail_only_fields_in_existing_request(httpx_mock):
+    scraper = JobsChScraper("any")
+    job = scraper._parse(_doc(job_id="detail-test", title="Engineer"))
+    httpx_mock.add_response(json={"job_id": "detail-test", "template_text": "Build systems.",
+                                  "employment_type_ids": ["5"], "employment_grades": [60, 80]})
+    assert scraper.get_description(job) == "Build systems."
+    assert (job.engagement_type, job.employment_type) == ("permanent", "PART_TIME")
+    assert job.workload_percentages == [60, 80]
+    assert len(httpx_mock.get_requests()) == 1

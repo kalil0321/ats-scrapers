@@ -161,6 +161,8 @@ def test_fetches_structured_jobs(httpx_mock) -> None:
     assert job.posted_at == datetime(
         2026, 7, 30, 8, 31, 42, tzinfo=UTC
     )
+    assert job.source_created_at == datetime(2026, 7, 30, 8, 31, 42, tzinfo=UTC)
+    assert job.source_updated_at is None
     assert job.fetched_at is not None
     # Ninehire gives no locale for a listing, and the alphabet of its title
     # does not say what language the listing is in.

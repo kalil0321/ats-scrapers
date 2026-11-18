@@ -16,11 +16,20 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    FiniteFloat,
+    HttpUrl,
+    model_validator,
+)
 
 log = logging.getLogger(__name__)
 
@@ -178,7 +187,47 @@ class Company(BaseModel):
     website: HttpUrl | None = None
 
 
+class CompensationComponent(BaseModel):
+    """One source-reported pay component in one compensation tier."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["base_salary", "bonus", "commission", "equity", "allowance", "other"]
+    source_label: str | None = None
+    unit: Literal["money", "percent", "shares"] | None = None
+    currency: str | None = None
+    period: str | None = Field(default=None, description="Source interval, such as '1 YEAR'.")
+    minimum: FiniteFloat | None = None
+    maximum: FiniteFloat | None = None
+    tier: str | None = Field(default=None, description="Source name of the applicable tier or package.")
+    summary: str | None = None
+
+
+class Occupation(BaseModel):
+    """Primary occupational classification assigned by the source."""
+
+    model_config = ConfigDict(frozen=True)
+
+    label: str = Field(min_length=1)
+    code: str | None = None
+    taxonomy: str | None = Field(default=None, description="Source vocabulary or published classification system.")
+
+
+class EducationRequirement(BaseModel):
+    """Source wording for an educational qualification attached to the posting."""
+
+    model_config = ConfigDict(frozen=True)
+
+    label: str = Field(min_length=1)
+    requirement: Literal["required", "preferred", "unspecified"] = "unspecified"
+
+
 EmploymentType = Literal["FULL_TIME", "PART_TIME", "CONTRACT", "INTERN", "TEMPORARY"]
+EngagementType = Literal[
+    "permanent", "fixed_term", "independent_contractor", "temporary", "apprenticeship", "internship",
+]
+WorkloadPercentage = Annotated[float, Field(strict=True, ge=0, le=100)]
+SourceTimestamp = Annotated[AwareDatetime, AfterValidator(lambda value: value.astimezone(UTC))]
 
 
 # Control characters that would corrupt a CSV / JSON line if they
@@ -195,7 +244,7 @@ class Job(BaseModel):
     on field names is part of the public contract** — renaming a field
     is a breaking change.
 
-    The fields fall into four groups, listed in the order they appear
+    The fields fall into six groups, listed in the order they appear
     below:
 
     1. **Identity** (``global_id``, ``url``, ``title``, ``company``,
@@ -212,18 +261,20 @@ class Job(BaseModel):
        by the downstream LLM enrichment pass / a geocoding service.
 
     3. **Compensation** (``salary_currency``, ``salary_period``,
-       ``salary_summary``, ``salary_min``, ``salary_max``).
+       ``salary_summary``, ``salary_min``, ``salary_max``, ``compensation_components``).
        ``salary_min`` / ``salary_max`` are *derived* from
        ``salary_summary`` via ``ats_scrapers.enrichment.parse_salary_range``
        when the ATS exposes only free text.
 
     4. **Classification** (``experience``, ``employment_type``,
        ``department``, ``team``, ``requisition_id``, ``apply_url``,
-       ``commitment``). Optional — set when the source API exposes
+       ``commitment``, ``workload_percentages``, ``occupation``,
+       ``engagement_type``, ``education_requirements``). Optional — set when the source API exposes
        them, ``None`` otherwise.
 
     5. **Content & timing** (``description``, ``posted_at``,
-       ``fetched_at``, ``application_deadline``, ``language``).
+       ``source_created_at``, ``source_updated_at``, ``fetched_at``,
+       ``application_deadline``, ``language``).
        ``application_deadline`` is an explicit deadline the ATS exposes
        (``None`` when unavailable, never inferred from other timestamps).
        ``language`` is the listing's locale code (ISO 639-1, e.g.
@@ -423,8 +474,24 @@ class Job(BaseModel):
         ),
     )
 
+    compensation_components: list[CompensationComponent] | None = Field(
+        default=None, description="Source pay components, with their original unit, bounds and applicable tier.",
+    )
+
     # --- Classification ---------------------------------------------------
 
+    workload_percentages: list[WorkloadPercentage] | None = Field(
+        default=None, description="Explicitly offered workload percentages of a full-time role, in source order.",
+    )
+    occupation: Occupation | None = Field(
+        default=None, description="Primary occupation, job family or function classified by the source.",
+    )
+    engagement_type: EngagementType | None = Field(
+        default=None, description="Explicit contractual relationship or duration, independent of working hours.",
+    )
+    education_requirements: list[EducationRequirement] | None = Field(
+        default=None, description="Educational qualifications the source attaches to the job and their stated status.",
+    )
     experience: int | None = Field(
         default=None,
         description=(
@@ -510,6 +577,12 @@ class Job(BaseModel):
             "UTC. ``None`` when the ATS doesn't expose this — common "
             "on aggregator sites and some legacy ATSes."
         ),
+    )
+    source_created_at: SourceTimestamp | None = Field(
+        default=None, description="UTC time at which the source says this posting record was created.",
+    )
+    source_updated_at: SourceTimestamp | None = Field(
+        default=None, description="UTC time at which the source says this posting record was last edited.",
     )
     fetched_at: datetime | None = Field(
         default=None,

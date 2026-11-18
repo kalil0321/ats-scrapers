@@ -25,7 +25,9 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, CompensationComponent, Job
+from ats_scrapers.scrapers._posting_fields import finite_number
+from ats_scrapers.scrapers._source_timestamp import source_timestamp
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -101,6 +103,8 @@ class ManfredScraper(BaseScraper):
             async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
                 await self._enrich_description(fetch, sem, copy)
+            if job.source_updated_at is None:
+                job.source_updated_at = copy.source_updated_at
             return copy.description
 
         return self._run_sync(run())
@@ -143,6 +147,8 @@ class ManfredScraper(BaseScraper):
                 # Detail enrichment is best-effort — a missing or broken
                 # detail endpoint must not sink the listing row.
                 return
+        if isinstance(detail, dict) and job.source_updated_at is None:
+            job.source_updated_at = source_timestamp(detail.get("updatedAt"))
         description = _compose_description(detail, self.lang)
         if description and not job.description:
             job.description = description[:25_000]
@@ -210,10 +216,47 @@ class ManfredScraper(BaseScraper):
             salary_min=salary_min,
             salary_max=salary_max,
             requisition_id=ic if isinstance(ic, str) else None,
+            compensation_components=_pay_components(item),
+            source_updated_at=source_timestamp(item.get("updatedAt")),
             posted_at=posted_at,
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _pay_components(item: dict[str, Any]) -> list[CompensationComponent] | None:
+    # Zero is the API's sentinel for a missing bound. The range 0..1
+    # renders as “Up to 1%”. An all-zero pair has no corresponding offer.
+    def bound(key: str) -> float | None:
+        number = finite_number(item.get(key))
+        return number if number is not None and number > 0 else None
+
+    symbol = item.get("currency")
+    symbol = symbol.strip() if isinstance(symbol, str) else ""
+    currency = {"€": "EUR", "£": "GBP", "US$": "USD", "MXN$": "MXN"}.get(symbol)
+    if re.fullmatch(r"[A-Z]{3}", symbol):
+        currency = symbol
+    components = []
+    salary_min, salary_max = bound("salaryFrom"), bound("salaryTo")
+    if salary_min is not None or salary_max is not None:
+        components.append(CompensationComponent(
+            kind="base_salary", source_label="Salary", unit="money", currency=currency,
+            minimum=salary_min, maximum=salary_max, period=None, tier=None,
+        ))
+    bonus = bound("bonus")
+    if bonus is not None:
+        components.append(CompensationComponent(
+            kind="bonus", source_label="Variable", unit="money", currency=currency,
+            minimum=bonus, maximum=bonus, period=None, tier=None,
+        ))
+    equity_min, equity_max = bound("equityInf"), bound("equitySup")
+    equity_bounds = [value for value in (equity_min, equity_max) if value is not None]
+    if equity_bounds and max(equity_bounds) <= 100:
+        components.append(CompensationComponent(
+            kind="equity", source_label="Equity", unit="percent",
+            minimum=equity_min, maximum=equity_max, period=None, tier=None,
+        ))
+    return components or None
 
 
 def _format_location(value: object) -> str | None:

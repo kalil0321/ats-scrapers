@@ -142,6 +142,31 @@ def test_job_minimal_construction() -> None:
     assert job.salary is None
 
 
+def test_source_fields_keep_distinct_events_and_explicit_zero() -> None:
+    job = _minimal_job(
+        source_created_at="2026-03-03T10:00:00+02:00", workload_percentages=[0, 80, 100],
+        compensation_components=[{"kind": "equity", "unit": "percent", "minimum": 0, "maximum": 1.5}],
+        occupation={"label": "Software development", "code": "15", "taxonomy": "Example"},
+        engagement_type="fixed_term", education_requirements=[{"label": "Bachelor or equivalent"}],
+    )
+    assert job.source_created_at == datetime(2026, 3, 3, 8, tzinfo=UTC)
+    assert job.posted_at is None and job.source_updated_at is None
+    assert job.workload_percentages == [0, 80, 100]
+    assert job.compensation_components[0].minimum == 0
+    assert job.education_requirements[0].requirement == "unspecified"
+    assert job == Job.model_validate_json(job.model_dump_json())
+
+
+@pytest.mark.parametrize("fields", [
+    {"source_updated_at": "2026-03-03T10:00:00"}, {"source_created_at": "2026-03-03"},
+    {"workload_percentages": [True]}, {"workload_percentages": [110]},
+    {"compensation_components": [{"kind": "commission", "maximum": float("inf")}]},
+])
+def test_source_fields_reject_ambiguous_or_invalid_values(fields) -> None:
+    with pytest.raises(ValidationError):
+        _minimal_job(**fields)
+
+
 def test_job_with_salary_returns_salary_object() -> None:
     job = _minimal_job(
         ats_type=ATSType.ASHBY,

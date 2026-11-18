@@ -24,6 +24,7 @@ from ats_scrapers.scrapers.ycombinator import (
     _parse_min_experience,
     _parse_relative_age,
     _parse_salary_range,
+    _pay_components,
 )
 
 _COMPANIES_RE = re.compile(r"^https://api\.ycombinator\.com/v0\.1/companies")
@@ -394,3 +395,49 @@ def test_role_specific_sections_survive_alongside_the_listing_description() -> N
     item = {**_job(), "aboutRole": "Pair with the team.", "requirements": ["Use C#."]}
     job = YCombinatorScraper("any")._parse_posting(item, slug="acme")
     assert job.description == "Build the core product.\n\nPair with the team.\n\nUse C#."
+
+
+def test_listing_compensation_uses_explicit_percentage_and_period(httpx_mock) -> None:
+    first = {**_job(salary="$1K - $3K / monthly"), "equityRange": "0.00% - 0.40%"}
+    second = {**_job(job_id=200, salary=""), "equityRange": "Shares available"}
+    httpx_mock.add_response(url=_COMPANIES_RE, json=_api_page(["acme"]))
+    httpx_mock.add_response(url=_PAGE_RE, text=_company_page_html([first, second]))
+    paid, unquantified = YCombinatorScraper("any", include_descriptions=False).fetch()
+    salary, equity = paid.compensation_components
+    assert (salary.kind, salary.minimum, salary.maximum, salary.period, salary.currency) == (
+        "base_salary", 1000, 3000, "monthly", "USD",
+    )
+    assert (equity.kind, equity.unit, equity.minimum, equity.maximum, equity.summary) == (
+        "equity", "percent", 0, .4, "0.00% - 0.40%",
+    )
+    assert equity.period is None and equity.currency is None
+    assert unquantified.compensation_components is None
+    assert len(httpx_mock.get_requests()) == 2
+
+
+def test_components_use_displayed_currency_and_structured_interval() -> None:
+    structured = {"currency": "USD", "value": {
+        "minValue": 600000, "maxValue": 1000000, "unitText": "YEAR",
+    }}
+    components = _pay_components("₹600K - ₹1M INR", "0.25%", structured)
+    assert components is not None
+    salary, equity = components
+    assert (salary.currency, salary.period, salary.minimum) == ("INR", "YEAR", 600000)
+    assert equity.minimum == equity.maximum == .25
+
+
+def test_detail_components_preserve_listing_equity_and_displayed_currency(httpx_mock) -> None:
+    scraper = YCombinatorScraper("any")
+    item = {**_job(description="", salary="₹600K - ₹1M INR"), "equityRange": "0.25%"}
+    job = scraper._parse_posting(item, slug="acme")
+    assert job.compensation_components[0].period is None
+    httpx_mock.add_response(url=str(job.url), text=(
+        '<script type="application/ld+json">{"@type":"JobPosting","description":"Build it.",'
+        '"baseSalary":{"currency":"USD","value":{"minValue":600000,"maxValue":1000000,'
+        '"unitText":"YEAR"}}}</script>'
+    ))
+    assert scraper.get_description(job) == "Build it."
+    salary, equity = job.compensation_components
+    assert (salary.currency, salary.period, salary.minimum) == ("INR", "YEAR", 600000)
+    assert equity.minimum == equity.maximum == .25
+    assert len(httpx_mock.get_requests()) == 1

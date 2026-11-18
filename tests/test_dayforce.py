@@ -374,3 +374,24 @@ def test_normalizes_tenant_board(
 def test_rejects_invalid_tenant_board(value: str) -> None:
     with pytest.raises(ValueError):
         _normalize_tenant_board(value)
+
+
+def test_job_function_and_explicit_required_education() -> None:
+    job = DayforceScraper("example/CANDIDATEPORTAL")._parse_job({
+        "Title": "Team Lead", "ReferenceNumber": 1, "JobFunction": " Supervisory Management ", "Education": "Bachelor’s Degree",
+    })
+    assert job.occupation.model_dump() == {
+        "label": "Supervisory Management", "taxonomy": "Dayforce job function", "code": None,
+    }
+    assert [q.model_dump() for q in job.education_requirements] == [
+        {"label": "Bachelor’s Degree", "requirement": "required"},
+    ]
+
+
+@pytest.mark.parametrize("value", ["Unspecified", "Equivalent Experience", "Expérience équivalente", 0])
+def test_job_family_and_experience_are_not_degree_requirements(value: object) -> None:
+    job = DayforceScraper("example/CANDIDATEPORTAL")._parse_job({
+        "Title": "Team Lead", "ReferenceNumber": 1, "Education": value, "JobFunction": None, "JobFamily": "Retail",
+    })
+    assert job.department == "Retail"
+    assert job.occupation is None and job.education_requirements is None

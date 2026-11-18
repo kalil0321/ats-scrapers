@@ -25,7 +25,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, Job, Occupation
+from ats_scrapers.scrapers._job_classification import occupation
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -84,6 +85,7 @@ class SmartRecruitersScraper(BaseScraper):
             async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
                 await self._enrich_detail(fetch, sem, copy)
+            job.occupation = copy.occupation
             return copy.description
 
         return self._run_sync(run())
@@ -191,6 +193,7 @@ class SmartRecruitersScraper(BaseScraper):
             company=self.company_slug,
             ats_type=ATSType.SMARTRECRUITERS,
             ats_id=item["id"],
+            occupation=_job_function(item.get("function")),
             location=loc_str,
             is_remote=is_remote,
             department=department,
@@ -214,6 +217,8 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
     single body, capped at 25k chars, with the actual job description
     first so consumers see the most relevant content if truncated.
     """
+    if job.occupation is None:
+        job.occupation = _job_function(detail.get("function"))
     if not job.description:
         sections = (detail.get("jobAd") or {}).get("sections") or {}
         if isinstance(sections, dict):
@@ -236,6 +241,12 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
         apply_url = detail.get("applyUrl")
         if isinstance(apply_url, str) and apply_url.strip():
             job.apply_url = apply_url.strip()
+
+
+def _job_function(value: object) -> Occupation | None:
+    if not isinstance(value, dict) or value.get("id") == "other":
+        return None
+    return occupation(value.get("label"), code=value.get("id"), taxonomy="SmartRecruiters job function")
 
 
 def _format_location(location: dict[str, Any]) -> str | None:

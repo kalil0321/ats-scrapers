@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -254,6 +255,8 @@ class GetOnBrdScraper(BaseScraper):
         )
 
         raw: dict[str, Any] = {}
+        if modality_attrs.get("locale_key"):
+            raw["modality_code"] = modality_attrs["locale_key"]
         for k in ("category_name", "lang", "perks", "remote_modality",
                   "remote_zone", "applications_count"):
             v = attrs.get(k)
@@ -273,6 +276,7 @@ class GetOnBrdScraper(BaseScraper):
             salary_min=salary_min,
             salary_max=salary_max,
             employment_type=employment_type,
+            engagement_type=engagement_from_label(modality_attrs.get("locale_key")),
             commitment=commitment,
             department=attrs.get("category_name"),
             description=description,

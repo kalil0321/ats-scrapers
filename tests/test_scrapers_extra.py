@@ -1081,6 +1081,7 @@ def test_oracle_enriches_single_page_job_with_raw_source_id(httpx_mock) -> None:
         json={
             "items": [{
                 "ExternalDescriptionStr": "<p>Maintain databases.</p>",
+                "ContractType": "Fixed term",
                 "ExternalResponsibilitiesStr": "<p>Ship backups.</p>",
             }]
         },
@@ -1089,6 +1090,7 @@ def test_oracle_enriches_single_page_job_with_raw_source_id(httpx_mock) -> None:
     [job] = OracleScraper(base).fetch()
 
     assert job.description == "Maintain databases.\n\nShip backups."
+    assert job.engagement_type == "fixed_term" and job.raw["ContractType"] == "Fixed term"
 
 
 def test_oracle_detail_replaces_listing_short_description(httpx_mock) -> None:
@@ -1363,3 +1365,54 @@ def test_oracle_shortfall_is_logged(httpx_mock, monkeypatch, caplog) -> None:
 
     assert len(jobs) == 5
     assert "announced 8 jobs, collected 5" in caplog.text
+
+
+def test_smartrecruiters_job_function_requires_an_explicit_label() -> None:
+    scraper = SmartRecruitersScraper("acme")
+    posting = {"id": "123", "name": "Education Manager", "department": {"label": "Education"}}
+    job = scraper._parse_job({**posting, "function": {"id": "management", "label": "Management"}})
+    assert job.occupation.model_dump() == {
+        "code": "management", "label": "Management", "taxonomy": "SmartRecruiters job function",
+    }
+    for value in (None, {}, {"id": "other", "label": "Autre"}, {"id": "engineering"}):
+        missing = scraper._parse_job({**posting, "function": value})
+        assert missing.department == "Education"
+        assert missing.occupation is None and missing.education_requirements is None
+
+
+def test_workable_widget_maps_function_and_education_separately_from_department() -> None:
+    scraper = WorkableScraper("example")
+    posting = {"url": "https://apply.workable.com/j/EXAMPLE123", "shortcode": "EXAMPLE123",
+               "title": "Office Assistant", "department": "Sales",
+               "description": "<p>Support the team.</p>", "benefits": "<p>Flexible hours.</p>"}
+    job = scraper._parse_job({**posting, "function": "Administrative",
+                              "education": "High School or equivalent"}, "Example")
+    assert job.occupation.model_dump() == {
+        "label": "Administrative", "taxonomy": "Workable job function", "code": None,
+    }
+    assert job.department == "Sales"
+    assert job.description == "Support the team.\n\nFlexible hours."
+    assert [(q.label, q.requirement) for q in job.education_requirements] == [
+        ("High School or equivalent", "unspecified"),
+    ]
+    missing = scraper._parse_job({**posting, "function": "Other", "education": "Unspecified",
+                                  "industry": "Higher Education", "experience": "Associate"}, "Example")
+    assert missing.occupation is None and missing.education_requirements is None
+
+
+def test_personio_schedule_cannot_hide_employment_contract():
+    job = PersonioScraper("acme")._parse_job(
+        {"id": "1", "name": "Tester", "employmentType": "Permanent employee", "schedule": "part-time"},
+        "https://acme.jobs.personio.com",
+    )
+    assert job.engagement_type == "permanent" and job.commitment == "part-time"
+    assert job.raw["employmentType"] == "Permanent employee"
+
+
+def test_oracle_contract_is_independent_of_worker_type():
+    base = "https://example.fa.oraclecloud.com"
+    job = OracleScraper(base)._parse_job(
+        {"Id": "1", "Title": "Engineer", "WorkerType": "Employee", "ContractType": "Fixed term"},
+        base, "CX_1",
+    )
+    assert job.engagement_type == "fixed_term" and job.raw["ContractType"] == "Fixed term"

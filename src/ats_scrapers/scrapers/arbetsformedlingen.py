@@ -22,7 +22,8 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, EducationRequirement, Job
+from ats_scrapers.scrapers._job_classification import classification_label, occupation
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -264,6 +265,11 @@ class ArbetsformedlingenScraper(BaseScraper):
                         else f"{int(lo)}–{int(hi)} %"
                     )
 
+        primary = item.get("occupation")
+        primary_occupation = (
+            occupation(primary.get("label"), taxonomy="JobTech Taxonomy", code=primary.get("concept_id"))
+            if isinstance(primary, dict) else None
+        )
         # ``occupation_field`` is the high-level domain (Pedagogik,
         # Hälso- och sjukvård, IT-data, etc.) — Arbetsförmedlingen's
         # closest analog to a department label.
@@ -307,6 +313,8 @@ class ArbetsformedlingenScraper(BaseScraper):
             is_remote=is_remote,
             team=team if isinstance(team, str) and team.strip() else None,
             description=description,
+            occupation=primary_occupation,
+            education_requirements=_education_requirements(item),
             department=department if isinstance(department, str) else None,
             employment_type=employment_type,
             commitment=commitment,
@@ -317,6 +325,27 @@ class ArbetsformedlingenScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _education_requirements(item: dict[str, Any]) -> list[EducationRequirement] | None:
+    qualifications: list[EducationRequirement] = []
+    for key in ("must_have", "nice_to_have"):
+        block = item.get(key)
+        if not isinstance(block, dict):
+            continue
+        for field in ("education", "education_level"):
+            entries = block.get(field)
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict) or not (label := classification_label(entry.get("label"))):
+                    continue
+                qualification = EducationRequirement(
+                    label=label, requirement="required" if key == "must_have" else "preferred",
+                )
+                if qualification not in qualifications:
+                    qualifications.append(qualification)
+    return qualifications or None
 
 
 # Swedish employment-type labels → our shared enum. The labels come from

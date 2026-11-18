@@ -78,6 +78,8 @@ def test_join_com_lists_jobs_via_graphql(httpx_mock) -> None:
     assert job.location == "Berlin, Germany"
     assert job.commitment == "Employee"
     assert job.posted_at == datetime(2026, 10, 1, 9, tzinfo=UTC)
+    assert job.source_created_at == datetime(2026, 10, 1, 9, tzinfo=UTC)
+    assert job.source_updated_at is None
     assert job.raw == {
         "category": {"name": "Design"},
         "employmentType": {"name": "Employee"},

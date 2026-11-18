@@ -420,3 +420,56 @@ def test_hosted_board_of_a_slug_with_a_space(httpx_mock) -> None:
     (job,) = AshbyScraper(slug).fetch()
 
     assert str(job.url) == f"https://jobs.ashbyhq.com/{slug}/p1"
+
+
+def test_each_compensation_component_keeps_its_own_tier_and_unit(httpx_mock) -> None:
+    _hosted_pages(httpx_mock)
+    salary = {"compensationType": "Salary", "minValue": 191000, "maxValue": 214500,
+              "currencyCode": "USD", "interval": "1 YEAR",
+              "summary": "On Target Earnings $191K – $214.5K"}
+    tiers = [
+        {"title": "US Remote", "components": [
+            salary,
+            {"compensationType": "Commission", "summary": "Offers Commission",
+             "currencyCode": "USD", "interval": "1 YEAR"},
+            {"compensationType": "EquityCashValue", "summary": "Offers Equity",
+             "currencyCode": "USD", "interval": "1 YEAR"},
+        ]},
+        {"title": "Tier 2", "additionalInformation": "Only in Ontario", "components": [
+            {"compensationType": "EquityPercentage", "minValue": 0, "maxValue": 1.75,
+             "interval": "NONE"},
+            {"compensationType": "Bonus", "minValue": 0, "maxValue": 4500,
+             "interval": "6 MONTH", "currencyCode": "CAD"},
+        ]},
+    ]
+    item = {**_job(), "compensation": {"compensationTiers": tiers, "summaryComponents": [salary]}}
+    httpx_mock.add_response(url=API, json={"jobs": [item]})
+    job, = AshbyScraper("acme").fetch()
+    ote, commission, cash_equity, percent_equity, bonus = job.compensation_components
+    assert (ote.kind, ote.source_label, ote.tier, ote.summary) == (
+        "other", "Salary", "US Remote", salary["summary"],
+    )
+    assert (ote.minimum, ote.maximum, ote.currency, ote.period) == (191000, 214500, "USD", "1 YEAR")
+    assert (commission.kind, commission.summary, commission.minimum, commission.maximum) == (
+        "commission", "Offers Commission", None, None,
+    )
+    assert (cash_equity.kind, cash_equity.unit, cash_equity.maximum) == ("equity", "money", None)
+    assert (percent_equity.unit, percent_equity.minimum, percent_equity.maximum,
+            percent_equity.period) == ("percent", 0, 1.75, "NONE")
+    assert bonus.tier == percent_equity.tier == "Tier 2 — Only in Ontario"
+    assert (bonus.kind, bonus.currency, bonus.period, bonus.minimum) == ("bonus", "CAD", "6 MONTH", 0)
+    assert (job.salary_min, job.salary_max, job.salary_period) == (191000, 214500, "YEAR")
+    assert len(httpx_mock.get_requests()) == 2
+
+
+def test_summary_components_used_only_when_tiers_have_no_component_rows() -> None:
+    item = {**_job(), "compensation": {"compensationTiers": [], "summaryComponents": [
+        {"compensationType": "Salary", "interval": "2 WEEK", "currencyCode": "USD", "minValue": 0},
+        {"compensationType": "NewType", "summary": "Employer-defined award"},
+    ]}}
+    job = AshbyScraper("acme")._parse_job(item)
+    salary, unknown = job.compensation_components
+    assert (salary.kind, salary.minimum, salary.maximum, salary.period) == ("base_salary", 0, None, "2 WEEK")
+    assert (unknown.kind, unknown.source_label, unknown.unit) == ("other", "NewType", None)
+    assert job.salary_min is None and job.salary_period is None
+    assert AshbyScraper("acme")._parse_job(_job()).compensation_components is None

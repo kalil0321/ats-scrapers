@@ -29,12 +29,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, CompensationComponent, Job
+from ats_scrapers.scrapers._posting_fields import finite_number
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -178,7 +180,9 @@ class AshbyScraper(BaseScraper):
         return [item for item in items if item is not None]
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
-        comp = item.get("compensation") or {}
+        comp = item.get("compensation")
+        if not isinstance(comp, dict):
+            comp = {}
         summary = (
             comp.get("compensationTierSummary")
             or comp.get("scrapeableCompensationSalarySummary")
@@ -255,6 +259,7 @@ class AshbyScraper(BaseScraper):
             salary_currency=currency,
             salary_period=period,
             salary_summary=summary,
+            compensation_components=_compensation_components(comp),
             salary_min=salary_min,
             salary_max=salary_max,
             posted_at=_parse_iso(item.get("publishedAt")),
@@ -440,6 +445,74 @@ def _hosted_item(
     return item
 
 
+_COMPONENT_TYPES = {
+    "Salary": ("base_salary", "money"),
+    "Bonus": ("bonus", "money"),
+    "Commission": ("commission", "money"),
+    "EquityCashValue": ("equity", "money"),
+    "EquityPercentage": ("equity", "percent"),
+    "EquityShares": ("equity", "shares"),
+    "Allowance": ("allowance", "money"),
+}
+_TOTAL_PAY = re.compile(r"\b(?:on[ -]target earnings|OTE|total compensation)\b", re.I)
+
+
+def _components_in_tier(
+    records: object, tier: str | None, tier_summary: object,
+) -> list[CompensationComponent]:
+    components: list[CompensationComponent] = []
+    if not isinstance(records, list):
+        return components
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        label = record.get("compensationType")
+        if not isinstance(label, str) or not label.strip():
+            continue
+        summary = record.get("summary")
+        summary = summary if isinstance(summary, str) else None
+        currency = record.get("currencyCode")
+        currency = currency if isinstance(currency, str) and currency else None
+        period = record.get("interval")
+        kind, unit = _COMPONENT_TYPES.get(label, ("other", None))
+        # Ashby also uses Salary for explicitly labelled on-target earnings.
+        pay_label = summary or (tier_summary if isinstance(tier_summary, str) else "")
+        if label == "Salary" and _TOTAL_PAY.search(pay_label):
+            kind = "other"
+        components.append(CompensationComponent.model_validate({
+            "kind": kind, "source_label": label, "unit": unit, "currency": currency,
+            "period": period if isinstance(period, str) else None,
+            "minimum": finite_number(record.get("minValue")),
+            "maximum": finite_number(record.get("maxValue")),
+            "tier": tier, "summary": summary,
+        }))
+    return components
+
+
+def _compensation_components(comp: dict[str, Any]) -> list[CompensationComponent] | None:
+    components = []
+    tiers = comp.get("compensationTiers")
+    if isinstance(tiers, list):
+        for tier in tiers:
+            if not isinstance(tier, dict):
+                continue
+            scope = " — ".join(
+                v for v in (tier.get("title"), tier.get("additionalInformation"))
+                if isinstance(v, str) and v.strip()
+            )
+            if not scope and len(tiers) > 1 and isinstance(tier.get("id"), str):
+                scope = tier["id"]
+            components.extend(_components_in_tier(
+                tier.get("components"), scope or None, tier.get("tierSummary"),
+            ))
+    # summaryComponents aggregates the tiers, so never append it to their rows.
+    if components:
+        return components
+    return _components_in_tier(
+        comp.get("summaryComponents"), None, comp.get("compensationTierSummary"),
+    ) or None
+
+
 def _parse_comp(
     comp: dict[str, Any] | None,
 ) -> tuple[float | None, float | None, str | None, str | None]:
@@ -450,11 +523,13 @@ def _parse_comp(
     component level (`minValue`, `maxValue`, `currencyCode`) — not nested in
     `compensationValue` as some older docs suggest.
     """
-    if not comp:
+    if not comp or not isinstance(comp.get("compensationTiers"), list):
         return None, None, None, None
-    for tier in comp.get("compensationTiers") or []:
-        for component in tier.get("components") or []:
-            if component.get("compensationType") != "Salary":
+    for tier in comp["compensationTiers"]:
+        if not isinstance(tier, dict) or not isinstance(tier.get("components"), list):
+            continue
+        for component in tier["components"]:
+            if not isinstance(component, dict) or component.get("compensationType") != "Salary":
                 continue
             interval = _INTERVAL_MAP.get(component.get("interval", ""), "YEAR")
             return (

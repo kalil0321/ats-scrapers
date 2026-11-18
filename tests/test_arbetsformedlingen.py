@@ -120,3 +120,37 @@ def test_empty_board(httpx_mock) -> None:
     httpx_mock.add_callback(_fake_api([]), url=_API_RE, is_reusable=True)
 
     assert ArbetsformedlingenScraper("arbetsformedlingen").fetch() == []
+
+
+def test_jobtech_primary_occupation_and_weighted_education() -> None:
+    row = _ads([datetime(2026, 11, 18)])[0]
+    row.update({
+        "occupation": {"concept_id": "occupation-example", "label": "Farmaceut/Receptarie",
+                       "legacy_ams_taxonomy_id": "other-code"},
+        "occupation_group": {"label": "Receptarier"},
+        "occupation_field": {"label": "Hälso- och sjukvård"},
+        "must_have": {"education_level": [{"label": "Gymnasial utbildning", "weight": 10}],
+                      "skills": [{"label": "Excel"}]},
+        "nice_to_have": {"education": [{"label": "Socialt arbete och omsorg", "weight": 5},
+                                       {"label": "Socialt arbete och omsorg"}],
+                         "work_experiences": [{"label": "Butikssäljare"}]},
+    })
+    job = ArbetsformedlingenScraper("arbetsformedlingen")._parse(row)
+    assert job.occupation.model_dump() == {
+        "label": "Farmaceut/Receptarie", "code": "occupation-example", "taxonomy": "JobTech Taxonomy",
+    }
+    assert job.department == "Hälso- och sjukvård"
+    assert [(q.label, q.requirement) for q in job.education_requirements] == [
+        ("Gymnasial utbildning", "required"), ("Socialt arbete och omsorg", "preferred"),
+    ]
+
+
+def test_jobtech_missing_or_unlabelled_concepts() -> None:
+    row = _ads([datetime(2026, 11, 18)])[0]
+    row.update({
+        "occupation": {"concept_id": "unlabelled"}, "occupation_field": {"label": "Education"},
+        "must_have": {"education": [{"concept_id": "x"}, {"label": " "}], "education_level": "3"},
+        "nice_to_have": {"skills": [{"label": "Teaching"}]},
+    })
+    job = ArbetsformedlingenScraper("arbetsformedlingen")._parse(row)
+    assert job.occupation is None and job.education_requirements is None

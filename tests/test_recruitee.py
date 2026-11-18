@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 
 import pytest
 
@@ -50,6 +51,15 @@ def test_parses_basic_offer(httpx_mock) -> None:
     job = jobs[0]
     assert job.title == "Senior Engineer"
     assert job.ats_type is ATSType.RECRUITEE
+
+
+def test_separate_offer_clocks(httpx_mock) -> None:
+    offer = {**_offer(), "created_at": "2026-04-15 08:00:01 UTC",
+             "published_at": "2026-04-16 09:00:02 UTC", "updated_at": "2026-05-17 10:00:03 UTC"}
+    httpx_mock.add_response(url=API, json={"offers": [offer]})
+    job = RecruiteeScraper("acme").fetch()[0]
+    assert job.source_created_at == datetime(2026, 4, 15, 8, 0, 1, tzinfo=UTC)
+    assert job.source_updated_at == datetime(2026, 5, 17, 10, 0, 3, tzinfo=UTC)
 
 
 def test_returns_empty_offers(httpx_mock) -> None:
@@ -121,3 +131,10 @@ def test_country_iso_from_locations(httpx_mock, offer_code, location_codes, expe
     offer["locations"] = [{"city": "X", "country_code": code} for code in location_codes]
     httpx_mock.add_response(url=API, json={"offers": [offer]})
     assert RecruiteeScraper("acme").fetch()[0].country_iso == expected
+
+
+def test_engagement_preserves_original_code():
+    job = RecruiteeScraper("acme")._parse_offer({**_offer(), "employment_type_code": "parttime_permanent"})
+    assert job.engagement_type == "permanent"
+    assert job.employment_type == "PART_TIME"
+    assert job.raw["employment_type_code"] == "parttime_permanent"

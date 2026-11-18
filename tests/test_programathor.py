@@ -378,3 +378,14 @@ def test_visible_sections_preserve_company_duties_requirements_and_skills(httpx_
     assert scraper.get_description(job) == (
         "Habilidades\nC++\nDescrição da empresa\nNossa empresa\nRequisitos\nCompiladores & redes"
     )
+
+
+@pytest.mark.parametrize(("label", "expected"), [
+    ("Estágio", "internship"), ("Freelance", "independent_contractor"),
+    ("Temporário", "temporary"), ("CLT", None), ("PJ", None),
+])
+def test_contract_label_preserves_engagement(label, expected):
+    html = _listing([_card(job_id="123", title="Developer", contract=label)])
+    job, = ProgramathorScraper("any")._parse_listing(html)
+    assert job.engagement_type == expected
+    assert job.commitment == label

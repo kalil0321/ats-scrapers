@@ -5,9 +5,8 @@ Greenhouse exposes a public JSON board at:
 
 The most permissive ATS API — no auth, no rate limits in practice. The
 ``content=true`` flag inflates the response with full job descriptions
-(HTML-encoded entities — we decode + strip tags). First_published gives
-the canonical posted-at; updated_at is the better choice for "when this
-posting changed" but we surface first_published since it's stable.
+(HTML-encoded entities — we decode + strip tags). The board exposes
+first publication and the last update as separate job post attributes.
 
 The list response also carries ``departments`` (array of named groups)
 and ``offices`` (locations the role is open in). Employment type is
@@ -23,6 +22,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._source_timestamp import source_timestamp
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -94,10 +94,7 @@ class GreenhouseScraper(BaseScraper):
         # text for storage.
         description = _clean_description(item.get("content"))
 
-        # ``first_published`` is a stable creation timestamp (employer
-        # set when the posting first went live). ``updated_at`` only
-        # tells us when an internal field changed (often noise). Prefer
-        # first_published for "posted_at" semantics.
+        # Historical posted_at fallback for boards missing first publication.
         posted_at = _parse_iso(item.get("first_published")) or _parse_iso(
             item.get("updated_at")
         )
@@ -124,6 +121,7 @@ class GreenhouseScraper(BaseScraper):
             description=description,
             requisition_id=requisition_id,
             posted_at=posted_at,
+            source_updated_at=source_timestamp(item.get("updated_at")),
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )

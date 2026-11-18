@@ -288,3 +288,9 @@ def test_other_500_is_retried(fake_httpcloak) -> None:
     responses.append(FakeResponse(payload([listing()])))
     assert len(DarwinboxScraper("airtel").fetch()) == 1
     assert len(calls) == 2
+
+
+def test_fixed_term_in_employee_type():
+    job = DarwinboxScraper("acme")._parse_listing({**listing(), "emp_type_name": "Fixed term"},
+                                                  "acme", "in", "https://acme.darwinbox.in")
+    assert job.engagement_type == "fixed_term" and job.commitment == "Fixed term"

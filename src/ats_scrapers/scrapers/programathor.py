@@ -50,6 +50,8 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.models import EngagementType
+
 API_ROOT = "https://programathor.com.br"
 # 15 jobs per page, fixed by the site. The cap only guards against a
 # listing that never runs out.
@@ -93,6 +95,15 @@ _EMPLOYMENT_MAP: dict[str, str] = {
     "freelance": "CONTRACT",
     "temporário": "TEMPORARY",
     "temporario": "TEMPORARY",
+}
+
+
+_ENGAGEMENT: dict[str, EngagementType] = {
+    "estágio": "internship",
+    "estagio": "internship",
+    "freelance": "independent_contractor",
+    "temporário": "temporary",
+    "temporario": "temporary",
 }
 
 
@@ -364,6 +375,7 @@ class ProgramathorScraper(BaseScraper):
             salary_min=salary_min,
             salary_max=salary_max,
             employment_type=employment_type,
+            engagement_type=_ENGAGEMENT.get(contract_raw.casefold()) if contract_raw else None,
             commitment=commitment,
             fetched_at=datetime.now(UTC),
             raw=raw or None,

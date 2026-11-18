@@ -7,6 +7,7 @@ plus the lang validation contract.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -87,6 +88,8 @@ def test_parses_full_offer(httpx_mock) -> None:
     httpx_mock.add_response(url=_api_url(), json=[_offer()])
     httpx_mock.add_response(url=_detail_url(), json=_detail())
     j = ManfredScraper("any").fetch()[0]
+    assert j.source_updated_at == datetime(2026, 5, 7, 7, 53, 59, 184000, tzinfo=UTC)
+    assert j.source_created_at is None
     assert j.ats_type is ATSType.MANFRED
     assert j.ats_id == "acme-data-scientist"
     assert j.title == "Data Scientist"
@@ -249,3 +252,38 @@ def test_visible_detail_sections_and_technical_punctuation(httpx_mock) -> None:
                     "Where?", "Spain only.", "Paid weekend shifts.",
                     "Health insurance"):
         assert section in job.description
+
+
+@pytest.mark.parametrize("listing_clock", [None, "2026-05-09T15:00:00Z"])
+def test_detail_update_fills_missing_listing_clock(listing_clock, httpx_mock) -> None:
+    scraper = ManfredScraper("any", include_descriptions=False)
+    job = scraper._parse({**_offer(), "updatedAt": listing_clock})
+    assert job is not None
+    httpx_mock.add_response(url=_detail_url(), json={
+        "introduction": "Build products.", "updatedAt": "2026-05-07T15:00:00Z",
+        "lastStatusChange": "2026-05-06T15:00:00Z",
+    })
+    assert scraper.get_description(job) == "Build products."
+    day = 9 if listing_clock else 7
+    assert job.source_updated_at == datetime(2026, 5, day, 15, tzinfo=UTC)
+
+
+def test_listing_components_use_displayed_variable_and_equity_units(httpx_mock) -> None:
+    httpx_mock.add_response(url=_api_url(), json=[
+        _offer(slug="salary-variable", salary_from=45000, salary_to=50000, bonus=5000),
+        _offer(slug="equity", equity_inf=0, equity_sup=1),
+        _offer(slug="no-published-pay", salary_from=0, salary_to=0),
+    ])
+    paid, ownership, undisclosed = ManfredScraper("any", include_descriptions=False).fetch()
+    base, variable = paid.compensation_components
+    assert (base.minimum, base.maximum, base.currency, base.period) == (45000, 50000, "EUR", None)
+    assert (variable.kind, variable.unit, variable.source_label, variable.currency) == (
+        "bonus", "money", "Variable", "EUR",
+    )
+    assert variable.minimum == variable.maximum == 5000
+    assert paid.salary_min == 45000 and paid.salary_max == 50000
+    _, equity = ownership.compensation_components
+    assert (equity.kind, equity.unit, equity.minimum, equity.maximum) == ("equity", "percent", None, 1)
+    assert equity.currency is None and equity.period is None
+    assert undisclosed.compensation_components is None
+    assert len(httpx_mock.get_requests()) == 1

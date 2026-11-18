@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._job_classification import education_level, occupation
 from ats_scrapers.scrapers._posting_detail import body_text
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -197,6 +198,8 @@ class WorkableScraper(BaseScraper):
             company=company_name,
             ats_type=ATSType.WORKABLE,
             ats_id=item.get("shortcode") or item.get("code") or str(item.get("id", "")),
+            occupation=occupation(item.get("function"), taxonomy="Workable job function"),
+            education_requirements=education_level(item.get("education")),
             description=_posting_body(item) if self.include_descriptions else None,
             location=_extract_location(item),
             is_remote=is_remote,
