@@ -10,6 +10,7 @@ from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import PaycomScraper
 from ats_scrapers.scrapers.base import ScraperRegistry
 from ats_scrapers.scrapers.paycom import (
+    LISTING_READS,
     _extract_config,
     _normalize_portal_token,
 )
@@ -231,23 +232,119 @@ def test_paginates_until_reported_count(httpx_mock) -> None:
 
 def test_search_count_mismatch_fails_closed(httpx_mock) -> None:
     httpx_mock.add_response(url=PORTAL_URL, text=_bootstrap())
-    httpx_mock.add_response(
-        url=SEARCH_URL,
-        json=_search([_preview(1)], count=2),
-    )
-    httpx_mock.add_response(
-        url=SEARCH_URL,
-        json=_search([], count=2),
-    )
+    for _ in range(LISTING_READS):
+        httpx_mock.add_response(
+            url=SEARCH_URL,
+            json=_search([_preview(1)], count=2),
+        )
+        httpx_mock.add_response(
+            url=SEARCH_URL,
+            json=_search([], count=2),
+        )
 
-    with pytest.raises(ScraperError, match="expected 2 jobs"):
+    with pytest.raises(
+        ScraperError,
+        match=rf"expected 2 jobs.*read {LISTING_READS} times",
+    ):
         PaycomScraper(TOKEN, include_descriptions=False).fetch()
 
 
 def test_duplicate_job_ids_fail_closed(httpx_mock) -> None:
-    _mock_listing(httpx_mock, [_preview(1), _preview(1)])
+    httpx_mock.add_response(url=PORTAL_URL, text=_bootstrap())
+    httpx_mock.add_response(
+        url=SEARCH_URL,
+        json=_search([_preview(1), _preview(1)]),
+        is_reusable=True,
+    )
 
     with pytest.raises(ScraperError, match="expected 2 jobs but received 1"):
+        PaycomScraper(TOKEN, include_descriptions=False).fetch()
+
+    assert len(httpx_mock.get_requests(url=SEARCH_URL)) == LISTING_READS
+
+
+def test_job_posted_during_the_read_reads_the_listing_again(
+    httpx_mock,
+) -> None:
+    # The first page counts 186 jobs, the second 187: one was posted in
+    # between.
+    first_page = [_preview(index) for index in range(1, 101)]
+    httpx_mock.add_response(url=PORTAL_URL, text=_bootstrap())
+    httpx_mock.add_response(url=SEARCH_URL, json=_search(first_page, count=186))
+    httpx_mock.add_response(
+        url=SEARCH_URL,
+        json=_search(
+            [_preview(index) for index in range(101, 188)],
+            count=187,
+        ),
+    )
+    httpx_mock.add_response(url=SEARCH_URL, json=_search(first_page, count=187))
+    httpx_mock.add_response(
+        url=SEARCH_URL,
+        json=_search(
+            [_preview(index) for index in range(101, 188)],
+            count=187,
+        ),
+    )
+
+    jobs = PaycomScraper(TOKEN, include_descriptions=False).fetch()
+
+    assert len({job.ats_id for job in jobs}) == len(jobs) == 187
+    assert len(httpx_mock.get_requests(url=SEARCH_URL)) == 4
+
+
+def test_rows_shifted_during_the_read_read_the_listing_again(
+    httpx_mock,
+) -> None:
+    # Job 1 posted and job 102 closed between the two pages: the count holds
+    # at 101, but the second page repeats job 101 and job 1 is missing.
+    httpx_mock.add_response(url=PORTAL_URL, text=_bootstrap())
+    httpx_mock.add_response(
+        url=SEARCH_URL,
+        json=_search([_preview(index) for index in range(2, 102)], count=101),
+    )
+    httpx_mock.add_response(
+        url=SEARCH_URL,
+        json=_search([_preview(101)], count=101),
+    )
+    httpx_mock.add_response(
+        url=SEARCH_URL,
+        json=_search([_preview(index) for index in range(1, 101)], count=101),
+    )
+    httpx_mock.add_response(
+        url=SEARCH_URL,
+        json=_search([_preview(101)], count=101),
+    )
+
+    jobs = PaycomScraper(TOKEN, include_descriptions=False).fetch()
+
+    assert sorted(int(str(job.ats_id).rsplit(":", 1)[1]) for job in jobs) == (
+        list(range(1, 102))
+    )
+
+
+def test_listing_that_never_holds_still_fails_closed(httpx_mock) -> None:
+    httpx_mock.add_response(url=PORTAL_URL, text=_bootstrap())
+    for read in range(LISTING_READS):
+        httpx_mock.add_response(
+            url=SEARCH_URL,
+            json=_search(
+                [_preview(index) for index in range(1, 101)],
+                count=150 + read,
+            ),
+        )
+        httpx_mock.add_response(
+            url=SEARCH_URL,
+            json=_search(
+                [_preview(index) for index in range(101, 152 + read)],
+                count=151 + read,
+            ),
+        )
+
+    with pytest.raises(
+        ScraperError,
+        match="job count changed from 152 to 153 while reading",
+    ):
         PaycomScraper(TOKEN, include_descriptions=False).fetch()
 
 

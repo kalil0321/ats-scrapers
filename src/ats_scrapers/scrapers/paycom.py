@@ -38,6 +38,10 @@ JOB_URL = "https://www.paycomonline.net/v4/ats/web.php/portal/{token}/jobs/{job_
 SEARCH_PATH = "/api/ats/job-posting-previews/search"
 DETAIL_PATH = "/api/ats/job-postings/{job_id}"
 PAGE_SIZE = 100
+# A job posted or closed while the listing is read changes the count between
+# two pages, or shifts a row from one page to the next. Such a read is
+# started again, up to this many reads in all.
+LISTING_READS = 3
 DETAIL_CONCURRENCY = 6
 _DETAIL_HANDLED = frozenset({404, 410})
 _TOKEN_RE = re.compile(r"^[0-9a-f]{32}$", re.I)
@@ -91,6 +95,10 @@ _REGION_BY_COUNTRY = {
     "US": "North America",
 }
 logger = logging.getLogger(__name__)
+
+
+class _ListingMovedError(ScraperError):
+    """The listing did not hold still for one complete read."""
 
 
 @ScraperRegistry.register(ATSType.PAYCOM)
@@ -224,6 +232,27 @@ class PaycomScraper(BaseScraper):
         service_url: str,
         headers: dict[str, str],
     ) -> list[dict[str, Any]]:
+        for read in range(1, LISTING_READS + 1):
+            try:
+                return await self._read_previews(fetch, service_url, headers)
+            except _ListingMovedError as exc:
+                if read == LISTING_READS:
+                    raise ScraperError(
+                        f"{exc} (read {LISTING_READS} times)"
+                    ) from exc
+                logger.info(
+                    "Reading Paycom (%s) listing again: %s",
+                    self.portal_token,
+                    exc,
+                )
+        raise AssertionError("unreachable")
+
+    async def _read_previews(
+        self,
+        fetch: Fetcher,
+        service_url: str,
+        headers: dict[str, str],
+    ) -> list[dict[str, Any]]:
         previews: list[dict[str, Any]] = []
         expected_total: int | None = None
         skip = 0
@@ -239,13 +268,19 @@ class PaycomScraper(BaseScraper):
                 raise ScraperError(
                     f"Paycom ({self.portal_token}) search response was not an object"
                 )
+            raw_total = payload.get("jobPostingPreviewsCount")
+            valid_total = isinstance(raw_total, int) and raw_total >= 0
             if expected_total is None:
-                raw_total = payload.get("jobPostingPreviewsCount")
-                if not isinstance(raw_total, int) or raw_total < 0:
+                if not valid_total:
                     raise ScraperError(
                         f"Paycom ({self.portal_token}) search omitted a valid count"
                     )
                 expected_total = raw_total
+            elif valid_total and raw_total != expected_total:
+                raise _ListingMovedError(
+                    f"Paycom ({self.portal_token}) job count changed from "
+                    f"{expected_total} to {raw_total} while reading"
+                )
             page = payload.get("jobPostingPreviews")
             if not isinstance(page, list):
                 raise ScraperError(
@@ -267,7 +302,7 @@ class PaycomScraper(BaseScraper):
         for item in previews:
             unique.setdefault(_job_id(item.get("jobId")), item)
         if expected_total != len(unique):
-            raise ScraperError(
+            raise _ListingMovedError(
                 f"Paycom ({self.portal_token}) expected {expected_total} jobs "
                 f"but received {len(unique)}"
             )
