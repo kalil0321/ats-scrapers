@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
+from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.tesla import (
     TeslaScraper,
     _format_description,
@@ -32,6 +36,71 @@ def test_returns_empty_with_warning_when_cloakbrowser_missing(
         jobs = TeslaScraper("tesla").fetch()
     assert jobs == []
     assert any("browser required" in r.getMessage().lower() for r in caplog.records)
+
+
+# --- proxy -------------------------------------------------------------
+
+
+class _LaunchStoppedError(Exception):
+    pass
+
+
+@pytest.fixture
+def launched_proxies(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Stand in for ``cloakbrowser.launch_async``: record the proxy, then stop."""
+    from ats_scrapers.scrapers import _cloakbrowser
+
+    proxies: list[object] = []
+
+    async def launch_async(**kwargs: object) -> None:
+        proxies.append(kwargs.get("proxy"))
+        raise _LaunchStoppedError
+
+    monkeypatch.setattr(_cloakbrowser, "is_enabled", lambda: True)
+    monkeypatch.setitem(
+        sys.modules, "cloakbrowser", SimpleNamespace(launch_async=launch_async)
+    )
+    return proxies
+
+
+def _tesla_job() -> Job:
+    return Job(
+        url="https://www.tesla.com/careers/search/job/engineer-1",
+        title="Engineer",
+        company="Tesla",
+        ats_type=ATSType.TESLA,
+        ats_id="1",
+        fetched_at=datetime.now(UTC),
+    )
+
+
+@pytest.mark.parametrize("entry", ["fetch", "get_description"])
+def test_browser_uses_the_proxy_argument(
+    monkeypatch: pytest.MonkeyPatch, launched_proxies: list[object], entry: str
+) -> None:
+    monkeypatch.setenv("PROXY", "http://env.example:1000:user:pass")
+    scraper = TeslaScraper("tesla", proxy="http://u:p@proxy.example:8080")
+
+    with pytest.raises(_LaunchStoppedError):
+        if entry == "fetch":
+            scraper.fetch()
+        else:
+            scraper.get_description(_tesla_job())
+
+    assert launched_proxies == ["http://u:p@proxy.example:8080"]
+
+
+def test_browser_falls_back_to_the_environment_proxy(
+    monkeypatch: pytest.MonkeyPatch, launched_proxies: list[object]
+) -> None:
+    monkeypatch.setenv("PROXY", "http://env.example:1000:user:pass")
+
+    with pytest.raises(_LaunchStoppedError):
+        TeslaScraper("tesla").fetch()
+
+    assert launched_proxies == [
+        {"server": "http://env.example:1000", "username": "user", "password": "pass"}
+    ]
 
 
 def test_parses_state_payload() -> None:

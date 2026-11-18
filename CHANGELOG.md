@@ -51,6 +51,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
+- Tesla: the browser goes through the `proxy` argument when one is given, and
+  through the `PROXY` environment variable only otherwise.
 - Eightfold: a listing page that answers 405, which Eightfold returns on every
   tenant for a few minutes once an address has sent too many requests, is retried
   after 30, 90 and 180 seconds instead of failing the board at once. A board
