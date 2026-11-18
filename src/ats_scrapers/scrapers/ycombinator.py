@@ -449,8 +449,16 @@ def _compose_description(item: dict[str, Any]) -> str | None:
     return "\n\n".join(parts)[:25_000] or None
 
 
+# Known tags only, so Markdown such as ``List<String>`` is not read as HTML.
+_HTML_TAG = re.compile(
+    r"</?(?:a|abbr|b|blockquote|br|code|div|em|h[1-6]|hr|i|li|ol|p|pre|s|small|span"
+    r"|strong|sub|sup|table|tbody|td|th|thead|tr|u|ul)\b[^<>]*>",
+    re.IGNORECASE,
+)
+
+
 def _clean_description_text(value: str) -> str:
-    if re.search(r"</?(?:p|div|ul|li|br|strong|h[1-6])\b", value, re.I):
+    if _HTML_TAG.search(value):
         return body_text(value)
     # Strip Markdown formatting while preserving names such as C# and foo_bar.
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)

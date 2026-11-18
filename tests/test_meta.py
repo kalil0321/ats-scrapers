@@ -204,3 +204,15 @@ def test_detail_that_adds_nothing_is_read_once(httpx_mock) -> None:
     scraper.enrich_descriptions([job])
 
     assert len(httpx_mock.get_requests()) == 1
+
+
+def test_a_fresh_listing_row_is_enriched_after_an_earlier_read(httpx_mock) -> None:
+    entry = {"id": "123", "title": "Engineer", "description": "Intro"}
+    posting = {"@type": "JobPosting", "description": "Intro", "responsibilities": "Design."}
+    page = '<script type="application/ld+json">' + json.dumps(posting) + '</script>'
+    scraper = MetaScraper("meta")
+
+    for _ in range(2):
+        [job] = scraper._parse_responses([{"data": {"careers": {"jobs": [entry]}}}])
+        httpx_mock.add_response(url=str(job.url), text=page)
+        assert scraper.get_description(job) == "Intro\n\nDesign."

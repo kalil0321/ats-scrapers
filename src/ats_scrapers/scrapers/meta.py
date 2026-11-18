@@ -49,8 +49,10 @@ class MetaScraper(BaseScraper):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        # Postings whose detail page was read, whether or not it added text.
-        self._details_read: set[str] = set()
+        # (URL, description) once the posting's detail page was read: a job
+        # still holding that description needs no second read, even when the
+        # detail added nothing to the listing.
+        self._details_read: set[tuple[str, str | None]] = set()
 
     async def afetch(self) -> list[Job]:
         if not cb.is_enabled():
@@ -194,7 +196,8 @@ class MetaScraper(BaseScraper):
         return "\n\n".join(dict.fromkeys(part for part in parts if part))[:25_000] or None
 
     def _needs_detail(self, job: Job) -> bool:
-        return str(job.url) not in self._details_read and _listing_incomplete(job)
+        read = (str(job.url), job.description) in self._details_read
+        return not read and _listing_incomplete(job)
 
     async def _enrich_detail_descriptions(self, jobs: list[Job]) -> None:
         """Fetch Meta detail pages for descriptions missing from listing GraphQL.
@@ -233,9 +236,9 @@ class MetaScraper(BaseScraper):
         posting = job_posting(response.text)
         if not posting:
             return
-        self._details_read.add(str(job.url))
         # Preserve sections from the listing when the detail omits them.
         job.description = self._description(posting, fallback=job.raw) or job.description
+        self._details_read.add((str(job.url), job.description))
 
 
 __all__ = ["MetaScraper"]
