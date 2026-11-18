@@ -49,7 +49,7 @@ import httpx
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.fetch import proxy_url_from_env
 from ats_scrapers.models import ATSType, Job
-from ats_scrapers.scrapers._job_classification import education_level, occupation
+from ats_scrapers.scrapers._job_classification import classification_label, education_level
 from ats_scrapers.scrapers._job_places import distinct_places, job_location
 from ats_scrapers.scrapers.base import BaseScraper
 from ats_scrapers.scrapers.workable import _EMPLOYMENT_TYPE_PATTERNS
@@ -274,7 +274,7 @@ def _job(entry: dict[str, str], found: _Locations, *, include_description: bool)
         country_iso=next(iter(found.countries)) if len(found.countries) == 1 else None,
         is_remote=found.remote,
         department=entry.get("category") or None,
-        occupation=occupation(entry.get("category"), taxonomy="Workable job function"),
+        job_category=classification_label(entry.get("category")),
         education_requirements=education_level(entry.get("education")),
         employment_type=employment_type,
         commitment=commitment,

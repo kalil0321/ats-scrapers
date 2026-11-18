@@ -25,7 +25,7 @@ from pydantic import ValidationError
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EducationRequirement, Job, WorkloadPercentages
-from ats_scrapers.scrapers._job_classification import classification_label, occupation
+from ats_scrapers.scrapers._job_classification import classification_label
 from ats_scrapers.scrapers._skill_tags import skill_tags
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -266,10 +266,7 @@ class ArbetsformedlingenScraper(BaseScraper):
                 commitment = f"{lo:g} %" if lo == hi else f"{lo:g}–{hi:g} %"
 
         primary = item.get("occupation")
-        primary_occupation = (
-            occupation(primary.get("label"), taxonomy="JobTech Taxonomy", code=primary.get("concept_id"))
-            if isinstance(primary, dict) else None
-        )
+        category = classification_label(primary.get("label")) if isinstance(primary, dict) else None
         # ``occupation_field`` is the high-level domain (Pedagogik,
         # Hälso- och sjukvård, IT-data, etc.) — Arbetsförmedlingen's
         # closest analog to a department label.
@@ -313,7 +310,7 @@ class ArbetsformedlingenScraper(BaseScraper):
             is_remote=is_remote,
             team=team if isinstance(team, str) and team.strip() else None,
             description=description,
-            occupation=primary_occupation,
+            job_category=category,
             education_requirements=_education_requirements(item),
             skill_requirements=_skill_requirements(item),
             department=department if isinstance(department, str) else None,

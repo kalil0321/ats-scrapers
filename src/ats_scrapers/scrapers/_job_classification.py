@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from ats_scrapers.models import EducationRequirement, Occupation
+from ats_scrapers.models import EducationRequirement
 
 
 def classification_label(value: object) -> str | None:
@@ -16,14 +16,6 @@ def classification_label(value: object) -> str | None:
     }:
         return None
     return label
-
-
-def occupation(label: object, *, taxonomy: str, code: object = None) -> Occupation | None:
-    name = classification_label(label)
-    if name is None:
-        return None
-    identifier = code.strip() if isinstance(code, str) else None
-    return Occupation(label=name, code=identifier or None, taxonomy=taxonomy)
 
 
 def education_level(

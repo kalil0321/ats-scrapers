@@ -91,15 +91,12 @@ def test_primary_job_family_and_category_fallback() -> None:
         business_category="example-product-group", job_function_id="unverified",
         basic_qualifications="Degree or equivalent experience",
     ))
-    assert job.occupation.model_dump() == {
-        "label": "Software Development", "code": None, "taxonomy": "Amazon job family",
-    }
+    assert job.job_category == "Software Development"
     assert job.department == "Corporate Operations"
     assert job.education_requirements is None
 
     [legacy] = scraper._parse_hit({"fields": {"icimsJobId": ["1"], "jobCategory": ["Human Resources"]}})
-    assert legacy.occupation.label == "Human Resources"
-    assert legacy.occupation.taxonomy == "Amazon job category"
+    assert legacy.job_category == "Human Resources"
 
     [unclassified] = scraper._parse_hit(_hit(teamCategory="Cloud services", business_category="retail"))
-    assert unclassified.department == "Cloud services" and unclassified.occupation is None
+    assert unclassified.department == "Cloud services" and unclassified.job_category is None

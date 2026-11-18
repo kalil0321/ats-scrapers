@@ -98,9 +98,7 @@ def test_groups_a_posting_listed_once_per_location(feed_file: Path) -> None:
     assert job.posted_at == datetime(2026, 11, 13, 16, 20, 57, tzinfo=UTC)
     assert job.company == "KeystoneCare"
     assert job.department == "Sales"
-    assert job.occupation.model_dump() == {
-        "label": "Sales", "code": None, "taxonomy": "Workable job function",
-    }
+    assert job.job_category == "Sales"
     assert [(q.label, q.requirement) for q in job.education_requirements] == [
         ("Bachelor's Degree", "unspecified"),
     ]
@@ -264,4 +262,4 @@ def test_empty_education_does_not_promote_requirements_prose(tmp_path: Path) -> 
                                 category="Other", education="Unspecified")))
     job, = WorkableFeedScraper(feed_path=path).fetch()
     assert "Requirements" in job.description
-    assert job.occupation is None and job.education_requirements is None
+    assert job.job_category is None and job.education_requirements is None

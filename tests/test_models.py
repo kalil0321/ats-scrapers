@@ -146,7 +146,7 @@ def test_source_fields_keep_distinct_events_and_explicit_zero() -> None:
     job = _minimal_job(
         source_created_at="2026-03-03T10:00:00+02:00", workload_percentages=[0, 80, 100],
         compensation_components=[{"kind": "equity", "unit": "percent", "minimum": 0, "maximum": 1.5}],
-        occupation={"label": "Software development", "code": "15", "taxonomy": "Example"},
+        job_category="Software development",
         engagement_type="fixed_term", education_requirements=[{"label": "Bachelor or equivalent"}],
     )
     assert job.source_created_at == datetime(2026, 3, 3, 8, tzinfo=UTC)
@@ -164,6 +164,7 @@ def test_source_fields_keep_distinct_events_and_explicit_zero() -> None:
     {"workload_percentages": {"minimum": 100, "maximum": 80}},
     {"workload_percentages": {"values": []}}, {"workload_percentages": {}},
     {"workload_percentages": "80–100%"}, {"workload_percentages": {"maximum": True}},
+    {"job_category": {"label": "Software development"}}, {"job_category": ""},
     {"workplace_type": "unknown"}, {"locations": [{"city": "Paris"}]},
     {"skill_requirements": [{"label": "SQL", "requirement": "yes"}]},
     {"compensation_components": [{"kind": "commission", "maximum": float("inf")}]},

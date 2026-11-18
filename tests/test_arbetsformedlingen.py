@@ -158,9 +158,7 @@ def test_jobtech_primary_occupation_and_weighted_education() -> None:
                          "work_experiences": [{"label": "Butikssäljare"}]},
     })
     job = ArbetsformedlingenScraper("arbetsformedlingen")._parse(row)
-    assert job.occupation.model_dump() == {
-        "label": "Farmaceut/Receptarie", "code": "occupation-example", "taxonomy": "JobTech Taxonomy",
-    }
+    assert job.job_category == "Farmaceut/Receptarie"
     assert job.department == "Hälso- och sjukvård"
     assert [(q.label, q.requirement) for q in job.education_requirements] == [
         ("Gymnasial utbildning", "required"), ("Socialt arbete och omsorg", "preferred"),
@@ -175,7 +173,7 @@ def test_jobtech_missing_or_unlabelled_concepts() -> None:
         "nice_to_have": {"skills": [{"label": "Teaching"}]},
     })
     job = ArbetsformedlingenScraper("arbetsformedlingen")._parse(row)
-    assert job.occupation is None and job.education_requirements is None
+    assert job.job_category is None and job.education_requirements is None
 
 
 def test_native_skill_groups_set_priority_independently_of_weights() -> None:

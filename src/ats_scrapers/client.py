@@ -224,7 +224,7 @@ class Client:
                     "is installed. Install with `pip install ats-scrapers[parquet]`, "
                     "or load a per-ATS CSV slice with `Client(prefer_parquet=False).load(ats=...)`."
                 ) from exc
-        return pd.read_csv(buffer)
+        return pd.read_csv(buffer, dtype={"job_category": "string"})
 
 
 @lru_cache(maxsize=1)
@@ -292,14 +292,14 @@ def _normalize_dataset(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy(deep=False)
     for name, decode in (
         ("workload_percentages", _workload_cell), ("compensation_components", _compensation_cell),
-        ("occupation", _nested_cell), ("education_requirements", _nested_cell),
+        ("education_requirements", _nested_cell),
         ("skill_requirements", _nested_cell), ("locations", _nested_cell),
     ):
         if name in df:
             df[name] = df[name].map(decode, na_action="ignore")
         else:
             df[name] = None
-    for name in ("engagement_type", "workplace_type"):
+    for name in ("engagement_type", "workplace_type", "job_category"):
         if name not in df:
             df[name] = None
     for name in ("source_created_at", "source_updated_at"):

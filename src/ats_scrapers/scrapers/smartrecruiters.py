@@ -25,8 +25,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, Job, Occupation
-from ats_scrapers.scrapers._job_classification import occupation
+from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._job_classification import classification_label
 from ats_scrapers.scrapers._job_places import distinct_places, job_location
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -87,7 +87,7 @@ class SmartRecruitersScraper(BaseScraper):
             async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
                 await self._enrich_detail(fetch, sem, copy)
-            job.occupation = copy.occupation
+            job.job_category = copy.job_category
             job.workplace_type = copy.workplace_type
             job.locations = copy.locations
             return copy.description
@@ -197,7 +197,7 @@ class SmartRecruitersScraper(BaseScraper):
             company=self.company_slug,
             ats_type=ATSType.SMARTRECRUITERS,
             ats_id=item["id"],
-            occupation=_job_function(item.get("function")),
+            job_category=_job_function(item.get("function")),
             location=loc_str,
             locations=distinct_places([_posting_place(location)]),
             workplace_type=_posting_mode(location),
@@ -234,8 +234,8 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
         job.locations = [place]
     if mode := _posting_mode(location):
         job.workplace_type = mode
-    if job.occupation is None:
-        job.occupation = _job_function(detail.get("function"))
+    if job.job_category is None:
+        job.job_category = _job_function(detail.get("function"))
     if not job.description:
         sections = (detail.get("jobAd") or {}).get("sections") or {}
         if isinstance(sections, dict):
@@ -285,10 +285,10 @@ def _posting_mode(loc: object) -> WorkplaceType | None:
     return None
 
 
-def _job_function(value: object) -> Occupation | None:
+def _job_function(value: object) -> str | None:
     if not isinstance(value, dict) or value.get("id") == "other":
         return None
-    return occupation(value.get("label"), code=value.get("id"), taxonomy="SmartRecruiters job function")
+    return classification_label(value.get("label"))
 
 
 def _format_location(location: dict[str, Any]) -> str | None:

@@ -1371,13 +1371,11 @@ def test_smartrecruiters_job_function_requires_an_explicit_label() -> None:
     scraper = SmartRecruitersScraper("acme")
     posting = {"id": "123", "name": "Education Manager", "department": {"label": "Education"}}
     job = scraper._parse_job({**posting, "function": {"id": "management", "label": "Management"}})
-    assert job.occupation.model_dump() == {
-        "code": "management", "label": "Management", "taxonomy": "SmartRecruiters job function",
-    }
+    assert job.job_category == "Management"
     for value in (None, {}, {"id": "other", "label": "Autre"}, {"id": "engineering"}):
         missing = scraper._parse_job({**posting, "function": value})
         assert missing.department == "Education"
-        assert missing.occupation is None and missing.education_requirements is None
+        assert missing.job_category is None and missing.education_requirements is None
 
 
 def test_workable_widget_maps_function_and_education_separately_from_department() -> None:
@@ -1387,9 +1385,7 @@ def test_workable_widget_maps_function_and_education_separately_from_department(
                "description": "<p>Support the team.</p>", "benefits": "<p>Flexible hours.</p>"}
     job = scraper._parse_job({**posting, "function": "Administrative",
                               "education": "High School or equivalent"}, "Example")
-    assert job.occupation.model_dump() == {
-        "label": "Administrative", "taxonomy": "Workable job function", "code": None,
-    }
+    assert job.job_category == "Administrative"
     assert job.department == "Sales"
     assert job.description == "Support the team.\n\nFlexible hours."
     assert [(q.label, q.requirement) for q in job.education_requirements] == [
@@ -1397,7 +1393,7 @@ def test_workable_widget_maps_function_and_education_separately_from_department(
     ]
     missing = scraper._parse_job({**posting, "function": "Other", "education": "Unspecified",
                                   "industry": "Higher Education", "experience": "Associate"}, "Example")
-    assert missing.occupation is None and missing.education_requirements is None
+    assert missing.job_category is None and missing.education_requirements is None
 
 
 def test_personio_schedule_cannot_hide_employment_contract():

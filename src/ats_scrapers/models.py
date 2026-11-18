@@ -218,16 +218,6 @@ class CompensationComponent(BaseModel):
     summary: str | None = None
 
 
-class Occupation(BaseModel):
-    """Primary occupational classification assigned by the source."""
-
-    model_config = ConfigDict(frozen=True)
-
-    label: str = Field(min_length=1)
-    code: str | None = None
-    taxonomy: str | None = Field(default=None, description="Source vocabulary or published classification system.")
-
-
 RequirementLevel = Literal["required", "preferred", "optional", "unspecified"]
 
 
@@ -328,7 +318,7 @@ class Job(BaseModel):
 
     4. **Classification** (``experience``, ``employment_type``,
        ``department``, ``team``, ``requisition_id``, ``apply_url``,
-       ``commitment``, ``workload_percentages``, ``occupation``,
+       ``commitment``, ``workload_percentages``, ``job_category``,
        ``engagement_type``, ``education_requirements``, ``skill_requirements``). Optional — set when the source API exposes
        them, ``None`` otherwise.
 
@@ -546,8 +536,8 @@ class Job(BaseModel):
     workload_percentages: WorkloadPercentages | None = Field(
         default=None, description="Explicit percentages of a full-time role, given individually or as a range.",
     )
-    occupation: Occupation | None = Field(
-        default=None, description="Primary occupation, job family or function classified by the source.",
+    job_category: str | None = Field(
+        default=None, min_length=1, description="Category label assigned to the posting by its source.",
     )
     engagement_type: EngagementType | None = Field(
         default=None, description="Explicit contractual relationship or duration, independent of working hours.",
