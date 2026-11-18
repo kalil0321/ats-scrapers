@@ -1,8 +1,10 @@
 """Programathor (https://programathor.com.br) — Brazilian tech job board.
 
-Programathor is the largest direct-posting tech job board in Brazil
-(~3,000 active recent postings, 15,000+ historical). Companies post
-directly through Programathor — not syndicated from LinkedIn or Indeed.
+Programathor is the largest direct-posting tech job board in Brazil.
+Companies post directly through Programathor, not syndicated from
+LinkedIn or Indeed. ``/jobs`` lists only open roles (30 in November
+2026). Closed roles move to ``/archives`` and their job pages return
+404, so they are not scraped.
 
 The site geo-blocks non-Brazilian IPs (returns 403). The library
 itself doesn't ship a proxy — running from a Brazilian residential
@@ -47,10 +49,8 @@ if TYPE_CHECKING:
     from typing import Any
 
 API_ROOT = "https://programathor.com.br"
-# 15 jobs/page is the site default; non-configurable. The site keeps
-# a long tail of historical postings reachable via deep pagination
-# (id 9000+ at page=1000) but listings beyond ~200 pages drift into
-# stale roles. Cap at 200 by default → ~3,000 most-recent active jobs.
+# 15 jobs per page, fixed by the site. The cap only guards against a
+# listing that never runs out.
 DEFAULT_MAX_PAGES = 200
 MAX_CONCURRENCY = 4
 # The transport deliberately stays on a hand-rolled httpx client rather
@@ -83,6 +83,8 @@ _CARD_RE = re.compile(
     re.DOTALL,
 )
 _TITLE_RE = re.compile(r'<h3[^>]*>(?P<t>.*?)(?:<span[^>]*>NOVA</span>)?</h3>', re.DOTALL)
+# Labels nested in the title, such as NOVA or the on-site-only badge.
+_TITLE_LABEL_RE = re.compile(r"<span\b[^>]*>.*?</span>", re.DOTALL)
 _BRIEFCASE_RE = re.compile(r"<i[^>]+fa-briefcase[^>]*>\s*</i>(?P<v>[^<]+)")
 _LOCATION_RE = re.compile(r"<i[^>]+fa-map-marker-alt[^>]*>\s*</i>(?P<v>[^<]+)")
 _COMPANY_TYPE_RE = re.compile(r"<i[^>]+fa-building[^>]*>\s*</i>(?P<v>[^<]+)")
@@ -131,7 +133,7 @@ class ProgramathorScraper(BaseScraper):
       then to direct connection. Most users running locally don't
       need one; servers on US/EU clouds will hit Programathor's
       403 geo-block without one.
-    - ``max_pages`` — pagination cap (default 200 → ~3,000 jobs).
+    - ``max_pages``: pagination ceiling (default 200).
     """
 
     ats = ATSType.PROGRAMATHOR
@@ -321,8 +323,7 @@ class ProgramathorScraper(BaseScraper):
         title_match = _TITLE_RE.search(body)
         if not title_match:
             return None
-        # Strip any nested NOVA / new-label spans before cleaning.
-        title = _strip_html(title_match.group("t"))
+        title = _strip_html(_TITLE_LABEL_RE.sub(" ", title_match.group("t")))
         title = re.sub(r"\s*NOVA\s*$", "", title).strip()
         if not title:
             return None
