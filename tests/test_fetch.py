@@ -479,32 +479,85 @@ def test_scrapers_give_their_transport_to_their_fetchers() -> None:
 # --- pacing -----------------------------------------------------------------
 
 
+def _fake_clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    from ats_scrapers import fetch as fetch_module
+
+    now = [100.0]
+
+    async def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(fetch_module.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(fetch_module.asyncio, "sleep", sleep)
+    return now
+
+
 def test_host_pacer_spaces_starts_per_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ats_scrapers.fetch import HostPacer
+
+    now = _fake_clock(monkeypatch)
+    pacer = HostPacer(2.0)
+    starts: list[tuple[str, float]] = []
+
+    async def main() -> None:
+        for host in ("a.test", "a.test", "a.test", "b.test"):
+            await pacer.wait(f"https://{host}/jobs")
+            starts.append((host, now[0]))
+
+    asyncio.run(main())
+
+    assert starts == [("a.test", 100.0), ("a.test", 100.5), ("a.test", 101.0), ("b.test", 101.0)]
+
+
+def test_host_pacer_groups_hosts_by_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ats_scrapers.fetch import HostPacer
+
+    now = _fake_clock(monkeypatch)
+    pacer = HostPacer(4.0, key=lambda host: host.split(".", 1)[1])
+    starts: list[float] = []
+
+    async def main() -> None:
+        for url in (
+            "https://acme.wd5.myworkdayjobs.com/x",
+            "https://other.wd5.myworkdayjobs.com/x",
+            "https://acme.wd1.myworkdayjobs.com/x",
+        ):
+            await pacer.wait(url)
+            starts.append(now[0])
+
+    asyncio.run(main())
+
+    assert starts == [100.0, 100.25, 100.25]
+
+
+def test_host_pacer_releases_late_waiters_one_interval_apart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from ats_scrapers import fetch as fetch_module
 
     now = [100.0]
     monkeypatch.setattr(fetch_module.time, "monotonic", lambda: now[0])
     pacer = fetch_module.HostPacer(2.0)
+    assert pacer._start_now("https://a.test/x") == 0.0
+    assert [pacer._start_now("https://a.test/x") for _ in range(3)] == [0.5, 0.5, 0.5]
 
-    waits = [pacer.reserve(f"https://{host}/jobs") for host in ("a.test", "a.test", "a.test", "b.test")]
-    now[0] = 102.0
-    later = pacer.reserve("https://a.test/jobs")
-
-    assert waits == [0.0, 0.5, 1.0, 0.0]
-    assert later == 0.0
+    # The loop was busy well past those starts: one waiter goes, the rest wait.
+    now[0] = 105.0
+    assert [pacer._start_now("https://a.test/x") for _ in range(3)] == [0.0, 0.5, 0.5]
 
 
-def test_host_pacer_groups_hosts_by_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    from ats_scrapers import fetch as fetch_module
+def test_host_pacer_gives_up_past_the_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ats_scrapers.fetch import HostPacer
 
-    monkeypatch.setattr(fetch_module.time, "monotonic", lambda: 100.0)
-    pacer = fetch_module.HostPacer(4.0, key=lambda host: host.split(".", 1)[1])
+    _fake_clock(monkeypatch)
+    pacer = HostPacer(1.0)
 
-    assert [
-        pacer.reserve("https://acme.wd5.myworkdayjobs.com/x"),
-        pacer.reserve("https://other.wd5.myworkdayjobs.com/x"),
-        pacer.reserve("https://acme.wd1.myworkdayjobs.com/x"),
-    ] == [0.0, 0.25, 0.0]
+    async def main() -> None:
+        await pacer.wait("https://a.test/x")
+        await pacer.wait("https://a.test/x", timeout=0.2)
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(main())
 
 
 def test_host_pacer_needs_a_positive_rate() -> None:

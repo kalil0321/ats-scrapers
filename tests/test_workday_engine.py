@@ -283,10 +283,10 @@ def test_a_pacer_is_asked_before_every_request() -> None:
         def __init__(self) -> None:
             self.urls: list[str] = []
 
-        async def wait(self, url: str) -> None:
+        async def wait(self, url: str, *, timeout: float | None = None) -> None:
             self.urls.append(url)
 
-        def wait_sync(self, url: str) -> None:
+        def wait_sync(self, url: str, *, timeout: float | None = None) -> None:
             self.urls.append(url)
 
     pacer = Pacer()
@@ -297,3 +297,23 @@ def test_a_pacer_is_asked_before_every_request() -> None:
 
     assert pacer.urls.count(API) == 2
     assert len([url for url in pacer.urls if url.startswith(f"{DETAIL}/job/")]) == 26
+
+
+def test_pacing_past_the_deadline_ends_the_site() -> None:
+    class SlowPacer:
+        async def wait(self, url: str, *, timeout: float | None = None) -> None:
+            assert timeout is not None and timeout <= 30
+            raise TimeoutError
+
+        def wait_sync(self, url: str, *, timeout: float | None = None) -> None:
+            raise TimeoutError
+
+    scraper = WorkdayScraper(
+        URL,
+        transport=httpx.MockTransport(_board_over_httpx),
+        pacer=SlowPacer(),
+        max_fetch_seconds=30,
+    )
+
+    with pytest.raises(ScraperError, match="max_fetch_seconds"):
+        scraper.fetch()

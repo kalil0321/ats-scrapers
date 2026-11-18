@@ -491,23 +491,34 @@ class HostPacer:
         self._lock = threading.Lock()
         self._next_start: dict[str, float] = {}
 
-    def reserve(self, url: str) -> float:
-        """Take the next start for ``url``'s group; the seconds until it."""
+    def _start_now(self, url: str) -> float:
+        """Take a start for ``url``'s group if one is free: 0, else the seconds to wait."""
         group = self._key(urlparse(url).hostname or "")
         with self._lock:
             now = time.monotonic()
-            start = max(now, self._next_start.get(group, now))
-            self._next_start[group] = start + self._interval
-        return start - now
+            next_start = self._next_start.get(group, now)
+            if now >= next_start:
+                self._next_start[group] = now + self._interval
+                return 0.0
+            return next_start - now
 
-    async def wait(self, url: str) -> None:
-        delay = self.reserve(url)
-        if delay > 0:
+    def _sleep_for(self, url: str, deadline: float | None, timeout: float | None) -> float:
+        delay = self._start_now(url)
+        if delay > 0 and deadline is not None and time.monotonic() + delay > deadline:
+            raise TimeoutError(f"no start for {url} within {timeout:g}s")
+        return delay
+
+    async def wait(self, url: str, *, timeout: float | None = None) -> None:
+        """Wait for a start; ``TimeoutError`` if none comes within ``timeout``."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        # A start is taken only once awake, so waiters held up by a busy loop
+        # still start one interval apart.
+        while (delay := self._sleep_for(url, deadline, timeout)) > 0:
             await asyncio.sleep(delay)
 
-    def wait_sync(self, url: str) -> None:
-        delay = self.reserve(url)
-        if delay > 0:
+    def wait_sync(self, url: str, *, timeout: float | None = None) -> None:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while (delay := self._sleep_for(url, deadline, timeout)) > 0:
             time.sleep(delay)
 
 

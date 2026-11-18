@@ -256,10 +256,18 @@ class WorkdayScraper(BaseScraper):
 
     def _check_deadline(self) -> None:
         if self._deadline is not None and time.monotonic() >= self._deadline:
-            raise ScraperError(
-                f"Workday tenant exceeded max_fetch_seconds="
-                f"{self.max_fetch_seconds:g}: {self.company_slug}"
-            )
+            raise self._deadline_error()
+
+    def _deadline_error(self) -> ScraperError:
+        return ScraperError(
+            f"Workday tenant exceeded max_fetch_seconds="
+            f"{self.max_fetch_seconds:g}: {self.company_slug}"
+        )
+
+    def _remaining(self) -> float | None:
+        if self._deadline is None:
+            return None
+        return max(0.0, self._deadline - time.monotonic())
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -448,7 +456,13 @@ class WorkdayScraper(BaseScraper):
                 if refused:
                     return
                 if self.pacer is not None:
-                    await self.pacer.wait(url)
+                    try:
+                        await self.pacer.wait(url, timeout=self._remaining())
+                    except TimeoutError:
+                        return
+                    # Another description may have been refused meanwhile.
+                    if refused:
+                        return
                 try:
                     response = await client.get(url, headers=DETAIL_HEADERS)
                 except httpx.HTTPError:
@@ -624,7 +638,10 @@ class WorkdayScraper(BaseScraper):
             self._check_deadline()
             async with sem:
                 if self.pacer is not None:
-                    await self.pacer.wait(api)
+                    try:
+                        await self.pacer.wait(api, timeout=self._remaining())
+                    except TimeoutError:
+                        raise self._deadline_error() from None
                 try:
                     response = await client.post(api, json=body, headers=LISTING_HEADERS)
                 except httpx.HTTPError as exc:
