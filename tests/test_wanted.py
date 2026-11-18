@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import httpx
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
@@ -18,7 +19,7 @@ from ats_scrapers.scrapers import ScraperRegistry, WantedScraper
 from ats_scrapers.scrapers import wanted as wanted_module
 
 _API_RE = re.compile(r"^https://www\.wanted\.co\.kr/api/v4/jobs(?:\?.*)?$")
-_DETAIL_RE = re.compile(r"^https://www\.wanted\.co\.kr/api/v4/jobs/\d+$")
+_DETAIL_RE = re.compile(r"^https://www\.wanted\.co\.kr/api/chaos/jobs/v5/\d+/details$")
 
 
 @pytest.fixture(autouse=True)
@@ -28,20 +29,19 @@ def _no_detail_pacing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _stub_detail_endpoint(httpx_mock) -> None:
-    httpx_mock.add_response(
-        url=re.compile(r"^https://www\.wanted\.co\.kr/api/v4/jobs/\d+$"),
-        json={
-            "job": {
-                "detail": {
-                    "intro": "Build hiring products.",
-                    "main_tasks": "Own the platform.",
-                    "requirements": "Python experience.",
-                }
-            }
-        },
-        is_reusable=True,
-        is_optional=True,
-    )
+    def detail(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"job": {
+            "id": int(request.url.path.split("/")[-2]),
+            "detail": {
+                "intro": "Build hiring products.",
+                "main_tasks": "Own the platform.",
+                "requirements": "Python experience.",
+                "hire_rounds": "Two interviews.",
+            },
+            "employment_note": "• 정규직전환형\n• 인턴 6개월",
+        }}})
+
+    httpx_mock.add_callback(detail, url=_DETAIL_RE, is_reusable=True, is_optional=True)
 
 
 def _job(
@@ -135,7 +135,10 @@ def test_parses_full_v4_job_payload(httpx_mock) -> None:
     # listings ship Korean strings — keep them verbatim).
     assert j.location == "중구, 서울, 한국"
     assert j.experience == 4  # annual_from
-    assert j.description == "Build hiring products.\n\nOwn the platform.\n\nPython experience."
+    assert j.description == (
+        "Build hiring products.\n\nOwn the platform.\n\nPython experience."
+        "\n\nTwo interviews.\n\n• 정규직전환형\n• 인턴 6개월"
+    )
     assert j.raw is not None
     assert j.raw.get("annual_to") == 6
     assert j.raw.get("industry_name") == "Tech"

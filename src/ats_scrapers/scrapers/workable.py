@@ -3,24 +3,8 @@
 Public widget API:
     https://apply.workable.com/api/v1/widget/accounts/{slug}
 
-Returns a single JSON payload with ``jobs[]``. No auth. The widget
-response carries title/department/location/employment_type/dates but
-not the description body.
-
-For descriptions we use Workable's per-job Markdown endpoint:
-
-    GET https://apply.workable.com/{slug}/jobs/view/{shortcode}.md
-
-That ships a clean Markdown render of the full posting (description +
-requirements + benefits) with a header line carrying location /
-employment-type / posted-date metadata.
-
-Workable rate-limits hard from a single IP — bulk pipeline runs at
-concurrency >2 see 429s on most tenants. The scraper retries 429/5xx
-with exponential backoff (honouring ``Retry-After`` when present); the
-caller should still keep concurrency low (2-4) for full re-scrapes.
-The per-job Markdown fetch is best-effort so the listing row survives
-when a detail request is rate-limited or unavailable.
+Request expanded widget rows for descriptions. When the widget omits the
+body, read the posting's JSON sections, then its published Markdown.
 """
 
 from __future__ import annotations
@@ -32,6 +16,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._posting_detail import body_text
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -72,7 +57,8 @@ _EMPLOYMENT_TYPE_PATTERNS = {
     "permanent": "FULL_TIME",
 }
 
-_HEADER_RE = re.compile(r"^#+\s+", re.MULTILINE)
+_MARKDOWN_DESCRIPTION = re.compile(r"^## Description[ \t]*$", re.MULTILINE)
+_MARKDOWN_APPLY = re.compile(r"^## Apply[ \t]*\n\s*\[.*?\]\(https://apply\.workable\.com/", re.MULTILINE)
 
 
 @ScraperRegistry.register(ATSType.WORKABLE)
@@ -86,6 +72,7 @@ class WorkableScraper(BaseScraper):
         async with self.make_fetcher() as fetch:
             payload = await fetch.get_json(
                 url, headers={"Accept": "application/json"},
+                params={"details": "true"} if self.include_descriptions else None,
             )
             company_name = payload.get("name")
             if not isinstance(company_name, str) or not company_name.strip():
@@ -98,6 +85,8 @@ class WorkableScraper(BaseScraper):
                 if existing is None:
                     jobs_by_id[key] = job
                     continue
+                if not existing.description:
+                    existing.description = job.description
                 existing.location = _combine_locations(
                     existing.location,
                     job.location,
@@ -114,14 +103,28 @@ class WorkableScraper(BaseScraper):
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
-        if not job.ats_id:
+        shortcode = job.ats_id
+        if not shortcode:
             return None
 
         async def run() -> str | None:
             async with self.make_fetcher() as fetch:
-                return await self._fetch_markdown(fetch, job.ats_id)
+                return await self._fetch_detail(fetch, shortcode)
 
         return self._run_sync(run())
+
+    async def _fetch_detail(self, fetch: Fetcher, shortcode: str) -> str | None:
+        url = f"https://apply.workable.com/api/v2/accounts/{self.company_slug}/jobs/{shortcode}"
+        try:
+            response = await fetch.request("GET", url, handled=_DETAIL_HANDLED)
+            if response.status_code in {401, 403, 429}:
+                return None
+            detail = response.json() if response.status_code == 200 else None
+        except (ValueError, ScraperError):
+            detail = None
+        if isinstance(detail, dict) and (description := _posting_body(detail)):
+            return description
+        return await self._fetch_markdown(fetch, shortcode)
 
     async def _fetch_markdown(self, fetch: Fetcher, shortcode: str) -> str | None:
         """Pull the Markdown body from ``/{slug}/jobs/view/{shortcode}.md``."""
@@ -138,7 +141,9 @@ class WorkableScraper(BaseScraper):
         if response.status_code != 200:
             return None
         text = response.text.strip()
-        return text[:25_000] if text else None
+        if heading := _MARKDOWN_DESCRIPTION.search(text):
+            text = _MARKDOWN_APPLY.split(text[heading.end():], maxsplit=1)[0].strip()
+        return text[:25_000] or None
 
     async def _enrich_description(
         self,
@@ -149,7 +154,7 @@ class WorkableScraper(BaseScraper):
         if job.description or not job.ats_id:
             return
         async with sem:
-            description = await self._fetch_markdown(fetch, job.ats_id)
+            description = await self._fetch_detail(fetch, job.ats_id)
         if description:
             job.description = description
 
@@ -192,6 +197,7 @@ class WorkableScraper(BaseScraper):
             company=company_name,
             ats_type=ATSType.WORKABLE,
             ats_id=item.get("shortcode") or item.get("code") or str(item.get("id", "")),
+            description=_posting_body(item) if self.include_descriptions else None,
             location=_extract_location(item),
             is_remote=is_remote,
             department=item.get("department") if isinstance(item.get("department"), str) else None,
@@ -202,6 +208,11 @@ class WorkableScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _posting_body(item: dict[str, Any]) -> str | None:
+    parts = [body_text(item.get(key)) for key in ("description", "requirements", "benefits")]
+    return "\n\n".join(dict.fromkeys(part for part in parts if part))[:25_000] or None
 
 
 def _extract_location(item: dict[str, Any]) -> str | None:

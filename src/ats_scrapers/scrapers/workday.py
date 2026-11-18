@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import asyncio
 import email.utils
-import html as html_mod
 import json
 import logging
 import math
@@ -53,6 +52,7 @@ import httpx
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.fetch import Engine, HostPacer, _cloak_available, borrowed_transport
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._posting_detail import body_text
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -133,7 +133,6 @@ DETAIL_KEEPALIVE_SECONDS = 60.0
 # overwrites the placeholder with the real city list from
 # ``jobPostingInfo.location`` + ``additionalLocations``.
 _LOCATION_ROLLUP_RE = re.compile(r"^\s*\d+\s+Locations?\s*$", re.IGNORECASE)
-_TAG_RE = re.compile(r"<[^>]+>")
 
 # Facets we'll try as subdivision dimensions, in priority order. After
 # `jobFamilyGroup` (which usually covers level 1 well), `timeType`
@@ -298,7 +297,8 @@ class WorkdayScraper(BaseScraper):
             return None
         info = payload.get("jobPostingInfo") if isinstance(payload, dict) else None
         description = _extract_description(info) if isinstance(info, dict) else None
-        return description[:25_000] if description else None
+        job.description = description[:25_000] if description else None
+        return job.description
 
     def _detail_client(self, url: str) -> httpx.Client | _CloakClient:
         """The client ``get_description`` reads with, opened on first use.
@@ -1093,12 +1093,8 @@ def _extract_description(job_posting_info: dict[str, Any]) -> str | None:
     """
     for key in ("jobDescription", "externalJobDescription", "description"):
         value = job_posting_info.get(key)
-        if isinstance(value, str) and value.strip():
-            text = html_mod.unescape(value)
-            text = _TAG_RE.sub(" ", text)
-            text = html_mod.unescape(text)
-            text = re.sub(r"\s+", " ", text).strip()
-            return text or None
+        if text := body_text(value):
+            return text
     return None
 
 

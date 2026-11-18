@@ -113,7 +113,12 @@ def test_descriptions_of_a_site_share_one_httpcloak_session(cloak) -> None:
 
     assert scraper.get_description(job) == "About R01"
     assert scraper.get_description(job) == "About R01"
-    assert [call[1] for call in fake.calls] == [f"{DETAIL}/job/X/Job_R01"] * 2
+    other = Job(
+        url=f"{URL}/job/X/Job_R02", title="Another job", company="Acme",
+        ats_type=ATSType.WORKDAY, ats_id="R02",
+    )
+    assert scraper.get_description(other) == "About R02"
+    assert [call[1] for call in fake.calls] == [f"{DETAIL}/job/X/Job_R01", f"{DETAIL}/job/X/Job_R02"]
     (session,) = fake.sessions
 
     scraper.close()

@@ -1,6 +1,6 @@
 # Provider Description Matrix
 
-This table covers the 63 providers listed below.
+This table covers the 73 providers listed below.
 `API/feed` means the data comes from a machine-readable endpoint such as JSON,
 XML, RSS, GraphQL, or a markdown endpoint. `HTML` means the scraper parses a
 page/rendered page rather than a structured job payload.
@@ -24,7 +24,7 @@ page/rendered page rather than a structured job payload.
 | `eightfold` | Yes | Yes | API | API |
 | `emploitic` | Yes | No | HTML with embedded JSON | HTML with embedded JSON |
 | `feishu_hire` | Yes | No | API | API |
-| `eures` | Yes | Yes | API/feed | API/feed + detail API fallback |
+| `eures` | When supplied | When missing from the listing | API/feed | Listing or detail API |
 | `gem` | Yes | Yes | API/feed | API/feed |
 | `getonbrd` | Yes | No | API/feed | API/feed |
 | `google` | Yes | Yes | HTML | HTML |
@@ -37,8 +37,9 @@ page/rendered page rather than a structured job payload.
 | `jibe` | Yes | No | API | API |
 | `jazzhr` | Yes | Yes | HTML | HTML |
 | `jd` | Yes | No | API/feed | API/feed |
+| `jobbankca` | When supplied | Yes, on demand | HTML | Public posting HTML |
 | `jobberman` | Yes | No | HTML with embedded JSON | HTML with embedded JSON |
-| `jobsch` | Yes | Yes | API | HTML |
+| `jobsch` | Yes | When the listing lacks a body | API | Vacancy API, then the original posting HTML or its JSON-LD |
 | `join_com` | Yes | Yes | HTML | HTML |
 | `keka` | Yes | No | HTML bootstrap + API | API |
 | `lever` | Yes | No | API | API |
@@ -46,7 +47,7 @@ page/rendered page rather than a structured job payload.
 | `manfred` | Yes | Yes | API/feed | API/feed |
 | `mycareersfuture` | Yes | No | API | API |
 | `mercor` | Yes | No | API/feed | API/feed |
-| `meta` | Yes | Yes | HTML / browser | HTML |
+| `meta` | Yes | When the listing omits sections | GraphQL via browser | Listing sections or posting JSON-LD |
 | `oracle` | Yes | Yes | API/feed | API/feed |
 | `paycom` | Yes | Yes | HTML bootstrap + API | API |
 | `peopleadmin` | Yes | Yes | HTML | HTML |
@@ -75,7 +76,7 @@ page/rendered page rather than a structured job payload.
 | `wantedly` | Yes | No | API/feed | API/feed |
 | `wellfound` | Yes | No | HTML with embedded JSON | HTML with embedded JSON |
 | `weworkremotely` | Yes | No | API/feed (RSS/XML) | API/feed (RSS/XML) |
-| `workable` | Yes | Yes | API/feed | API/feed (Markdown) |
+| `workable` | Yes | When the widget omits the body | XML feed or widget API | XML feed or expanded widget, with detail JSON then Markdown as widget fallbacks |
 | `workday` | Yes | Yes | API/feed | API/feed |
 | `zoho_recruit` | Yes | Yes, when missing from the listing | HTML with embedded JSON | HTML with embedded JSON (listing or job page) |
-| `ycombinator` | Yes | No | API/feed | API/feed |
+| `ycombinator` | Yes | When the listing lacks role text | Companies API and embedded listings | Embedded listing or structured posting HTML |

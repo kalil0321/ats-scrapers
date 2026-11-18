@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 API_ROOT = "https://www.wanted.co.kr"
 JOBS_PATH = "/api/v4/jobs"
-DETAIL_PATH_TEMPLATE = "/api/v4/jobs/{job_id}"
+DETAIL_PATH_TEMPLATE = "/api/chaos/jobs/v5/{job_id}/details"
 PER_PAGE = 100  # API hard-caps limit at 100 (>100 → 422).
 MAX_CONCURRENCY = 4
 # The WAF 403s an address's detail requests for about five minutes once it
@@ -179,15 +179,23 @@ class WantedScraper(BaseScraper):
             try:
                 response = await fetch.request("GET", url, handled={403})
                 payload = response.json() if response.status_code != 403 else {}
-            except ScraperError:
+            except (ScraperError, ValueError):
                 return
         if response.status_code == 403:
             blocked.set()
             return
         if not isinstance(payload, dict):
             return
-        detail = ((payload.get("job") or {}).get("detail") or {})
-        description = _compose_description(detail)
+        data = payload.get("data", payload)
+        posting = data.get("job") if isinstance(data, dict) else None
+        if not isinstance(posting, dict):
+            return
+        if posting.get("id") is not None and str(posting["id"]) != job.ats_id:
+            return
+        detail = posting.get("detail")
+        if not isinstance(detail, dict):
+            return
+        description = _compose_description(detail, posting.get("employment_note"))
         if description and not job.description:
             job.description = description[:25_000]
 
@@ -299,7 +307,7 @@ def _to_int(value: object) -> int | None:
     return None
 
 
-def _compose_description(detail: dict[str, Any]) -> str | None:
+def _compose_description(detail: dict[str, Any], employment_note: object = None) -> str | None:
     parts: list[str] = []
     for key in (
         "intro",
@@ -307,10 +315,12 @@ def _compose_description(detail: dict[str, Any]) -> str | None:
         "requirements",
         "preferred_points",
         "benefits",
-        "hire_round",
+        "hire_rounds",
     ):
         value = detail.get(key)
         if isinstance(value, str) and value.strip():
             parts.append(value.strip())
+    if isinstance(employment_note, str) and employment_note.strip():
+        parts.append(employment_note.strip())
     text = "\n\n".join(parts).strip()
     return text or None

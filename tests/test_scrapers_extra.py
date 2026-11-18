@@ -79,7 +79,7 @@ def test_smartrecruiters_404(httpx_mock) -> None:
 
 def test_workable_happy_path(httpx_mock) -> None:
     httpx_mock.add_response(
-        url="https://apply.workable.com/api/v1/widget/accounts/acme",
+        url="https://apply.workable.com/api/v1/widget/accounts/acme?details=true",
         json={
             "name": "Acme Corporation",
             "jobs": [
@@ -88,6 +88,7 @@ def test_workable_happy_path(httpx_mock) -> None:
                     "title": "Backend Dev",
                     "url": "https://apply.workable.com/acme/j/ABC123",
                     "location": {"city": "Paris", "country": "France"},
+                    "description": "<p>Build APIs.</p><p>Test releases.</p>",
                     "published_on": "2026-03-15T10:00:00Z",
                 }
             ]
@@ -98,6 +99,8 @@ def test_workable_happy_path(httpx_mock) -> None:
     assert jobs[0].company == "Acme Corporation"
     assert jobs[0].location == "Paris, France"
     assert jobs[0].ats_id == "ABC123"
+    assert jobs[0].description == "Build APIs.\nTest releases."
+    assert len(httpx_mock.get_requests()) == 1
 
 
 def test_workable_falls_back_to_slug_without_company_name(httpx_mock) -> None:
@@ -114,7 +117,7 @@ def test_workable_falls_back_to_slug_without_company_name(httpx_mock) -> None:
         },
     )
 
-    jobs = WorkableScraper("acme").fetch()
+    jobs = WorkableScraper("acme", include_descriptions=False).fetch()
 
     assert jobs[0].company == "acme"
 
@@ -155,7 +158,7 @@ def test_workable_combines_locations_for_duplicate_shortcodes(httpx_mock) -> Non
 
 def test_workable_404(httpx_mock) -> None:
     httpx_mock.add_response(
-        url="https://apply.workable.com/api/v1/widget/accounts/missing",
+        url="https://apply.workable.com/api/v1/widget/accounts/missing?details=true",
         status_code=404,
     )
     with pytest.raises(CompanyNotFoundError):
@@ -939,7 +942,7 @@ def test_workday_enriches_description_from_detail_endpoint(httpx_mock) -> None:
     jobs = WorkdayScraper("https://acme.wd1.myworkdayjobs.com/External").fetch()
 
     assert len(jobs) == 1
-    assert jobs[0].description == "Build search ."
+    assert jobs[0].description == "Build search."
     assert jobs[0].raw == {
         "bullet_fields": ["R-1"],
         "externalPath": "/job/USA/Engineer_R-1",
