@@ -86,6 +86,11 @@ def test_groups_a_posting_listed_once_per_location(feed_file: Path) -> None:
     assert str(job.url) == "https://apply.workable.com/j/5A286F5DE5"
     assert job.apply_url is None
     assert job.location == "Philadelphia, PA, US | Roslyn, PA, US | CA"
+    assert [(p.city, p.region, p.country_iso, p.is_primary) for p in job.locations] == [
+        ("Philadelphia", "PA", "US", None), ("Roslyn", "PA", "US", None),
+        (None, None, "CA", None),
+    ]
+    assert job.workplace_type is None
     # Two countries: left to the location text.
     assert job.country_iso is None
     # One remote entry makes the posting remote.

@@ -36,6 +36,7 @@ from urllib.parse import quote
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, CompensationComponent, Job, normalize_compensation_period
+from ats_scrapers.scrapers._job_places import distinct_places, job_location, workplace_type
 from ats_scrapers.scrapers._posting_fields import finite_number
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from ats_scrapers.fetch import Fetcher
+    from ats_scrapers.models import JobLocation
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +252,12 @@ class AshbyScraper(BaseScraper):
             ats_type=ATSType.ASHBY,
             ats_id=item["id"],
             location=item.get("location"),
+            workplace_type=workplace_type(item.get("workplaceType")),
+            locations=distinct_places([
+                _ashby_place(item, primary=True),
+                *(_ashby_place(loc, primary=False) for loc in secondary_locations
+                  if isinstance(loc, dict)),
+            ]),
             is_remote=is_remote,
             description=description,
             employment_type=employment_type,
@@ -266,6 +274,16 @@ class AshbyScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _ashby_place(item: dict[str, Any], *, primary: bool) -> JobLocation | None:
+    address = item.get("address")
+    postal = address.get("postalAddress", address) if isinstance(address, dict) else {}
+    if not isinstance(postal, dict):
+        postal = {}
+    return job_location(item.get("location"), city=postal.get("addressLocality"),
+                        region=postal.get("addressRegion"), country=postal.get("addressCountry"),
+                        primary=primary)
 
 
 def _app_data(page: str, url: str) -> dict[str, Any]:

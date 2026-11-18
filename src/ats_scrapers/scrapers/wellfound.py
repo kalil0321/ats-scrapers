@@ -40,6 +40,7 @@ from pydantic import HttpUrl
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
 from ats_scrapers.scrapers._htmltree import parse_html
+from ats_scrapers.scrapers._job_places import distinct_places, job_location, workplace_type
 from ats_scrapers.scrapers._throttle import Throttle
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -274,6 +275,7 @@ class WellfoundScraper(BaseScraper):
         currency, salary_min, salary_max = _parse_salary(compensation)
         locations = _strings(item.get("locationNames"))
         remote_locations = _strings(item.get("acceptedRemoteLocationNames"))
+        config = item.get("remoteConfig")
         live_start = item.get("liveStartAt")
         description = item.get("description")
         experience = item.get("yearsExperienceMin")
@@ -294,6 +296,8 @@ class WellfoundScraper(BaseScraper):
             ats_type=ATSType.WELLFOUND,
             ats_id=ats_id,
             location=", ".join(locations or remote_locations) or None,
+            locations=distinct_places(job_location(name) for name in locations),
+            workplace_type=workplace_type(config.get("kind")) if isinstance(config, dict) else None,
             is_remote=item["remote"] if isinstance(item.get("remote"), bool) else None,
             salary_summary=compensation,
             salary_currency=currency,

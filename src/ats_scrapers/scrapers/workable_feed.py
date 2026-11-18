@@ -50,6 +50,7 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.fetch import proxy_url_from_env
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._job_classification import education_level, occupation
+from ats_scrapers.scrapers._job_places import distinct_places, job_location
 from ats_scrapers.scrapers.base import BaseScraper
 from ats_scrapers.scrapers.workable import _EMPLOYMENT_TYPE_PATTERNS
 
@@ -64,7 +65,7 @@ _CHUNK = 1 << 20
 
 @dataclass
 class _Locations:
-    places: list[str] = field(default_factory=list)
+    places: dict[tuple[str, str, str], str] = field(default_factory=dict)
     countries: set[str] = field(default_factory=set)
     remote: bool = False
     posted_at: datetime | None = None
@@ -211,11 +212,9 @@ def _collect_locations(path: Path) -> dict[str, _Locations]:
         if not shortcode:
             continue
         found = locations.setdefault(shortcode, _Locations())
-        place = ", ".join(
-            p for p in (entry.get("city"), entry.get("state"), entry.get("country")) if p
-        )
-        if place and place not in found.places:
-            found.places.append(place)
+        place = (entry.get("city", ""), entry.get("state", ""), entry.get("country", ""))
+        if any(place):
+            found.places[place] = ", ".join(part for part in place if part)
         if entry.get("country"):
             found.countries.add(entry["country"].upper())
         found.remote = found.remote or entry.get("remote", "").lower() == "true"
@@ -267,7 +266,11 @@ def _job(entry: dict[str, str], found: _Locations, *, include_description: bool)
         company=entry.get("company") or "Unknown",
         ats_type=ATSType.WORKABLE,
         ats_id=entry["referencenumber"],
-        location=" | ".join(found.places) or None,
+        location=" | ".join(dict.fromkeys(found.places.values())) or None,
+        locations=distinct_places(
+            job_location(label, city=city, region=state, country_code=country)
+            for (city, state, country), label in found.places.items()
+        ),
         country_iso=next(iter(found.countries)) if len(found.countries) == 1 else None,
         is_remote=found.remote,
         department=entry.get("category") or None,

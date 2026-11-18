@@ -31,11 +31,14 @@ from urllib.parse import quote, unquote, urlparse
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._engagement import engagement_from_label
+from ats_scrapers.scrapers._job_places import distinct_places, job_location, workplace_type
 from ats_scrapers.scrapers._public_page import PAGE_CHECK_ATTEMPTS, page_is_gone
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
+
+    from ats_scrapers.models import JobLocation
 
 API_TEMPLATE = "https://{host}/v0/postings/{slug}?mode=json"
 DEFAULT_REGION = "us"
@@ -209,7 +212,8 @@ class LeverScraper(BaseScraper):
                 raw[k] = v
 
         is_remote = None
-        wp = (item.get("workplaceType") or "").lower()
+        source_mode = item.get("workplaceType")
+        wp = source_mode.lower() if isinstance(source_mode, str) else None
         if wp == "remote":
             is_remote = True
         elif wp in {"on-site", "onsite", "in-office"}:
@@ -224,6 +228,8 @@ class LeverScraper(BaseScraper):
             ats_type=ATSType.LEVER,
             ats_id=item["id"],
             location=categories.get("location"),
+            locations=_lever_places(categories, item.get("country")),
+            workplace_type=workplace_type(source_mode),
             country_iso=_country_iso(item.get("country")),
             department=categories.get("department"),
             team=categories.get("team"),
@@ -242,6 +248,19 @@ class LeverScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _lever_places(categories: dict[str, Any], country: object) -> list[JobLocation] | None:
+    primary = categories.get("location")
+    labels = categories.get("allLocations")
+    labels = list(labels) if isinstance(labels, list) else []
+    if primary and primary not in labels:
+        labels.insert(0, primary)
+    return distinct_places(
+        job_location(label, primary=(label == primary) if primary else None,
+                     country_code=_country_iso(country) if label == primary else None)
+        for label in labels if isinstance(label, str) and label.strip()
+    )
 
 
 def _parse_slug(value: str, region: str | None) -> tuple[str, str]:

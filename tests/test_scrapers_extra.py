@@ -1416,3 +1416,73 @@ def test_oracle_contract_is_independent_of_worker_type():
         base, "CX_1",
     )
     assert job.engagement_type == "fixed_term" and job.raw["ContractType"] == "Fixed term"
+
+
+@pytest.mark.parametrize(("flags", "expected"), [
+    ({"remote": True, "hybrid": False}, "remote"), ({"hybrid": True}, "hybrid"),
+    ({"remote": False, "hybrid": False}, "onsite"), ({"remote": False}, None),
+    ({"remote": True, "hybrid": True}, None),
+])
+def test_smartrecruiters_workplace_uses_the_explicit_location_flags(flags, expected) -> None:
+    job = SmartRecruitersScraper("acme")._parse_job({
+        "id": "test", "name": "Analyst",
+        "location": {"fullLocation": "Paris, Île-de-France, France", "city": "Paris",
+                     "region": "Île-de-France", "country": "fr", **flags},
+    })
+    assert job.workplace_type == expected
+    [place] = job.locations
+    assert (place.label, place.city, place.region, place.country_iso, place.is_primary) == (
+        "Paris, Île-de-France, France", "Paris", "Île-de-France", "FR", None,
+    )
+
+
+def test_workable_keeps_all_visible_places_across_duplicate_jobs(httpx_mock) -> None:
+    item = {"shortcode": "sample", "title": "Analyst", "url": "https://example.org/a",
+            "telecommuting": False}
+    a = {"city": "Washington, D.C.", "country": "United States", "countryCode": "us"}
+    b = {"city": "Ottawa", "region": "Ontario", "country": "Canada", "countryCode": "CA"}
+    httpx_mock.add_response(url="https://apply.workable.com/api/v1/widget/accounts/acme",
+                            json={"jobs": [{**item, "locations": [a]},
+                                           {**item, "locations": [b, a, {"city": "Secret", "hidden": True}]}]})
+    [job] = WorkableScraper("acme", include_descriptions=False).fetch()
+    assert job.workplace_type is None and job.is_remote is False
+    assert [(p.city, p.region, p.country_iso, p.is_primary) for p in job.locations] == [
+        ("Washington, D.C.", None, "US", None), ("Ottawa", "Ontario", "CA", None),
+    ]
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_workable_existing_detail_request_can_supply_workplace_and_locations(httpx_mock) -> None:
+    scraper = WorkableScraper("acme", include_descriptions=False)
+    job = scraper._parse_job({"title": "Analyst", "url": "https://example.org/a",
+                               "shortcode": "sample"}, "Acme")
+    httpx_mock.add_response(url="https://apply.workable.com/api/v2/accounts/acme/jobs/sample",
+                            json={"description": "Work here.", "workplace": "on_site",
+                                  "location": {"city": "Lille", "countryCode": "fr"}})
+    assert scraper.get_description(job) == "Work here."
+    assert job.workplace_type == "onsite"
+    assert [(p.city, p.country_iso) for p in job.locations] == [("Lille", "FR")]
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_smartrecruiters_existing_detail_call_updates_places_on_the_original_job(httpx_mock) -> None:
+    scraper = SmartRecruitersScraper("acme")
+    job = scraper._parse_job({"id": "sample", "name": "Analyst",
+                              "location": {"fullLocation": "Paris, France", "city": "Paris"}})
+    httpx_mock.add_response(
+        url="https://api.smartrecruiters.com/v1/companies/acme/postings/sample",
+        json={"location": {"country": "fr", "fullLocation": "Paris, France", "hybrid": True},
+              "jobAd": {"sections": {"jobDescription": {"text": "Review reports."}}}},
+    )
+    assert scraper.get_description(job) == "Review reports."
+    assert job.workplace_type == "hybrid"
+    assert [(p.label, p.city, p.country_iso) for p in job.locations] == [("Paris, France", "Paris", "FR")]
+
+
+def test_workable_conflicting_modes_on_duplicate_rows_stay_unknown(httpx_mock) -> None:
+    item = {"shortcode": "sample", "title": "Analyst", "url": "https://example.org/a"}
+    httpx_mock.add_response(url="https://apply.workable.com/api/v1/widget/accounts/acme",
+                            json={"jobs": [{**item, "workplace": mode} for mode in
+                                           ("remote", "hybrid", "hybrid")]})
+    [job] = WorkableScraper("acme", include_descriptions=False).fetch()
+    assert job.workplace_type is None

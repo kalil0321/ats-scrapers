@@ -503,3 +503,32 @@ def test_base_salary_does_not_inherit_other_components_ote_label():
     }]}}
     base, ote = AshbyScraper("acme")._parse_job(item).compensation_components
     assert (base.kind, base.minimum, ote.kind, ote.minimum) == ("base_salary", 80000, "other", 120000)
+
+
+def test_location_addresses_belong_to_each_site() -> None:
+    item = {
+        **_job(location="Central office, Riverside"),
+        "workplaceType": "Hybrid", "isRemote": False,
+        "address": {"postalAddress": {"addressLocality": "Riverside", "addressRegion": "CA",
+                                      "addressCountry": "USA"}},
+        "secondaryLocations": [
+            {"location": "Berlin", "address": {"addressLocality": "Berlin", "addressCountry": "de"}},
+            {"location": "Europe", "address": {"postalAddress": {"addressCountry": "European Union"}}},
+        ],
+    }
+    job = AshbyScraper("acme")._parse_job(item)
+    assert job.workplace_type == "hybrid" and job.is_remote is False
+    assert [(p.label, p.city, p.region, p.country_iso, p.is_primary) for p in job.locations] == [
+        ("Central office, Riverside", "Riverside", "CA", "US", True),
+        ("Berlin", "Berlin", None, "DE", False),
+        ("Europe", None, None, None, False),
+    ]
+    bare = AshbyScraper("acme")._parse_job({**_job(), "isRemote": True})
+    assert bare.workplace_type is None and bare.locations is None
+
+
+@pytest.mark.parametrize("country", ["EU", "ZZ", "ß"])
+def test_non_country_codes_do_not_turn_into_location_countries(country) -> None:
+    item = {**_job(location="European offices"), "address": {"postalAddress": {"addressCountry": country}}}
+    [place] = AshbyScraper("acme")._parse_job(item).locations
+    assert place.label == "European offices" and place.country_iso is None

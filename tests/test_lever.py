@@ -301,3 +301,24 @@ def test_contractual_commitment_is_preserved():
     job = LeverScraper("acme")._parse_job({**_job(), "categories": {"commitment": "Fixed-term"}})
     assert job.engagement_type == "fixed_term"
     assert job.commitment == "Fixed-term"
+
+
+def test_all_locations_keep_labels_order_and_primary_country() -> None:
+    item = {**_job(), "workplaceType": "unspecified", "country": "ca",
+            "categories": {"location": "Montréal, QC", "allLocations": [
+                "Paris, France", "Montréal, QC", "Paris, France",
+            ]}}
+    job = LeverScraper("acme")._parse_job(item)
+    assert job.workplace_type is None
+    assert [(p.label, p.city, p.country_iso, p.is_primary) for p in job.locations] == [
+        ("Paris, France", None, None, False),
+        ("Montréal, QC", None, "CA", True),
+    ]
+
+
+@pytest.mark.parametrize(("source", "expected"), [("on-site", "onsite"), ("hybrid", "hybrid"),
+                                                   ("remote", "remote"), (None, None)])
+def test_explicit_workplace_type(source, expected) -> None:
+    item = {**_job(), "workplaceType": source, "categories": {"location": "Office"}}
+    job = LeverScraper("acme")._parse_job(item)
+    assert job.workplace_type == expected
