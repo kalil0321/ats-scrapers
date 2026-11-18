@@ -679,7 +679,7 @@ def test_aws_waf_challenge_is_reported_without_retrying(
         headers={"x-amzn-waf-action": "challenge"},
         text="<html><script>window.gokuProps = {};</script></html>",
     )
-    with pytest.raises(ScraperError, match="AWS WAF"):
+    with pytest.raises(ScraperError, match=r"AWS WAF.*cloud_browser"):
         AvatureScraper("acme").fetch()
 
 
@@ -748,6 +748,34 @@ def test_refused_board_is_read_through_the_cloud_browser(refused_to_httpcloak) -
     assert [(j.ats_id, j.description) for j in jobs] == [
         ("1", "Build the scraper."), ("2", None), ("3", None),
     ]
+
+
+def test_aws_waf_challenge_is_read_through_the_cloud_browser(
+    monkeypatch: pytest.MonkeyPatch, httpx_mock,
+) -> None:
+    import ats_scrapers.scrapers.avature as av
+
+    async def never(self, base: str, company: str) -> list:
+        raise AssertionError("httpcloak cannot pass a JavaScript challenge")
+
+    monkeypatch.setattr(av.AvatureScraper, "_fetch_via_httpcloak", never)
+    httpx_mock.add_response(
+        url=_url("acme", 0),
+        status_code=202,
+        headers={"x-amzn-waf-action": "challenge"},
+        text="<html><script>window.gokuProps = {};</script></html>",
+    )
+    jobs_url = "https://acme.avature.net/en_US/careers"
+    browser = FakeBrowser({
+        _url("acme", 0): RenderedPage(
+            html=f'<a href="{jobs_url}/JobDetail/Engineer/1">Engineer</a>', url=_url("acme", 0),
+        ),
+    })
+
+    jobs = AvatureScraper("acme", cloud_browser=browser).fetch()
+
+    assert [j.ats_id for j in jobs] == ["1"]
+    assert browser.requested[0] == _url("acme", 0)
 
 
 def test_refused_board_whose_cloud_browser_fails_raises(refused_to_httpcloak) -> None:
