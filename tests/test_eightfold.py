@@ -906,6 +906,71 @@ def test_404_does_not_trigger_retries(monkeypatch, httpx_mock) -> None:
         EightfoldScraper("dolby").fetch()
 
 
+# --- Edge block (405) on the listing ----------------------------------------
+
+
+def test_listing_405_waits_out_the_block_then_lists(monkeypatch, httpx_mock) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+    sleeps = _record_sleeps(monkeypatch)
+    httpx_mock.add_response(url=_mock_url(0), status_code=405)
+    httpx_mock.add_response(url=_mock_url(0), json=_page([_position(job_id="OK")]))
+
+    jobs = EightfoldScraper("dolby").fetch()
+
+    assert [j.ats_id for j in jobs] == ["OK"]
+    assert sleeps == [ef.BLOCK_COOLOFF_DELAYS[0]]
+
+
+def test_listing_405_mid_pagination_waits_and_keeps_going(
+    monkeypatch, httpx_mock
+) -> None:
+    _record_sleeps(monkeypatch)
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page([_position(job_id=f"A{i}") for i in range(10)], count=20),
+    )
+    httpx_mock.add_response(url=_mock_url(10), status_code=405)
+    httpx_mock.add_response(
+        url=_mock_url(10),
+        json=_page([_position(job_id=f"B{i}") for i in range(10)], count=20),
+    )
+
+    jobs = EightfoldScraper("dolby", include_descriptions=False).fetch()
+
+    assert len(jobs) == 20
+
+
+def test_listing_405_that_persists_raises_blocked(monkeypatch, httpx_mock) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+    sleeps = _record_sleeps(monkeypatch)
+    httpx_mock.add_response(url=_mock_url(0), status_code=405, is_reusable=True)
+
+    with pytest.raises(ScraperError, match=r"blocked \(405\) at start=0"):
+        EightfoldScraper("dolby").fetch()
+
+    assert sleeps == list(ef.BLOCK_COOLOFF_DELAYS)
+    assert len(httpx_mock.get_requests()) == len(ef.BLOCK_COOLOFF_DELAYS) + 1
+
+
+def test_smartapply_405_waits_out_the_block(monkeypatch, httpx_mock) -> None:
+    _record_sleeps(monkeypatch)
+    api = "https://frontier.eightfold.ai/api/pcsx/search"
+    httpx_mock.add_response(
+        url=_mock_url(0, base=api, domain="frontier.com"),
+        status_code=403,
+        json={"message": "PCSX is not enabled for this user."},
+    )
+    httpx_mock.add_response(url=_smartapply_url(0), status_code=405)
+    httpx_mock.add_response(
+        url=_smartapply_url(0),
+        json={"positions": [{"id": 1, "name": "Sales Advisor"}], "count": 1},
+    )
+
+    jobs = EightfoldScraper("frontier", domain="frontier.com").fetch()
+
+    assert [j.title for j in jobs] == ["Sales Advisor"]
+
+
 # --- Extra fields extraction (department, is_remote) -----------------------
 
 

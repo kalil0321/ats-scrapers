@@ -38,6 +38,7 @@ from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from typing import Any
 
 PAGE_SIZE = 10  # Eightfold's server-fixed page size.
@@ -52,6 +53,10 @@ RETRY_BASE_DELAY = 1.5  # seconds; exponential for 429, linear for 5xx
 # hours for descriptions it is refusing to serve anyway.
 DETAIL_MAX_RETRY_WAIT = 60.0
 SLOW_REQUEST_THRESHOLD = 5.0  # log a warning for any single request slower than this
+# Eightfold's edge answers 405 to every tenant, on every host, once one address
+# has sent too many requests, and serves it again a few minutes after the
+# requests stop. A listing page that meets it waits these delays in turn.
+BLOCK_COOLOFF_DELAYS: tuple[float, ...] = (30.0, 90.0, 180.0)
 # Eightfold's 404 page for a host whose company group no longer exists. A live
 # tenant asked with a wrong ``domain`` answers a plain "Page Not Found".
 _GROUP_NOT_FOUND = "Group ID not found"
@@ -337,6 +342,45 @@ class EightfoldScraper(BaseScraper):
     async def _fetch_page_httpx(
         self, client: httpx.AsyncClient, *, start: int
     ) -> dict[str, Any]:
+        return await self._wait_out_block(
+            self._fetch_page_httpx_once, client, start=start
+        )
+
+    async def _fetch_page_smartapply_httpx(
+        self, client: httpx.AsyncClient, *, start: int
+    ) -> dict[str, Any]:
+        return await self._wait_out_block(
+            self._fetch_page_smartapply_httpx_once, client, start=start
+        )
+
+    async def _wait_out_block(
+        self,
+        fetch_page: Callable[..., Awaitable[dict[str, Any]]],
+        client: httpx.AsyncClient,
+        *,
+        start: int,
+    ) -> dict[str, Any]:
+        for delay in BLOCK_COOLOFF_DELAYS:
+            try:
+                return await fetch_page(client, start=start)
+            except _EdgeBlocked:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Eightfold (%s) blocked (405) at start=%d; retrying in %.0fs",
+                    self.company_name, start, delay,
+                )
+                await asyncio.sleep(delay)
+        try:
+            return await fetch_page(client, start=start)
+        except _EdgeBlocked as exc:
+            raise ScraperError(
+                f"Eightfold ({self.company_name}) blocked (405) at start={start} "
+                f"after waiting {sum(BLOCK_COOLOFF_DELAYS):.0f}s"
+            ) from exc
+
+    async def _fetch_page_httpx_once(
+        self, client: httpx.AsyncClient, *, start: int
+    ) -> dict[str, Any]:
         """One page with retry on 429/5xx (ported from the legacy Microsoft
         scraper, where ~1% of requests hit transient 502s on Eightfold)."""
         last_exc: Exception | None = None
@@ -399,6 +443,8 @@ class EightfoldScraper(BaseScraper):
                     )
                 await asyncio.sleep(RETRY_BASE_DELAY * attempt)
                 continue
+            if response.status_code == 405:
+                raise _EdgeBlocked
             self._raise_if_group_gone(response)
             # Non-retryable status (404, etc.)
             raise ScraperError(
@@ -410,7 +456,7 @@ class EightfoldScraper(BaseScraper):
             f"Eightfold ({self.company_name}) exhausted retries at start={start}: {last_exc}"
         )
 
-    async def _fetch_page_smartapply_httpx(
+    async def _fetch_page_smartapply_httpx_once(
         self, client: httpx.AsyncClient, *, start: int
     ) -> dict[str, Any]:
         last_exc: Exception | None = None
@@ -461,6 +507,8 @@ class EightfoldScraper(BaseScraper):
                     )
                 await asyncio.sleep(_retry_after_seconds(response, attempt))
                 continue
+            if response.status_code == 405:
+                raise _EdgeBlocked
             raise ScraperError(
                 f"Eightfold ({self.company_name}) SmartApply returned "
                 f"{response.status_code} at start={start}"
@@ -647,6 +695,10 @@ class _WAFBlocked(Exception):  # noqa: N818
         )
         self.company_name = company_name
         self.start = start
+
+
+class _EdgeBlocked(Exception):  # noqa: N818
+    """Internal signal that a listing page met the edge's 405 block."""
 
 
 class _SmartApplyRequired(Exception):  # noqa: N818
