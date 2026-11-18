@@ -316,6 +316,18 @@ def test_all_locations_keep_labels_order_and_primary_country() -> None:
     ]
 
 
+@pytest.mark.parametrize(("country", "expected"), [("us", "US"), ("ZZ", None), (None, None)])
+def test_remote_location_uses_only_the_reported_country(country, expected) -> None:
+    item = {**_job(), "country": country, "categories": {"location": "Remote"}}
+    job = LeverScraper("acme")._parse_job(item)
+    if expected is None:
+        assert job.locations is None
+    else:
+        assert [(p.label, p.country_iso, p.is_primary) for p in job.locations] == [
+            (expected, expected, True),
+        ]
+
+
 @pytest.mark.parametrize(("source", "expected"), [("on-site", "onsite"), ("hybrid", "hybrid"),
                                                    ("remote", "remote"), (None, None)])
 def test_explicit_workplace_type(source, expected) -> None:

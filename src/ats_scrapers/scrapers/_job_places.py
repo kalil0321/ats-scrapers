@@ -87,8 +87,6 @@ def job_location(
             iso = COUNTRY_NAMES.get(nation.casefold())
     name = _text(label)
     if name and name.casefold() in _MODE_LABELS:
-        if not (city_name or area or nation):
-            return None
         name = None
     name = name or ", ".join(part for part in (city_name, area, nation or iso) if part)
     if not name:
