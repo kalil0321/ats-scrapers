@@ -19,6 +19,8 @@ These tests pin:
 from __future__ import annotations
 
 import socket
+import sys
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -203,6 +205,118 @@ def test_parses_job_detail_links_keyed_by_job_id_query(httpx_mock) -> None:
     assert job.ats_id == "132998"
     assert job.title == "Data Scientist"
     assert str(job.url) == "https://acme.avature.net/careers/JobDetail?jobId=132998"
+
+
+def test_parses_folder_detail_links_and_pages_by_folder_offset(httpx_mock) -> None:
+    """Epic, Rosewood and others link jobs as ``FolderDetail`` pages."""
+    def page(start: int, count: int, link: str = "") -> str:
+        anchors = "".join(
+            f'<article class="article article--result"><h3><a href='
+            f'"https://acme.avature.net/careers/FolderDetail/Job-{i}/{i}">Job {i}</a>'
+            f"</h3></article>"
+            for i in range(start, start + count)
+        )
+        return f"<html><body>{anchors}{link}</body></html>"
+
+    httpx_mock.add_response(
+        url=_url("acme", 0),
+        text=page(
+            0, 10,
+            '<a class="paginationNextLink" href="https://acme.avature.net/careers/'
+            'SearchJobs/?folderRecordsPerPage=10&amp;folderOffset=10">Next</a>',
+        ),
+    )
+    httpx_mock.add_response(
+        url="https://acme.avature.net/careers/SearchJobs/?folderRecordsPerPage=10&folderOffset=10",
+        text=page(10, 3),
+    )
+
+    jobs = AvatureScraper("acme").fetch()
+
+    assert [j.ats_id for j in jobs] == [str(i) for i in range(13)]
+    assert jobs[0].title == "Job 0"
+
+
+def test_parses_a_renamed_detail_page(httpx_mock) -> None:
+    page = """
+    <html><body><article class="article article--result">
+      <h3><a class="link" href="https://acme.avature.net/careers/Job-Description/Analyst-Albany-NY/44970">Analyst</a></h3>
+    </article></body></html>
+    """
+    httpx_mock.add_response(url=_url("acme", 0), text=page)
+
+    [job] = AvatureScraper("acme").fetch()
+
+    assert (job.ats_id, job.title) == ("44970", "Analyst")
+
+
+def test_share_links_are_not_jobs(httpx_mock) -> None:
+    page = """
+    <html><body><article class="article article--result">
+      <h3><a href="https://acme.avature.net/careers/JobDetail/Crew/21590">Crew</a></h3>
+      <a href="mailto:?body=https://acme.avature.net/careers/JobDetail/Crew/21590">Share</a>
+      <a href="https://twitter.com/intent/tweet?url=https://acme.avature.net/careers/JobDetail/Crew/21590">Tweet</a>
+    </article></body></html>
+    """
+    httpx_mock.add_response(url=_url("acme", 0), text=page)
+
+    jobs = AvatureScraper("acme").fetch()
+
+    assert [j.ats_id for j in jobs] == ["21590"]
+
+
+# --- Pages without job links ------------------------------------------------
+
+
+def test_board_that_says_it_has_no_jobs_is_empty(httpx_mock) -> None:
+    page = """
+    <html><head><link href="/ASSET/portal/avature.css" rel="stylesheet"></head><body>
+      <div class="list-controls__text__legend" aria-label="0 results"></div>
+      <h3 class="article__header__text__title">No jobs found</h3>
+    </body></html>
+    """
+    httpx_mock.add_response(url=_url("acme", 0), text=page)
+
+    assert AvatureScraper("acme").fetch() == []
+
+
+@pytest.mark.parametrize(
+    "count",
+    [
+        '<div class="list-controls__text__legend" aria-label="432 results"></div>',
+        '<span class="jobPaginationLegend">1-20 of 169 results</span>',
+    ],
+)
+def test_listing_with_results_but_no_readable_job_raises(httpx_mock, count: str) -> None:
+    page = f"""
+    <html><body><p>Powered by Avature</p>{count}
+      <a href="https://acme.avature.net/careers/Unknown-Page/Analyst/44970">Analyst</a>
+    </body></html>
+    """
+    httpx_mock.add_response(url=_url("acme", 0), text=page)
+
+    with pytest.raises(ScraperError, match="no job link could be read"):
+        AvatureScraper("acme").fetch()
+
+
+def test_board_that_redirects_off_avature_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_url("acme", 0), status_code=301, headers={"Location": "https://careers.acme.example/en"},
+    )
+    httpx_mock.add_response(
+        url="https://careers.acme.example/en", text="<html><body>Search jobs</body></html>",
+    )
+
+    with pytest.raises(CompanyNotFoundError, match=r"careers\.acme\.example"):
+        AvatureScraper("acme").fetch()
+
+
+def test_page_that_is_not_an_avature_listing_raises(httpx_mock) -> None:
+    httpx_mock.add_response(url=_url("acme", 0), text="<html><body>Maintenance</body></html>")
+
+    with pytest.raises(ScraperError, match="not an Avature listing") as excinfo:
+        AvatureScraper("acme").fetch()
+    assert not isinstance(excinfo.value, CompanyNotFoundError)
 
 
 # --- Pagination & termination ----------------------------------------------
@@ -565,6 +679,94 @@ def test_aws_waf_challenge_is_reported_without_retrying(
     )
     with pytest.raises(ScraperError, match="AWS WAF"):
         AvatureScraper("acme").fetch()
+
+
+@pytest.fixture
+def refused_to_httpcloak(monkeypatch: pytest.MonkeyPatch, httpx_mock) -> None:
+    """The listing answers 406 to httpx and to httpcloak."""
+    import ats_scrapers.scrapers.avature as av
+
+    async def refused(self, base: str, company: str) -> list:
+        raise av._BlockedTenantError(base)
+
+    monkeypatch.setattr(av.AvatureScraper, "_fetch_via_httpcloak", refused)
+    httpx_mock.add_response(url=_url("acme", 0), status_code=406)
+
+
+def test_refused_board_without_browserbase_raises(monkeypatch, refused_to_httpcloak) -> None:
+    monkeypatch.delenv("BROWSERBASE_API_KEY", raising=False)
+    monkeypatch.delenv("BROWSERBASE_PROJECT_ID", raising=False)
+    monkeypatch.delenv("ATS_SCRAPERS_DISABLE_BROWSERBASE", raising=False)
+
+    with pytest.raises(ScraperError, match=r"refused the listing \(406\)"):
+        AvatureScraper("acme").fetch()
+
+
+def test_refused_board_with_browserbase_disabled_raises(monkeypatch, refused_to_httpcloak) -> None:
+    monkeypatch.setenv("ATS_SCRAPERS_DISABLE_BROWSERBASE", "1")
+
+    with pytest.raises(ScraperError, match="disabled"):
+        AvatureScraper("acme").fetch()
+
+
+def test_refused_board_whose_browserbase_fallback_fails_raises(
+    monkeypatch, refused_to_httpcloak,
+) -> None:
+    import ats_scrapers.scrapers.avature as av
+    monkeypatch.setenv("BROWSERBASE_API_KEY", "key")
+    monkeypatch.setenv("BROWSERBASE_PROJECT_ID", "project")
+    monkeypatch.delenv("ATS_SCRAPERS_DISABLE_BROWSERBASE", raising=False)
+
+    async def fails(self, base: str, company: str) -> list:
+        raise ScraperError("Browserbase session create failed: 402")
+
+    monkeypatch.setattr(av.AvatureScraper, "_fetch_via_browserbase", fails)
+
+    with pytest.raises(ScraperError, match=r"Browserbase fallback failed: .*402"):
+        AvatureScraper("acme").fetch()
+
+
+# --- proxy ------------------------------------------------------------------
+
+
+def test_listing_goes_through_the_proxy_argument(monkeypatch, httpx_mock) -> None:
+    import ats_scrapers.scrapers.avature as av
+    proxies: list[object] = []
+    real_client = httpx.AsyncClient
+
+    def client(*args, **kwargs):
+        proxies.append(kwargs.get("proxy"))
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(av.httpx, "AsyncClient", client)
+    httpx_mock.add_response(url=_url("acme", 0), text=ANCHOR_ONLY_PAGE)
+
+    AvatureScraper("acme", proxy="http://proxy.example:8080").fetch()
+
+    assert proxies == ["http://proxy.example:8080"]
+
+
+def test_httpcloak_goes_through_the_proxy_argument(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def get(url: str, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(status_code=200, text=ANCHOR_ONLY_PAGE, url=url)
+
+    monkeypatch.setitem(sys.modules, "httpcloak", SimpleNamespace(get=get))
+    scraper = AvatureScraper("acme", proxy="http://proxy.example:8080")
+
+    scraper._fetch_page_via_httpcloak_sync("https://acme.avature.net", 0)
+    scraper._http_get_via_httpcloak_sync("https://acme.avature.net/careers/JobDetail/A/1")
+
+    assert [c.get("proxy") for c in calls] == ["http://proxy.example:8080"] * 2
+
+
+def test_failed_lookup_through_a_proxy_is_not_not_found(httpx_mock) -> None:
+    httpx_mock.add_exception(_dns_error(socket.EAI_NONAME), url=_url("acme", 0), is_reusable=True)
+    with pytest.raises(ScraperError) as excinfo:
+        AvatureScraper("acme", proxy="http://proxy.invalid:8080").fetch()
+    assert not isinstance(excinfo.value, CompanyNotFoundError)
 
 
 def test_retries_on_5xx_then_succeeds(monkeypatch, httpx_mock) -> None:
