@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -8,6 +9,10 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import WinTalentScraper
 from ats_scrapers.scrapers.base import ScraperRegistry
+from ats_scrapers.scrapers.wintalent import (
+    LISTING_PASSES,
+    LISTING_RETRY_DELAY,
+)
 
 HOST = "dfmc.hotjob.cn"
 SUITE = "SU61d501d92f9d24431f65f608"
@@ -32,6 +37,22 @@ def stable_cache_buster(monkeypatch) -> None:
         "ats_scrapers.scrapers.wintalent._new_cache_bust",
         lambda: "123",
     )
+
+
+@pytest.fixture(autouse=True)
+def listing_waits(monkeypatch) -> list[float]:
+    # The waits before a listing is read again are recorded, not slept.
+    waits: list[float] = []
+    sleep = asyncio.sleep
+
+    async def record_listing_wait(delay: float, *args, **kwargs):
+        if delay == LISTING_RETRY_DELAY:
+            waits.append(delay)
+            return None
+        return await sleep(delay, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "sleep", record_listing_wait)
+    return waits
 
 
 def _payload(data: dict[str, object], *, state: object = "200") -> dict:
@@ -502,6 +523,7 @@ def test_modern_repeated_rows_fail_closed(
             total_pages=2,
             page_size=2,
         ),
+        is_reusable=True,
     )
     httpx_mock.add_response(
         method="POST",
@@ -513,10 +535,15 @@ def test_modern_repeated_rows_fail_closed(
             total_pages=2,
             page_size=2,
         ),
+        is_reusable=True,
     )
 
-    with pytest.raises(ScraperError, match=error):
+    with pytest.raises(ScraperError, match=rf"{error} \(read {LISTING_PASSES} times\)"):
         WinTalentScraper(PORTAL, include_descriptions=False).fetch()
+
+    assert len(httpx_mock.get_requests(url=_list_url("2", 1))) == (
+        LISTING_PASSES
+    )
 
 
 def test_unreadable_description_keeps_the_job_and_logs_why(
@@ -613,13 +640,16 @@ def test_modern_total_mismatch_fails_closed(httpx_mock) -> None:
             [_item("67b2a2c11eb80555b7a39fb9")],
             total=2,
         ),
+        is_reusable=True,
     )
 
     with pytest.raises(ScraperError, match="expected 2 jobs"):
         WinTalentScraper(PORTAL, include_descriptions=False).fetch()
 
 
-def test_modern_metadata_change_fails_closed(httpx_mock) -> None:
+def test_modern_metadata_change_fails_closed(
+    httpx_mock, listing_waits
+) -> None:
     first = _item("67b2a2c11eb80555b7a39fb9")
     second = _item("6a3cd0971d4c30777af06d79")
     httpx_mock.add_response(url=CONFIG_URL, json=_config("2"))
@@ -633,6 +663,7 @@ def test_modern_metadata_change_fails_closed(httpx_mock) -> None:
             total_pages=2,
             page_size=1,
         ),
+        is_reusable=True,
     )
     httpx_mock.add_response(
         method="POST",
@@ -641,13 +672,109 @@ def test_modern_metadata_change_fails_closed(httpx_mock) -> None:
             [second],
             page=2,
             total=3,
-            total_pages=2,
+            total_pages=3,
             page_size=1,
+        ),
+        is_reusable=True,
+    )
+
+    with pytest.raises(
+        ScraperError,
+        match=(
+            r"metadata changed while fetching: page 1 reported 2 jobs on 2 "
+            rf"pages, page 2 3 on 3 \(read {LISTING_PASSES} times\)"
+        ),
+    ):
+        WinTalentScraper(PORTAL, include_descriptions=False).fetch()
+
+    assert listing_waits == [LISTING_RETRY_DELAY] * (LISTING_PASSES - 1)
+
+
+def _add_list_page(
+    httpx_mock,
+    recruit_type: str,
+    page: int,
+    post_ids: list[str],
+    *,
+    total: int,
+    total_pages: int,
+    page_size: int,
+) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=(
+            _list_url(recruit_type, page, page_size=page_size)
+            if page > 1
+            else _list_url(recruit_type, 1)
+        ),
+        json=_page(
+            [_item(post_id) for post_id in post_ids],
+            page=page,
+            total=total,
+            total_pages=total_pages,
+            page_size=page_size,
         ),
     )
 
-    with pytest.raises(ScraperError, match="metadata changed"):
-        WinTalentScraper(PORTAL, include_descriptions=False).fetch()
+
+def test_stale_first_page_is_read_again_once_its_cache_expires(
+    httpx_mock, caplog, listing_waits
+) -> None:
+    a, b, c, d, e = (
+        "6afbc5af80d178ea73ae261d",
+        "6af4296380d178ea73a8b975",
+        "6af2c1651a94d530979396c6",
+        "6aec252dd280e980fa99d12c",
+        "6aebfbb0e520070c28cc4831",
+    )
+    other = "67b2a2c11eb80555b7a39fb9"
+    layout = {"total": 5, "total_pages": 3, "page_size": 2}
+    httpx_mock.add_response(url=CONFIG_URL, json=_config("1", "2"))
+    # Page 1 comes from the portal's cache and still counts 3 jobs; page 2,
+    # read live, counts 5.
+    _add_list_page(
+        httpx_mock, "1", 1, [a, b], total=3, total_pages=2, page_size=2
+    )
+    _add_list_page(httpx_mock, "1", 2, [c, d], **layout)
+    # Once the cache has expired, every page agrees.
+    _add_list_page(httpx_mock, "1", 1, [a, b], **layout)
+    _add_list_page(httpx_mock, "1", 2, [c, d], **layout)
+    _add_list_page(httpx_mock, "1", 3, [e], **layout)
+    httpx_mock.add_response(
+        method="POST",
+        url=_list_url("2"),
+        json=_page([_item(other), _item(a)]),
+    )
+
+    with caplog.at_level("WARNING", logger="ats_scrapers.scrapers.wintalent"):
+        jobs = WinTalentScraper(PORTAL, include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == [a, b, c, d, e, other]
+    assert "recruit_type=1 read again" in caplog.text
+    assert "page 1 reported 3 jobs on 2 pages, page 2 5 on 3" in caplog.text
+    # The portal keeps page 1 cached for about 300 seconds.
+    assert listing_waits == [LISTING_RETRY_DELAY]
+    assert LISTING_RETRY_DELAY > 300
+
+
+def test_rows_shifted_during_a_read_are_read_again(httpx_mock) -> None:
+    a, b, c = (
+        "6afbc5af80d178ea73ae261d",
+        "6af4296380d178ea73a8b975",
+        "6af2c1651a94d530979396c6",
+    )
+    layout = {"total": 3, "total_pages": 2, "page_size": 2}
+    httpx_mock.add_response(url=CONFIG_URL, json=_config("2"))
+    # Between the two pages, job a is posted and another job closed: the
+    # count holds at 3, but page 2 repeats job c and job a is missed.
+    _add_list_page(httpx_mock, "2", 1, [b, c], **layout)
+    _add_list_page(httpx_mock, "2", 2, [c], **layout)
+    _add_list_page(httpx_mock, "2", 1, [a, b], **layout)
+    _add_list_page(httpx_mock, "2", 2, [c], **layout)
+
+    jobs = WinTalentScraper(PORTAL, include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == [a, b, c]
 
 
 def test_non_success_state_fails_closed(httpx_mock) -> None:
