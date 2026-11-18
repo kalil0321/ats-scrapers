@@ -8,7 +8,7 @@ proxy). These tests exercise:
 - Brazilian salary/location parsing (R$,
   "Remoto" → "Remote, Brazil")
 - Pagination termination (3 consecutive duplicate-only pages → stop)
-- The proxy URL helper (Evomi's host:port:user:pass shape converts to
+- The proxy URL helper (the host:port:user:pass form converts to
   the standard URL form httpx wants)
 - 403 → ScraperError that says how to fix it
 """

@@ -96,9 +96,10 @@ def proxy_url_from_env() -> str | None:
     """Resolve the proxy URL from the environment.
 
     ``ATS_SCRAPERS_PROXY`` takes a standard proxy URL
-    (``http://user:pass@host:port``). The legacy ``PROXY`` var ships in
-    Evomi's 4-colon ``http://host:port:user:pass`` shape (the same
-    convention the browser helpers parse) and is normalized here.
+    (``http://user:pass@host:port``). The legacy ``PROXY`` var uses the
+    ``http://host:port:user:pass`` form some residential proxy providers
+    hand out (the same form the browser helpers parse) and is normalized
+    here.
     """
     url = os.getenv("ATS_SCRAPERS_PROXY")
     if url:

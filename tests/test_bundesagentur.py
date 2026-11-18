@@ -1077,7 +1077,7 @@ def test_incomplete_200_retries_then_succeeds(httpx_mock) -> None:
 # ---------------------------------------------------------------------------
 #
 # At ~750 k jobs the legacy list-accumulating ``afetch`` holds a
-# few GB of Job objects in memory, which is tight on the 7.6 GB VPS
+# few GB of Job objects in memory, which is tight on an 8 GB server
 # when other scrapers are also resident. The streaming variant pushes
 # each parsed Job to an async callback (or asyncio.Queue in the
 # ``fetch_stream`` wrapper) instead of accumulating, leaving only the

@@ -14,7 +14,7 @@ Two scrapers use cloakbrowser today:
     Browserbase Sessions over residential proxies return 403/429.
     cloakbrowser + ``humanize=True`` + a behavioural warm-up clears
     the bot manager. From a datacenter IP the warm-up is still
-    rate-limited so we route through the Evomi residential proxy
+    rate-limited so we route through a residential proxy
     when ``PROXY`` is set; on a residential machine ``PROXY`` is
     typically unset and the warm-up alone suffices.
 
@@ -25,7 +25,7 @@ Two scrapers use cloakbrowser today:
 
 Helpers below mirror the structure of :mod:`_browserbase` (which
 Avature still uses as its last-resort fallback): ``is_enabled`` /
-``require_cloakbrowser`` / ``warn_disabled`` / ``evomi_proxy_from_env``.
+``require_cloakbrowser`` / ``warn_disabled`` / ``proxy_from_env``.
 The graceful degradation contract is preserved — when ``cloakbrowser``
 isn't installed, the scraper logs a warning and returns ``[]`` instead
 of crashing the publish pipeline.
@@ -83,20 +83,19 @@ def warn_disabled(scraper_name: str) -> None:
     )
 
 
-def evomi_proxy_from_env() -> dict[str, Any] | None:
+def proxy_from_env() -> dict[str, Any] | None:
     """Parse the ``PROXY`` env var into the dict shape cloakbrowser /
     Playwright accept under ``launch(proxy=...)``.
 
-    Evomi ships ``PROXY`` in the 4-colon
-    ``http://host:port:user:pass`` shape (same convention the rest of
-    the codebase uses — Tesla's old patchright path, jobs.ch). Returns
+    ``PROXY`` uses the ``http://host:port:user:pass`` form some
+    residential proxy providers hand out, the same form
+    :func:`ats_scrapers.fetch.proxy_url_from_env` reads. Returns
     ``None`` when no env var is set so the caller passes it straight
     through without a branch.
 
-    Used by Tesla on the datacenter VPS to avoid an immediate
-    rate-limit on the first ``cua-api`` call. On a residential
-    machine ``PROXY`` is typically unset and cloakbrowser warms up
-    directly.
+    From a datacenter address it keeps Tesla's first ``cua-api`` call
+    from being rate-limited. On a residential machine ``PROXY`` is
+    typically unset and cloakbrowser warms up directly.
     """
     raw = os.getenv("PROXY")
     if not raw:
