@@ -16,13 +16,13 @@ the Pydantic descriptions are the source of truth; please update both.
 | Group | Fields |
 |---|---|
 | **Identity** | `global_id`, `url`, `title`, `company`, `ats_type`, `ats_id` |
-| **Location** | `location`, `country_iso`, `region`, `lat`, `lon`, `is_remote` |
+| **Location** | `location`, `country_iso`, `region`, `lat`, `lon`, `is_remote`, `locations`, `workplace_type` |
 | **Compensation** | `salary_currency`, `salary_period`, `salary_summary`, `salary_min`, `salary_max`, `compensation_components` |
-| **Classification** | `experience`, `employment_type`, `department`, `team`, `requisition_id`, `apply_url`, `commitment`, `workload_percentages`, `occupation`, `engagement_type`, `education_requirements` |
+| **Classification** | `experience`, `employment_type`, `department`, `team`, `requisition_id`, `apply_url`, `commitment`, `workload_percentages`, `occupation`, `engagement_type`, `education_requirements`, `skill_requirements` |
 | **Content & timing** | `description`, `posted_at`, `source_created_at`, `source_updated_at`, `fetched_at`, `application_deadline`, `language` |
 | **Provider overflow** | `raw` |
 
-The library model has 37 fields. Older files can contain a subset of these columns.
+The library model has 40 fields. Older files can contain a subset of these columns.
 
 > **Heuristic vs LLM split.** The publisher's hardcoded inference is
 > intentionally narrow: title-only `is_remote` (returns `True` or
@@ -205,13 +205,16 @@ scraper from a structured ATS field, or derived from `salary_summary`.
 
 | Field | Public representation and meaning |
 |---|---|
-| `compensation_components` | List of components with `kind`, `source_label`, `unit`, `currency`, `period`, `minimum`, `maximum`, `tier` and `summary`. The cash salary, share grant, equity percentage and commission of an offer can be queried separately. An explicit zero is a value. A component can also carry just a source label or summary when its amount is undisclosed. |
-| `workload_percentages` | List of explicit percentages of a full-time position. For example, `[80, 85, 90, 95, 100]` records five selectable workloads. An interval in free text does not establish five selectable options. |
-| `occupation` | The primary source-assigned job family, function or occupation as `{label, code, taxonomy}`. Compare codes within the same taxonomy. `department` and `team` describe the employer's organization. |
+| `compensation_components` | List of components with `kind`, `source_label`, `unit`, `currency`, `period`, `minimum`, `maximum`, `tier` and `summary`. Units are `money`, `percent` (10 means 10%) or `shares`. For example, an equity grant may specify shares or a cash valuation. Pay periods use `HOUR`, `DAY`, `WEEK`, `MONTH` or `YEAR`. An explicit zero is a value. |
+| `workload_percentages` | An object with either discrete `values` or inclusive `minimum` and/or `maximum`, from 0 to 100. `{"values":[80,100]}` offers two rates. `{"minimum":80,"maximum":100}` covers the interval. |
+| `occupation` | The name the source gives the occupation, job family or function (`label`), its identifier (`code`) and the classification system that defines it (`taxonomy`). For example, ISCO-08 uses code `"2512"` for Software Developers. Codes and taxonomies are optional. |
 | `engagement_type` | Source-reported contractual arrangement. Values are `permanent`, `fixed_term`, `independent_contractor`, `temporary`, `apprenticeship` or `internship`. A permanent role can have part-time hours. |
-| `education_requirements` | List of source qualification labels, each accompanied by `required`, `preferred` or `unspecified`. An education label without a stated priority uses `unspecified`. Preserve the original qualification wording. |
+| `education_requirements` | List of qualifications with the original `label` and a `requirement` level. `required` is mandatory, `preferred` is an advantage, `optional` is expressly optional, and `unspecified` means the source lists it without a priority. |
+| `skill_requirements` | Skills listed by the source. Each has a `label` and the same `requirement` levels as education. |
+| `workplace_type` | Source-stated attendance arrangement. Values are `onsite`, `hybrid`, `remote` and `onsite_or_remote`. |
+| `locations` | Advertised places of work in source order. Each has a `label` and may supply `city`, administrative `region`, `country_iso` and `is_primary`. A posting can offer several offices. |
 
-The four nested fields use JSON in CSV and native lists or structs in Parquet.
+Nested fields use JSON in CSV and native lists or structs in Parquet.
 Missing source evidence yields null. An empty list records an explicitly empty
 collection where the source gives it that meaning. Previously exported files
 may lack these columns entirely.

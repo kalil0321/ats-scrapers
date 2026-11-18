@@ -25,7 +25,7 @@ import pandas as pd
 
 from ats_scrapers.exceptions import StorageError
 from ats_scrapers.manifest import DEFAULT_MANIFEST_URL, USER_AGENT, Manifest
-from ats_scrapers.models import ATSType
+from ats_scrapers.models import ATSType, normalize_compensation_period
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -239,8 +239,34 @@ def _has_parquet_engine() -> bool:
 def _nested_cell(value: object) -> object:
     if isinstance(value, str):
         return json.loads(value)
+    return _native_nested(value)
+
+
+def _native_nested(value: object) -> object:
     if isinstance(value, np.ndarray):
-        return value.tolist()
+        value = value.tolist()
+    if isinstance(value, list):
+        return [_native_nested(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _native_nested(item) for key, item in value.items()}
+    return value
+
+
+def _workload_cell(value: object) -> object:
+    value = _nested_cell(value)
+    if isinstance(value, list):
+        return {"values": value} if value else None
+    if isinstance(value, dict):
+        return {key: item for key, item in value.items() if item is not None}
+    return value
+
+
+def _compensation_cell(value: object) -> object:
+    value = _nested_cell(value)
+    if isinstance(value, list):
+        for component in value:
+            if isinstance(component, dict) and "period" in component:
+                component["period"] = normalize_compensation_period(component["period"])
     return value
 
 
@@ -264,13 +290,18 @@ def _normalize_dataset(df: pd.DataFrame) -> pd.DataFrame:
     if not {"ats_type", "ats_id"}.issubset(df.columns):
         return df
     df = df.copy(deep=False)
-    for name in ("workload_percentages", "compensation_components", "occupation", "education_requirements"):
+    for name, decode in (
+        ("workload_percentages", _workload_cell), ("compensation_components", _compensation_cell),
+        ("occupation", _nested_cell), ("education_requirements", _nested_cell),
+        ("skill_requirements", _nested_cell), ("locations", _nested_cell),
+    ):
         if name in df:
-            df[name] = df[name].map(_nested_cell, na_action="ignore")
+            df[name] = df[name].map(decode, na_action="ignore")
         else:
             df[name] = None
-    if "engagement_type" not in df:
-        df["engagement_type"] = None
+    for name in ("engagement_type", "workplace_type"):
+        if name not in df:
+            df[name] = None
     for name in ("source_created_at", "source_updated_at"):
         if name in df:
             df[name] = _source_times(df[name])

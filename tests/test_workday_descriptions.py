@@ -181,3 +181,19 @@ def test_detail_preserves_paragraphs_and_literal_text(monkeypatch: pytest.Monkey
     assert scraper.get_description(job) == "Use C# & SQL.\nLatency < 5 ms."
     assert scraper.get_description(job) == job.description
     assert len(site.requests) == 1
+
+
+def test_detail_reports_each_location_and_attendance(monkeypatch: pytest.MonkeyPatch) -> None:
+    site = _Site(monkeypatch, lambda request: httpx.Response(200, json={"jobPostingInfo": {
+        "jobDescription": "Design tools.", "location": "Basel, CH", "remoteType": "Hybrid",
+        "jobRequisitionLocation": {"descriptor": "Basel, CH", "country": {"alpha2Code": "CH"}},
+        "additionalLocations": ["Basel, CH", "Nice, France"],
+    }}))
+    scraper = WorkdayScraper(URL)
+    job = _job(location="2 Locations")
+    assert scraper.get_description(job) == "Design tools."
+    assert job.workplace_type == "hybrid"
+    assert [(p.label, p.country_iso, p.is_primary) for p in job.locations] == [
+        ("Basel, CH", "CH", True), ("Nice, France", None, False),
+    ]
+    assert len(site.requests) == 1

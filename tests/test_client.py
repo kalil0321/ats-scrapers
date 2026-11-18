@@ -221,12 +221,44 @@ def test_nested_columns_and_source_timestamps_read_the_same(httpx_mock, suffix: 
     httpx_mock.add_response(url=url, content=body)
     with Client() as client:
         frame = client_module._normalize_dataset(client._download(url))
-    assert frame["workload_percentages"].tolist() == [[80, 100], []]
+    assert frame["workload_percentages"].tolist() == [{"values": [80, 100]}, None]
     assert frame.at[0, "occupation"] == {"label": "Developer", "code": "dev"}
     assert pd.isna(frame.at[1, "occupation"])
     assert frame.at[0, "source_created_at"] == pd.Timestamp("2026-11-01T10:00:00Z")
     assert pd.isna(frame.at[1, "source_created_at"])
     assert frame["source_updated_at"].isna().all()
+
+
+@pytest.mark.parametrize("suffix", ["csv", "parquet"])
+def test_loads_workload_forms_and_typed_lists(httpx_mock, suffix) -> None:
+    if suffix == "parquet":
+        pytest.importorskip("pyarrow")
+    url = f"https://example.com/terms.{suffix}"
+    data = pd.DataFrame({
+        "ats_type": ["custom", "custom"], "ats_id": ["a", "b"],
+        "workload_percentages": [{"values": [60, 80]}, {"minimum": 80, "maximum": 100}],
+        "locations": [[{"label": "Paris"}, {"label": "Berlin"}], None],
+        "workplace_type": ["hybrid", None],
+        "skill_requirements": [[{"label": "SQL", "requirement": "preferred"}], []],
+        "compensation_components": [[{"kind": "base_salary", "period": "1 YEAR"}],
+                                    [{"kind": "equity", "period": "4 YEARS"}]],
+    })
+    if suffix == "parquet":
+        body = data.to_parquet(index=False)
+    else:
+        for col in ("workload_percentages", "locations", "skill_requirements", "compensation_components"):
+            data[col] = data[col].map(lambda item: json.dumps(item) if item is not None else None)
+        body = data.to_csv(index=False).encode()
+    httpx_mock.add_response(url=url, content=body)
+    with Client() as client:
+        frame = client_module._normalize_dataset(client._download(url))
+    assert frame["workload_percentages"].tolist() == [{"values": [60, 80]}, {"minimum": 80, "maximum": 100}]
+    assert type(frame.at[0, "workload_percentages"]["values"]) is list
+    assert frame.at[0, "locations"] == [{"label": "Paris"}, {"label": "Berlin"}]
+    assert frame.at[0, "skill_requirements"] == [{"label": "SQL", "requirement": "preferred"}]
+    assert frame.at[1, "skill_requirements"] == []
+    assert frame.at[0, "compensation_components"][0]["period"] == "YEAR"
+    assert frame.at[1, "compensation_components"][0]["period"] is None
 
 
 def test_load_uses_uuid_for_invalid_legacy_ats_id(stub_client: Client) -> None:
