@@ -53,6 +53,10 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 - Tesla: the browser goes through the `proxy` argument when one is given, and
   through the `PROXY` environment variable only otherwise.
+- Eightfold: a listing page that answers 405, which Eightfold returns on every
+  tenant for a few minutes once an address has sent too many requests, is retried
+  after 30, 90 and 180 seconds instead of failing the board at once. A board
+  still refused after that raises a `blocked (405)` error.
 - Bundesagentur: a request refused with 403 or 429, a server error or a network
   error is retried with backoff capped at two minutes, up to 14 attempts (about
   16 minutes), while other pages go on, so one refused page no longer ends a full
