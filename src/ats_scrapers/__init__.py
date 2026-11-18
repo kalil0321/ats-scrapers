@@ -13,6 +13,7 @@ Two layers of progressive disclosure:
 
 from ats_scrapers._version import __version__
 from ats_scrapers.client import Client, find_company, list_ats, search
+from ats_scrapers.cloud_browser import CloudBrowser, RenderedPage
 from ats_scrapers.exceptions import (
     ATSScrapersError,
     CompanyNotFoundError,
@@ -29,6 +30,7 @@ __all__ = [
     "ATSScrapersError",
     "ATSType",
     "Client",
+    "CloudBrowser",
     "Company",
     "CompanyNotFoundError",
     "EmploymentType",
@@ -38,6 +40,7 @@ __all__ = [
     "MalformedJSONError",
     "Manifest",
     "ManifestError",
+    "RenderedPage",
     "ResolvedCareersUrl",
     "Salary",
     "SalaryPeriod",

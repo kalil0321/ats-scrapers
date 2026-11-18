@@ -180,6 +180,9 @@ all = [
     { name = "pyarrow" },
     { name = "pycryptodome" },
 ]
+cloud-browser = [
+    { name = "playwright" },
+]
 dev = [
     { name = "aiohttp" },
     { name = "beautifulsoup4" },
@@ -227,7 +230,7 @@ test = [
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'scrapers'", specifier = ">=3.9" },
     { name = "ats-scrapers", extras = ["all"], marker = "extra == 'test'" },
-    { name = "ats-scrapers", extras = ["scrapers", "parquet"], marker = "extra == 'all'" },
+    { name = "ats-scrapers", extras = ["scrapers", "parquet", "cloud-browser"], marker = "extra == 'all'" },
     { name = "ats-scrapers", extras = ["test"], marker = "extra == 'dev'" },
     { name = "beautifulsoup4", marker = "extra == 'scrapers'", specifier = ">=4.12" },
     { name = "cloakbrowser", marker = "extra == 'scrapers'", specifier = "==0.6.5" },
@@ -237,6 +240,7 @@ requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pandas-stubs", marker = "extra == 'dev'" },
+    { name = "playwright", marker = "extra == 'cloud-browser'", specifier = ">=1.53" },
     { name = "playwright", marker = "extra == 'scrapers'", specifier = ">=1.53,<1.65" },
     { name = "pyarrow", marker = "extra == 'parquet'", specifier = ">=15.0" },
     { name = "pycryptodome", marker = "extra == 'scrapers'", specifier = ">=3.20" },
@@ -247,7 +251,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
     { name = "types-boto3", marker = "extra == 'dev'" },
 ]
-provides-extras = ["scrapers", "parquet", "all", "test", "dev"]
+provides-extras = ["scrapers", "parquet", "cloud-browser", "all", "test", "dev"]
 
 [[package]]
 name = "attrs"
