@@ -296,16 +296,34 @@ class WorkdayScraper(BaseScraper):
             payload = response.json()
         except ValueError:
             return None
-        info = payload.get("jobPostingInfo") if isinstance(payload, dict) else None
-        if not isinstance(info, dict):
-            return None
+        self._apply_detail(job, payload)
+        return job.description
+
+    def _apply_detail(self, job: Job, payload: object) -> None:
+        if not isinstance(payload, dict) or not isinstance(info := payload.get("jobPostingInfo"), dict):
+            return
+        organization = payload.get("hiringOrganization")
+        if not self.company_name and isinstance(organization, dict):
+            name = organization.get("name")
+            if isinstance(name, str) and name.strip():
+                job.company = name.strip()
+        if not job.description and (text := _extract_description(info)):
+            job.description = text[:25_000]
         if places := _detail_places(info):
             job.locations = places
+        additional = info.get("additionalLocations")
+        label = _format_locations(info.get("location"), additional)
+        if label and (not job.location or _LOCATION_ROLLUP_RE.match(job.location) or additional):
+            job.location = label
         if mode := _attendance(info.get("remoteType")):
             job.workplace_type = mode
-        description = _extract_description(info)
-        job.description = description[:25_000] if description else None
-        return job.description
+        dates = {key: info[key] for key in ("startDate", "endDate") if info.get(key)}
+        if dates:
+            job.raw = {**(job.raw or {}), **dates}
+        if posted := _posting_day(dates.get("startDate")):
+            job.posted_at = posted
+        if deadline := _posting_day(dates.get("endDate")):
+            job.application_deadline = deadline
 
     def _detail_client(self, url: str) -> httpx.Client | _CloakClient:
         """The client ``get_description`` reads with, opened on first use.
@@ -446,7 +464,7 @@ class WorkdayScraper(BaseScraper):
         not discard the listing row or the rest of the tenant.
         """
         targets = [
-            (i, j) for i, j in enumerate(jobs)
+            j for j in jobs
             if (j.raw or {}).get("externalPath") or _external_path(j.url)
         ]
         if not targets:
@@ -454,7 +472,7 @@ class WorkdayScraper(BaseScraper):
 
         refused: list[int] = []
 
-        async def resolve(i: int, job: Job) -> None:
+        async def resolve(job: Job) -> None:
             external_path = (job.raw or {}).get("externalPath") or _external_path(job.url)
             if not external_path:
                 return
@@ -483,44 +501,9 @@ class WorkdayScraper(BaseScraper):
                 payload = response.json()
             except ValueError:
                 return
-            jpi = payload.get("jobPostingInfo") if isinstance(payload, dict) else None
-            if not isinstance(jpi, dict):
-                return
-            updates: dict[str, Any] = {}
-            if places := _detail_places(jpi):
-                updates["locations"] = places
-            if mode := _attendance(jpi.get("remoteType")):
-                updates["workplace_type"] = mode
+            self._apply_detail(job, payload)
 
-            description = _extract_description(jpi)
-            if description and not job.description:
-                updates["description"] = description[:25_000]
-
-            if isinstance(job.location, str) and _LOCATION_ROLLUP_RE.match(job.location):
-                primary = jpi.get("location")
-                additional = jpi.get("additionalLocations") or []
-                resolved = _format_locations(primary, additional)
-                if resolved:
-                    updates["location"] = resolved
-
-            # Capture posting dates from the detail payload. Workday sends
-            # bare 'YYYY-MM-DD' strings with no time or timezone. Merge into
-            # raw rather than replacing it, so listing-sourced keys
-            # (externalPath, bullet_fields) survive the model_copy update below.
-            start_date = jpi.get("startDate")
-            end_date = jpi.get("endDate")
-            if start_date or end_date:
-                merged_raw = dict(job.raw or {})
-                if start_date:
-                    merged_raw["startDate"] = start_date
-                if end_date:
-                    merged_raw["endDate"] = end_date
-                updates["raw"] = merged_raw
-
-            if updates:
-                jobs[i] = job.model_copy(update=updates)
-
-        await _run_all(resolve(i, j) for i, j in targets)
+        await _run_all(resolve(job) for job in targets)
         if refused:
             logger.warning(
                 "Workday (%s): a description request got HTTP %d, so the "
@@ -1113,6 +1096,15 @@ def _detail_places(info: dict[str, Any]) -> list[JobLocation] | None:
             if place and (primary is None or place.label != primary.label):
                 places.append(place)
     return distinct_places(places)
+
+
+def _posting_day(value: object) -> datetime | None:
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        return None
+    try:
+        return datetime.fromisoformat(value).replace(tzinfo=UTC)
+    except ValueError:
+        return None
 
 
 def _format_locations(primary: object, additional: object) -> str | None:
