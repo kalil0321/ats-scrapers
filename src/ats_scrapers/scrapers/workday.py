@@ -23,29 +23,43 @@ filtered query has its own ≤2K cap, and the union covers the full set.
 
 The ``facets`` field in every response carries each value's true ``count``
 — so we can plan the subdivision optimally without extra probes.
+
+Workday's Cloudflare front answers many plain Python clients with an HTTP 429
+bot challenge, depending on the TLS fingerprint and the address. Requests go
+through ``httpcloak`` (browser TLS) when it is installed, through httpx
+otherwise, and through httpx with the caller's ``transport`` when one is given.
 """
 
 from __future__ import annotations
 
 import asyncio
+import email.utils
 import html as html_mod
+import json
 import logging
+import math
+import random
 import re
 import threading
 import time
+import urllib.request
 import weakref
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlsplit
 
 import httpx
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.fetch import Engine, HostPacer, _cloak_available, borrowed_transport
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    from typing import Any
+    from collections.abc import Awaitable, Iterable
+    from typing import Any, Self, TypeVar
+
+    T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +112,14 @@ MAX_SUBDIVISION_DEPTH = 8
 MAX_CONCURRENCY = 10
 MAX_RETRIES = 3
 RETRY_BACKOFF = 1.5
+# A 403 or 429 without Retry-After asks to slow down: wait about 5 s, then 10 s.
+RATE_LIMIT_BACKOFF = 5.0
+# A longer Retry-After ends the board: a sooner retry would be refused again.
 MAX_RETRY_DELAY = 30.0
+# 401 means a CSRF-protected tenant, which needs a handshake this scraper lacks.
+_RETRYABLE_STATUSES = frozenset({403, 429, 502, 503, 504})
+LISTING_HEADERS = {"Content-Type": "application/json", "Accept": "application/json"}
+# httpcloak replaces the User-Agent with its browser's own.
 DETAIL_HEADERS = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
 # ``get_description`` keeps its connections to the site open between jobs,
 # enough of them for a caller that reads several jobs at once.
@@ -143,6 +164,8 @@ class WorkdayScraper(BaseScraper):
     """Workday scraper — `company_slug` must be the full careers URL."""
 
     ats = ATSType.WORKDAY
+    #: ``"cloak"`` falls back to ``"httpx"`` when httpcloak is not installed.
+    fetch_engine: ClassVar[Engine] = "cloak"
 
     def __init__(
         self,
@@ -153,21 +176,31 @@ class WorkdayScraper(BaseScraper):
         company_name: str | None = None,
         include_descriptions: bool = True,
         proxy: str | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+        pacer: HostPacer | None = None,
     ) -> None:
+        """``transport`` sends every request in place of httpcloak, a direct
+        connection or ``proxy``. :meth:`get_description` needs it to be an
+        ``httpx.BaseTransport`` as well. The scraper never closes it.
+
+        ``pacer`` spaces the requests to each host, shared with any other
+        scraper given the same pacer."""
         super().__init__(
             company_slug,
             timeout=timeout,
             include_descriptions=include_descriptions,
             proxy=proxy,
+            transport=transport,
         )
         self.max_fetch_seconds = max_fetch_seconds
+        self.pacer = pacer
         self.company_name = (
             company_name.strip()
             if company_name and company_name.strip()
             else None
         )
         self._deadline: float | None = None
-        self._detail_http: httpx.Client | None = None
+        self._detail_http: httpx.Client | _CloakClient | None = None
         self._detail_finalizer: weakref.finalize | None = None
         self._detail_lock = threading.Lock()
 
@@ -184,7 +217,8 @@ class WorkdayScraper(BaseScraper):
         makes that contract explicit; it simply delegates to the normal
         constructor (``company_slug`` *is* the URL), and ``kwargs`` are
         forwarded unchanged (``timeout``, ``max_fetch_seconds``,
-        ``company_name``, ``include_descriptions``, ``proxy``).
+        ``company_name``, ``include_descriptions``, ``proxy``, ``transport``,
+        ``pacer``).
         """
         return cls(url, **kwargs)
 
@@ -222,10 +256,18 @@ class WorkdayScraper(BaseScraper):
 
     def _check_deadline(self) -> None:
         if self._deadline is not None and time.monotonic() >= self._deadline:
-            raise ScraperError(
-                f"Workday tenant exceeded max_fetch_seconds="
-                f"{self.max_fetch_seconds:g}: {self.company_slug}"
-            )
+            raise self._deadline_error()
+
+    def _deadline_error(self) -> ScraperError:
+        return ScraperError(
+            f"Workday tenant exceeded max_fetch_seconds="
+            f"{self.max_fetch_seconds:g}: {self.company_slug}"
+        )
+
+    def _remaining(self) -> float | None:
+        if self._deadline is None:
+            return None
+        return max(0.0, self._deadline - time.monotonic())
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -240,10 +282,12 @@ class WorkdayScraper(BaseScraper):
         external_path = (job.raw or {}).get("externalPath") or _external_path(job.url)
         if not external_path:
             return None
+        url = f"{detail_prefix}{external_path}"
         try:
-            response = self._detail_client().get(
-                f"{detail_prefix}{external_path}", headers=DETAIL_HEADERS
-            )
+            client = self._detail_client(url)
+            if self.pacer is not None:
+                self.pacer.wait_sync(url)
+            response = client.get(url, headers=DETAIL_HEADERS)
         except httpx.HTTPError:
             return None
         if response.status_code != 200:
@@ -256,7 +300,7 @@ class WorkdayScraper(BaseScraper):
         description = _extract_description(info) if isinstance(info, dict) else None
         return description[:25_000] if description else None
 
-    def _detail_client(self) -> httpx.Client:
+    def _detail_client(self, url: str) -> httpx.Client | _CloakClient:
         """The client ``get_description`` reads with, opened on first use.
 
         Callers ask for one job at a time. Every job of a site lives on the
@@ -266,18 +310,65 @@ class WorkdayScraper(BaseScraper):
         """
         with self._detail_lock:
             if self._detail_http is None:
-                client = httpx.Client(
-                    timeout=self.timeout,
-                    follow_redirects=True,
-                    proxy=self.proxy,
-                    limits=httpx.Limits(
-                        max_keepalive_connections=DETAIL_KEEPALIVE_CONNECTIONS,
-                        keepalive_expiry=DETAIL_KEEPALIVE_SECONDS,
-                    ),
-                )
+                client: httpx.Client | _CloakClient
+                if self.transport is not None:
+                    if not isinstance(self.transport, httpx.BaseTransport):
+                        raise TypeError(
+                            "get_description sends synchronous requests: the "
+                            "transport must also be an httpx.BaseTransport"
+                        )
+                    client = httpx.Client(
+                        timeout=self.timeout,
+                        follow_redirects=True,
+                        transport=borrowed_transport(self.transport),
+                    )
+                elif self._uses_cloak():
+                    client = _CloakClient(timeout=self.timeout, proxy=self._cloak_proxy(url))
+                else:
+                    client = httpx.Client(
+                        timeout=self.timeout,
+                        follow_redirects=True,
+                        proxy=self.proxy,
+                        limits=httpx.Limits(
+                            max_keepalive_connections=DETAIL_KEEPALIVE_CONNECTIONS,
+                            keepalive_expiry=DETAIL_KEEPALIVE_SECONDS,
+                        ),
+                    )
                 self._detail_finalizer = weakref.finalize(self, client.close)
                 self._detail_http = client
             return self._detail_http
+
+    def _uses_cloak(self) -> bool:
+        if self.transport is not None or self.fetch_engine != "cloak":
+            return False
+        if _cloak_available():
+            return True
+        _warn_without_cloak()
+        return False
+
+    def _cloak_proxy(self, url: str) -> str | None:
+        """The proxy httpx would use for ``url``: the given one, else the
+        environment's."""
+        if self.proxy:
+            return self.proxy
+        proxies = urllib.request.getproxies_environment()
+        host = urlsplit(url).hostname or ""
+        if urllib.request.proxy_bypass_environment(host, proxies):  # type: ignore[attr-defined]
+            return None
+        return proxies.get("https") or proxies.get("all")
+
+    def _listing_client(self, url: str) -> httpx.AsyncClient | _AsyncCloakClient:
+        if self.transport is not None:
+            return httpx.AsyncClient(
+                timeout=self.timeout,
+                follow_redirects=True,
+                transport=borrowed_transport(self.transport),
+            )
+        if self._uses_cloak():
+            return _AsyncCloakClient(
+                _CloakClient(timeout=self.timeout, proxy=self._cloak_proxy(url))
+            )
+        return httpx.AsyncClient(timeout=self.timeout, follow_redirects=True, proxy=self.proxy)
 
     def close(self) -> None:
         """Release the connection ``get_description`` keeps open.
@@ -298,9 +389,7 @@ class WorkdayScraper(BaseScraper):
         display_company: str,
         detail_prefix: str,
     ) -> list[Job]:
-        async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True, proxy=self.proxy
-        ) as client:
+        async with self._listing_client(api) as client:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             seen: set[str] = set()
             all_jobs: list[Job] = []
@@ -333,7 +422,7 @@ class WorkdayScraper(BaseScraper):
 
     async def _enrich_details(
         self,
-        client: httpx.AsyncClient,
+        client: httpx.AsyncClient | _AsyncCloakClient,
         sem: asyncio.Semaphore,
         detail_prefix: str,
         jobs: list[Job],
@@ -356,16 +445,31 @@ class WorkdayScraper(BaseScraper):
         if not targets:
             return
 
+        refused: list[int] = []
+
         async def resolve(i: int, job: Job) -> None:
             external_path = (job.raw or {}).get("externalPath") or _external_path(job.url)
             if not external_path:
                 return
             url = f"{detail_prefix}{external_path}"
             async with sem:
+                if refused:
+                    return
+                if self.pacer is not None:
+                    try:
+                        await self.pacer.wait(url, timeout=self._remaining())
+                    except TimeoutError:
+                        return
+                    # Another description may have been refused meanwhile.
+                    if refused:
+                        return
                 try:
                     response = await client.get(url, headers=DETAIL_HEADERS)
                 except httpx.HTTPError:
                     return
+            if response.status_code == 429 or _challenged(response):
+                refused.append(response.status_code)
+                return
             if response.status_code != 200:
                 return
             try:
@@ -403,11 +507,17 @@ class WorkdayScraper(BaseScraper):
             if updates:
                 jobs[i] = job.model_copy(update=updates)
 
-        await asyncio.gather(*(resolve(i, j) for i, j in targets))
+        await _run_all(resolve(i, j) for i, j in targets)
+        if refused:
+            logger.warning(
+                "Workday (%s): a description request got HTTP %d, so the "
+                "descriptions still missing were not requested",
+                self.company_slug, refused[0],
+            )
 
     async def _exhaust_query(
         self,
-        client: httpx.AsyncClient,
+        client: httpx.AsyncClient | _AsyncCloakClient,
         api: str,
         sem: asyncio.Semaphore,
         *,
@@ -478,11 +588,11 @@ class WorkdayScraper(BaseScraper):
                 size=count,
             )
 
-        await asyncio.gather(*(child(v_id, count) for v_id, count in values))
+        await _run_all(child(v_id, count) for v_id, count in values)
 
     async def _fan_out_pages(
         self,
-        client: httpx.AsyncClient,
+        client: httpx.AsyncClient | _AsyncCloakClient,
         api: str,
         sem: asyncio.Semaphore,
         *,
@@ -501,13 +611,13 @@ class WorkdayScraper(BaseScraper):
             )
             return (payload or {}).get("jobPostings") or []
 
-        results = await asyncio.gather(*(fetch_one(o) for o in offsets))
+        results = await _run_all(fetch_one(o) for o in offsets)
         for batch in results:
             absorb(batch)
 
     async def _request(
         self,
-        client: httpx.AsyncClient,
+        client: httpx.AsyncClient | _AsyncCloakClient,
         api: str,
         sem: asyncio.Semaphore,
         *,
@@ -520,25 +630,33 @@ class WorkdayScraper(BaseScraper):
             "offset": offset,
             "searchText": "",
         }
-        # Workday 403s when we burst — also retryable. 401 means CSRF-protected
-        # tenant (some need an init handshake; we don't currently support those).
-        retryable_statuses = {403, 429, 502, 503, 504}
         last_error = "no response"
+        delay = 0.0
         for attempt in range(MAX_RETRIES):
+            if attempt:
+                await self._wait_to_retry(delay, last_error)
             self._check_deadline()
             async with sem:
+                if self.pacer is not None:
+                    try:
+                        await self.pacer.wait(api, timeout=self._remaining())
+                    except TimeoutError:
+                        raise self._deadline_error() from None
                 try:
-                    response = await client.post(
-                        api, json=body, headers={"Content-Type": "application/json"}
-                    )
+                    response = await client.post(api, json=body, headers=LISTING_HEADERS)
                 except httpx.HTTPError as exc:
                     last_error = (
                         f"{type(exc).__name__}: {exc}" if str(exc)
                         else type(exc).__name__
                     )
-                    await asyncio.sleep(min(MAX_RETRY_DELAY, RETRY_BACKOFF ** attempt))
+                    delay = _jittered(RETRY_BACKOFF ** attempt)
                     continue
-            if response.status_code == 404:
+            status = response.status_code
+            if _challenged(response):
+                raise ScraperError(
+                    f"Workday gave up at offset={offset}: HTTP {status}, a bot challenge"
+                )
+            if status == 404:
                 raise CompanyNotFoundError(
                     f"Workday site not found: {self.company_slug}"
                 )
@@ -548,7 +666,7 @@ class WorkdayScraper(BaseScraper):
                     raise CompanyNotFoundError(
                         f"Workday tenant {self.company_slug} {gone}"
                     )
-            if response.status_code == 200:
+            if status == 200:
                 try:
                     payload = response.json()
                 except ValueError:
@@ -561,38 +679,47 @@ class WorkdayScraper(BaseScraper):
                         f"{self.company_slug} (offset={offset}, "
                         f"content-type={content_type})"
                     )
-                    await asyncio.sleep(
-                        min(MAX_RETRY_DELAY, RETRY_BACKOFF ** attempt)
-                    )
+                    delay = _jittered(RETRY_BACKOFF ** attempt)
                     continue
                 if not isinstance(payload, dict):
                     last_error = (
                         "Workday returned an unexpected JSON payload for "
                         f"{self.company_slug} (offset={offset})"
                     )
-                    await asyncio.sleep(
-                        min(MAX_RETRY_DELAY, RETRY_BACKOFF ** attempt)
-                    )
+                    delay = _jittered(RETRY_BACKOFF ** attempt)
                     continue
                 return payload
-            if response.status_code in retryable_statuses:
-                last_error = f"HTTP {response.status_code}"
-                # Exponential backoff respects Retry-After when present.
-                retry_after = response.headers.get("Retry-After")
-                delay = (
-                    float(retry_after) if retry_after and retry_after.isdigit()
-                    else RETRY_BACKOFF ** attempt
-                )
-                delay = min(MAX_RETRY_DELAY, delay)
-                await asyncio.sleep(delay)
+            if status in _RETRYABLE_STATUSES:
+                last_error = f"HTTP {status}"
+                retry_after = _retry_after(response.headers.get("Retry-After"))
+                if retry_after is not None and retry_after > MAX_RETRY_DELAY:
+                    raise ScraperError(
+                        f"Workday gave up at offset={offset}: {last_error}, "
+                        f"Retry-After {retry_after:.0f} s"
+                    )
+                if retry_after is None:
+                    base = (
+                        RATE_LIMIT_BACKOFF * 2 ** attempt if status in (403, 429)
+                        else RETRY_BACKOFF ** attempt
+                    )
+                    retry_after = _jittered(min(MAX_RETRY_DELAY, base))
+                delay = retry_after
                 continue
             raise ScraperError(
-                f"Workday returned {response.status_code} for {self.company_slug} "
+                f"Workday returned {status} for {self.company_slug} "
                 f"(offset={offset})"
             )
         raise ScraperError(
             f"Workday gave up after {MAX_RETRIES} retries at offset={offset}: {last_error}"
         )
+
+    async def _wait_to_retry(self, delay: float, last_error: str) -> None:
+        if self._deadline is not None and time.monotonic() + delay >= self._deadline:
+            raise ScraperError(
+                f"Workday tenant exceeded max_fetch_seconds="
+                f"{self.max_fetch_seconds:g}: {self.company_slug} (waiting out {last_error})"
+            )
+        await asyncio.sleep(delay)
 
     def _parse_job(
         self,
@@ -679,6 +806,163 @@ class WorkdayScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _challenged(response: Any) -> bool:
+    """Whether Cloudflare answered with its bot check. A client that cannot run
+    the check gets it again on every retry."""
+    value = response.headers.get("cf-mitigated")
+    return isinstance(value, str) and value.strip().lower() == "challenge"
+
+
+def _retry_after(value: object) -> float | None:
+    """Seconds to wait from a Retry-After header: a number or an HTTP date."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            when = email.utils.parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        seconds = (when - datetime.now(UTC)).total_seconds()
+    return max(0.0, seconds) if math.isfinite(seconds) else None
+
+
+def _jittered(delay: float) -> float:
+    """Between half and all of ``delay``, so a site's requests do not retry
+    in step."""
+    return delay * random.uniform(0.5, 1.0)
+
+
+async def _run_all(aws: Iterable[Awaitable[T]]) -> list[T]:
+    """Await ``aws`` together. When one fails, the others are cancelled and
+    awaited before the error is raised, so none outlives the client."""
+    tasks = [asyncio.ensure_future(aw) for aw in aws]
+    try:
+        return await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+_warned_without_cloak = False
+
+
+def _warn_without_cloak() -> None:
+    global _warned_without_cloak
+    if not _warned_without_cloak:
+        _warned_without_cloak = True
+        logger.warning(
+            "Workday: httpcloak is not installed, so requests go through httpx, "
+            "which Workday often answers with HTTP 429 bot challenges. "
+            "Install ats-scrapers[scrapers]."
+        )
+
+
+class _CloakResponse:
+    """An httpcloak answer with the parts of ``httpx.Response`` the scraper reads."""
+
+    def __init__(self, raw: Any) -> None:
+        self.status_code = int(raw.status_code)
+        self.headers = httpx.Headers(_header_items(getattr(raw, "headers", None)))
+        self.text: str = raw.text or ""
+
+    def json(self) -> Any:
+        return json.loads(self.text)
+
+
+def _header_items(headers: object) -> list[tuple[str, str]]:
+    """httpcloak gives each header as a string or as a list of strings."""
+    if not isinstance(headers, dict):
+        return []
+    return [
+        (str(name), str(one))
+        for name, value in headers.items()
+        for one in (value if isinstance(value, list) else [value])
+    ]
+
+
+class _CloakClient:
+    """One httpcloak session (kept connections, browser TLS) for one site.
+
+    Thread-safe. A request can outlive the task that started it in a worker
+    thread, so the session is freed when its last request ends.
+    """
+
+    def __init__(self, *, timeout: float, proxy: str | None) -> None:
+        import httpcloak  # type: ignore[import-untyped]
+
+        try:
+            self._session = httpcloak.Session(timeout=max(1, math.ceil(timeout)), proxy=proxy)
+        except Exception as exc:
+            raise ScraperError(f"Workday: httpcloak could not start a session: {exc}") from exc
+        self._lock = threading.Lock()
+        self._running = 0
+        self._closing = False
+
+    def get(self, url: str, *, headers: dict[str, str] | None = None) -> _CloakResponse:
+        return self._send("GET", url, headers=headers)
+
+    def post(
+        self, url: str, *, json: Any = None, headers: dict[str, str] | None = None
+    ) -> _CloakResponse:
+        return self._send("POST", url, json=json, headers=headers)
+
+    def _send(
+        self, method: str, url: str, *, json: Any = None, headers: dict[str, str] | None
+    ) -> _CloakResponse:
+        sent = {k: v for k, v in (headers or {}).items() if k.lower() != "user-agent"}
+        with self._lock:
+            if self._closing:
+                raise RuntimeError("Cannot send a request, as the session has been closed.")
+            self._running += 1
+        try:
+            if method == "POST":
+                raw = self._session.post(url, json=json, headers=sent)
+            else:
+                raw = self._session.get(url, headers=sent)
+        except Exception as exc:  # httpcloak reports every network failure this way
+            raise httpx.TransportError(str(exc) or type(exc).__name__) from exc
+        finally:
+            with self._lock:
+                self._running -= 1
+                free = self._closing and not self._running
+            if free:
+                self._session.close()
+        return _CloakResponse(raw)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closing = True
+            free = not self._running
+        if free:
+            self._session.close()
+
+
+class _AsyncCloakClient:
+    """:class:`_CloakClient` for the event loop, one worker thread per request."""
+
+    def __init__(self, client: _CloakClient) -> None:
+        self._client = client
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        self._client.close()
+
+    async def get(self, url: str, *, headers: dict[str, str] | None = None) -> _CloakResponse:
+        return await asyncio.to_thread(self._client.get, url, headers=headers)
+
+    async def post(
+        self, url: str, *, json: Any = None, headers: dict[str, str] | None = None
+    ) -> _CloakResponse:
+        return await asyncio.to_thread(self._client.post, url, json=json, headers=headers)
 
 
 def _parse_workday_date(value: str | None) -> datetime | None:

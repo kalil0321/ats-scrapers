@@ -28,6 +28,15 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   shortcode with all its locations and its URL unchanged. Workable shares the
   feed address on request (`feed_url` or `ATS_SCRAPERS_WORKABLE_FEED_URL`) and
   asks for at most one download per hour.
+- `transport`: Workday and the scrapers that read through the shared `Fetcher`
+  take an `httpx.AsyncBaseTransport` that sends their requests instead of a
+  direct connection or a proxy, for example one that forwards them to another
+  service. Pass it to the constructor, or set the `transport` attribute where
+  the constructor does not list it. It is never closed by the scraper. Workday's
+  `get_description` needs it to be an `httpx.BaseTransport` as well.
+- `HostPacer`: starts requests to each host at most a given number of times per
+  second, shared by every scraper it is given to, across threads and event
+  loops. `key` paces groups of hosts together. Workday takes it as `pacer`.
 - Bundesagentur: `proxies` takes routes in order of preference, `None` for a
   direct connection. A route that meets a 403, a 429 or a network error rests
   for five minutes while the next one carries the requests. A single `proxy`
@@ -77,6 +86,22 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   tenant for a few minutes once an address has sent too many requests, is retried
   after 30, 90 and 180 seconds instead of failing the board at once. A board
   still refused after that raises a `blocked (405)` error.
+- Workday: listing and description requests go through `httpcloak` when it is
+  installed. Workday's bot protection answers many plain Python clients with an
+  HTTP 429 challenge from the first request, whatever the request rate. Without
+  `httpcloak`, requests go through httpx as before and a warning says so.
+- Workday: when one request of a board fails, the board's other searches and
+  description requests are cancelled before its connection closes. They no
+  longer run on after the error and fail with "the client has been closed".
+- Workday: a bot challenge (HTTP 429 or 403 marked `cf-mitigated: challenge`)
+  ends the board at once instead of being retried, since a retry gets the same
+  challenge. Other 403 and 429 answers wait the `Retry-After` the server gives
+  (seconds or a date) and end the board when it is longer than 30 seconds;
+  without one they wait about 5 then 10 seconds, with jitter. A retry no longer
+  holds one of the board's request slots while it waits, no wait follows the
+  last attempt, and no wait runs past `max_fetch_seconds`. The error still names
+  the last HTTP status. Descriptions stop being requested after one is refused
+  with 429 or a challenge, and a warning says so.
 - Bundesagentur: a request refused with 403 or 429, a server error or a network
   error is retried with backoff capped at two minutes, up to 14 attempts (about
   16 minutes), while other pages go on, so one refused page no longer ends a full

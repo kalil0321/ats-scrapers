@@ -9,6 +9,7 @@ import sys
 import types
 from typing import Any
 
+import httpx
 import pytest
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
@@ -420,3 +421,161 @@ async def test_run_sync_inside_running_loop() -> None:
         return 7
 
     assert BaseScraper._run_sync(coro()) == 7
+
+
+# --- transport --------------------------------------------------------------
+
+
+class _Recorder(httpx.AsyncBaseTransport):
+    def __init__(self, status: int = 200, payload: Any = None) -> None:
+        self.status = status
+        self.payload = payload
+        self.urls: list[str] = []
+        self.closed = False
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.urls.append(str(request.url))
+        return httpx.Response(self.status, json=self.payload)
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+async def test_a_transport_sends_every_request_and_stays_open() -> None:
+    transport = _Recorder(payload={"ok": True})
+
+    async with _fetcher(transport=transport, proxy="http://proxy.test:8080") as fetch:
+        assert await fetch.get_json(URL) == {"ok": True}
+
+    assert transport.urls == [URL]
+    assert not transport.closed
+
+
+async def test_a_transport_turns_escalation_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ats_scrapers import fetch as fetch_module
+
+    monkeypatch.setattr(fetch_module, "_cloak_available", lambda: True)
+
+    async with _fetcher(transport=_Recorder(status=403), escalate=True) as fetch:
+        with pytest.raises(ScraperError, match="returned 403"):
+            await fetch.get_json(URL)
+        assert fetch.engine == "httpx"
+
+
+def test_the_cloak_engine_cannot_use_a_transport() -> None:
+    with pytest.raises(ValueError, match="cloak engine"):
+        _fetcher(engine="cloak", transport=_Recorder())
+
+
+def test_scrapers_give_their_transport_to_their_fetchers() -> None:
+    from ats_scrapers.scrapers import AshbyScraper
+
+    transport = _Recorder(payload={"jobs": []})
+
+    assert AshbyScraper("acme", transport=transport).fetch() == []
+    assert transport.urls[0].startswith("https://api.ashbyhq.com/posting-api/job-board/acme")
+
+
+# --- pacing -----------------------------------------------------------------
+
+
+def _fake_clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    from ats_scrapers import fetch as fetch_module
+
+    now = [100.0]
+
+    async def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(fetch_module.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(fetch_module.asyncio, "sleep", sleep)
+    return now
+
+
+def test_host_pacer_spaces_starts_per_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ats_scrapers.fetch import HostPacer
+
+    now = _fake_clock(monkeypatch)
+    pacer = HostPacer(2.0)
+    starts: list[tuple[str, float]] = []
+
+    async def main() -> None:
+        for host in ("a.test", "a.test", "a.test", "b.test"):
+            await pacer.wait(f"https://{host}/jobs")
+            starts.append((host, now[0]))
+
+    asyncio.run(main())
+
+    assert starts == [("a.test", 100.0), ("a.test", 100.5), ("a.test", 101.0), ("b.test", 101.0)]
+
+
+def test_host_pacer_groups_hosts_by_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ats_scrapers.fetch import HostPacer
+
+    now = _fake_clock(monkeypatch)
+    pacer = HostPacer(4.0, key=lambda host: host.split(".", 1)[1])
+    starts: list[float] = []
+
+    async def main() -> None:
+        for url in (
+            "https://acme.wd5.myworkdayjobs.com/x",
+            "https://other.wd5.myworkdayjobs.com/x",
+            "https://acme.wd1.myworkdayjobs.com/x",
+        ):
+            await pacer.wait(url)
+            starts.append(now[0])
+
+    asyncio.run(main())
+
+    assert starts == [100.0, 100.25, 100.25]
+
+
+def test_host_pacer_releases_late_waiters_one_interval_apart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ats_scrapers import fetch as fetch_module
+
+    now = [100.0]
+    monkeypatch.setattr(fetch_module.time, "monotonic", lambda: now[0])
+    pacer = fetch_module.HostPacer(2.0)
+    assert pacer._start_now("https://a.test/x") == 0.0
+    assert [pacer._start_now("https://a.test/x") for _ in range(3)] == [0.5, 0.5, 0.5]
+
+    # The loop was busy well past those starts: one waiter goes, the rest wait.
+    now[0] = 105.0
+    assert [pacer._start_now("https://a.test/x") for _ in range(3)] == [0.0, 0.5, 0.5]
+
+
+def test_host_pacer_gives_up_past_the_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ats_scrapers.fetch import HostPacer
+
+    _fake_clock(monkeypatch)
+    pacer = HostPacer(1.0)
+
+    async def main() -> None:
+        await pacer.wait("https://a.test/x")
+        await pacer.wait("https://a.test/x", timeout=0.2)
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(main())
+
+
+def test_host_pacer_needs_a_positive_rate() -> None:
+    from ats_scrapers.fetch import HostPacer
+
+    with pytest.raises(ValueError, match="positive"):
+        HostPacer(0)
+
+
+def test_a_transport_runs_a_cloak_scraper_on_httpx() -> None:
+    import httpx
+
+    from ats_scrapers.scrapers.darwinbox import DarwinboxScraper
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={}))
+    scraper = DarwinboxScraper("acme")
+    scraper.transport = transport
+
+    fetcher = scraper.make_fetcher()
+
+    assert fetcher.engine == "httpx"
