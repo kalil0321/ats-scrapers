@@ -88,6 +88,8 @@ class FakeCDP:
     redirects: dict[str, str] = field(default_factory=dict)
     connections: list[SimpleNamespace] = field(default_factory=list)
     fail: bool = False
+    # Reads refused while a page navigates on by itself, as after a JavaScript challenge.
+    navigations: int = 0
 
     async def connect(self, cdp_url: str) -> tuple[Any, Any]:
         if self.fail:
@@ -103,7 +105,16 @@ class FakeCDP:
                 return SimpleNamespace(status=cdp.status)
 
             async def content(self) -> str:
+                if cdp.navigations:
+                    cdp.navigations -= 1
+                    raise RuntimeError(
+                        "Page.content: Unable to retrieve content because the page "
+                        "is navigating and changing the content."
+                    )
                 return f"<html>{self.url}</html>"
+
+            async def wait_for_load_state(self, state: str, **_: Any) -> None:
+                await asyncio.sleep(0)
 
             async def close(self) -> None:
                 self.closed = True
@@ -238,6 +249,27 @@ async def test_concurrent_renders_share_one_session(httpx_mock, cdp: FakeCDP) ->
     assert [p.url for p in pages] == [f"https://acme.example/jobs/{i}" for i in range(4)]
     assert [r.method for r in httpx_mock.get_requests()] == ["POST", "PATCH"]
     assert len(cdp.connections) == 1
+
+
+async def test_a_page_that_moves_on_by_itself_is_read_once_it_settles(
+    httpx_mock, cdp: FakeCDP,
+) -> None:
+    _mock_sessions(httpx_mock, PROVIDERS[2].values[0])
+    cdp.navigations = 2
+
+    async with KernelBrowser("key") as browser:
+        page = await browser.render("https://acme.example/jobs")
+
+    assert page.html == "<html>https://acme.example/jobs</html>"
+
+
+async def test_a_page_that_never_settles_raises(httpx_mock, cdp: FakeCDP) -> None:
+    _mock_sessions(httpx_mock, PROVIDERS[2].values[0])
+    cdp.navigations = 1_000_000
+
+    async with KernelBrowser("key", timeout=0.3) as browser:
+        with pytest.raises(RuntimeError, match="navigating"):
+            await browser.render("https://acme.example/jobs")
 
 
 async def test_page_with_an_error_status_raises(httpx_mock, cdp: FakeCDP) -> None:

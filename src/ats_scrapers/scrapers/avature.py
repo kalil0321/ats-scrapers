@@ -135,6 +135,11 @@ class _BlockedTenantError(Exception):
     """The tenant refused the listing with 406: try the next client."""
 
 
+class _ChallengedTenantError(Exception):
+    """The tenant answered with an AWS WAF JavaScript challenge, which only a
+    browser passes."""
+
+
 _BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -219,6 +224,12 @@ class AvatureScraper(BaseScraper):
             return await self._fetch_direct(base, company)
         except _BlockedTenantError:
             pass  # 406 — try the cheaper fallback first.
+        except _ChallengedTenantError:
+            # httpcloak cannot run the challenge's JavaScript either.
+            return await self._fetch_refused_board(
+                base, company,
+                f"Avature ({base}) answered with an AWS WAF JavaScript challenge",
+            )
 
         # Cheap fallback: httpcloak's TLS+h2 fingerprint passes the LB on
         # ~80% of the previously 406-blocked tenants we sampled. No paid
@@ -228,15 +239,19 @@ class AvatureScraper(BaseScraper):
         except _BlockedTenantError:
             pass  # rare: even httpcloak couldn't get through.
 
-        return await self._fetch_refused_board(base, company)
+        return await self._fetch_refused_board(
+            base, company,
+            f"Avature ({base}) refused the listing (406) to httpx and httpcloak",
+        )
 
-    async def _fetch_refused_board(self, base: str, company: str) -> list[Job]:
-        """Load a board refused to httpx and httpcloak in the cloud browser.
+    async def _fetch_refused_board(
+        self, base: str, company: str, refused: str,
+    ) -> list[Job]:
+        """Load a board that plain HTTP cannot read in the cloud browser.
 
         Without one, or when it fails, the board raises: it was refused, which
         says nothing about whether it has jobs.
         """
-        refused = f"Avature ({base}) refused the listing (406) to httpx and httpcloak"
         if self.cloud_browser is None:
             raise ScraperError(
                 f"{refused}; pass a `cloud_browser` to load it in a browser, "
@@ -509,10 +524,7 @@ class AvatureScraper(BaseScraper):
             if response.status_code == 200:
                 return response.text, str(response.url)
             if response.headers.get("x-amzn-waf-action", "").lower() == "challenge":
-                raise ScraperError(
-                    f"Avature ({base}) answered with an AWS WAF JavaScript "
-                    "challenge; only a real browser can load this tenant"
-                )
+                raise _ChallengedTenantError(base)
             if response.status_code == 406:
                 # 406 from Avature is usually transient rate-limit-style
                 # blocking: retry with backoff. Only the first listing page

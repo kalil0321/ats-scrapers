@@ -13,6 +13,7 @@ import contextlib
 import importlib.util
 import os
 import threading
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Coroutine, Mapping
 from concurrent.futures import Future
@@ -194,7 +195,7 @@ class CDPCloudBrowser(CloudBrowser):
             )
             if response is not None and response.status >= 400:
                 raise ScraperError(f"{self.provider}: {url} answered {response.status}")
-            return RenderedPage(html=await page.content(), url=page.url)
+            return RenderedPage(html=await _settled_html(page, self.timeout), url=page.url)
         finally:
             with contextlib.suppress(Exception):
                 await page.close()
@@ -387,6 +388,27 @@ def _api_key(value: str | None, env_var: str, owner: str) -> str:
     if not key:
         raise ValueError(f"{owner} needs an API key: pass api_key or set {env_var}")
     return key
+
+
+async def _settled_html(page: Any, timeout: float) -> str:
+    """The page's HTML once it has stopped moving on by itself.
+
+    A JavaScript challenge (AWS WAF, Cloudflare) loads, solves itself and then
+    loads the real page: read in between, the HTML is the challenge's, or
+    Playwright refuses because the page is navigating.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        with contextlib.suppress(Exception):
+            await page.wait_for_load_state(
+                "networkidle", timeout=max(deadline - time.monotonic(), 0.1) * 1000,
+            )
+        try:
+            return await page.content()
+        except Exception as exc:
+            if "navigating" not in str(exc) or time.monotonic() >= deadline:
+                raise
+        await asyncio.sleep(0.25)
 
 
 def _has_playwright() -> bool:
