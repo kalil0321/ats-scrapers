@@ -27,7 +27,15 @@ import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._htmltree import parse_html
+from ats_scrapers.scrapers._posting_detail import (
+    body_text,
+    decode_encoded_tags,
+    fill_missing,
+    job_posting,
+)
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -105,7 +113,40 @@ class YCombinatorScraper(BaseScraper):
                 await absorb(co_jobs)
 
             await asyncio.gather(*(per_company(s) for s in slugs))
+            if self.include_descriptions:
+                await self._enrich_jobs(fetch, jobs)
         return jobs
+
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        self.enrich_descriptions([job])
+        return job.description
+
+    def enrich_descriptions(self, jobs: list[Job]) -> list[Job]:
+        async def run() -> None:
+            async with self.make_fetcher() as fetch:
+                await self._enrich_jobs(fetch, jobs)
+
+        if any(not job.description for job in jobs):
+            self._run_sync(run())
+        return jobs
+
+    async def _enrich_jobs(self, fetch: Fetcher, jobs: list[Job]) -> None:
+        sem = asyncio.Semaphore(MAX_CONCURRENCY)
+
+        async def enrich(job: Job) -> None:
+            if job.url.host != "www.ycombinator.com":
+                return
+            try:
+                page = await self._request_html(fetch, sem, str(job.url))
+            except ScraperError as exc:
+                log.debug("YC detail unavailable for %s: %s", job.ats_id, exc)
+                return
+            if page:
+                _apply_detail(job, page)
+
+        await fill_missing(jobs, enrich, MAX_CONCURRENCY)
 
     # --- discovery ---------------------------------------------------------
 
@@ -400,35 +441,68 @@ def _employment_from_type(raw: object) -> str | None:
 def _compose_description(item: dict[str, Any]) -> str | None:
     """Build a plain-text body from YC's embedded posting fields."""
     parts: list[str] = []
-    for key in (
-        "description",
-        "descriptionPlain",
-        "aboutRole",
-        "responsibilities",
-        "requirements",
-        "companyOneLiner",
+    main = item.get("descriptionPlain") or item.get("description")
+    for value in (
+        main, item.get("aboutRole"), item.get("responsibilities"),
+        item.get("requirements"), item.get("interview_process"),
     ):
-        value = item.get(key)
-        if isinstance(value, str) and value.strip():
-            parts.append(_clean_description_text(value))
-        elif isinstance(value, list):
-            cleaned = [
-                _clean_description_text(v)
-                for v in value
-                if isinstance(v, str) and v.strip()
-            ]
-            if cleaned:
-                parts.append("\n".join(cleaned))
-    text = "\n\n".join(p for p in parts if p).strip()
-    return text[:25_000] or None
+        for part in value if isinstance(value, list) else [value]:
+            if isinstance(part, str) and part.strip():
+                text = _clean_description_text(part)
+                if text and text not in parts:
+                    parts.append(text)
+    return "\n\n".join(parts)[:25_000] or None
+
+
+# Known tags only, so Markdown such as ``List<String>`` is not read as HTML.
+_HTML_TAG = re.compile(
+    r"</?(?:a|abbr|b|blockquote|br|code|div|em|h[1-6]|hr|i|li|ol|p|pre|s|small|span"
+    r"|strong|sub|sup|table|tbody|td|th|thead|tr|u|ul)\b[^<>]*>",
+    re.IGNORECASE,
+)
 
 
 def _clean_description_text(value: str) -> str:
-    text = html.unescape(value)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
-    text = re.sub(r"[*_`#>]+", "", text)
-    return re.sub(r"[ \t\r\f\v]+", " ", text).strip()
+    value = decode_encoded_tags(value)
+    if _HTML_TAG.search(value):
+        return body_text(value)
+    # Strip Markdown formatting while preserving names such as C# and foo_bar.
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.M)
+    return html.unescape(re.sub(r"\*\*(.+?)\*\*", r"\1", text)).strip()
+
+
+def _apply_detail(job: Job, page: str) -> None:
+    posting = job_posting(page)
+    # YC's server-rendered page embeds the primary posting and related
+    # jobs. Only props.job belongs to this row.
+    props_job: dict[str, Any] = {}
+    for node in parse_html(page).walk():
+        encoded = node.attrs.get("data-page")
+        if not encoded:
+            continue
+        try:
+            payload = json.loads(encoded)
+        except ValueError:
+            continue
+        props = payload.get("props") if isinstance(payload, dict) else None
+        candidate = props.get("job") if isinstance(props, dict) else None
+        if isinstance(candidate, dict):
+            if job.ats_id and str(candidate.get("id")) != job.ats_id:
+                return
+            props_job = candidate
+            break
+
+    description = body_text(posting.get("description"))
+    if description:
+        interview = props_job.get("interview_process")
+        if isinstance(interview, str) and interview.strip():
+            section = _clean_description_text(interview)
+            if section and section not in description:
+                description += "\n\n" + section
+        job.description = description[:25_000]
+    else:
+        job.description = _compose_description(props_job)
 
 
 _RELATIVE_RE = re.compile(

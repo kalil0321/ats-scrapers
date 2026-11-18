@@ -19,7 +19,11 @@ import asyncio
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.scrapers.eures import EuresScraper, _extract_detail_description
+from ats_scrapers.scrapers.eures import (
+    EuresScraper,
+    _clean_description_text,
+    _extract_detail_description,
+)
 
 
 def _base_item(**overrides):
@@ -44,36 +48,29 @@ def test_real_employer_passes_through_verbatim() -> None:
     assert job.description == "Build European services."
 
 
-def test_detail_description_falls_back_to_application_instructions() -> None:
-    payload = {
-        "preferredLanguage": "bg",
-        "jvProfiles": {
-            "bg": {
-                "description": "",
-                "applicationInstructions": [
-                    'Contact <a href="mailto:jobs@example.com">jobs@example.com</a>'
-                ],
-            }
-        },
+def test_metadata_alone_is_not_a_job_description() -> None:
+    payload = {"jvProfiles": {"bg": {
+        "description": "<p>&nbsp;</p>",
+        "employer": {"description": "Company profile"},
+        "requiredSkills": [{"prefLabel": "Driving"}],
+        "applicationInstructions": ["Call the employer."],
+    }}}
+
+    assert _extract_detail_description(payload) is None
+
+
+def test_detail_prefers_original_profile_then_falls_back_across_languages() -> None:
+    profiles = {
+        "en": {"description": "Call the employer."},
+        "de": {"description": "<p>Bitte anrufen.</p>"},
     }
-
-    assert _extract_detail_description(payload) == (
-        "Application instructions: Contact jobs@example.com"
-    )
-
-
-def test_detail_description_prefers_real_description_over_fallback() -> None:
-    payload = {
-        "preferredLanguage": "en",
-        "jvProfiles": {
-            "en": {
-                "description": "<p>Build European services.</p>",
-                "applicationInstructions": ["Call the employer"],
-            }
-        },
-    }
-
-    assert _extract_detail_description(payload) == "Build European services."
+    payload = {"preferredLanguage": "de", "jvProfiles": profiles,
+               "translation": {"description": "Translated text"}}
+    assert _extract_detail_description(payload) == "Bitte anrufen."
+    profiles["de"]["description"] = "<br>"
+    assert _extract_detail_description(payload) == "Call the employer."
+    profiles.clear()
+    assert _extract_detail_description(payload) == "Translated text"
 
 
 def test_zero_width_description_is_ignored() -> None:
@@ -104,58 +101,37 @@ def test_contract_type_wins_over_schedule() -> None:
     assert job.employment_type == "TEMPORARY"
 
 
-def test_get_description_fetches_detail_api(httpx_mock) -> None:
+@pytest.mark.parametrize(("response", "expected"), [
+    ({"jvProfiles": {"en": {"description": "Apply through EURES."}}}, "Apply through EURES."),
+    ({"jvProfiles": {"en": {"applicationInstructions": ["Apply through EURES."]}}}, None),
+    (["unexpected"], None),
+])
+def test_get_description_uses_only_detail_job_body(httpx_mock, response, expected) -> None:
     httpx_mock.add_response(
-        url="https://europa.eu/eures/api/jv-searchengine/public/jv/id/abc123?lang=en",
-        json={
-            "preferredLanguage": "en",
-            "jvProfiles": {
-                "en": {
-                    "description": "",
-                    "applicationInstructions": ["Apply through EURES."],
-                }
-            },
-        },
+        url="https://europa.eu/eures/api/jv-searchengine/public/jv/id/abc123?requestLang=en&preferredLang=en",
+        json=response,
     )
-    job = EuresScraper("eures")._parse(_base_item(id="abc123", description=""))
-
-    assert job is not None
-    assert EuresScraper("eures").get_description(job) == (
-        "Application instructions: Apply through EURES."
-    )
+    scraper = EuresScraper("eures")
+    job = scraper._parse(_base_item(description="", locationMap={"DE": ["DE1"]}))
+    assert scraper.get_description(job) == expected
 
 
-def test_get_description_falls_back_to_job_summary_on_detail_404(httpx_mock) -> None:
+def test_get_description_returns_none_for_vanished_job(httpx_mock) -> None:
     httpx_mock.add_response(
-        url="https://europa.eu/eures/api/jv-searchengine/public/jv/id/gone?lang=en",
+        url="https://europa.eu/eures/api/jv-searchengine/public/jv/id/gone?requestLang=en&preferredLang=en",
         status_code=404,
     )
-    job = EuresScraper("eures")._parse(
-        _base_item(id="gone", description="", locationMap={"DE": ["DE1"]})
-    )
-
-    assert job is not None
-    assert EuresScraper("eures").get_description(job) == (
-        "Software Engineer. Employer: Acme Corp. Location: DE (DE1)"
-    )
+    scraper = EuresScraper("eures")
+    job = scraper._parse(_base_item(id="gone", description="", locationMap={"DE": ["DE1"]}))
+    assert scraper.get_description(job) is None
+    assert scraper.get_description(job.model_copy(update={"ats_id": None})) is None
 
 
-def test_get_description_falls_back_when_existing_description_is_too_short(
-    httpx_mock,
-) -> None:
-    httpx_mock.add_response(
-        url="https://europa.eu/eures/api/jv-searchengine/public/jv/id/tiny?lang=en",
-        status_code=404,
-    )
-    job = EuresScraper("eures")._parse(
-        _base_item(id="tiny", description="OK", locationMap={"LV": ["LV009"]})
-    )
-
-    assert job is not None
-    assert job.description is None
-    assert EuresScraper("eures").get_description(job) == (
-        "Software Engineer. Employer: Acme Corp. Location: LV (LV009)"
-    )
+def test_short_listing_description_needs_no_detail_request(httpx_mock) -> None:
+    scraper = EuresScraper("eures")
+    job = scraper._parse(_base_item(description="OK"))
+    assert job.description == scraper.get_description(job) == "OK"
+    assert not httpx_mock.get_requests()
 
 
 def test_french_non_renseigne_kept_verbatim() -> None:
@@ -344,3 +320,23 @@ def test_fetch_stream_raises_when_the_portal_query_fails(monkeypatch) -> None:
 
     with pytest.raises(ScraperError, match="network down"):
         asyncio.run(consume())
+
+
+def test_listing_uses_translation_if_original_contains_only_markup() -> None:
+    item = _base_item(description="<br>", translations={
+        "en": {"description": "&#8203;"},
+        "de": {"description": "E-Mail: &lt;info@example.org&gt;"},
+    })
+    job = EuresScraper("eures")._parse(item)
+    assert job.description == "E-Mail: <info@example.org>"
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ("&lt;p&gt;Drive trucks.&lt;/p&gt;", "Drive trucks."),
+    ("<p>Use the &lt;div&gt; element.</p>", "Use the <div> element."),
+    ("Pay &lt; 3,000 EUR", "Pay < 3,000 EUR"),
+])
+def test_description_text_reads_encoded_markup_and_keeps_literal_brackets(
+    value: str, expected: str,
+) -> None:
+    assert _clean_description_text(value) == expected

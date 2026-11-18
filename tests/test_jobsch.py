@@ -21,7 +21,7 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import JobsChScraper, ScraperRegistry
 
-_API_RE = re.compile(r"^https://www\.jobs\.ch/api/v1/public/search")
+_API_RE = re.compile(r"^https://www\.jobs\.ch/api/v1/public/search(?:\?|$)")
 
 
 # Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture
@@ -29,12 +29,15 @@ _API_RE = re.compile(r"^https://www\.jobs\.ch/api/v1/public/search")
 # retry constants.
 @pytest.fixture(autouse=True)
 def _detail_page_stub(httpx_mock) -> None:
-    httpx_mock.add_response(
-        url=re.compile(r"^https://www\.jobs\.ch/(?:de/stellenangebote|en/vacancies)/detail/"),
-        text="<html><body><div class='vacancy-description'>Build Swiss products.</div></body></html>",
-        is_reusable=True,
-        is_optional=True,
-    )
+    def default_detail(request):
+        return httpx.Response(200, json={
+            "job_id": request.url.path.split("/")[-1],
+            "template_text": "<div>Build Swiss products.</div>",
+        })
+
+    httpx_mock.add_callback(default_detail, url=re.compile(
+        r"^https://www\.jobs\.ch/api/v1/public/search/job/(?!meta-1$|detail-test$|gone$)"
+    ), is_reusable=True, is_optional=True)
 
 
 def _doc(
@@ -112,7 +115,7 @@ def test_parses_full_doc(httpx_mock) -> None:
     assert str(j.url) == "https://www.jobs.ch/de/stellenangebote/detail/abc-123/"
 
 
-def test_extracts_meta_description_with_reversed_attributes(httpx_mock) -> None:
+def test_skips_publication_notice_when_api_and_page_have_no_body(httpx_mock) -> None:
     httpx_mock.add_response(
         url=_API_RE,
         json=_page([
@@ -123,17 +126,18 @@ def test_extracts_meta_description_with_reversed_attributes(httpx_mock) -> None:
             )
         ], total_hits=1),
     )
+    httpx_mock.add_response(url="https://www.jobs.ch/api/v1/public/search/job/meta-1", json={})
     httpx_mock.add_response(
         url="https://example.com/jobs/meta-1/",
         text=(
-            "<html><head><meta content='Build Swiss APIs.' "
+            "<html><head><meta content='Apply now for this job!' "
             "name='description'></head></html>"
         ),
     )
 
     jobs = JobsChScraper("any", query_seeds=()).fetch()
 
-    assert jobs[0].description == "Build Swiss APIs."
+    assert jobs[0].description is None
 
 
 def test_falls_back_to_canonical_url_when_no_links(httpx_mock) -> None:
@@ -237,7 +241,7 @@ def test_enriches_after_cross_seed_dedupe(httpx_mock) -> None:
 
     assert [j.ats_id for j in jobs] == ["dupe"]
     detail_requests = httpx_mock.get_requests(
-        url=re.compile(r"^https://www\.jobs\.ch/en/vacancies/detail/dupe/")
+        url=re.compile(r"^https://www\.jobs\.ch/api/v1/public/search/job/dupe$")
     )
     assert len(detail_requests) == 1
 
@@ -525,3 +529,52 @@ def test_persistent_500_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=_API_RE, status_code=500, is_reusable=True)
     with pytest.raises(ScraperError):
         JobsChScraper("any", query_seeds=()).fetch()
+
+
+@pytest.mark.parametrize("defer", [True, False])
+def test_detail_returns_original_sections(httpx_mock, defer) -> None:
+    doc = _doc(job_id="detail-test", title="Mitarbeiter")
+    doc.update(preview="SEO teaser...")
+    httpx_mock.add_response(url=_API_RE, json=_page([doc], 1))
+    httpx_mock.add_response(url="https://www.jobs.ch/api/v1/public/search/job/detail-test", json={
+        "job_id": "detail-test", "template_text": "<h2>Aufgaben</h2><p>C++ &amp; C#.</p>",
+        "template_lead_text": "Unser Team", "template_contact_address": "<p>Kontakt</p>",
+    })
+    scraper = JobsChScraper("any", include_descriptions=not defer)
+    job, = scraper.fetch()
+    if defer:
+        assert job.description is None and len(httpx_mock.get_requests()) == 1
+    assert scraper.get_description(job) == "Unser Team\n\nAufgaben\nC++ & C#.\n\nKontakt"
+    assert len(httpx_mock.get_requests()) == 2
+
+
+def test_html_fallback_prefers_original_and_preserves_nested_sections(httpx_mock) -> None:
+    scraper = JobsChScraper("any")
+    job = scraper._parse(_doc(job_id="detail-test", title="Engineer"))
+    httpx_mock.add_response(url="https://www.jobs.ch/api/v1/public/search/job/detail-test",
+                            json={"job_id": "detail-test", "preview": "Teaser"})
+    httpx_mock.add_response(url=str(job.url), text="""
+      <script type="application/ld+json">{"@type":"JobPosting","description":"Translation"}</script>
+      <section data-cy="vacancy-description"><div data-cy="info-block">Summary</div>
+      <h4>About the job</h4><div>Original <b>text</b>.</div><p>Last paragraph.</p></section>""")
+    assert scraper.get_description(job) == "Original text.\nLast paragraph."
+
+
+def test_listing_body_needs_no_detail_request(httpx_mock) -> None:
+    doc = _doc(job_id="inline", title="Tester")
+    doc.update(template_text="<p>Test it.</p>")
+    httpx_mock.add_response(url=_API_RE, json=_page([doc], 1))
+    job, = JobsChScraper("any").fetch()
+    assert job.description == "Test it."
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_complete_template_in_api_avoids_page_fetch(httpx_mock) -> None:
+    scraper = JobsChScraper("any")
+    job = scraper._parse(_doc(job_id="detail-test", title="Tester"))
+    httpx_mock.add_response(url="https://www.jobs.ch/api/v1/public/search/job/detail-test", json={
+        "job_id": "detail-test", "template": "<html><head><title>SEO</title></head>"
+        "<body><p>Test systems.</p><ul><li>Collaborate.</li></ul></body></html>",
+    })
+    assert scraper.get_description(job) == "Test systems.\nCollaborate."
+    assert len(httpx_mock.get_requests()) == 1

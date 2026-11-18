@@ -232,3 +232,20 @@ def test_persistent_500_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=_api_url(), status_code=500, is_reusable=True)
     with pytest.raises(ScraperError):
         ManfredScraper("any").fetch()
+
+
+def test_visible_detail_sections_and_technical_punctuation(httpx_mock) -> None:
+    detail = {
+        **_detail(), "whatTheyAskFor": "Know **C#** and read pg_stat.",
+        "inOneMonth": "Onboard.", "inThreeMonths": "Ship.", "inSixMonths": "Lead.",
+        "faq": [{"question": "Where?", "answer": "Spain only."}],
+        "watches": {"description": "Paid weekend shifts."},
+        "perks": [{"name": "Health insurance"}],
+    }
+    httpx_mock.add_response(url=_api_url(), json=[_offer()])
+    httpx_mock.add_response(url=_detail_url(), json=detail)
+    [job] = ManfredScraper("any").fetch()
+    for section in ("Know C# and read pg_stat.", "Onboard.", "Ship.", "Lead.",
+                    "Where?", "Spain only.", "Paid weekend shifts.",
+                    "Health insurance"):
+        assert section in job.description

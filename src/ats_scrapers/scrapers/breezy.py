@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING, ClassVar
 from ats_scrapers import fetch as fetch_layer
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._htmltree import parse_html
+from ats_scrapers.scrapers._posting_detail import body_text, job_posting
 from ats_scrapers.scrapers._slug import require_host_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -248,26 +250,10 @@ class BreezyScraper(BaseScraper):
 
 
 def _extract_description(html: str) -> str | None:
-    """Pull the plain-text description body from a Breezy detail page.
-
-    Breezy renders the position body as ``<div class="description">``
-    (rich HTML — paragraphs, lists). Tenants that hide the description
-    behind a login or whose pages lack the standard markup yield
-    ``None``; the caller silently keeps the listing-derived row.
-    """
-    try:
-        from bs4 import BeautifulSoup
-    except ImportError as exc:  # pragma: no cover
-        raise ScraperError(
-            "BreezyHR detail-page enrichment requires beautifulsoup4."
-        ) from exc
-
-    soup = BeautifulSoup(html, "html.parser")
-    block = soup.find(class_="description")
-    if block is None:
-        return None
-    text = block.get_text(separator="\n", strip=True)
-    return text or None
+    for node in parse_html(html).walk():
+        if "description" in node.classes and (text := node.lines()):
+            return text
+    return body_text(job_posting(html).get("description")) or None
 
 
 def _format_location(value: object) -> str | None:

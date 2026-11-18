@@ -43,6 +43,8 @@ import httpx
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._htmltree import parse_html
+from ats_scrapers.scrapers._posting_detail import body_text, job_posting
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -63,16 +65,6 @@ RETRY_BASE_DELAY = 2.0
 DETAIL_CONCURRENCY = 4
 
 _TAG_RE = re.compile(r"<[^>]+>")
-_META_TAG_RE = re.compile(r"<meta\b(?P<attrs>[^>]*)>", re.IGNORECASE | re.DOTALL)
-_ATTR_RE = re.compile(
-    r"(?P<name>[a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*"
-    r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
-    re.DOTALL,
-)
-_DETAIL_DESCRIPTION_RE = re.compile(
-    r'<(?:div|section|article)[^>]+class=["\'][^"\']*(?:job-description|description|job-detail)[^"\']*["\'][^>]*>(?P<body>.*?)</(?:div|section|article)>',
-    re.IGNORECASE | re.DOTALL,
-)
 _JOB_LINK_RE = re.compile(r'href="(/jobs/(?P<id>\d+)-[a-z0-9-]+)"')
 # Each card is wrapped in `<div class="cell-list ">…</div>` containing
 # one anchor with the job link. We anchor the regex on the cell start
@@ -164,7 +156,6 @@ class ProgramathorScraper(BaseScraper):
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
-        copy = job.model_copy()
 
         async def run() -> str | None:
             client_kwargs: dict[str, Any] = {
@@ -176,8 +167,8 @@ class ProgramathorScraper(BaseScraper):
                 client_kwargs["verify"] = False
             async with httpx.AsyncClient(**client_kwargs) as client:
                 sem = asyncio.Semaphore(1)
-                await self._enrich_description(client, sem, copy)
-            return copy.description
+                await self._enrich_description(client, sem, job)
+            return job.description
 
         return self._run_sync(run())
 
@@ -395,29 +386,27 @@ def _strip_html(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
-def _extract_description(text: str) -> str | None:
-    match = _DETAIL_DESCRIPTION_RE.search(text)
-    if match:
-        cleaned = _strip_html(match.group("body"))
-        if cleaned:
-            return cleaned
-    meta = _extract_meta_description(text)
-    return meta or None
-
-
-def _extract_meta_description(text: str) -> str | None:
-    for tag in _META_TAG_RE.finditer(text):
-        attrs = {
-            m.group("name").lower(): html.unescape(m.group("value"))
-            for m in _ATTR_RE.finditer(tag.group("attrs"))
-        }
-        kind = (attrs.get("name") or attrs.get("property") or "").lower()
-        if kind not in {"description", "og:description"}:
-            continue
-        cleaned = _strip_html(attrs.get("content") or "")
-        if cleaned:
-            return cleaned
-    return None
+def _extract_description(page: str) -> str | None:
+    # The visible sections also include the employer introduction. The
+    # structured version can omit it and relabel requirements as duties.
+    root = parse_html(page)
+    skills: list[str] = []
+    description = ""
+    for block in root.walk():
+        if "wrapper-header-job-show" in block.classes:
+            skills = [tag.text() for tag in block.walk() if "tag-hover" in tag.classes]
+        if "wrapper-content-job-show" in block.classes:
+            section = next((n for n in block.walk() if "line-height-2-4" in n.classes), None)
+            if section:
+                description = section.lines()
+        elif "job-description" in block.classes and not description:
+            description = block.lines()
+    if description:
+        if skills:
+            description = "Habilidades\n" + ", ".join(skills) + "\n" + description
+    else:
+        description = body_text(job_posting(page).get("description"))
+    return description[:25_000] or None
 
 
 def _normalize_location(raw: str) -> str | None:

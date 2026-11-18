@@ -8,6 +8,7 @@ brittle than useful.
 
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -140,3 +141,78 @@ def test_extracts_description_from_detail_json_ld() -> None:
     assert _description_from_detail_html(html) == (
         "Build Meta systems.\n\nOperate global products."
     )
+
+
+def test_encoded_jobposting_keeps_visible_punctuation() -> None:
+    page = """<script type="application/ld+json">
+      {&quot;@type&quot;:&quot;JobPosting&quot;,&quot;description&quot;:&quot;Use C#.&quot;}
+    </script>"""
+    assert _description_from_detail_html(page) == "Use C#."
+
+
+@pytest.mark.parametrize("via_batch", [False, True])
+def test_partial_graphql_is_enriched_from_structured_detail(httpx_mock, via_batch) -> None:
+    entry = {"id": "123", "title": "Engineer", "description": "Intro"}
+    scraper = MetaScraper("meta")
+    [job] = scraper._parse_responses([{"data": {"careers": {"jobs": [entry]}}}])
+    posting = {
+        "@type": "JobPosting", "description": "Intro", "responsibilities": "Design.",
+        "qualifications": ["Six years.", "Use &quot;SQL&quot;."],
+    }
+    httpx_mock.add_response(url=str(job.url), text=(
+        '<script type="application/ld+json">' + json.dumps({"@graph": [posting]}) + '</script>'
+    ))
+    if via_batch:
+        assert scraper.enrich_descriptions([job]) == [job]
+    else:
+        assert scraper.get_description(job) == job.description
+    assert job.description == 'Intro\n\nDesign.\n\nSix years.\nUse "SQL".'
+    scraper.get_description(job)
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_complete_graphql_needs_no_detail_request() -> None:
+    entry = {
+        "id": "123", "title": "Engineer", "description": "Intro",
+        "responsibilities": ["Build"], "minimum_qualifications": ["SQL"],
+        "preferred_qualifications": ["C#"],
+    }
+    scraper = MetaScraper("meta")
+    [job] = scraper._parse_responses([{"data": {"careers": {"jobs": [entry]}}}])
+    assert scraper.get_description(job) == "Intro\n\nBuild\n\nSQL\n\nC#"
+
+
+def test_partial_graphql_survives_failed_detail_read(httpx_mock) -> None:
+    entry = {"id": "123", "title": "Engineer", "description": "Intro"}
+    scraper = MetaScraper("meta")
+    [job] = scraper._parse_responses([{"data": {"careers": {"jobs": [entry]}}}])
+    httpx_mock.add_response(url=str(job.url), status_code=503)
+    assert scraper.get_description(job) == "Intro"
+
+
+def test_detail_that_adds_nothing_is_read_once(httpx_mock) -> None:
+    entry = {"id": "123", "title": "Engineer", "description": "Intro"}
+    scraper = MetaScraper("meta")
+    [job] = scraper._parse_responses([{"data": {"careers": {"jobs": [entry]}}}])
+    posting = {"@type": "JobPosting", "description": "Intro"}
+    httpx_mock.add_response(url=str(job.url), text=(
+        '<script type="application/ld+json">' + json.dumps(posting) + '</script>'
+    ))
+
+    assert scraper.get_description(job) == "Intro"
+    assert scraper.get_description(job) == "Intro"
+    scraper.enrich_descriptions([job])
+
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_a_fresh_listing_row_is_enriched_after_an_earlier_read(httpx_mock) -> None:
+    entry = {"id": "123", "title": "Engineer", "description": "Intro"}
+    posting = {"@type": "JobPosting", "description": "Intro", "responsibilities": "Design."}
+    page = '<script type="application/ld+json">' + json.dumps(posting) + '</script>'
+    scraper = MetaScraper("meta")
+
+    for _ in range(2):
+        [job] = scraper._parse_responses([{"data": {"careers": {"jobs": [entry]}}}])
+        httpx_mock.add_response(url=str(job.url), text=page)
+        assert scraper.get_description(job) == "Intro\n\nDesign."

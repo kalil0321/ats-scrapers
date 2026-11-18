@@ -98,6 +98,9 @@ def test_base_enrich_descriptions_uses_get_description() -> None:
 
 def test_workable_get_description_fetches_markdown(httpx_mock) -> None:
     httpx_mock.add_response(
+        url="https://apply.workable.com/api/v2/accounts/acme/jobs/ABC123", status_code=404
+    )
+    httpx_mock.add_response(
         url="https://apply.workable.com/acme/jobs/view/ABC123.md",
         text="# Engineer\n\nBuild useful products.",
     )
@@ -110,6 +113,29 @@ def test_workable_get_description_fetches_markdown(httpx_mock) -> None:
     description = WorkableScraper("acme").get_description(job)
 
     assert description == "# Engineer\n\nBuild useful products."
+    assert job.description is None
+
+
+def test_workable_markdown_omits_widget_header_and_apply_footer(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://apply.workable.com/api/v2/accounts/acme/jobs/ABC123", status_code=404
+    )
+    httpx_mock.add_response(
+        url="https://apply.workable.com/acme/jobs/view/ABC123.md",
+        text=(
+            "# Engineer\n\n## Description\nBuild useful products.\n\n"
+            "## Apply\n\n[Apply here](https://apply.workable.com/acme/j/ABC123/apply)"
+        ),
+    )
+    job = _job(
+        ats_type=ATSType.WORKABLE,
+        ats_id="ABC123",
+        url="https://apply.workable.com/acme/j/ABC123",
+    )
+
+    description = WorkableScraper("acme").get_description(job)
+
+    assert description == "Build useful products."
     assert job.description is None
 
 
@@ -152,3 +178,23 @@ def test_breezy_get_description_fetches_detail_html(httpx_mock) -> None:
 
     assert description == "Build hiring tools."
     assert job.description is None
+
+
+def test_workable_get_description_reads_all_sections_from_json(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://apply.workable.com/api/v2/accounts/acme/jobs/ABC123",
+        json={"description": "<p>Build.</p>", "requirements": "Python", "benefits": "Pension"},
+    )
+    job = _job(ats_type=ATSType.WORKABLE, ats_id="ABC123")
+    assert WorkableScraper("acme").get_description(job) == "Build.\n\nPython\n\nPension"
+    assert job.description is None
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_workable_detail_rate_limit_does_not_trigger_a_second_request(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://apply.workable.com/api/v2/accounts/acme/jobs/ABC123", status_code=429,
+    )
+    job = _job(ats_type=ATSType.WORKABLE, ats_id="ABC123")
+    assert WorkableScraper("acme").get_description(job) is None
+    assert len(httpx_mock.get_requests()) == 1

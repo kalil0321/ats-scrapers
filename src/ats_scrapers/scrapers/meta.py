@@ -18,10 +18,7 @@ present, the scraper carries them into ``Job.description``.
 from __future__ import annotations
 
 import asyncio
-import html
-import json
 import logging
-import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,6 +26,7 @@ import httpx
 
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers import _cloakbrowser as cb
+from ats_scrapers.scrapers._posting_detail import body_text, job_posting
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 log = logging.getLogger(__name__)
@@ -41,10 +39,6 @@ _LISTING_URL = "https://www.metacareers.com/jobs"
 # the first wave to settle.
 _GRAPHQL_SETTLE_MS = 8_000
 _DETAIL_CONCURRENCY = 4
-_JSON_LD_RE = re.compile(
-    r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(?P<body>.*?)</script>',
-    re.IGNORECASE | re.DOTALL,
-)
 
 
 @ScraperRegistry.register(ATSType.META)
@@ -53,6 +47,13 @@ class MetaScraper(BaseScraper):
 
     ats = ATSType.META
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # (URL, description) once the posting's detail page was read: a job
+        # still holding that description needs no second read, even when the
+        # detail added nothing to the listing.
+        self._details_read: set[tuple[str, str | None]] = set()
+
     async def afetch(self) -> list[Job]:
         if not cb.is_enabled():
             cb.warn_disabled("Meta")
@@ -60,15 +61,14 @@ class MetaScraper(BaseScraper):
         return await self._fetch_via_cloakbrowser()
 
     def get_description(self, job: Job) -> str | None:
-        if job.description:
+        if not self._needs_detail(job):
             return job.description
-        jobs = [job.model_copy()]
+        self.enrich_descriptions([job])
+        return job.description
 
-        async def run() -> str | None:
-            await self._enrich_detail_descriptions(jobs)
-            return jobs[0].description
-
-        return self._run_sync(run())
+    def enrich_descriptions(self, jobs: list[Job]) -> list[Job]:
+        self._run_sync(self._enrich_detail_descriptions(jobs))
+        return jobs
 
     async def _fetch_via_cloakbrowser(self) -> list[Job]:
         from cloakbrowser import launch_async
@@ -185,25 +185,19 @@ class MetaScraper(BaseScraper):
         return None
 
     @staticmethod
-    def _description(entry: dict[str, Any]) -> str | None:
-        parts: list[str] = []
-        for key in (
-            "description",
-            "description_plain",
-            "descriptionPlain",
-            "responsibilities",
-            "minimum_qualifications",
-            "preferred_qualifications",
-        ):
-            value = entry.get(key)
-            if isinstance(value, str) and value.strip():
-                parts.append(value.strip())
-            elif isinstance(value, list):
-                items = [v.strip() for v in value if isinstance(v, str) and v.strip()]
-                if items:
-                    parts.append("\n".join(items))
-        text = "\n\n".join(parts).strip()
-        return text[:25_000] or None
+    def _description(entry: dict[str, Any], fallback: dict[str, Any] | None = None) -> str | None:
+        sections = (
+            ("description", "description_plain", "descriptionPlain"),
+            ("responsibilities",),
+            ("qualifications", "minimum_qualifications"),
+            ("preferred_qualifications",),
+        )
+        parts = [_section(entry, *keys) or _section(fallback or {}, *keys) for keys in sections]
+        return "\n\n".join(dict.fromkeys(part for part in parts if part))[:25_000] or None
+
+    def _needs_detail(self, job: Job) -> bool:
+        read = (str(job.url), job.description) in self._details_read
+        return not read and _listing_incomplete(job)
 
     async def _enrich_detail_descriptions(self, jobs: list[Job]) -> None:
         """Fetch Meta detail pages for descriptions missing from listing GraphQL.
@@ -212,7 +206,7 @@ class MetaScraper(BaseScraper):
         public detail page embeds Schema.org ``JobPosting`` JSON-LD with the
         full body, so this path avoids another browser session per job.
         """
-        targets = [(i, job) for i, job in enumerate(jobs) if not job.description]
+        targets = [job for job in jobs if self._needs_detail(job)]
         if not targets:
             return
 
@@ -222,16 +216,14 @@ class MetaScraper(BaseScraper):
             headers={"User-Agent": "Mozilla/5.0"},
         ) as client:
             await asyncio.gather(*(
-                self._enrich_one_detail(client, sem, jobs, i, job)
-                for i, job in targets
+                self._enrich_one_detail(client, sem, job)
+                for job in targets
             ))
 
     async def _enrich_one_detail(
         self,
         client: httpx.AsyncClient,
         sem: asyncio.Semaphore,
-        jobs: list[Job],
-        index: int,
         job: Job,
     ) -> None:
         async with sem:
@@ -241,42 +233,40 @@ class MetaScraper(BaseScraper):
                 return
         if response.status_code != 200:
             return
-        description = _description_from_detail_html(response.text)
-        if description:
-            jobs[index] = job.model_copy(update={"description": description[:25_000]})
+        posting = job_posting(response.text)
+        if not posting:
+            return
+        # Preserve sections from the listing when the detail omits them.
+        job.description = self._description(posting, fallback=job.raw) or job.description
+        self._details_read.add((str(job.url), job.description))
 
 
 __all__ = ["MetaScraper"]
 
 
+def _section(entry: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = entry.get(key)
+        lines = value if isinstance(value, list) else [value]
+        text = "\n".join(filter(None, (body_text(line) for line in lines)))
+        if text:
+            return text
+    return ""
+
+
+def _listing_incomplete(job: Job) -> bool:
+    if not job.description:
+        return True
+    entry = job.raw or {}
+    # A stored detail body can be reused. A listing introduction alone cannot.
+    return job.description == MetaScraper._description(entry) and not (
+        _section(entry, "description", "description_plain", "descriptionPlain")
+        and _section(entry, "responsibilities")
+        and (_section(entry, "qualifications") or (
+            _section(entry, "minimum_qualifications") and _section(entry, "preferred_qualifications")
+        ))
+    )
+
+
 def _description_from_detail_html(text: str) -> str | None:
-    for match in _JSON_LD_RE.finditer(text):
-        raw = html.unescape(match.group("body")).strip()
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        for item in _iter_json_ld_items(payload):
-            if not isinstance(item, dict) or item.get("@type") != "JobPosting":
-                continue
-            desc = item.get("description")
-            resp = item.get("responsibilities")
-            parts = [
-                value.strip()
-                for value in (desc, resp)
-                if isinstance(value, str) and value.strip()
-            ]
-            if parts:
-                return "\n\n".join(parts)
-    return None
-
-
-def _iter_json_ld_items(value: object):
-    if isinstance(value, list):
-        yield from value
-    elif isinstance(value, dict):
-        graph = value.get("@graph")
-        if isinstance(graph, list):
-            yield from graph
-        else:
-            yield value
+    return MetaScraper._description(job_posting(text))

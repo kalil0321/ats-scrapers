@@ -8,6 +8,8 @@ HTML-entity-encoded JSON in the page).
 
 from __future__ import annotations
 
+import html
+import json
 import re
 from typing import Any
 
@@ -17,6 +19,7 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import ScraperRegistry, YCombinatorScraper
 from ats_scrapers.scrapers.ycombinator import (
+    _compose_description,
     _employment_from_type,
     _extract_balanced_array,
     _parse_min_experience,
@@ -59,7 +62,6 @@ def _api_page(
 def _company_page_html(jobs: list[dict[str, Any]]) -> str:
     """Build a YC company page with the ``jobPostings`` JSON embedded
     HTML-entity-encoded the same way the real page does it."""
-    import json
     payload = json.dumps(jobs)
     # Escape just the chars YC's renderer encodes — quotes, &, <, >.
     encoded = (
@@ -207,7 +209,7 @@ def test_walks_companies_then_extracts_postings(httpx_mock) -> None:
     assert j.employment_type == "FULL_TIME"
     assert j.commitment == "Full-time"
     assert j.department == "Engineering"
-    assert j.description == "Build the core product.\n\nBuild things."
+    assert j.description == "Build the core product."
     assert j.posted_at is not None  # parsed from "16 days"
     assert str(j.url).endswith("/companies/acme/jobs/AbC123-founding-engineer")
     assert "signup_job_id" in str(j.apply_url)
@@ -355,3 +357,51 @@ def test_persistent_500_on_companies_api_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=_COMPANIES_RE, status_code=500, is_reusable=True)
     with pytest.raises(ScraperError):
         YCombinatorScraper("any").fetch()
+
+
+@pytest.mark.parametrize("defer", [True, False])
+def test_tagline_triggers_one_detail_after_dedupe(httpx_mock, defer) -> None:
+    item = _job(description="")
+    httpx_mock.add_response(url=_COMPANIES_RE, json=_api_page(["acme"]))
+    httpx_mock.add_response(url=_PAGE_RE, text=_company_page_html([item, item]))
+    props = {"props": {"job": {"id": item["id"], "interview_process": "Pair programming."},
+                       "relatedJobs": [{"description": "Another role."}]}}
+    posting = {"@type": "JobPosting", "description": "<p>Maintain C# &amp; PostgreSQL.</p>"}
+    httpx_mock.add_response(url="https://www.ycombinator.com" + item["url"], text=(
+        f'<script type="application/ld+json">{json.dumps(posting)}</script>'
+        f'<div data-page="{html.escape(json.dumps(props), quote=True)}"></div>'
+    ))
+    scraper = YCombinatorScraper("any", include_descriptions=not defer)
+    job, = scraper.fetch()
+    if defer:
+        assert job.description is None and len(httpx_mock.get_requests()) == 2
+    assert scraper.get_description(job) == "Maintain C# & PostgreSQL.\n\nPair programming."
+    assert len(httpx_mock.get_requests()) == 3
+
+
+@pytest.mark.parametrize("status,expected", [(200, "Maintain C# and foo_bar."), (404, None)])
+def test_detail_props_or_removed_posting(httpx_mock, status, expected) -> None:
+    item = _job(description="")
+    scraper = YCombinatorScraper("any")
+    job = scraper._parse_posting(item, slug="acme")
+    props = {"props": {"job": {"id": item["id"], "description": "**Maintain** C# and foo_bar."}}}
+    httpx_mock.add_response(url=str(job.url), status_code=status, text=(
+        f'<div data-page="{html.escape(json.dumps(props), quote=True)}"></div>'
+    ))
+    assert scraper.get_description(job) == expected
+
+
+def test_role_specific_sections_survive_alongside_the_listing_description() -> None:
+    item = {**_job(), "aboutRole": "Pair with the team.", "requirements": ["Use C#."]}
+    job = YCombinatorScraper("any")._parse_posting(item, slug="acme")
+    assert job.description == "Build the core product.\n\nPair with the team.\n\nUse C#."
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ('<b>Build</b> <a href="https://example.com">APIs</a>.', "Build APIs."),
+    ("Use List<String> and **Kotlin**.", "Use List<String> and Kotlin."),
+    ("&lt;p&gt;Build APIs.&lt;/p&gt;", "Build APIs."),
+    ("Use List&lt;String&gt;.", "Use List<String>."),
+])
+def test_description_reads_inline_html_and_keeps_markdown_text(value: str, expected: str) -> None:
+    assert _compose_description({"description": value}) == expected

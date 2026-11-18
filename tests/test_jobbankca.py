@@ -635,3 +635,71 @@ def test_infer_is_remote_explicit_telework() -> None:
 ])
 def test_infer_country_iso(location: str | None, expected: str) -> None:
     assert _infer_country_iso(location) == expected
+
+
+def test_native_detail_uses_visible_sections_in_order(httpx_mock) -> None:
+    scraper = JobBankCAScraper("jobbankca")
+    job = scraper._parse_job(_article())
+    assert job is not None
+    httpx_mock.add_response(url=str(job.url), text="""
+        <div class="job-posting-details-body">
+          <span property="description">Short summary</span>
+          <div class="main-job-posting-detail"><h3>Overview</h3><p>English</p>
+            <h3>Responsibilities</h3><ul><li>Train staff</li></ul>
+            <h3>Benefits</h3><p>Dental plan</p></div>
+          <div id="employmentGroup"><p>Mentorship</p></div>
+          <div class="job-audience"><p>Temporary residents can apply.</p></div>
+          <aside>Similar jobs</aside></div>""")
+    description = scraper.get_description(job)
+    assert description is not None
+    assert " ".join(description.split()) == (
+        "Overview English Responsibilities Train staff Benefits Dental plan "
+        "Mentorship Temporary residents can apply."
+    )
+    assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.parametrize(("markup", "expected"), [
+    ('<span property="description">Repair &amp; calibrate instruments.</span>',
+     "Repair & calibrate instruments."),
+    ('<span property="description"></span><a href="https://example.com">View full posting</a>',
+     None),
+    ('<meta name="description" content="Look at this job opportunity">', None),
+])
+def test_partner_detail_uses_only_its_supplied_body(httpx_mock, markup, expected) -> None:
+    scraper = JobBankCAScraper("jobbankca")
+    job = scraper._parse_job(_article())
+    assert job is not None
+    httpx_mock.add_response(url=str(job.url), text=f'<div class="job-posting-details-body">{markup}</div>')
+    assert scraper.get_description(job) == expected
+    assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.parametrize(("language", "posting_path", "detail_url"), [
+    ("en", "jobpostingtfw", "https://www.jobbank.gc.ca/jobsearch/jobpostingtfw/123"),
+    ("fr", "jobposting", "https://www.guichetemplois.gc.ca/rechercheemplois/offredemploi/123"),
+    ("fr", "jobpostingtfw", "https://www.guichetemplois.gc.ca/jobsearch/offredemploietet/123"),
+])
+def test_detail_fetch_preserves_route_and_language(httpx_mock, language, posting_path, detail_url):
+    scraper = JobBankCAScraper("jobbankca", language=language)
+    job = scraper._parse_job(_article(job_id="123", posting_path=posting_path))
+    httpx_mock.add_response(url=detail_url, status_code=410)
+    assert job is not None
+    assert scraper.get_description(job) is None
+
+
+def test_unavailable_postings_leave_the_rest_of_the_batch_described(httpx_mock) -> None:
+    scraper = JobBankCAScraper("jobbankca")
+    timed_out, refused, served = (scraper._parse_job(_article(job_id=i)) for i in "123")
+    assert timed_out is not None and refused is not None and served is not None
+    httpx_mock.add_exception(httpx.ReadTimeout("timed out"), url=str(timed_out.url))
+    httpx_mock.add_response(url=str(refused.url), status_code=503)
+    httpx_mock.add_response(url=str(served.url), text=(
+        '<div class="job-posting-details-body">'
+        '<span property="description">Weld frames.</span></div>'
+    ))
+
+    scraper.enrich_descriptions([timed_out, refused, served])
+
+    assert (timed_out.description, refused.description) == (None, None)
+    assert served.description == "Weld frames."

@@ -168,3 +168,26 @@ def test_several_jobs_can_be_read_at_once(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert texts == [f"Role R{number}" for number in range(1, 9)]
     assert len(site.opened) == 1
+
+
+def test_detail_preserves_paragraphs_and_literal_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    response = httpx.Response(200, json={"jobPostingInfo": {
+        "jobDescription": "<p>&nbsp;</p>",
+        "externalJobDescription": "<p>Use C# &amp; SQL.</p><ul><li>Latency &lt; 5 ms.</li></ul>",
+    }})
+    site = _Site(monkeypatch, lambda request: response)
+    job = _job()
+    scraper = WorkdayScraper(URL)
+    assert scraper.get_description(job) == "Use C# & SQL.\nLatency < 5 ms."
+    assert scraper.get_description(job) == job.description
+    assert len(site.requests) == 1
+
+
+def test_entity_encoded_description_is_read_as_markup() -> None:
+    info = {"jobDescription": "&lt;p&gt;Build APIs.&lt;/p&gt;"}
+    assert workday._extract_description(info) == "Build APIs."
+
+
+def test_entity_encoded_empty_description_falls_through_to_the_external_one() -> None:
+    info = {"jobDescription": "&lt;p&gt;&lt;/p&gt;", "externalJobDescription": "<p>Ship it.</p>"}
+    assert workday._extract_description(info) == "Ship it."

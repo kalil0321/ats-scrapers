@@ -54,6 +54,7 @@ from typing import TYPE_CHECKING, ClassVar
 from ats_scrapers import fetch as fetch_mod
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._posting_detail import decode_encoded_tags
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -71,7 +72,7 @@ DETAIL_URL_FMT = (
     "https://europa.eu/eures/portal/jv-se/jv-details/{jv_id}?lang=en"
 )
 DETAIL_API_URL_FMT = (
-    "https://europa.eu/eures/api/jv-searchengine/public/jv/id/{jv_id}?lang=en"
+    "https://europa.eu/eures/api/jv-searchengine/public/jv/id/{jv_id}?requestLang=en&preferredLang=en"
 )
 PAGE_SIZE = 50  # API caps `resultsPerPage` at 50 (>50 returns 400).
 # ``page`` x ``resultsPerPage`` above 10,000 returns 400, whatever the size.
@@ -274,21 +275,18 @@ class EuresScraper(BaseScraper):
             if cleaned:
                 return cleaned
         if not job.ats_id:
-            return _job_summary_description(job)
+            return None
         return self._run_sync(self._aget_description(job))
 
     async def _aget_description(self, job: Job) -> str | None:
-        # Any failure shape — non-200 detail response (incl. 404 for a
-        # vanished posting), network error, malformed JSON — falls back
-        # to the factual summary; the row must stay searchable.
         try:
             async with self.make_fetcher(follow_redirects=False) as fetcher:
                 payload = await fetcher.get_json(
                     DETAIL_API_URL_FMT.format(jv_id=job.ats_id)
                 )
         except (ScraperError, ValueError):
-            return _job_summary_description(job)
-        return _extract_detail_description(payload) or _job_summary_description(job)
+            return None
+        return _extract_detail_description(payload)
 
     async def fetch_stream(self) -> AsyncGenerator[Job, None]:
         """Stream jobs as they're parsed.
@@ -795,130 +793,41 @@ def _flatten_location(loc_map: dict[str, Any]) -> str | None:
 
 
 def _extract_description(item: dict[str, Any]) -> str | None:
-    value = item.get("description")
-    if not isinstance(value, str) or not value.strip():
-        translations = item.get("translations") or {}
-        if isinstance(translations, dict):
-            for translation in translations.values():
-                if isinstance(translation, dict):
-                    candidate = translation.get("description")
-                    if isinstance(candidate, str) and candidate.strip():
-                        value = candidate
-                        break
-    if not isinstance(value, str) or not value.strip():
-        return None
-    return _clean_description_text(value)
-
-
-def _extract_detail_description(payload: dict[str, Any]) -> str | None:
-    """Extract the richest text available from the EURES detail API.
-
-    Some national feeds publish a listing with no ``description`` at all,
-    but the detail API still has application instructions, employer text,
-    or required skills. Use those as a last-resort description so the row
-    remains searchable without hitting the browser-rendered Angular page.
-    """
-    candidates: list[str] = []
-    translation = payload.get("translation")
-    if isinstance(translation, dict):
-        description = translation.get("description")
-        if isinstance(description, str):
-            candidates.append(description)
-
-    profiles = payload.get("jvProfiles") or {}
-    if isinstance(profiles, dict):
-        preferred = payload.get("preferredLanguage")
-        ordered_profiles = []
-        if isinstance(preferred, str) and preferred in profiles:
-            ordered_profiles.append(profiles[preferred])
-        ordered_profiles.extend(
-            profile
-            for lang, profile in profiles.items()
-            if lang != preferred
-        )
-        for profile in ordered_profiles:
-            if not isinstance(profile, dict):
-                continue
-            description = profile.get("description")
-            if isinstance(description, str):
-                candidates.append(description)
-            employer = profile.get("employer") or {}
-            if isinstance(employer, dict):
-                employer_description = employer.get("description")
-                if isinstance(employer_description, str):
-                    candidates.append(employer_description)
-            skills = _detail_skills_text(profile.get("requiredSkills") or [])
-            if skills:
-                candidates.append(skills)
-            instructions = _detail_instructions_text(
-                profile.get("applicationInstructions") or []
-            )
-            if instructions:
-                candidates.append(f"Application instructions: {instructions}")
-
-    for candidate in candidates:
-        cleaned = _clean_description_text(candidate)
-        if cleaned:
-            return cleaned
+    if body := _description_field(item):
+        return body
+    translations = item.get("translations")
+    if isinstance(translations, dict):
+        for translation in translations.values():
+            if body := _description_field(translation):
+                return body
     return None
 
 
-def _detail_instructions_text(values: object) -> str | None:
-    if not isinstance(values, list):
+def _description_field(record: object) -> str | None:
+    value = record.get("description") if isinstance(record, dict) else None
+    return _clean_description_text(value) if isinstance(value, str) else None
+
+
+def _extract_detail_description(payload: object) -> str | None:
+    if not isinstance(payload, dict):
         return None
-    text = " ".join(str(value) for value in values if value)
-    return text.strip() or None
-
-
-def _detail_skills_text(values: object) -> str | None:
-    if not isinstance(values, list):
-        return None
-    parts: list[str] = []
-    for value in values:
-        if isinstance(value, str):
-            parts.append(value)
-        elif isinstance(value, dict):
-            for key in ("prefLabel", "label", "description", "name"):
-                candidate = value.get(key)
-                if isinstance(candidate, str) and candidate.strip():
-                    parts.append(candidate)
-                    break
-    if not parts:
-        return None
-    return "Required skills: " + "; ".join(parts)
-
-
-def _job_summary_description(job: Job) -> str | None:
-    """Last-resort searchable text when EURES publishes no description.
-
-    A small number of national feeds return an empty listing description
-    and either an empty/404 detail response. Keep those rows non-empty by
-    composing a factual summary from fields already present in the job.
-    """
-    parts = [job.title.strip()] if job.title and job.title.strip() else []
-    if job.company and job.company.strip():
-        parts.append(f"Employer: {job.company.strip()}")
-    if job.location and job.location.strip():
-        parts.append(f"Location: {job.location.strip()}")
-    if job.employment_type and job.employment_type.strip():
-        parts.append(f"Employment type: {job.employment_type.strip()}")
-    if job.commitment and job.commitment.strip():
-        parts.append(f"Contract type: {job.commitment.strip()}")
-    return ". ".join(parts)[:25_000] or None
+    profiles = payload.get("jvProfiles")
+    if isinstance(profiles, dict):
+        preferred = payload.get("preferredLanguage")
+        for language in sorted(profiles, key=lambda lang: lang != preferred):
+            if body := _description_field(profiles[language]):
+                return body
+    return _description_field(payload.get("translation")) or _extract_description(payload)
 
 
 def _clean_description_text(value: str) -> str | None:
-    text = html.unescape(value)
-    text = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", text)
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = html.unescape(text)
+    text = re.sub(r"<br\s*/?>", "\n", decode_encoded_tags(value), flags=re.IGNORECASE)
+    text = re.sub(r"</?[A-Za-z][A-Za-z0-9:-]*(?:\s[^<>]*)?\s*/?>", " ", text)
+    text = re.sub(r"[\u200b\ufeff]", "", html.unescape(text))
     text = re.sub(r"[ \t\r\f\v]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = text.strip()[:25_000]
-    if len(text) < 4:
-        return None
-    return text
+    return text if re.search(r"[^\s\u200c\u200d]", text) else None
 
 
 async def _gather_tolerant(
