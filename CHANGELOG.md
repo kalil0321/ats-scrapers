@@ -73,8 +73,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - Avature: a board behind an AWS WAF JavaScript challenge is read in the
   `cloud_browser` when one is given, instead of raising. Without one it raises
   as before.
-- Cloud browsers read a page once it stops moving on by itself, so a page behind
-  a JavaScript challenge that solves itself is read after the challenge.
+- Cloud browsers read a page behind an AWS WAF challenge once the challenge has
+  reloaded the real page, and read again a page that is still navigating.
 - Avature: a board refused with 406 to both httpx and httpcloak raises instead
   of returning no jobs. The `proxy` argument is now used for listing and job
   pages.

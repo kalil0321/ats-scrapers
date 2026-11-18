@@ -90,6 +90,9 @@ class FakeCDP:
     fail: bool = False
     # Reads refused while a page navigates on by itself, as after a JavaScript challenge.
     navigations: int = 0
+    headers: dict[str, str] = field(default_factory=dict)
+    idle_waits: int = 0
+    never_idle: bool = False
 
     async def connect(self, cdp_url: str) -> tuple[Any, Any]:
         if self.fail:
@@ -102,7 +105,7 @@ class FakeCDP:
 
             async def goto(self, url: str, **_: Any) -> SimpleNamespace:
                 self.url = cdp.redirects.get(url, url)
-                return SimpleNamespace(status=cdp.status)
+                return SimpleNamespace(status=cdp.status, headers=cdp.headers)
 
             async def content(self) -> str:
                 if cdp.navigations:
@@ -114,7 +117,9 @@ class FakeCDP:
                 return f"<html>{self.url}</html>"
 
             async def wait_for_load_state(self, state: str, **_: Any) -> None:
-                await asyncio.sleep(0)
+                cdp.idle_waits += 1
+                if cdp.never_idle:
+                    raise TimeoutError(f"Timeout exceeded while waiting for {state}")
 
             async def close(self) -> None:
                 self.closed = True
@@ -256,6 +261,36 @@ async def test_a_page_that_moves_on_by_itself_is_read_once_it_settles(
 ) -> None:
     _mock_sessions(httpx_mock, PROVIDERS[2].values[0])
     cdp.navigations = 2
+
+    async with KernelBrowser("key") as browser:
+        page = await browser.render("https://acme.example/jobs")
+
+    assert page.html == "<html>https://acme.example/jobs</html>"
+    assert cdp.idle_waits == 0
+
+
+async def test_aws_waf_challenge_is_read_once_the_network_settles(
+    httpx_mock, cdp: FakeCDP,
+) -> None:
+    _mock_sessions(httpx_mock, PROVIDERS[2].values[0])
+    cdp.status = 202
+    cdp.headers = {"x-amzn-waf-action": "challenge"}
+    cdp.navigations = 1
+
+    async with KernelBrowser("key") as browser:
+        page = await browser.render("https://acme.example/jobs")
+
+    assert page.html == "<html>https://acme.example/jobs</html>"
+    assert cdp.idle_waits == 1
+
+
+async def test_aws_waf_challenge_on_a_busy_page_is_read_when_the_wait_ends(
+    httpx_mock, cdp: FakeCDP,
+) -> None:
+    _mock_sessions(httpx_mock, PROVIDERS[2].values[0])
+    cdp.status = 202
+    cdp.headers = {"x-amzn-waf-action": "challenge"}
+    cdp.never_idle = True
 
     async with KernelBrowser("key") as browser:
         page = await browser.render("https://acme.example/jobs")

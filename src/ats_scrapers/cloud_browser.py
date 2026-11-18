@@ -195,6 +195,10 @@ class CDPCloudBrowser(CloudBrowser):
             )
             if response is not None and response.status >= 400:
                 raise ScraperError(f"{self.provider}: {url} answered {response.status}")
+            if response is not None and response.headers.get("x-amzn-waf-action") == "challenge":
+                # The AWS WAF challenge solves itself, then reloads the real page.
+                with contextlib.suppress(Exception):
+                    await page.wait_for_load_state("networkidle", timeout=self.timeout * 1000)
             return RenderedPage(html=await _settled_html(page, self.timeout), url=page.url)
         finally:
             with contextlib.suppress(Exception):
@@ -391,18 +395,10 @@ def _api_key(value: str | None, env_var: str, owner: str) -> str:
 
 
 async def _settled_html(page: Any, timeout: float) -> str:
-    """The page's HTML once it has stopped moving on by itself.
-
-    A JavaScript challenge (AWS WAF, Cloudflare) loads, solves itself and then
-    loads the real page: read in between, the HTML is the challenge's, or
-    Playwright refuses because the page is navigating.
-    """
+    """The page's HTML, read again while the page navigates on by itself
+    (Playwright refuses to read a page that is navigating)."""
     deadline = time.monotonic() + timeout
     while True:
-        with contextlib.suppress(Exception):
-            await page.wait_for_load_state(
-                "networkidle", timeout=max(deadline - time.monotonic(), 0.1) * 1000,
-            )
         try:
             return await page.content()
         except Exception as exc:
