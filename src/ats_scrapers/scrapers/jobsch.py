@@ -51,14 +51,13 @@ import asyncio
 import html
 import logging
 import re
-from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar
 
 import httpx
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.fetch import Fetcher, proxy_url_from_env
+from ats_scrapers.fetch import Fetcher, FetchResponse, proxy_url_from_env
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -161,12 +160,46 @@ class _Throttle:
         return seconds
 
 
-@dataclass
 class _Search:
-    fetcher: Fetcher
-    via_proxy: bool
-    sem: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(MAX_CONCURRENCY))
-    throttle: _Throttle = field(default_factory=_Throttle)
+    """The client, concurrency and throttle shared by the search requests of one fetch."""
+
+    def __init__(self, fetcher: Fetcher, *, via_proxy: bool) -> None:
+        self.fetcher = fetcher
+        self.via_proxy = via_proxy
+        self.throttle = _Throttle()
+        self.reopen = False
+        self._sem = asyncio.Semaphore(MAX_CONCURRENCY)
+        self._reopening = asyncio.Lock()
+        self._in_flight = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
+
+    async def send(self, query: dict[str, Any]) -> tuple[float, FetchResponse]:
+        """Send one search request in its turn; return its start time and response."""
+        async with self._sem:
+            async with self._reopening:
+                if self.reopen:
+                    # Closing the client cuts requests still in flight, and the
+                    # Fetcher would resend those at once, inside the pause.
+                    await self._idle.wait()
+                    await self.fetcher.aclose()
+                    self.reopen = False
+            sent_at = await self.throttle.wait()
+            self._in_flight += 1
+            self._idle.clear()
+            try:
+                response = await self.fetcher.request(
+                    "GET",
+                    API_URL,
+                    params=query,
+                    headers={"Accept": "application/json"},
+                    handled={403, 422},
+                )
+            finally:
+                self._in_flight -= 1
+                if not self._in_flight:
+                    self._idle.set()
+        return sent_at, response
 
 
 async def _gather(coros: list[Coroutine[Any, Any, None]]) -> None:
@@ -433,15 +466,7 @@ class JobsChScraper(BaseScraper):
         # network errors. 403 (address blocked) and 422 (past the
         # deep-pagination cap) are provider quirks handled here.
         while True:
-            async with search.sem:
-                sent_at = await throttle.wait()
-                response = await search.fetcher.request(
-                    "GET",
-                    API_URL,
-                    params=query,
-                    headers={"Accept": "application/json"},
-                    handled={403, 422},
-                )
+            sent_at, response = await search.send(query)
             if response.status_code != 403:
                 throttle.passed(sent_at)
                 break
@@ -464,7 +489,7 @@ class JobsChScraper(BaseScraper):
                 start, params or {}, pause,
             )
             # A rotating proxy hands new connections a new exit address.
-            await search.fetcher.aclose()
+            search.reopen = True
         if response.status_code == 422:
             if start == 0:
                 # The first page of a search is never past the cap: the

@@ -384,6 +384,57 @@ def test_block_after_the_first_answer_is_waited_out_without_a_proxy(httpx_mock) 
     assert len(jobs) == 4_500
 
 
+def test_request_in_flight_at_a_403_is_not_resent_during_the_pause(
+    httpx_mock, monkeypatch,
+) -> None:
+    """Pages 20 to 80 go out together: 20 is refused while 40 still waits for
+    its answer. Nothing may reach the site until the pause is over."""
+    from ats_scrapers import fetch as fetch_module
+    from ats_scrapers.scrapers import jobsch
+
+    monkeypatch.setattr(jobsch, "BLOCK_PAUSES", (0.5,))
+    waiting: set[asyncio.Future[None]] = set()
+    real_aclose = fetch_module.Fetcher.aclose
+
+    async def aclose(self) -> None:
+        # Closing the pool drops every connection still waiting for an answer.
+        for answer in waiting:
+            if not answer.done():
+                answer.set_exception(httpx.ReadError("connection closed"))
+        await real_aclose(self)
+
+    monkeypatch.setattr(fetch_module.Fetcher, "aclose", aclose)
+    serve = _fake_search(_dated_docs(100))
+    sent: list[float] = []
+    refused_at: list[float] = []
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        loop = asyncio.get_running_loop()
+        sent.append(loop.time())
+        start = parse_qs(urlsplit(str(request.url)).query)["start"][0]
+        if start == "20" and not refused_at:
+            await asyncio.sleep(0.05)
+            refused_at.append(loop.time())
+            return httpx.Response(403, text="<html>blocked</html>")
+        if start == "40" and len(sent) <= 5:
+            answer = loop.create_future()
+            waiting.add(answer)
+            loop.call_later(0.2, lambda: answer.done() or answer.set_result(None))
+            try:
+                await answer
+            finally:
+                waiting.discard(answer)
+        return serve(request)
+
+    httpx_mock.add_callback(respond, url=_API_RE, is_reusable=True)
+
+    jobs = JobsChScraper("any", include_descriptions=False).fetch()
+
+    assert len(jobs) == 100
+    during_pause = [t for t in sent if refused_at[0] < t < refused_at[0] + 0.4]
+    assert during_pause == []
+
+
 def test_refused_first_request_without_a_proxy_raises_at_once(httpx_mock) -> None:
     httpx_mock.add_response(url=_API_RE, status_code=403, is_reusable=True)
 
