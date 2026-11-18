@@ -51,6 +51,16 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
+- Avature: a board refused with 406 to both httpx and httpcloak raises when the
+  Browserbase fallback is not set up or fails, instead of returning no jobs. The
+  `proxy` argument is now used for listing and job pages.
+- Avature: job links to `FolderDetail` pages (Epic, KPMG Ireland, Rosewood,
+  Smurfit Westrock) and to Maximus's `Job-Description` pages are read, and
+  `folderOffset` pages are followed. Share links (`mailto:`) are no longer read
+  as a job.
+- Avature: a first listing page without a job link raises when it states a
+  result count above zero, and a board that redirects to a site that is not
+  Avature is reported as not found.
 - Tesla: the browser goes through the `proxy` argument when one is given, and
   through the `PROXY` environment variable only otherwise.
 - Eightfold: a listing page that answers 405, which Eightfold returns on every

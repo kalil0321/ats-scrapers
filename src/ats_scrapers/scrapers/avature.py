@@ -108,9 +108,23 @@ _LOCALE_PREFIXES = {
 }
 
 # A link to another listing page and its offset. Portals name the offset
-# ``jobOffset``, ``projectOffset`` or ``pipelineOffset``.
+# ``jobOffset``, ``projectOffset``, ``pipelineOffset`` or ``folderOffset``.
 _PAGE_LINK_RE = re.compile(
-    r'href="([^"]*?[?&;](?:job|project|pipeline)Offset=(\d+)[^"]*)"'
+    r'href="([^"]*?[?&;](?:job|project|pipeline|folder)Offset=(\d+)[^"]*)"'
+)
+
+# The result total a listing page states: ``aria-label="432 results"`` on the
+# results legend, or ``1-20 of 169 results`` in the pagination legend.
+_RESULT_COUNT_RES = (
+    re.compile(r'<[^>]*\blist-controls__text__legend\b[^>]*>'),
+    re.compile(r'jobPaginationLegend[^>]*>[^<]*?(\d[\d.,]*)\s*[^\d<]*<'),
+)
+_ARIA_COUNT_RE = re.compile(r'\baria-label="\s*(\d[\d.,]*)')
+
+# Names of the job page in detail links. Portals can rename it: Maximus calls
+# it ``Job-Description``.
+_DETAIL_PAGES = (
+    "JobDetail", "ProjectDetail", "PipelineDetail", "FolderDetail", "Job-Description",
 )
 
 # Pseudo-anchor texts that aren't real jobs (action buttons rendered as <a>).
@@ -175,7 +189,7 @@ class AvatureScraper(BaseScraper):
 
         async def run() -> str | None:
             async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=True,
+                timeout=self.timeout, follow_redirects=True, proxy=self.proxy,
             ) as client:
                 sem = asyncio.Semaphore(1)
                 await self._enrich_with_detail(client, sem, copy)
@@ -209,58 +223,38 @@ class AvatureScraper(BaseScraper):
     async def _fetch_via_browserbase_optional(
         self, base: str, company: str,
     ) -> list[Job]:
-        """Use Browserbase only when configured; otherwise return empty.
+        """Load a board refused to httpx and httpcloak in Browserbase.
 
-        This keeps the scraper usable as a public library without
-        forcing a paid dependency. Three states:
-
-        * ``BROWSERBASE_API_KEY`` + ``BROWSERBASE_PROJECT_ID`` set, and
-          ``playwright`` importable → run the Browserbase fallback.
-        * Either credential missing → log a warning and return ``[]`` for
-          this tenant (the rest of the pipeline keeps running).
-        * Playwright unavailable → same as above.
-
-        Set ``ATS_SCRAPERS_DISABLE_BROWSERBASE=1`` to force the fallback off
-        even when credentials exist (useful in CI / local dev).
+        Needs ``BROWSERBASE_API_KEY``, ``BROWSERBASE_PROJECT_ID`` and
+        ``playwright``; ``ATS_SCRAPERS_DISABLE_BROWSERBASE=1`` turns it off.
+        When it cannot run or fails, the board raises: it was refused, which
+        says nothing about whether it has jobs.
         """
-        import logging
-        log = logging.getLogger(__name__)
-
+        refused = f"Avature ({base}) refused the listing (406) to httpx and httpcloak"
         if os.getenv("ATS_SCRAPERS_DISABLE_BROWSERBASE"):
-            log.warning(
-                "Avature %s: 406-blocked and "
-                "ATS_SCRAPERS_DISABLE_BROWSERBASE is set; skipping tenant.",
-                base,
+            raise ScraperError(
+                f"{refused}; the Browserbase fallback is disabled "
+                "(ATS_SCRAPERS_DISABLE_BROWSERBASE)"
             )
-            return []
-
-        api_key = os.getenv("BROWSERBASE_API_KEY")
-        project_id = os.getenv("BROWSERBASE_PROJECT_ID")
-        if not api_key or not project_id:
-            log.warning(
-                "Avature %s: 406-blocked. Set BROWSERBASE_API_KEY and "
-                "BROWSERBASE_PROJECT_ID to enable the fallback path; "
-                "skipping tenant for now.",
-                base,
+        if not os.getenv("BROWSERBASE_API_KEY") or not os.getenv("BROWSERBASE_PROJECT_ID"):
+            raise ScraperError(
+                f"{refused}; set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID "
+                "to load it in a browser, or try another network through `proxy`"
             )
-            return []
-
         try:
             from playwright.async_api import async_playwright  # noqa: F401
-        except ImportError:
-            log.warning(
-                "Avature %s: 406-blocked and `playwright` is not "
-                "installed. Run `pip install playwright` to enable the "
-                "Browserbase fallback; skipping tenant for now.",
-                base,
-            )
-            return []
-
+        except ImportError as exc:
+            raise ScraperError(
+                f"{refused}; the Browserbase fallback needs `pip install playwright`"
+            ) from exc
         try:
             return await self._fetch_via_browserbase(base, company)
-        except Exception as exc:  # log + continue is intentional
-            log.warning("Avature %s: Browserbase fallback failed (%s).", base, exc)
-            return []
+        except CompanyNotFoundError:
+            raise
+        except Exception as exc:
+            raise ScraperError(
+                f"{refused}; the Browserbase fallback failed: {exc}"
+            ) from exc
 
     async def _fetch_via_httpcloak(self, base: str, company: str) -> list[Job]:
         """TLS+h2 impersonation fallback. Free, ~1-10s/page, beats
@@ -293,6 +287,8 @@ class AvatureScraper(BaseScraper):
                     raise  # Never made it past page 0 — escalate.
                 break  # Mid-pagination block — keep what we have.
             page_jobs = self._parse_page(html_text, base, company)
+            if page_num == 0 and not page_jobs:
+                _check_empty_listing(html_text, page_url, base)
             new = [j for j in page_jobs if j.ats_id not in seen]
             if not new:
                 break
@@ -331,6 +327,7 @@ class AvatureScraper(BaseScraper):
                 params=None if url else _pagination_params(base, offset),
                 headers=_BROWSER_HEADERS,
                 timeout=self.timeout,
+                **self._httpcloak_proxy(),
             )
         except Exception as exc:
             raise ScraperError(
@@ -369,24 +366,30 @@ class AvatureScraper(BaseScraper):
         try:
             return httpcloak.get(
                 url, headers=_BROWSER_HEADERS, timeout=self.timeout,
+                **self._httpcloak_proxy(),
             )
         except Exception:
             return None
+
+    def _httpcloak_proxy(self) -> dict[str, str]:
+        return {"proxy": self.proxy} if self.proxy else {}
 
     async def _fetch_direct(self, base: str, company: str) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
 
         async with httpx.AsyncClient(
-            timeout=self.timeout, follow_redirects=True
+            timeout=self.timeout, follow_redirects=True, proxy=self.proxy,
         ) as client:
             page_size = _page_size(base)
             offset, url = 0, None
-            for _ in range(MAX_PAGES):
+            for page_num in range(MAX_PAGES):
                 html_text, page_url = await self._fetch_page(
                     client, base, offset, url
                 )
                 page_jobs = self._parse_page(html_text, base, company)
+                if page_num == 0 and not page_jobs:
+                    _check_empty_listing(html_text, page_url, base)
                 new = [j for j in page_jobs if j.ats_id not in seen]
                 if not new:
                     break
@@ -481,17 +484,21 @@ class AvatureScraper(BaseScraper):
                 # Listing pages — sequential on one tab.
                 page_size = _page_size(base)
                 offset, url = 0, None
-                for _ in range(MAX_PAGES):
+                for page_num in range(MAX_PAGES):
                     list_url = url or _paginated_search_url(base, offset)
                     try:
                         await page.goto(
                             list_url, wait_until="domcontentloaded", timeout=30_000
                         )
                     except Exception:
+                        if page_num == 0:
+                            raise
                         break
                     html_text = await page.content()
                     page_url = page.url or list_url
                     page_jobs = self._parse_page(html_text, base, company)
+                    if page_num == 0 and not page_jobs:
+                        _check_empty_listing(html_text, page_url, base)
                     new = [j for j in page_jobs if j.ats_id not in seen]
                     if not new:
                         break
@@ -552,7 +559,11 @@ class AvatureScraper(BaseScraper):
             try:
                 response = await client.get(list_url, headers=_BROWSER_HEADERS)
             except httpx.HTTPError as exc:
-                if _host_does_not_resolve(exc) and not _environment_proxy():
+                if (
+                    _host_does_not_resolve(exc)
+                    and not self.proxy
+                    and not _environment_proxy()
+                ):
                     # Avature drops the DNS record of a closed tenant.
                     raise CompanyNotFoundError(
                         f"Avature site not found: {base} (host does not resolve)"
@@ -817,12 +828,33 @@ def _is_map_search(base: str) -> bool:
 
 
 def _is_detail_href(href: str) -> bool:
-    return (
-        "/JobDetail/" in href
-        or "/JobDetail?" in href
-        or "/ProjectDetail/" in href
-        or "/PipelineDetail" in href
-    )
+    # Share links (mailto:, social sites) carry a job URL in their query, so
+    # only the path counts.
+    parsed = urlparse(href)
+    if parsed.scheme not in ("", "http", "https"):
+        return False
+    path = f"{parsed.path}/"
+    return any(f"/{page}/" in path for page in _DETAIL_PAGES)
+
+
+def _check_empty_listing(html_text: str, page_url: str, base: str) -> None:
+    """Raise unless a first listing page without job links is an empty board."""
+    if "avature" not in html_text.lower():
+        if urlparse(page_url).netloc != urlparse(base).netloc:
+            raise CompanyNotFoundError(
+                f"Avature ({base}) redirects to {page_url}, which is not an Avature site"
+            )
+        raise ScraperError(f"Avature ({base}) answered a page that is not an Avature listing")
+    legend, pagination = _RESULT_COUNT_RES
+    # The legend's attributes come in any order: read the count from its tag.
+    tag = legend.search(html_text)
+    stated = _ARIA_COUNT_RE.search(tag.group(0)) if tag else None
+    stated = stated or pagination.search(html_text)
+    if stated and int(re.sub(r"\D", "", stated.group(1))) > 0:
+        raise ScraperError(
+            f"Avature ({base}) lists {stated.group(1)} results on {page_url} "
+            "but no job link could be read"
+        )
 
 
 def _join_avature_url(base: str, href: str) -> str:
