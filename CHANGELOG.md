@@ -51,6 +51,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
+- Tesla: the browser goes through the `proxy` argument when one is given, and
+  through the `PROXY` environment variable only otherwise.
 - Bundesagentur: a request refused with 403 or 429, a server error or a network
   error is retried with backoff capped at two minutes, up to 14 attempts (about
   16 minutes), while other pages go on, so one refused page no longer ends a full

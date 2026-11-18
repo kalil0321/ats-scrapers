@@ -8,12 +8,12 @@ are 403'd by Akamai bot management — TLS-impersonation libraries
 "Access Denied" because Akamai pins the IP / TLS fingerprint /
 JavaScript challenge stack together.
 
-``cloakbrowser`` (stealth-patched Chromium) clears the bot manager
-in our 2026-05-11 retesting. From a datacenter VPS the unproxied
-request to ``cua-api`` gets rate-limited (429) even via cloakbrowser,
-so we route the whole flow through the Evomi residential proxy when
-``PROXY`` is set. The behavioural warm-up (scroll + mouse moves +
-short waits) primes Akamai's risk-score before we touch the API.
+``cloakbrowser`` (stealth-patched Chromium) clears the bot manager.
+From a datacenter address the ``cua-api`` request is rate-limited (429)
+even through cloakbrowser, so the whole flow goes through the ``proxy``
+argument when one is given, else through the proxy in ``PROXY``. The
+behavioural warm-up (scroll + mouse moves + short waits) primes
+Akamai's risk-score before we touch the API.
 
 Graceful degradation: when ``cloakbrowser`` isn't installed, the
 scraper logs a warning and returns ``[]`` so the rest of the publish
@@ -86,7 +86,7 @@ class TeslaScraper(BaseScraper):
         async def run() -> str | None:
             from cloakbrowser import launch_async
 
-            proxy = cb.evomi_proxy_from_env()
+            proxy = self._browser_proxy()
             browser = await launch_async(
                 headless=True, humanize=True, proxy=proxy,
             )
@@ -106,10 +106,14 @@ class TeslaScraper(BaseScraper):
 
         return self._run_sync(run())
 
+    def _browser_proxy(self) -> str | dict[str, Any] | None:
+        # cloakbrowser reads the credentials out of a proxy URL itself.
+        return self.proxy or cb.evomi_proxy_from_env()
+
     async def _fetch_via_cloakbrowser(self) -> list[Job]:
         from cloakbrowser import launch_async
 
-        proxy = cb.evomi_proxy_from_env()
+        proxy = self._browser_proxy()
         browser = await launch_async(
             headless=True, humanize=True, proxy=proxy,
         )
