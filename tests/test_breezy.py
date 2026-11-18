@@ -226,3 +226,12 @@ def test_non_list_response_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=URL, json={"error": "auth required"})
     with pytest.raises(ScraperError, match="non-list JSON"):
         BreezyScraper("acme").fetch()
+
+
+def test_jobposting_description_is_used_when_visible_block_is_empty() -> None:
+    from ats_scrapers.scrapers.breezy import _extract_description
+
+    page = """<div class="description"> </div>
+      <script type="application/ld+json">{"@type":"JobPosting",
+      "description":"<p>Write C#.</p><p>Run tests.</p>"}</script>"""
+    assert _extract_description(page) == "Write C#.\nRun tests."

@@ -143,7 +143,7 @@ class ManfredScraper(BaseScraper):
                 # Detail enrichment is best-effort — a missing or broken
                 # detail endpoint must not sink the listing row.
                 return
-        description = _compose_description(detail)
+        description = _compose_description(detail, self.lang)
         if description and not job.description:
             job.description = description[:25_000]
 
@@ -240,39 +240,56 @@ def _parse_iso(value: object) -> datetime | None:
         return None
 
 
-def _compose_description(item: dict[str, Any]) -> str | None:
+def _compose_description(item: dict[str, Any], lang: str = DEFAULT_LANG) -> str | None:
     parts: list[str] = []
-    for key in (
-        "introduction",
-        "whatWillYouDo",
-        "responsibilities",
-        "howWillYouDoIt",
-        "whatOffering",
-        "whereWillDoIt",
-        "whenWillDoIt",
-        "whoWillDoItWith",
-    ):
-        value = item.get(key)
-        if isinstance(value, str) and value.strip():
-            parts.append(_markdown_to_text(value))
-        elif isinstance(value, list):
-            cleaned = [
-                _markdown_to_text(v)
-                for v in value
-                if isinstance(v, str) and v.strip()
-            ]
-            if cleaned:
-                parts.append("\n".join(f"- {v}" for v in cleaned))
-    text = "\n\n".join(p for p in parts if p).strip()
-    return text or None
+
+    def add(value: object, label: str = "") -> None:
+        if isinstance(value, list):
+            value = "\n".join(f"- {v}" for v in value if isinstance(v, str) and v.strip())
+        if isinstance(value, str) and (text := _markdown_to_text(value)):
+            parts.append(f"{label}\n{text}" if label else text)
+
+    def add_faq(entries: list[object]) -> None:
+        for entry in entries:
+            if isinstance(entry, dict):
+                add(entry.get("question"))
+                add(entry.get("answer"))
+
+    add(item.get("introduction"))
+    add(item.get("whatWillYouDo"))
+    for key, months in (("inOneMonth", 1), ("inThreeMonths", 3), ("inSixMonths", 6)):
+        if lang == "ES":
+            label = "En 1 mes" if months == 1 else f"En {months} meses"
+        else:
+            label = "In 1 month" if months == 1 else f"In {months} months"
+        add(item.get(key), label)
+    add(item.get("responsibilities"))
+    add(item.get("howWillYouDoIt"))
+    add(item.get("whenWillDoIt"))
+    watches = item.get("watches")
+    if isinstance(watches, dict):
+        add(watches.get("description"))
+        add_faq(watches.get("faq") or [])
+    add(item.get("whereWillDoIt"))
+    add(item.get("whoWillDoItWith"))
+    add(item.get("whatTheyAskFor"))
+    add(item.get("whatOffering"))
+    for perk in item.get("perks") or []:
+        if isinstance(perk, dict):
+            add(perk.get("name"))
+            add(perk.get("description"))
+    add_faq(item.get("faq") or [])
+    return "\n\n".join(parts) or None
 
 
 def _markdown_to_text(value: str) -> str:
     text = html.unescape(value)
     text = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", text)
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"[*_`#>]+", "", text)
+    text = re.sub(r"</?[a-zA-Z][\w:-]*(?:\s+[^>]*)?\s*/?>", " ", text)
+    text = re.sub(r"(?m)^ {0,3}(?:#{1,6} |>[ ]?)", "", text)
+    text = re.sub(r"(\*{1,3}|`+)([^\n]+?)\1", r"\2", text)
+    text = re.sub(r"(?<!\w)(_{1,3})([^\n]+?)\1(?!\w)", r"\2", text)
     text = re.sub(r"\r\n?", "\n", text)
     text = re.sub(r"[ \t\f\v]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)

@@ -48,17 +48,18 @@ Single-source scraper: ``company_slug`` is informational and ignored.
 from __future__ import annotations
 
 import asyncio
-import html
 import logging
-import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar
+from urllib.parse import quote
 
 import httpx
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.fetch import Fetcher, FetchResponse, proxy_url_from_env
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._htmltree import parse_html
+from ats_scrapers.scrapers._posting_detail import body_text, fill_missing, job_posting
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -77,18 +78,6 @@ MAX_USABLE_OFFSET = 2000
 # Default cap on pages per query — 100 × 20 rows = the API's per-query
 # ceiling. Lower via ``max_pages`` for quick smoke runs.
 DEFAULT_MAX_PAGES = 100
-
-_TAG_RE = re.compile(r"<[^>]+>")
-_META_TAG_RE = re.compile(r"<meta\b(?P<attrs>[^>]*)>", re.IGNORECASE | re.DOTALL)
-_ATTR_RE = re.compile(
-    r"(?P<name>[a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*"
-    r"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
-    re.DOTALL,
-)
-_DESCRIPTION_BLOCK_RE = re.compile(
-    r'<(?:div|section|article)[^>]+class=["\'][^"\']*(?:job-description|vacancy-description|description|jobad)[^"\']*["\'][^>]*>(?P<body>.*?)</(?:div|section|article)>',
-    re.IGNORECASE | re.DOTALL,
-)
 
 # Lower bound of the publication-date walk; live postings are far younger.
 EARLIEST_PUBLICATION = datetime(2000, 1, 1)
@@ -251,22 +240,8 @@ class JobsChScraper(BaseScraper):
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
-        copy = job.model_copy()
-        proxy_url = self.proxy or proxy_url_from_env()
-
-        async def run() -> str | None:
-            client_kwargs: dict[str, Any] = {
-                "timeout": self.timeout,
-                "follow_redirects": True,
-            }
-            if proxy_url is not None:
-                client_kwargs["proxy"] = proxy_url
-            async with httpx.AsyncClient(**client_kwargs) as client:
-                sem = asyncio.Semaphore(1)
-                await self._enrich_description(client, sem, copy)
-            return copy.description
-
-        return self._run_sync(run())
+        self._run_sync(self._enrich_descriptions([job], proxy_url=self.proxy or proxy_url_from_env()))
+        return job.description
 
     async def afetch(self) -> list[Job]:
         # Probe IP routing on the empty query: if the datacenter IP is
@@ -428,30 +403,32 @@ class JobsChScraper(BaseScraper):
             client_kwargs["proxy"] = proxy_url
 
         async with httpx.AsyncClient(**client_kwargs) as client:
-            detail_sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
-            await asyncio.gather(*(
-                self._enrich_description(client, detail_sem, job) for job in jobs
-            ))
+            async def enrich(job: Job) -> None:
+                await self._enrich_description(client, job)
 
-    async def _enrich_description(
-        self,
-        client: httpx.AsyncClient,
-        sem: asyncio.Semaphore,
-        job: Job,
-    ) -> None:
-        async with sem:
+            await fill_missing(jobs, enrich, DETAIL_CONCURRENCY)
+
+    async def _enrich_description(self, client: httpx.AsyncClient, job: Job) -> None:
+        if job.ats_id:
+            url = f"{API_URL}/job/{quote(job.ats_id, safe='')}"
             try:
-                response = await client.get(
-                    str(job.url),
-                    headers={"User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*"},
-                )
-            except httpx.HTTPError:
-                return
-        if response.status_code != 200:
+                response = await client.get(url, headers={"Accept": "application/json"})
+                if response.status_code in {401, 403, 410, 429}:
+                    return
+                if response.status_code == 200:
+                    item = response.json()
+                    if isinstance(item, dict) and item.get("job_id") == job.ats_id:
+                        job.description = _api_description(item)
+                        if job.description:
+                            return
+            except (httpx.HTTPError, ValueError):
+                pass
+        try:
+            page = await client.get(str(job.url), headers={"Accept": "text/html"})
+        except httpx.HTTPError:
             return
-        description = _extract_description(response.text)
-        if description and not job.description:
-            job.description = description[:25_000]
+        if page.status_code == 200:
+            job.description = _extract_description(page.text)
 
     async def _fetch_page(
         self,
@@ -555,6 +532,7 @@ class JobsChScraper(BaseScraper):
             company=company or "Unknown",
             ats_type=ATSType.JOBSCH,
             ats_id=ats_id,
+            description=_api_description(item),
             location=location,
             employment_type=employment_type,
             posted_at=posted_at,
@@ -588,34 +566,38 @@ def _parse_iso(value: object) -> datetime | None:
         return None
 
 
-def _extract_description(text: str) -> str | None:
-    match = _DESCRIPTION_BLOCK_RE.search(text)
-    if match:
-        cleaned = _strip_html(match.group("body"))
-        if cleaned:
-            return cleaned
-    meta = _extract_meta_description(text)
-    return meta or None
+def _api_description(item: dict[str, Any]) -> str | None:
+    # Search and the multi-ID endpoint return a preview. Only the vacancy
+    # endpoint normally supplies the employer's original template sections.
+    body = body_text(item.get("template_text"))
+    if body:
+        sections = [body_text(item.get("template_lead_text")), body,
+                    body_text(item.get("template_contact_address"))]
+        return "\n\n".join(dict.fromkeys(s for s in sections if s))[:25_000]
 
-
-def _extract_meta_description(text: str) -> str | None:
-    for tag in _META_TAG_RE.finditer(text):
-        attrs = {
-            m.group("name").lower(): html.unescape(m.group("value"))
-            for m in _ATTR_RE.finditer(tag.group("attrs"))
-        }
-        kind = (attrs.get("name") or attrs.get("property") or "").lower()
-        if kind not in {"description", "og:description"}:
-            continue
-        cleaned = _strip_html(attrs.get("content") or "")
-        if cleaned:
-            return cleaned
+    if isinstance(template := item.get("template"), str) and template.strip():
+        root = parse_html(template)
+        content = root.find("body") or root
+        if content.find("p") or content.find("li"):
+            return content.lines()[:25_000] or None
     return None
 
 
-def _strip_html(value: str) -> str:
-    text = html.unescape(value)
-    text = _TAG_RE.sub(" ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
+def _extract_description(page: str) -> str | None:
+    # The JSON-LD can be automatically translated. The visible vacancy
+    # section preserves the original and may also contain a separate summary.
+    for node in parse_html(page).walk():
+        if node.attrs.get("data-cy") == "vacancy-description":
+            labels = {"About the job", "Über den Job", "À propos de l’emploi"}
+            node.children = [
+                child for child in node.children
+                if isinstance(child, str) or (
+                    child.attrs.get("data-cy") != "info-block"
+                    and not (child.tag == "h4" and child.text() in labels)
+                )
+            ]
+        elif not {"vacancy-description", "job-description"}.intersection(node.classes):
+            continue
+        if text := node.lines():
+            return text[:25_000]
+    return body_text(job_posting(page).get("description"))[:25_000] or None

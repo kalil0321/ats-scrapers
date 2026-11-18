@@ -23,9 +23,8 @@ plus a handful of optional flag tags (``.telework``, ``.appmethod``,
 ``.postedonJB``, ``.new``). Salary is free text (``$25.00 hourly``,
 ``$110,000.00 to $150,000.00 annually``) and currency is implicitly CAD.
 
-The full description lives on a per-job detail page; pulling it would
-mean 62k extra requests for marginal gain, so we leave ``description``
-empty and ship the teaser metadata only.
+Listing requests omit the body. Use get_description to read the public
+posting in the requested language.
 
 Single-source scraper: ``company_slug`` is informational and ignored —
 every fetch returns the entire active dataset.
@@ -46,6 +45,7 @@ import httpx
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job, SalaryPeriod
+from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -181,6 +181,29 @@ class JobBankCAScraper(BaseScraper):
 
     def fetch(self) -> list[Job]:
         return self._run_sync(self.afetch())
+
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        posting_id = job.ats_id or ""
+        if not re.fullmatch(r"[0-9]+", posting_id):
+            return None
+        # Preserve Job Bank's TFW route and use its official French counterpart
+        # for French scrapes. Both domains serve the detail markup over HTTP.
+        tfw = job.url.path == f"/jobsearch/jobpostingtfw/{posting_id}"
+        if self.language == "fr":
+            route = "jobsearch/offredemploietet" if tfw else "rechercheemplois/offredemploi"
+            url = f"https://www.guichetemplois.gc.ca/{route}/{posting_id}"
+        else:
+            route = "jobpostingtfw" if tfw else "jobposting"
+            url = f"https://www.jobbank.gc.ca/jobsearch/{route}/{posting_id}"
+        with httpx.Client(timeout=self.timeout, proxy=self.proxy) as client:
+            response = client.get(url, headers={"User-Agent": DEFAULT_USER_AGENT})
+        if response.is_redirect or response.status_code in {404, 410}:
+            return None
+        response.raise_for_status()
+        job.description = _detail_description(response.text)
+        return job.description
 
     async def _fetch_async(self) -> list[Job]:
         jobs: dict[str, Job] = {}
@@ -431,6 +454,26 @@ class JobBankCAScraper(BaseScraper):
             language=language,
             raw=raw or None,
         )
+
+
+def _detail_description(page: str) -> str | None:
+    posting = next((node for node in parse_html(page).walk()
+                    if "job-posting-details-body" in node.classes), None)
+    if posting is None:
+        return None
+    sections = []
+    has_main_body = False
+    fallback = ""
+    for node in posting.walk():
+        if ("main-job-posting-detail" in node.classes or "job-audience" in node.classes
+                or node.attrs.get("id") == "employmentGroup"):
+            if text := node.lines():
+                sections.append(text)
+                has_main_body |= "main-job-posting-detail" in node.classes
+        elif "description" in node.attrs.get("property", "").split() and not fallback:
+            fallback = node.lines()
+    text = "\n\n".join(sections) if has_main_body else fallback
+    return text[:25_000] or None
 
 
 def _announced_total(html_text: str) -> int | None:

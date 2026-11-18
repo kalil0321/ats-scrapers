@@ -166,7 +166,7 @@ def test_parses_full_listing_card(httpx_mock) -> None:
     assert str(j.url) == "https://programathor.com.br/jobs/33458-engenheiro-qa-python"
 
 
-def test_extracts_meta_description_with_reversed_attributes(httpx_mock) -> None:
+def test_meta_description_is_only_a_preview(httpx_mock) -> None:
     httpx_mock.add_response(
         url="https://programathor.com.br/jobs?page=1",
         text=_listing([_card(job_id="7", title="Backend Engineer")]),
@@ -186,7 +186,7 @@ def test_extracts_meta_description_with_reversed_attributes(httpx_mock) -> None:
 
     jobs = ProgramathorScraper("any").fetch()
 
-    assert jobs[0].description == "Build Brazilian APIs."
+    assert jobs[0].description is None
 
 
 def test_strips_new_label_from_title(httpx_mock) -> None:
@@ -348,3 +348,33 @@ def test_persistent_500_raises(httpx_mock) -> None:
     )
     with pytest.raises(ScraperError):
         ProgramathorScraper("any").fetch()
+
+
+@pytest.mark.parametrize("defer", [True, False])
+def test_structured_detail_is_read_once(httpx_mock, defer) -> None:
+    card = _card(job_id="7", title="Engineer", salary="A combinar")
+    httpx_mock.add_response(url=_LISTING_RE, text=_listing([card, card]))
+    httpx_mock.add_response(url="https://programathor.com.br/jobs/7-engineer", text="""
+      <meta name="description" content="Build...">
+      <script type="application/ld+json">{"@graph":[{"@type":"JobPosting",
+        "description":"<h3>Habilidades</h3><p>C and C++</p>"}]}</script>
+    """)
+    scraper = ProgramathorScraper("any", max_pages=1, include_descriptions=not defer)
+    job, = scraper.fetch()
+    if defer:
+        assert job.description is None and len(httpx_mock.get_requests()) == 1
+    assert scraper.get_description(job) == "Habilidades\nC and C++"
+    assert len(httpx_mock.get_requests()) == 2
+
+
+def test_visible_sections_preserve_company_duties_requirements_and_skills(httpx_mock) -> None:
+    scraper = ProgramathorScraper("any")
+    job, = scraper._parse_listing(_listing([_card(job_id="7", title="Engineer")]))
+    httpx_mock.add_response(url=str(job.url), text="""
+      <div class="wrapper-header-job-show"><span class="tag tag-hover">C++</span></div>
+      <div class="wrapper-content-job-show"><div class="line-height-2-4">
+      <h3>Descrição da empresa</h3><p>Nossa empresa</p><h3>Requisitos</h3>
+      <p>Compiladores &amp; redes</p></div><div>Related jobs</div></div>""")
+    assert scraper.get_description(job) == (
+        "Habilidades\nC++\nDescrição da empresa\nNossa empresa\nRequisitos\nCompiladores & redes"
+    )
