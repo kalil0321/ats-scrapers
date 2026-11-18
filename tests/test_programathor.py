@@ -16,6 +16,7 @@ proxy). These tests exercise:
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -227,6 +228,41 @@ def test_location_with_city_appends_brazil(httpx_mock) -> None:
     jobs = ProgramathorScraper("any").fetch()
     assert jobs[0].location == "São Paulo, Brazil"
     assert jobs[0].is_remote is False
+
+
+# --- captured listing ---------------------------------------------------------
+
+# The job-list column of /jobs?page=1, 2 and 3, captured on 18 Nov 2026 when
+# the board had 30 open roles. Kept as served, except the signed query strings
+# of the S3 logo URLs, which are removed. Page 3 is what the site serves past
+# the last page.
+FIXTURES = Path(__file__).parent / "fixtures" / "programathor"
+
+
+def test_captured_listing_yields_every_open_role(httpx_mock) -> None:
+    for page in (1, 2, 3):
+        httpx_mock.add_response(
+            url=f"https://programathor.com.br/jobs?page={page}",
+            text=(FIXTURES / f"jobs_page_{page}.html").read_text(encoding="utf-8"),
+        )
+    httpx_mock.add_response(
+        url=re.compile(r"^https://programathor\.com\.br/jobs\?page=[45]$"),
+        text=(FIXTURES / "jobs_page_3.html").read_text(encoding="utf-8"),
+        is_reusable=True,
+    )
+
+    jobs = ProgramathorScraper("any", include_descriptions=False).fetch()
+
+    assert len(jobs) == 30
+    by_id = {job.ats_id: job for job in jobs}
+    assert len(by_id) == 30
+    assert by_id["33884"].title == "Analista SAP B1 Pleno"
+    assert by_id["33860"].title == "Desenvolvedor Full-Stack Estágio"
+    assert by_id["33884"].is_remote is False
+    assert by_id["33685"].title == "Desenvolvedor Back-End Senior (AI Engineer)"
+    assert by_id["33685"].company == "LOLDESIGN Soluções Digitais LTDA"
+    assert by_id["33685"].is_remote is True
+    assert all("PRESENCIAL" not in job.title for job in jobs)
 
 
 # --- salary parsing --------------------------------------------------------
