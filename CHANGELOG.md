@@ -32,6 +32,12 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   direct connection. A route that meets a 403, a 429 or a network error rests
   for five minutes while the next one carries the requests. A single `proxy`
   is used as well.
+- `CloudBrowser`: a browser passed to a scraper as `cloud_browser` for pages
+  plain HTTP cannot load. Avature reads boards that refuse httpx and httpcloak
+  through it. `ats_scrapers.cloud_browser` rents one from Browserbase, Browser
+  Use, Kernel or Notte with your own API key (`cloud-browser` extra), keeps one
+  session for every page and stops it on `close()`, `aclose()` or the end of a
+  `with` block. Other browsers fit by subclassing `CloudBrowser`.
 
 ### Changed
 
@@ -43,6 +49,10 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - Workday: `get_description` keeps its connection to the site open between
   jobs. `close()` releases it.
 - Paylocity reads the job pages of a board eight at a time instead of two.
+- Avature uses Browserbase only through `cloud_browser=BrowserbaseBrowser()`. It
+  no longer reads `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID` by itself,
+  and `ATS_SCRAPERS_DISABLE_BROWSERBASE` is gone: without a `cloud_browser`, a
+  refused board raises.
 
 ### Removed
 
@@ -51,9 +61,9 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Fixed
 
-- Avature: a board refused with 406 to both httpx and httpcloak raises when the
-  Browserbase fallback is not set up or fails, instead of returning no jobs. The
-  `proxy` argument is now used for listing and job pages.
+- Avature: a board refused with 406 to both httpx and httpcloak raises instead
+  of returning no jobs. The `proxy` argument is now used for listing and job
+  pages.
 - Avature: job links to `FolderDetail` pages (Epic, KPMG Ireland, Rosewood,
   Smurfit Westrock) and to Maximus's `Job-Description` pages are read, and
   `folderOffset` pages are followed. Share links (`mailto:`) are no longer read

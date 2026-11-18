@@ -58,9 +58,10 @@ The package is imported as `ats_scrapers`. Optional extras add only what you
 need:
 
 ```bash
-pip install "ats-scrapers[parquet]"   # query the full Parquet snapshot
-pip install "ats-scrapers[scrapers]"  # run the scraper library
-pip install "ats-scrapers[all]"       # install every runtime extra
+pip install "ats-scrapers[parquet]"        # query the full Parquet snapshot
+pip install "ats-scrapers[scrapers]"       # run the scraper library
+pip install "ats-scrapers[cloud-browser]"  # rent a browser for pages that need one
+pip install "ats-scrapers[all]"            # install every runtime extra
 ```
 
 ## Scrape any careers page
@@ -96,6 +97,27 @@ jobs = GreenhouseScraper("anthropic").fetch()
 Scrapers are async-first. In async code, or for concurrency, use
 `await scraper.afetch()`. The sync `fetch()` also works inside a running event
 loop (Jupyter, FastAPI) by running on a worker thread.
+
+**Pages that need a browser.** A few Avature boards refuse every HTTP client
+and raise `ScraperError`. To read them, pass a `cloud_browser`. Browserbase,
+Browser Use, Kernel and Notte work out of the box with your own API key
+(`pip install "ats-scrapers[scrapers,cloud-browser]"`):
+
+```python
+from ats_scrapers import get_scraper_for_url
+from ats_scrapers.cloud_browser import BrowserbaseBrowser
+
+# The key defaults to BROWSERBASE_API_KEY. BrowserUseBrowser, KernelBrowser
+# and NotteBrowser read BROWSER_USE_API_KEY, KERNEL_API_KEY and NOTTE_API_KEY.
+with BrowserbaseBrowser() as browser:
+    scraper = get_scraper_for_url("https://acme.avature.net/careers", cloud_browser=browser)
+    jobs = scraper.fetch()
+```
+
+The session starts on the first page a scraper cannot read and is stopped when
+the block ends (`async with` and `aclose()` work too); `session_options` is
+sent as the provider's session settings. For any other browser, subclass
+`CloudBrowser` and implement `async def render(self, url) -> RenderedPage`.
 
 ## Search the jobs we already scraped
 

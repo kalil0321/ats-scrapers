@@ -23,12 +23,8 @@ Two scrapers use cloakbrowser today:
     initialisation transparently; ``humanize`` is optional but
     cheap, so we keep it on for parity with the Tesla path.
 
-Helpers below mirror the structure of :mod:`_browserbase` (which
-Avature still uses as its last-resort fallback): ``is_enabled`` /
-``require_cloakbrowser`` / ``warn_disabled`` / ``proxy_from_env``.
-The graceful degradation contract is preserved — when ``cloakbrowser``
-isn't installed, the scraper logs a warning and returns ``[]`` instead
-of crashing the publish pipeline.
+When ``cloakbrowser`` isn't installed, the scraper logs a warning and
+returns ``[]``.
 """
 
 from __future__ import annotations

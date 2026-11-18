@@ -23,10 +23,9 @@ order of cost:
 
 1. ``httpcloak`` (free, ~1-10s/page): a TLS+h2-impersonation client
    that gets through 80%+ of 406-blocked tenants in our sample.
-2. Browserbase + Playwright CDP (paid, ~$0.10/min): real Chrome,
-   guaranteed to render but expensive and occasionally hangs at the
-   session-create step. Reserved for the few tenants ``httpcloak``
-   still can't crack.
+2. The ``cloud_browser`` passed to the scraper (see
+   :mod:`ats_scrapers.cloud_browser`), for the few tenants ``httpcloak``
+   still can't pass. Without one, such a tenant raises.
 """
 
 from __future__ import annotations
@@ -37,18 +36,15 @@ import os
 import re
 import socket
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
 
+from ats_scrapers.cloud_browser import CloudBrowser
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
-
-if TYPE_CHECKING:
-    pass
 
 PAGE_SIZE = 12  # Avature's default page size.
 MAP_PAGE_SIZE = 30  # SearchJobsMaps pages use a different offset scheme.
@@ -59,6 +55,8 @@ RETRY_BASE_DELAY = 1.5
 # tenants are mid-sized (most under 200 jobs), so 6 keeps load light
 # without prolonging the per-tenant runtime.
 DETAIL_CONCURRENCY = 6
+# Job pages a cloud browser renders at once.
+BROWSER_DETAIL_CONCURRENCY = 4
 
 # Avature label vocabulary — multiple tenants reword the same concept.
 # These map to our standardized columns. All comparisons are
@@ -134,7 +132,7 @@ _PSEUDO_TITLES = {
 }
 
 class _BlockedTenantError(Exception):
-    """Raised when a tenant returns 406 — escalates to the Browserbase path."""
+    """The tenant refused the listing with 406: try the next client."""
 
 
 _BROWSER_HEADERS = {
@@ -158,7 +156,10 @@ _BROWSER_HEADERS = {
 class AvatureScraper(BaseScraper):
     """Avature scraper. ``company_slug`` is either a bare slug
     (``"bloomberg"`` → ``https://bloomberg.avature.net``) or a full base URL
-    for tenants on custom domains (``"https://careers.ibm.com/en_US"``)."""
+    for tenants on custom domains (``"https://careers.ibm.com/en_US"``).
+
+    ``cloud_browser`` loads the boards that refuse both httpx and httpcloak.
+    """
 
     ats = ATSType.AVATURE
 
@@ -169,6 +170,7 @@ class AvatureScraper(BaseScraper):
         timeout: float = 30.0,
         include_descriptions: bool = True,
         proxy: str | None = None,
+        cloud_browser: CloudBrowser | None = None,
     ) -> None:
         super().__init__(
             company_slug,
@@ -176,6 +178,12 @@ class AvatureScraper(BaseScraper):
             include_descriptions=include_descriptions,
             proxy=proxy,
         )
+        if cloud_browser is not None and not isinstance(cloud_browser, CloudBrowser):
+            raise TypeError(
+                "cloud_browser must be an instance of a CloudBrowser subclass, "
+                f"not {type(cloud_browser).__name__}"
+            )
+        self.cloud_browser = cloud_browser
         slug = company_slug.strip()
         if slug.startswith(("http://", "https://")):
             self.company_slug = require_http_url(slug, provider="AvatureScraper")
@@ -196,6 +204,9 @@ class AvatureScraper(BaseScraper):
             if not copy.description:
                 sem = asyncio.Semaphore(1)
                 await self._enrich_with_detail_via_httpcloak(sem, copy)
+            if not copy.description and self.cloud_browser is not None:
+                sem = asyncio.Semaphore(1)
+                await self._enrich_with_detail_via_browser(self.cloud_browser, sem, copy)
             return copy.description
 
         return self._run_sync(run())
@@ -217,53 +228,34 @@ class AvatureScraper(BaseScraper):
         except _BlockedTenantError:
             pass  # rare: even httpcloak couldn't get through.
 
-        # Last resort: real browser via Browserbase Sessions.
-        return await self._fetch_via_browserbase_optional(base, company)
+        return await self._fetch_refused_board(base, company)
 
-    async def _fetch_via_browserbase_optional(
-        self, base: str, company: str,
-    ) -> list[Job]:
-        """Load a board refused to httpx and httpcloak in Browserbase.
+    async def _fetch_refused_board(self, base: str, company: str) -> list[Job]:
+        """Load a board refused to httpx and httpcloak in the cloud browser.
 
-        Needs ``BROWSERBASE_API_KEY``, ``BROWSERBASE_PROJECT_ID`` and
-        ``playwright``; ``ATS_SCRAPERS_DISABLE_BROWSERBASE=1`` turns it off.
-        When it cannot run or fails, the board raises: it was refused, which
+        Without one, or when it fails, the board raises: it was refused, which
         says nothing about whether it has jobs.
         """
         refused = f"Avature ({base}) refused the listing (406) to httpx and httpcloak"
-        if os.getenv("ATS_SCRAPERS_DISABLE_BROWSERBASE"):
+        if self.cloud_browser is None:
             raise ScraperError(
-                f"{refused}; the Browserbase fallback is disabled "
-                "(ATS_SCRAPERS_DISABLE_BROWSERBASE)"
-            )
-        if not os.getenv("BROWSERBASE_API_KEY") or not os.getenv("BROWSERBASE_PROJECT_ID"):
-            raise ScraperError(
-                f"{refused}; set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID "
-                "to load it in a browser, or try another network through `proxy`"
+                f"{refused}; pass a `cloud_browser` to load it in a browser, "
+                "or try another network through `proxy`"
             )
         try:
-            from playwright.async_api import async_playwright  # noqa: F401
-        except ImportError as exc:
-            raise ScraperError(
-                f"{refused}; the Browserbase fallback needs `pip install playwright`"
-            ) from exc
-        try:
-            return await self._fetch_via_browserbase(base, company)
+            return await self._fetch_via_browser(self.cloud_browser, base, company)
         except CompanyNotFoundError:
             raise
         except Exception as exc:
-            raise ScraperError(
-                f"{refused}; the Browserbase fallback failed: {exc}"
-            ) from exc
+            raise ScraperError(f"{refused}; the cloud browser failed: {exc}") from exc
 
     async def _fetch_via_httpcloak(self, base: str, company: str) -> list[Job]:
         """TLS+h2 impersonation fallback. Free, ~1-10s/page, beats
         Avature's 406 LB block on ~80% of the tenants where httpx
-        fails. Verified live on Unifi / sandboxbnc / uop (the same
-        tenants that hung Browserbase Sessions in 2026-05).
+        fails.
 
         Raises :class:`_BlockedTenantError` when even httpcloak gets
-        406'd — the rare case that escalates to Browserbase Sessions.
+        406'd, the rare case that needs the cloud browser.
         """
         try:
             import httpcloak  # noqa: F401  — availability check
@@ -430,121 +422,59 @@ class AvatureScraper(BaseScraper):
         fields, description = _parse_detail(response.text)
         _apply_detail_to_job(job, fields, description)
 
-    async def _fetch_via_browserbase(self, base: str, company: str) -> list[Job]:
-        """Browserbase fallback: run the same listing+detail flow via real Chrome.
-
-        Cost is non-trivial (a session is ~$0.10/min), so we keep the
-        per-tenant work tight: one session, all listing pages first,
-        then a small concurrent batch of detail-page navigations on
-        separate tabs. We cap detail concurrency at 4 to avoid pushing
-        Browserbase past its per-session limits.
-
-        Caller (``_fetch_via_browserbase_optional``) verifies that
-        ``BROWSERBASE_API_KEY`` / ``BROWSERBASE_PROJECT_ID`` are set
-        and that ``playwright`` is importable — this method assumes both.
-        """
-        from playwright.async_api import async_playwright
-
-        api_key = os.environ["BROWSERBASE_API_KEY"]
-        project_id = os.environ["BROWSERBASE_PROJECT_ID"]
-
-        # Create a Browserbase session.
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(
-                "https://api.browserbase.com/v1/sessions",
-                headers={"X-BB-API-Key": api_key,
-                         "Content-Type": "application/json"},
-                json={
-                    "projectId": project_id,
-                    "browserSettings": {
-                        "fingerprint": {
-                            "browsers": ["chrome"],
-                            "devices": ["desktop"],
-                            "operatingSystems": ["macos"],
-                        }
-                    },
-                },
-            )
-            if r.status_code != 201:
-                raise ScraperError(
-                    f"Browserbase session create failed: {r.status_code} "
-                    f"{r.text[:200]}"
-                )
-            session = r.json()
-            ws_url = session["connectUrl"]
-
+    async def _fetch_via_browser(
+        self, browser: CloudBrowser, base: str, company: str,
+    ) -> list[Job]:
+        """The listing and detail flow, with each page rendered by ``browser``."""
         all_jobs: list[Job] = []
         seen: set[str] = set()
-        async with async_playwright() as p:
-            browser = await p.chromium.connect_over_cdp(ws_url)
+        page_size = _page_size(base)
+        offset, url = 0, None
+        for page_num in range(MAX_PAGES):
+            list_url = url or _paginated_search_url(base, offset)
             try:
-                ctx = browser.contexts[0]
-                page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+                page = await browser.render(list_url)
+            except Exception:
+                if page_num == 0:
+                    raise
+                break
+            html_text, page_url = page.html, page.url or list_url
+            page_jobs = self._parse_page(html_text, base, company)
+            if page_num == 0 and not page_jobs:
+                _check_empty_listing(html_text, page_url, base)
+            new = [j for j in page_jobs if j.ats_id not in seen]
+            if not new:
+                break
+            for j in new:
+                seen.add(j.ats_id)
+            all_jobs.extend(new)
+            following = _next_page(
+                html_text, page_url, offset, len(page_jobs), page_size
+            )
+            if following is None:
+                break
+            offset, url = following
+        else:
+            raise _page_guard_error(base, len(all_jobs))
 
-                # Listing pages — sequential on one tab.
-                page_size = _page_size(base)
-                offset, url = 0, None
-                for page_num in range(MAX_PAGES):
-                    list_url = url or _paginated_search_url(base, offset)
-                    try:
-                        await page.goto(
-                            list_url, wait_until="domcontentloaded", timeout=30_000
-                        )
-                    except Exception:
-                        if page_num == 0:
-                            raise
-                        break
-                    html_text = await page.content()
-                    page_url = page.url or list_url
-                    page_jobs = self._parse_page(html_text, base, company)
-                    if page_num == 0 and not page_jobs:
-                        _check_empty_listing(html_text, page_url, base)
-                    new = [j for j in page_jobs if j.ats_id not in seen]
-                    if not new:
-                        break
-                    for j in new:
-                        seen.add(j.ats_id)
-                    all_jobs.extend(new)
-                    following = _next_page(
-                        html_text, page_url, offset, len(page_jobs), page_size
-                    )
-                    if following is None:
-                        break
-                    offset, url = following
-                else:
-                    raise _page_guard_error(base, len(all_jobs))
-
-                if self.include_descriptions:
-                    # Detail pages — small parallel batch on extra tabs.
-                    bb_detail_concurrency = 4
-                    sem = asyncio.Semaphore(bb_detail_concurrency)
-                    tabs = [await ctx.new_page() for _ in range(bb_detail_concurrency)]
-                    tab_q: asyncio.Queue = asyncio.Queue()
-                    for t in tabs:
-                        tab_q.put_nowait(t)
-
-                    async def enrich(job: Job) -> None:
-                        async with sem:
-                            tab = await tab_q.get()
-                            try:
-                                try:
-                                    await tab.goto(
-                                        str(job.url),
-                                        wait_until="domcontentloaded",
-                                        timeout=30_000,
-                                    )
-                                except Exception:
-                                    return
-                                html = await tab.content()
-                                fields, description = _parse_detail(html)
-                                _apply_detail_to_job(job, fields, description)
-                            finally:
-                                tab_q.put_nowait(tab)
-
-                    await asyncio.gather(*(enrich(j) for j in all_jobs))
-            finally:
-                await browser.close()
+        if self.include_descriptions:
+            sem = asyncio.Semaphore(BROWSER_DETAIL_CONCURRENCY)
+            await asyncio.gather(*(
+                self._enrich_with_detail_via_browser(browser, sem, job)
+                for job in all_jobs
+            ))
         return all_jobs
+
+    async def _enrich_with_detail_via_browser(
+        self, browser: CloudBrowser, sem: asyncio.Semaphore, job: Job,
+    ) -> None:
+        async with sem:
+            try:
+                page = await browser.render(str(job.url))
+            except Exception:
+                return  # Detail enrichment is best-effort; keep the search row.
+        fields, description = _parse_detail(page.html)
+        _apply_detail_to_job(job, fields, description)
 
     async def _fetch_page(
         self,
@@ -585,9 +515,8 @@ class AvatureScraper(BaseScraper):
                 )
             if response.status_code == 406:
                 # 406 from Avature is usually transient rate-limit-style
-                # blocking — retry with backoff. Only escalate to the
-                # Browserbase path on the first listing page if every
-                # retry exhausts.
+                # blocking: retry with backoff. Only the first listing page
+                # escalates to the fallback clients once every retry fails.
                 if attempt == MAX_RETRIES and offset == 0:
                     raise _BlockedTenantError(base)
                 if attempt == MAX_RETRIES:
