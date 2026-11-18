@@ -28,6 +28,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MODERN_PAGE_SIZE = 50
+# Page 1 of a modern listing is served from a cache the portal keeps for about
+# five minutes, filled by whichever request comes first: the page size and
+# cache-buster of a later request are ignored. The later pages are read live,
+# so while the list changes, page 1's count, page size and rows can disagree
+# with them. A recruit type whose pages disagree is read again once that
+# cache has expired.
+LISTING_PASSES = 3
+LISTING_RETRY_DELAY = 330.0
 # The answer of a job page whose posting is closed while the list still
 # shows it: "该职位招聘已经关闭，请关注其他职位，谢谢!".
 _CLOSED_POSTING_STATE = "1017"
@@ -135,6 +143,10 @@ _PLACE_COUNTRY: dict[str, str] = {
 
 class _PostingClosedError(Exception):
     """The job page says the posting is closed."""
+
+
+class _ListingMovedError(ScraperError):
+    """The pages of one read of a listing do not add up to one list."""
 
 
 @ScraperRegistry.register(ATSType.WINTALENT)
@@ -309,6 +321,41 @@ class WinTalentScraper(BaseScraper):
         jobs: list[Job],
         seen: set[str],
     ) -> None:
+        for listing_pass in range(1, LISTING_PASSES + 1):
+            try:
+                listed = await self._read_modern_recruit_type(
+                    fetch,
+                    recruit_type,
+                )
+            except _ListingMovedError as error:
+                if listing_pass == LISTING_PASSES:
+                    raise ScraperError(
+                        f"{error} (read {LISTING_PASSES} times)"
+                    ) from error
+                logger.warning(
+                    "WinTalent (%s) recruit_type=%s read again in %.0fs: %s",
+                    self.portal_url,
+                    recruit_type,
+                    LISTING_RETRY_DELAY,
+                    error,
+                )
+                await asyncio.sleep(LISTING_RETRY_DELAY)
+                continue
+            # ``seen`` holds the ids of the whole portal and only removes a
+            # job listed under two recruit types.
+            for job in listed:
+                job_id = str(job.ats_id)
+                if job_id in seen:
+                    continue
+                seen.add(job_id)
+                jobs.append(job)
+            return
+
+    async def _read_modern_recruit_type(
+        self,
+        fetch: Fetcher,
+        recruit_type: str,
+    ) -> list[Job]:
         assert self.suite is not None
         endpoint = (
             f"{self.base_url}/wecruit/positionInfo/"
@@ -317,10 +364,10 @@ class WinTalentScraper(BaseScraper):
         expected_total: int | None = None
         total_pages: int | None = None
         effective_page_size: int | None = None
-        # ``seen`` holds the ids of the whole portal and only removes a job
-        # listed under two recruit types. Progress and completeness are
-        # judged on the ids of this recruit type alone.
+        type_jobs: list[Job] = []
         type_ids: set[str] = set()
+        # Its own cache-buster, so no cache on the way replays an earlier read.
+        cache_bust = _new_cache_bust()
         for page in range(1, MAX_PAGES + 1):
             requested_page_size = (
                 effective_page_size or MODERN_PAGE_SIZE
@@ -332,7 +379,7 @@ class WinTalentScraper(BaseScraper):
                     "recruitType": recruit_type,
                     "currentPage": page,
                     "pageSize": requested_page_size,
-                    "_": f"{self._cache_bust}-{recruit_type}-{page}",
+                    "_": f"{cache_bust}-{recruit_type}-{page}",
                 },
                 headers={
                     "Accept": "application/json",
@@ -377,7 +424,7 @@ class WinTalentScraper(BaseScraper):
                         f"WinTalent ({self.portal_url}) returned "
                         "inconsistent empty pagination metadata"
                     )
-                return
+                return []
             reported_page = _coerce_int(page_form.get("currentPage"))
             if reported_page is not None and reported_page != page:
                 raise ScraperError(
@@ -421,12 +468,14 @@ class WinTalentScraper(BaseScraper):
                         f"{reported_page_size} while fetching"
                     )
                 if page_total != expected_total or page_count != total_pages:
-                    raise ScraperError(
+                    raise _ListingMovedError(
                         f"WinTalent ({self.portal_url}) pagination "
-                        "metadata changed while fetching"
+                        f"metadata changed while fetching: page 1 reported "
+                        f"{expected_total} jobs on {total_pages} pages, "
+                        f"page {page} {page_total} on {page_count}"
                     )
             if not items:
-                raise ScraperError(
+                raise _ListingMovedError(
                     f"WinTalent ({self.portal_url}) pagination stopped "
                     f"at {len(type_ids)} of {expected_total} jobs"
                 )
@@ -444,23 +493,20 @@ class WinTalentScraper(BaseScraper):
                     continue
                 type_ids.add(job_id)
                 new_in_type += 1
-                if job_id in seen:
-                    continue
-                seen.add(job_id)
-                jobs.append(job)
+                type_jobs.append(job)
             if new_in_type == 0:
-                raise ScraperError(
+                raise _ListingMovedError(
                     f"WinTalent ({self.portal_url}) repeated page {page} "
                     "without new job IDs"
                 )
             if total_pages is not None and page >= total_pages:
                 if len(type_ids) != expected_total:
-                    raise ScraperError(
+                    raise _ListingMovedError(
                         f"WinTalent ({self.portal_url}) expected "
                         f"{expected_total} jobs, received "
                         f"{len(type_ids)} distinct ones"
                     )
-                return
+                return type_jobs
         raise ScraperError(
             f"WinTalent ({self.portal_url}) reached the {MAX_PAGES}-page "
             "safety cap"
