@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import quote
@@ -57,7 +58,7 @@ import httpx
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.fetch import Fetcher, FetchResponse, proxy_url_from_env
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, Job, WorkloadPercentages
 from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers._posting_detail import body_text, fill_missing, job_posting
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -67,6 +68,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from ats_scrapers.models import EngagementType
+    from ats_scrapers.scrapers._htmltree import Node
 
 log = logging.getLogger(__name__)
 
@@ -437,7 +439,10 @@ class JobsChScraper(BaseScraper):
         except httpx.HTTPError:
             return
         if page.status_code == 200:
-            job.description = _extract_description(page.text)
+            tree = parse_html(page.text)
+            if job.workload_percentages is None:
+                job.workload_percentages = _page_workload(tree)
+            job.description = _extract_description(page.text, tree)
 
     async def _fetch_page(
         self,
@@ -547,7 +552,7 @@ def _apply_employment_fields(job: Job, item: dict[str, Any]) -> None:
         if isinstance(grades, list) and all(
             type(n) in (int, float) and 0 <= n <= 100 for n in grades
         ):
-            job.workload_percentages = list(dict.fromkeys(float(n) for n in grades))
+            job.workload_percentages = WorkloadPercentages(values=list(dict.fromkeys(grades)))
             if all(n == 100 for n in grades):
                 job.employment_type = "FULL_TIME"
             elif all(n < 100 for n in grades):
@@ -603,10 +608,25 @@ def _api_description(item: dict[str, Any]) -> str | None:
     return None
 
 
-def _extract_description(page: str) -> str | None:
+def _page_workload(tree: Node) -> WorkloadPercentages | None:
+    for node in tree.walk():
+        if node.attrs.get("data-cy") != "info-workload":
+            continue
+        match = re.fullmatch(r"(\d+(?:[.,]\d+)?)\s*(?:%?\s*[–-]\s*(\d+(?:[.,]\d+)?)\s*)?%", node.text())
+        if match:
+            low = float(match[1].replace(",", "."))
+            high = float(match[2].replace(",", ".")) if match[2] else low
+            if 0 <= low <= high <= 100:
+                if match[2] is None:
+                    return WorkloadPercentages(values=[low])
+                return WorkloadPercentages(minimum=low, maximum=high)
+    return None
+
+
+def _extract_description(page: str, tree: Node) -> str | None:
     # The JSON-LD can be automatically translated. The visible vacancy
     # section preserves the original and may also contain a separate summary.
-    for node in parse_html(page).walk():
+    for node in tree.walk():
         if node.attrs.get("data-cy") == "vacancy-description":
             labels = {"About the job", "Über den Job", "À propos de l’emploi"}
             node.children = [

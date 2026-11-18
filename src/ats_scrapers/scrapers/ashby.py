@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
-from ats_scrapers.models import ATSType, CompensationComponent, Job
+from ats_scrapers.models import ATSType, CompensationComponent, Job, normalize_compensation_period
 from ats_scrapers.scrapers._posting_fields import finite_number
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -259,7 +259,7 @@ class AshbyScraper(BaseScraper):
             salary_currency=currency,
             salary_period=period,
             salary_summary=summary,
-            compensation_components=_compensation_components(comp),
+            compensation_components=_compensation_components(comp, raw),
             salary_min=salary_min,
             salary_max=salary_max,
             posted_at=_parse_iso(item.get("publishedAt")),
@@ -447,14 +447,15 @@ def _hosted_item(
 
 _COMPONENT_TYPES = {
     "Salary": ("base_salary", "money"),
-    "Bonus": ("bonus", "money"),
-    "Commission": ("commission", "money"),
+    "Bonus": ("bonus", None),
+    "Commission": ("commission", None),
     "EquityCashValue": ("equity", "money"),
     "EquityPercentage": ("equity", "percent"),
     "EquityShares": ("equity", "shares"),
-    "Allowance": ("allowance", "money"),
+    "Allowance": ("allowance", None),
 }
-_TOTAL_PAY = re.compile(r"\b(?:on[ -]target earnings|OTE|total compensation)\b", re.I)
+_TOTAL_PAY = re.compile(r"\b(?:on[ -]target earnings|OTE|total (?:compensation|pay))\b", re.I)
+_PERCENT = re.compile(r"\d\s*(?:%|per\s*cent\b)|\bpercentage\b", re.I)
 
 
 def _components_in_tier(
@@ -471,17 +472,23 @@ def _components_in_tier(
             continue
         summary = record.get("summary")
         summary = summary if isinstance(summary, str) else None
+        # Only a single-component tier summary can describe this row alone.
+        if not summary and len(records) == 1 and isinstance(tier_summary, str):
+            summary = tier_summary
         currency = record.get("currencyCode")
-        currency = currency if isinstance(currency, str) and currency else None
-        period = record.get("interval")
+        currency = currency if isinstance(currency, str) and re.fullmatch(r"[A-Z]{3}", currency) else None
         kind, unit = _COMPONENT_TYPES.get(label, ("other", None))
-        # Ashby also uses Salary for explicitly labelled on-target earnings.
-        pay_label = summary or (tier_summary if isinstance(tier_summary, str) else "")
-        if label == "Salary" and _TOTAL_PAY.search(pay_label):
+        if kind in {"bonus", "commission", "allowance"}:
+            if _PERCENT.search(summary or ""):
+                unit = "percent"
+            elif currency or re.search(r"[$€£¥₹]\s*\d", summary or ""):
+                unit = "money"
+        if label == "Salary" and _TOTAL_PAY.search(summary or ""):
             kind = "other"
         components.append(CompensationComponent.model_validate({
-            "kind": kind, "source_label": label, "unit": unit, "currency": currency,
-            "period": period if isinstance(period, str) else None,
+            "kind": kind, "source_label": label, "unit": unit,
+            "currency": currency if unit == "money" else None,
+            "period": normalize_compensation_period(record.get("interval")),
             "minimum": finite_number(record.get("minValue")),
             "maximum": finite_number(record.get("maxValue")),
             "tier": tier, "summary": summary,
@@ -489,7 +496,7 @@ def _components_in_tier(
     return components
 
 
-def _compensation_components(comp: dict[str, Any]) -> list[CompensationComponent] | None:
+def _compensation_components(comp: dict[str, Any], raw: dict[str, Any]) -> list[CompensationComponent] | None:
     components = []
     tiers = comp.get("compensationTiers")
     if isinstance(tiers, list):
@@ -508,9 +515,11 @@ def _compensation_components(comp: dict[str, Any]) -> list[CompensationComponent
     # summaryComponents aggregates the tiers, so never append it to their rows.
     if components:
         return components
-    return _components_in_tier(
-        comp.get("summaryComponents"), None, comp.get("compensationTierSummary"),
-    ) or None
+    records = comp.get("summaryComponents")
+    components = _components_in_tier(records, None, comp.get("compensationTierSummary"))
+    if components:
+        raw["compensation_summary_components"] = records
+    return components or None
 
 
 def _parse_comp(

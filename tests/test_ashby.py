@@ -449,15 +449,16 @@ def test_each_compensation_component_keeps_its_own_tier_and_unit(httpx_mock) -> 
     assert (ote.kind, ote.source_label, ote.tier, ote.summary) == (
         "other", "Salary", "US Remote", salary["summary"],
     )
-    assert (ote.minimum, ote.maximum, ote.currency, ote.period) == (191000, 214500, "USD", "1 YEAR")
+    assert (ote.minimum, ote.maximum, ote.currency, ote.period) == (191000, 214500, "USD", "YEAR")
     assert (commission.kind, commission.summary, commission.minimum, commission.maximum) == (
         "commission", "Offers Commission", None, None,
     )
     assert (cash_equity.kind, cash_equity.unit, cash_equity.maximum) == ("equity", "money", None)
     assert (percent_equity.unit, percent_equity.minimum, percent_equity.maximum,
-            percent_equity.period) == ("percent", 0, 1.75, "NONE")
+            percent_equity.period) == ("percent", 0, 1.75, None)
     assert bonus.tier == percent_equity.tier == "Tier 2 — Only in Ontario"
-    assert (bonus.kind, bonus.currency, bonus.period, bonus.minimum) == ("bonus", "CAD", "6 MONTH", 0)
+    assert (bonus.kind, bonus.currency, bonus.period, bonus.minimum) == ("bonus", "CAD", None, 0)
+    assert job.raw["compensation_tiers"] == tiers
     assert (job.salary_min, job.salary_max, job.salary_period) == (191000, 214500, "YEAR")
     assert len(httpx_mock.get_requests()) == 2
 
@@ -469,7 +470,36 @@ def test_summary_components_used_only_when_tiers_have_no_component_rows() -> Non
     ]}}
     job = AshbyScraper("acme")._parse_job(item)
     salary, unknown = job.compensation_components
-    assert (salary.kind, salary.minimum, salary.maximum, salary.period) == ("base_salary", 0, None, "2 WEEK")
+    assert (salary.kind, salary.minimum, salary.maximum, salary.period) == ("base_salary", 0, None, None)
+    assert job.raw["compensation_summary_components"][0]["interval"] == "2 WEEK"
     assert (unknown.kind, unknown.source_label, unknown.unit) == ("other", "NewType", None)
     assert job.salary_min is None and job.salary_period is None
     assert AshbyScraper("acme")._parse_job(_job()).compensation_components is None
+
+
+@pytest.mark.parametrize(("record", "kind", "unit", "currency"), [
+    ({"compensationType": "Bonus", "minValue": 10}, "bonus", None, None),
+    ({"compensationType": "Bonus", "summary": "10% target", "currencyCode": "USD"}, "bonus", "percent", None),
+    ({"compensationType": "Bonus", "summary": "$500 signing bonus"}, "bonus", "money", None),
+    ({"compensationType": "EquityShares", "currencyCode": "USD"}, "equity", "shares", None),
+    ({"compensationType": "EquityPercentage", "currencyCode": "USD"}, "equity", "percent", None),
+    ({"compensationType": "Salary", "summary": "Total compensation $230K", "currencyCode": "USD"},
+     "other", "money", "USD"),
+    ({"compensationType": "NewType", "currencyCode": "USD"}, "other", None, None),
+])
+def test_component_kind_and_unit_follow_source(record, kind, unit, currency):
+    item = {**_job(), "compensation": {"summaryComponents": [record]}}
+    component, = AshbyScraper("acme")._parse_job(item).compensation_components
+    assert (component.kind, component.unit, component.currency) == (kind, unit, currency)
+    assert component.summary == record.get("summary")
+
+
+def test_base_salary_does_not_inherit_other_components_ote_label():
+    item = {**_job(), "compensation": {"compensationTiers": [{
+        "tierSummary": "Base salary $80K • OTE $120K", "components": [
+            {"compensationType": "Salary", "minValue": 80000, "currencyCode": "USD"},
+            {"compensationType": "Salary", "minValue": 120000, "summary": "OTE $120K"},
+        ],
+    }]}}
+    base, ote = AshbyScraper("acme")._parse_job(item).compensation_components
+    assert (base.kind, base.minimum, ote.kind, ote.minimum) == ("base_salary", 80000, "other", 120000)

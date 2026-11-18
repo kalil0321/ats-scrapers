@@ -31,7 +31,7 @@ from ats_scrapers.scrapers._source_timestamp import source_timestamp
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    from typing import Any
+    from typing import Any, Literal
 
     from ats_scrapers.fetch import Fetcher
 
@@ -243,11 +243,20 @@ def _pay_components(item: dict[str, Any]) -> list[CompensationComponent] | None:
             kind="base_salary", source_label="Salary", unit="money", currency=currency,
             minimum=salary_min, maximum=salary_max, period=None, tier=None,
         ))
-    bonus = bound("bonus")
-    if bonus is not None:
+    bonus_source = item.get("bonus")
+    bonus_text = bonus_source.strip() if isinstance(bonus_source, str) else ""
+    percent_text = bonus_text if bonus_text.endswith("%") else None
+    bonus = finite_number(percent_text[:-1]) if percent_text else bound("bonus")
+    if bonus is not None and bonus > 0:
+        # Manfred displays this as "Variable + €5K" when the offer gives a
+        # currency. A bare bonus amount does not identify its own unit.
+        bonus_unit: Literal["money", "percent"] | None = "money" if currency else None
+        if percent_text or symbol == "%":
+            bonus_unit = "percent"
         components.append(CompensationComponent(
-            kind="bonus", source_label="Variable", unit="money", currency=currency,
-            minimum=bonus, maximum=bonus, period=None, tier=None,
+            kind="bonus", source_label="Variable", unit=bonus_unit,
+            currency=currency if bonus_unit == "money" else None, summary=percent_text,
+            minimum=bonus, maximum=bonus,
         ))
     equity_min, equity_max = bound("equityInf"), bound("equitySup")
     equity_bounds = [value for value in (equity_min, equity_max) if value is not None]

@@ -405,12 +405,14 @@ def test_listing_compensation_uses_explicit_percentage_and_period(httpx_mock) ->
     paid, unquantified = YCombinatorScraper("any", include_descriptions=False).fetch()
     salary, equity = paid.compensation_components
     assert (salary.kind, salary.minimum, salary.maximum, salary.period, salary.currency) == (
-        "base_salary", 1000, 3000, "monthly", "USD",
+        "base_salary", 1000, 3000, "MONTH", "USD",
     )
     assert (equity.kind, equity.unit, equity.minimum, equity.maximum, equity.summary) == (
         "equity", "percent", 0, .4, "0.00% - 0.40%",
     )
     assert equity.period is None and equity.currency is None
+    assert paid.salary_period == "YEAR"
+    assert paid.raw["salaryRange"] == "$1K - $3K / monthly"
     assert unquantified.compensation_components is None
     assert len(httpx_mock.get_requests()) == 2
 
@@ -424,6 +426,14 @@ def test_components_use_displayed_currency_and_structured_interval() -> None:
     salary, equity = components
     assert (salary.currency, salary.period, salary.minimum) == ("INR", "YEAR", 600000)
     assert equity.minimum == equity.maximum == .25
+
+
+def test_unknown_structured_salary_period_and_explicit_display_period() -> None:
+    structured = {"currency": "USD", "value": {"value": 5000, "unitText": "2 WEEK"}}
+    salary, = _pay_components("", None, structured)
+    assert (salary.minimum, salary.maximum, salary.period) == (5000, 5000, None)
+    salary, = _pay_components("$5K / per month", None, structured)
+    assert salary.period == "MONTH"
 
 
 def test_detail_components_preserve_listing_equity_and_displayed_currency(httpx_mock) -> None:

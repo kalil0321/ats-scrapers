@@ -18,7 +18,7 @@ import httpx
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType
+from ats_scrapers.models import ATSType, WorkloadPercentages
 from ats_scrapers.scrapers import JobsChScraper, ScraperRegistry
 
 _API_RE = re.compile(r"^https://www\.jobs\.ch/api/v1/public/search(?:\?|$)")
@@ -596,7 +596,8 @@ def test_jobsch_normalizes_explicit_choices_only(grades, ids, percentages, engag
             "employment_type_ids": ids}
     job = JobsChScraper("any")._parse(item)
     assert job is not None
-    assert job.workload_percentages == percentages
+    expected = WorkloadPercentages(values=percentages) if percentages else None
+    assert job.workload_percentages == expected
     assert job.engagement_type == engagement
     assert job.raw["employment_grades"] == grades
     if ids:
@@ -610,5 +611,27 @@ def test_jobsch_reads_detail_only_fields_in_existing_request(httpx_mock):
                                   "employment_type_ids": ["5"], "employment_grades": [60, 80]})
     assert scraper.get_description(job) == "Build systems."
     assert (job.engagement_type, job.employment_type) == ("permanent", "PART_TIME")
-    assert job.workload_percentages == [60, 80]
+    assert job.workload_percentages == WorkloadPercentages(values=[60, 80])
     assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.parametrize(("grades", "display", "expected"), [
+    ([], "80 – 100%", WorkloadPercentages(minimum=80, maximum=100)),
+    ([], "62,5%", WorkloadPercentages(values=[62.5])),
+    ([60, 80], "60 – 80%", WorkloadPercentages(values=[60, 80])),
+    ([], "100–80%", None),
+    ([], "120%", None),
+    ([], "Part-time", None),
+])
+def test_explicit_workload_on_existing_page_fallback(httpx_mock, grades, display, expected):
+    scraper = JobsChScraper("any")
+    job = scraper._parse(_doc(job_id="detail-test", title="Engineer 50–90%", grades=grades))
+    httpx_mock.add_response(url="https://www.jobs.ch/api/v1/public/search/job/detail-test",
+                            json={"job_id": "detail-test"})
+    httpx_mock.add_response(url=str(job.url), text=(
+        '<article data-cy="vacancy-description">Travel 25%.</article>'
+        f'<li data-cy="info-workload"><div><span>{display}</span></div></li>'
+    ))
+    assert scraper.get_description(job) == "Travel 25%."
+    assert job.workload_percentages == expected
+    assert len(httpx_mock.get_requests()) == 2

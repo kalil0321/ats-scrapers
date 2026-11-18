@@ -11,9 +11,31 @@ import httpx
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import WorkloadPercentages
 from ats_scrapers.scrapers import ArbetsformedlingenScraper
 
 _API_RE = re.compile(r"^https://jobsearch\.api\.jobtechdev\.se/search")
+
+
+@pytest.mark.parametrize(("scope", "expected"), [
+    ({"min": 0, "max": 100}, WorkloadPercentages(minimum=0, maximum=100)),
+    ({"min": 100, "max": 100}, WorkloadPercentages(minimum=100, maximum=100)),
+    ({"min": 62.5, "max": None}, WorkloadPercentages(minimum=62.5)),
+    ({"max": 80}, WorkloadPercentages(maximum=80)),
+    ({"min": None, "max": None}, None),
+    ({"min": 90, "max": 10}, None),
+    ({"min": False, "max": 80}, None),
+    ({"max": 101}, None),
+    (None, None),
+])
+def test_scope_of_work_uses_only_source_bounds(scope, expected):
+    row = _ads([datetime(2026, 11, 18)])[0]
+    row.update(scope_of_work=scope, working_hours_type={"label": "Deltid"})
+    job = ArbetsformedlingenScraper("any")._parse(row)
+    assert job.workload_percentages == expected
+    assert job.commitment == "Deltid"
+    if scope is not None:
+        assert job.raw["scope_of_work"] == scope
 
 
 def _ads(dates: list[datetime]) -> list[dict[str, object]]:

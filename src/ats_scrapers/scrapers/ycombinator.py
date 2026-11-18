@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, CompensationComponent, Job
+from ats_scrapers.models import ATSType, CompensationComponent, Job, normalize_compensation_period
 from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers._posting_detail import body_text, fill_missing, job_posting
 from ats_scrapers.scrapers._posting_fields import finite_number
@@ -259,7 +259,7 @@ class YCombinatorScraper(BaseScraper):
         raw: dict[str, Any] = {}
         for key in (
             "role", "prettyRole", "roleSpecificType", "minSchoolYear",
-            "visa", "skills", "equityRange", "companyBatchName",
+            "visa", "skills", "salaryRange", "equityRange", "companyBatchName",
             "lastActive", "askUs",
         ):
             v = item.get(key)
@@ -440,9 +440,9 @@ def _base_pay(display: object, structured: object) -> CompensationComponent | No
     summary = display.strip() if isinstance(display, str) else ""
     amount, _, suffix = summary.partition(" / ")
     lo, hi, currency = _component_bounds(amount)
-    if suffix and suffix.lower() not in {"hourly", "daily", "weekly", "monthly", "yearly", "annually"}:
+    period = normalize_compensation_period(suffix or bounds.get("unitText"))
+    if suffix and period is None:
         return None
-    period = suffix or bounds.get("unitText")
     label = "salaryRange"
     if not currency:
         # Keep the display authoritative if present (the page's JSON-LD
@@ -459,7 +459,7 @@ def _base_pay(display: object, structured: object) -> CompensationComponent | No
     return CompensationComponent(
         kind="base_salary", source_label=label, unit="money",
         currency=currency if isinstance(currency, str) else None,
-        period=period if isinstance(period, str) else None,
+        period=period,
         minimum=lo, maximum=hi, summary=summary or None, tier=None,
     )
 
@@ -555,7 +555,8 @@ def _apply_detail(job: Job, page: str) -> None:
 
     if props_job or posting:
         listing = {part.kind: part.summary for part in job.compensation_components or []}
-        salary = props_job.get("salaryRange") or job.salary_summary or listing.get("base_salary")
+        salary = (props_job.get("salaryRange") or (job.raw or {}).get("salaryRange")
+                  or job.salary_summary or listing.get("base_salary"))
         equity = props_job.get("equityRange") or (job.raw or {}).get("equityRange") or listing.get("equity")
         components = _pay_components(salary, equity, posting.get("baseSalary"))
         if components:

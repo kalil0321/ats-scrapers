@@ -287,3 +287,17 @@ def test_listing_components_use_displayed_variable_and_equity_units(httpx_mock) 
     assert equity.currency is None and equity.period is None
     assert undisclosed.compensation_components is None
     assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.parametrize(("currency", "bonus", "unit", "expected_currency"), [
+    (None, 10, None, None),
+    ("€", "10%", "percent", None),
+    ("€", 10, "money", "EUR"),
+])
+def test_variable_pay_units_require_evidence(currency, bonus, unit, expected_currency):
+    job = ManfredScraper("any")._parse({**_offer(), "bonus": bonus, "currency": currency})
+    base, variable = job.compensation_components
+    assert (variable.unit, variable.currency, variable.minimum) == (unit, expected_currency, 10)
+    assert variable.period is None
+    assert base.kind == "base_salary"
+    assert job.salary_period == "YEAR"
