@@ -30,7 +30,12 @@ from typing import TYPE_CHECKING, ClassVar
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._htmltree import parse_html
-from ats_scrapers.scrapers._posting_detail import body_text, fill_missing, job_posting
+from ats_scrapers.scrapers._posting_detail import (
+    body_text,
+    decode_encoded_tags,
+    fill_missing,
+    job_posting,
+)
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -458,6 +463,7 @@ _HTML_TAG = re.compile(
 
 
 def _clean_description_text(value: str) -> str:
+    value = decode_encoded_tags(value)
     if _HTML_TAG.search(value):
         return body_text(value)
     # Strip Markdown formatting while preserving names such as C# and foo_bar.
