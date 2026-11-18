@@ -181,3 +181,13 @@ def test_detail_preserves_paragraphs_and_literal_text(monkeypatch: pytest.Monkey
     assert scraper.get_description(job) == "Use C# & SQL.\nLatency < 5 ms."
     assert scraper.get_description(job) == job.description
     assert len(site.requests) == 1
+
+
+def test_entity_encoded_description_is_read_as_markup() -> None:
+    info = {"jobDescription": "&lt;p&gt;Build APIs.&lt;/p&gt;"}
+    assert workday._extract_description(info) == "Build APIs."
+
+
+def test_entity_encoded_empty_description_falls_through_to_the_external_one() -> None:
+    info = {"jobDescription": "&lt;p&gt;&lt;/p&gt;", "externalJobDescription": "<p>Ship it.</p>"}
+    assert workday._extract_description(info) == "Ship it."

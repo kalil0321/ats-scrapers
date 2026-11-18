@@ -188,3 +188,19 @@ def test_partial_graphql_survives_failed_detail_read(httpx_mock) -> None:
     [job] = scraper._parse_responses([{"data": {"careers": {"jobs": [entry]}}}])
     httpx_mock.add_response(url=str(job.url), status_code=503)
     assert scraper.get_description(job) == "Intro"
+
+
+def test_detail_that_adds_nothing_is_read_once(httpx_mock) -> None:
+    entry = {"id": "123", "title": "Engineer", "description": "Intro"}
+    scraper = MetaScraper("meta")
+    [job] = scraper._parse_responses([{"data": {"careers": {"jobs": [entry]}}}])
+    posting = {"@type": "JobPosting", "description": "Intro"}
+    httpx_mock.add_response(url=str(job.url), text=(
+        '<script type="application/ld+json">' + json.dumps(posting) + '</script>'
+    ))
+
+    assert scraper.get_description(job) == "Intro"
+    assert scraper.get_description(job) == "Intro"
+    scraper.enrich_descriptions([job])
+
+    assert len(httpx_mock.get_requests()) == 1

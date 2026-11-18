@@ -686,3 +686,20 @@ def test_detail_fetch_preserves_route_and_language(httpx_mock, language, posting
     httpx_mock.add_response(url=detail_url, status_code=410)
     assert job is not None
     assert scraper.get_description(job) is None
+
+
+def test_unavailable_postings_leave_the_rest_of_the_batch_described(httpx_mock) -> None:
+    scraper = JobBankCAScraper("jobbankca")
+    timed_out, refused, served = (scraper._parse_job(_article(job_id=i)) for i in "123")
+    assert timed_out is not None and refused is not None and served is not None
+    httpx_mock.add_exception(httpx.ReadTimeout("timed out"), url=str(timed_out.url))
+    httpx_mock.add_response(url=str(refused.url), status_code=503)
+    httpx_mock.add_response(url=str(served.url), text=(
+        '<div class="job-posting-details-body">'
+        '<span property="description">Weld frames.</span></div>'
+    ))
+
+    scraper.enrich_descriptions([timed_out, refused, served])
+
+    assert (timed_out.description, refused.description) == (None, None)
+    assert served.description == "Weld frames."

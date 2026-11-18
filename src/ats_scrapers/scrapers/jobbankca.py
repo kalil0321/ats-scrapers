@@ -197,11 +197,14 @@ class JobBankCAScraper(BaseScraper):
         else:
             route = "jobpostingtfw" if tfw else "jobposting"
             url = f"https://www.jobbank.gc.ca/jobsearch/{route}/{posting_id}"
-        with httpx.Client(timeout=self.timeout, proxy=self.proxy) as client:
-            response = client.get(url, headers={"User-Agent": DEFAULT_USER_AGENT})
-        if response.is_redirect or response.status_code in {404, 410}:
+        try:
+            with httpx.Client(timeout=self.timeout, proxy=self.proxy) as client:
+                response = client.get(url, headers={"User-Agent": DEFAULT_USER_AGENT})
+        except httpx.HTTPError:
             return None
-        response.raise_for_status()
+        # Gone, moved or refused: the job keeps no description and the batch goes on.
+        if response.status_code != 200:
+            return None
         job.description = _detail_description(response.text)
         return job.description
 

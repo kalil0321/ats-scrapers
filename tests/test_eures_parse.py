@@ -19,7 +19,11 @@ import asyncio
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.scrapers.eures import EuresScraper, _extract_detail_description
+from ats_scrapers.scrapers.eures import (
+    EuresScraper,
+    _clean_description_text,
+    _extract_detail_description,
+)
 
 
 def _base_item(**overrides):
@@ -325,3 +329,14 @@ def test_listing_uses_translation_if_original_contains_only_markup() -> None:
     })
     job = EuresScraper("eures")._parse(item)
     assert job.description == "E-Mail: <info@example.org>"
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ("&lt;p&gt;Drive trucks.&lt;/p&gt;", "Drive trucks."),
+    ("<p>Use the &lt;div&gt; element.</p>", "Use the <div> element."),
+    ("Pay &lt; 3,000 EUR", "Pay < 3,000 EUR"),
+])
+def test_description_text_reads_encoded_markup_and_keeps_literal_brackets(
+    value: str, expected: str,
+) -> None:
+    assert _clean_description_text(value) == expected
