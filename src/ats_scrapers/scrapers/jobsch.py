@@ -14,16 +14,15 @@ template is in ``_links.detail_*`` (German is the canonical default).
 
 Two anti-bot quirks to handle:
 
-  - Datacenter IP geo-fence — bare httpx from a Hetzner / AWS /
-    DigitalOcean machine returns 403 with a 919-byte block page
-    (verified 2026-05-09 from Hetzner). The scraper tries direct
+  - Datacenter IP geo-fence: bare httpx from a datacenter address
+    returns 403 with a 919-byte block page. The scraper tries direct
     first and, on 403, falls back to a residential proxy pulled
-    from the ``PROXY`` env var (Evomi 4-colon shape
-    ``http://host:port:user:pass``, matching Tesla / Meta).
+    from the ``PROXY`` env var (``http://host:port:user:pass``,
+    matching Tesla / Meta).
     Without ``PROXY`` set we raise a clear error rather than
     silently 0-scraping.
 
-  - Deep-pagination cap — ``start>=2000`` always returns 422
+  - Deep-pagination cap: ``start>=2000`` always returns 422
     regardless of IP, so one query reads at most 2 000 of the ~37 000
     live postings. Facet filters do not help: many postings carry no
     region, category or industry. Every posting but a few dozen has an
@@ -166,7 +165,7 @@ class JobsChScraper(BaseScraper):
             raise ScraperError(
                 "jobs.ch returned 403 (likely datacenter IP block) and "
                 "no PROXY env var is set. Set PROXY=http://host:port:user:pass "
-                "to a residential proxy (Evomi or similar) to enable the "
+                "to a residential proxy to enable the "
                 "fallback path."
             )
         log.info(

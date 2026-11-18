@@ -297,7 +297,7 @@ class EuresScraper(BaseScraper):
         ``seen`` ID set + a bounded in-flight queue stays resident.
         Prefer this over the in-memory :meth:`fetch` / :meth:`afetch`
         from cron contexts that write straight to disk — at ~2.7 M jobs
-        the accumulated list is ~10 GB RSS, exceeding our 7.6 GB VPS.
+        the accumulated list is ~10 GB RSS, more than a small server has.
         The producer-side fan-out and dedup logic is shared with the
         legacy :meth:`fetch` via :meth:`afetch`; we just plug a
         queue-pushing ``on_job`` callback into it and yield from the

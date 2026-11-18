@@ -365,7 +365,7 @@ def test_proxy_env_standard_url(monkeypatch: pytest.MonkeyPatch) -> None:
     assert proxy_url_from_env() == "http://user:pass@proxy.example:8080"
 
 
-def test_proxy_env_legacy_evomi_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_proxy_env_legacy_host_port_user_pass_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ATS_SCRAPERS_PROXY", raising=False)
     monkeypatch.setenv("PROXY", "http://proxy.example:8080:user:pass")
     assert proxy_url_from_env() == "http://user:pass@proxy.example:8080"
