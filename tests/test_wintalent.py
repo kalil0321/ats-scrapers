@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -8,7 +9,10 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import WinTalentScraper
 from ats_scrapers.scrapers.base import ScraperRegistry
-from ats_scrapers.scrapers.wintalent import LISTING_PASSES
+from ats_scrapers.scrapers.wintalent import (
+    LISTING_PASSES,
+    LISTING_RETRY_DELAY,
+)
 
 HOST = "dfmc.hotjob.cn"
 SUITE = "SU61d501d92f9d24431f65f608"
@@ -36,11 +40,19 @@ def stable_cache_buster(monkeypatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def no_listing_retry_delay(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "ats_scrapers.scrapers.wintalent.LISTING_RETRY_DELAY",
-        0,
-    )
+def listing_waits(monkeypatch) -> list[float]:
+    # The waits before a listing is read again are recorded, not slept.
+    waits: list[float] = []
+    sleep = asyncio.sleep
+
+    async def record_listing_wait(delay: float, *args, **kwargs):
+        if delay == LISTING_RETRY_DELAY:
+            waits.append(delay)
+            return None
+        return await sleep(delay, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "sleep", record_listing_wait)
+    return waits
 
 
 def _payload(data: dict[str, object], *, state: object = "200") -> dict:
@@ -635,7 +647,9 @@ def test_modern_total_mismatch_fails_closed(httpx_mock) -> None:
         WinTalentScraper(PORTAL, include_descriptions=False).fetch()
 
 
-def test_modern_metadata_change_fails_closed(httpx_mock) -> None:
+def test_modern_metadata_change_fails_closed(
+    httpx_mock, listing_waits
+) -> None:
     first = _item("67b2a2c11eb80555b7a39fb9")
     second = _item("6a3cd0971d4c30777af06d79")
     httpx_mock.add_response(url=CONFIG_URL, json=_config("2"))
@@ -673,6 +687,8 @@ def test_modern_metadata_change_fails_closed(httpx_mock) -> None:
     ):
         WinTalentScraper(PORTAL, include_descriptions=False).fetch()
 
+    assert listing_waits == [LISTING_RETRY_DELAY] * (LISTING_PASSES - 1)
+
 
 def _add_list_page(
     httpx_mock,
@@ -702,7 +718,7 @@ def _add_list_page(
 
 
 def test_stale_first_page_is_read_again_once_its_cache_expires(
-    httpx_mock, caplog
+    httpx_mock, caplog, listing_waits
 ) -> None:
     a, b, c, d, e = (
         "6afbc5af80d178ea73ae261d",
@@ -736,6 +752,9 @@ def test_stale_first_page_is_read_again_once_its_cache_expires(
     assert [job.ats_id for job in jobs] == [a, b, c, d, e, other]
     assert "recruit_type=1 read again" in caplog.text
     assert "page 1 reported 3 jobs on 2 pages, page 2 5 on 3" in caplog.text
+    # The portal keeps page 1 cached for about 300 seconds.
+    assert listing_waits == [LISTING_RETRY_DELAY]
+    assert LISTING_RETRY_DELAY > 300
 
 
 def test_rows_shifted_during_a_read_are_read_again(httpx_mock) -> None:
