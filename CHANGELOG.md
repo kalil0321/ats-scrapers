@@ -8,6 +8,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 ### Added
 
 - CareerPlug hiring sites (`careerplug`).
+- HiringThing job boards, on its own and on partner domains (`hiringthing`).
 - isolved Hire career portals (`isolved_hire`).
 - `Job.uuid`: the UUIDv7 the hosted dataset gives a posting the first time it
   publishes it, kept while the posting keeps its `global_id`.

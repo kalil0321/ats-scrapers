@@ -21,7 +21,7 @@ def test_ats_type_includes_every_supported_platform() -> None:
         "clearcompany", "cornerstone",
         "darwinbox", "dayforce", "eightfold", "feishu_hire", "gem", "greenhouse", "greeting",
         "gupy", "herp", "hrmos",
-        "hireology",
+        "hireology", "hiringthing",
         "icims", "isolved_hire", "jibe", "join_com", "jobvite", "keka", "lever", "manatal", "mercor", "moka", "oracle", "pageup", "paycom", "paylocity",
         "peopleadmin", "personio", "phenom",
         "applicantpro",
