@@ -11,7 +11,7 @@ are candidate lists only.
 | Dataset | Licence | Used for |
 | --- | --- | --- |
 | [latmay/ats-career-page-urls](https://huggingface.co/datasets/latmay/ats-career-page-urls) (Hugging Face, Nov 2026 snapshot) | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) | Candidate career-page URLs for Workday and other providers |
-| [Common Crawl](https://commoncrawl.org/) URL index (CC-MAIN-2026-04 to CC-MAIN-2026-43) | [Common Crawl terms of use](https://commoncrawl.org/terms-of-use) | Candidate board URLs for Workday, Greenhouse, Ashby, BambooHR, Dayforce, iCIMS, Paylocity, Personio, Recruitee, Hireology, Softgarden, Teamtailor and UKG |
+| [Common Crawl](https://commoncrawl.org/) URL index (CC-MAIN-2026-04 to CC-MAIN-2026-43) | [Common Crawl terms of use](https://commoncrawl.org/terms-of-use) | Candidate board URLs for Workday, Greenhouse, Ashby, BambooHR, Dayforce, iCIMS, Paylocity, Personio, Recruitee, Hireology, Softgarden, Teamtailor, UKG, ADP, Avature, isolved Hire, Jibe, Oracle, PageUp, Phenom, SuccessFactors and TalentBrew |
 
 Some Workday career-site URLs were also found through web search (Exa) for
 `myworkdayjobs.com` pages, then validated the same way.
