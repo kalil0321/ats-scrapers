@@ -1,9 +1,14 @@
 url,name,company_code,locale,country
 https://jobs.bell.ca,Bell Canada,,en_us,us
+https://careers.browardhealth.org,Broward Health,,en_us,us
+https://careers.enbw.com,EnBW,,de_de,de
 https://careers.gehealthcare.com,GE HealthCare,,en_us,us
 https://careers.roche.com,Roche,,en_us,us
 https://www.careers.philips.com,Philips,,en_us,us
 https://careers.southwestair.com,Southwest Airlines,,en_us,us
+https://www.spencersandspiritjobs.com,Spencer's and Spirit Halloween,,en_us,us
+https://careers.therealreal.com,The RealReal,,en_us,us
+https://www.werkenbijtzorg.nl,TZorg,,nl_nl,nl
 https://careers.ucb.com,UCB Pharma,,en_us,us
 https://jobs.thecignagroup.com,Cigna Group,,en_us,us
 https://careers.chenmed.com,ChenMed,,en_us,us
@@ -14,6 +19,8 @@ https://careers.dhl.com,DHL,,en_us,us
 https://careers.thalesgroup.com,Thales Group,,en_us,us
 https://careers.hpe.com,HPE,,en_us,us
 https://careers.bcg.com,BCG,,en_us,us
+https://www.jobs-ups.com,UPS,,en_us,us
+https://www.vcacareers.com,VCA Animal Hospitals,,en_ca,ca
 https://careers.wbd.com,Warner Bros Discovery,,en_us,us
 https://careers.regions.com,Regions Bank,,en_us,us
 https://careers.mastercard.com,Mastercard,,en_us,us
