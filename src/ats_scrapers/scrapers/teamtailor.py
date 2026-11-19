@@ -14,6 +14,9 @@ jobs is read page by page with ``?offset=100``, ``?offset=200``, ... until
 a page comes back short or brings no posting that was not already seen.
 The first request carries no parameter, so a tenant with fewer than 100
 jobs is still a single-request scrape.
+
+A career site served on the employer's own domain has the same feed: pass
+its address (``https://careers.example.com``) instead of the subdomain.
 """
 
 from __future__ import annotations
@@ -23,11 +26,12 @@ import re
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, ClassVar
+from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
-from ats_scrapers.scrapers._slug import require_host_label
+from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -45,7 +49,8 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 @ScraperRegistry.register(ATSType.TEAMTAILOR)
 class TeamtailorScraper(BaseScraper):
-    """Teamtailor scraper — `company_slug` is the tenant subdomain."""
+    """Teamtailor scraper — `company_slug` is the tenant subdomain, or the
+    address of a career site on the employer's own domain."""
 
     ats = ATSType.TEAMTAILOR
 
@@ -68,12 +73,21 @@ class TeamtailorScraper(BaseScraper):
             include_descriptions=include_descriptions,
             proxy=proxy,
         )
-        self.company_slug = require_host_label(
-            company_slug, provider="TeamtailorScraper"
-        )
+        slug = company_slug.strip()
+        if slug.startswith(("http://", "https://")):
+            # The feed sits under the site's path: a query string or a
+            # fragment in the address is not part of it.
+            site = urlparse(require_http_url(slug, provider="TeamtailorScraper"))
+            self.company_slug = f"{site.scheme}://{site.netloc}{site.path.rstrip('/')}"
+            self._feed_url = f"{self.company_slug}/jobs.rss"
+            self._company = site.hostname or self.company_slug
+        else:
+            self.company_slug = require_host_label(slug, provider="TeamtailorScraper")
+            self._feed_url = RSS_TEMPLATE.format(slug=self.company_slug)
+            self._company = self.company_slug
 
     async def afetch(self) -> list[Job]:
-        url = RSS_TEMPLATE.format(slug=self.company_slug)
+        url = self._feed_url
         jobs: list[Job] = []
         seen: set[str] = set()
         async with self.make_fetcher() as fetch:
@@ -153,7 +167,7 @@ class TeamtailorScraper(BaseScraper):
         return Job(
             url=link,
             title=title,
-            company=self.company_slug,
+            company=self._company,
             ats_type=ATSType.TEAMTAILOR,
             ats_id=ats_id,
             location=_format_location(item),

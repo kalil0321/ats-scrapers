@@ -108,6 +108,50 @@ def test_parses_basic_rss(httpx_mock) -> None:
     assert str(job.url) == "https://acme.teamtailor.com/jobs/123-engineer"
 
 
+def test_reads_a_career_site_on_the_employers_own_domain(httpx_mock) -> None:
+    link = "https://careers.example.com/jobs/123-engineer"
+    httpx_mock.add_response(
+        url="https://careers.example.com/jobs.rss", text=_rss([_item(link=link)])
+    )
+    scraper = TeamtailorScraper("https://careers.example.com/")
+    jobs = scraper.fetch()
+    assert scraper.company_slug == "https://careers.example.com"
+    assert [job.ats_id for job in jobs] == ["123"]
+    assert jobs[0].company == "careers.example.com"
+    assert str(jobs[0].url) == link
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "https://careers.example.com/?utm_source=linkedin",
+        "https://careers.example.com/#openings",
+        "https://careers.example.com",
+    ],
+)
+def test_the_feed_address_ignores_a_query_string_and_a_fragment(httpx_mock, address: str) -> None:
+    httpx_mock.add_response(
+        url="https://careers.example.com/jobs.rss",
+        text=_rss([_item(link="https://careers.example.com/jobs/123-engineer")]),
+    )
+    scraper = TeamtailorScraper(address)
+    assert [job.ats_id for job in scraper.fetch()] == ["123"]
+    assert scraper.company_slug == "https://careers.example.com"
+
+
+def test_a_site_under_a_path_keeps_it(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://example.com/careers/jobs.rss",
+        text=_rss([_item(link="https://example.com/careers/jobs/123-engineer")]),
+    )
+    assert len(TeamtailorScraper("https://example.com/careers/").fetch()) == 1
+
+
+def test_an_address_that_is_not_public_is_refused() -> None:
+    with pytest.raises(ScraperError):
+        TeamtailorScraper("https://localhost/")
+
+
 def test_parses_multiple_items_preserves_order(httpx_mock) -> None:
     httpx_mock.add_response(url=RSS_URL, text=_rss([
         _item(title="A", link="https://acme.teamtailor.com/jobs/1-a", guid="g1"),
