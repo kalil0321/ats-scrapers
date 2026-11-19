@@ -98,7 +98,11 @@ _SEARCH_PARAMS = {
 
 _HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$")
 # Some sites prefix the path with a locale: /en/job/..., /fr-fr/job/...
-_JOB_PATH_RE = re.compile(r"^(?:/[a-z]{2}(?:-[a-z]{2})?)?/job/[^?#]+/\d+/(\d+)/?$", re.IGNORECASE)
+# A site in another language names the segment in that language
+# (/emploi/..., /fr/emploi/...); the link's data-job-id says it is a posting.
+_JOB_PATH_RE = re.compile(
+    r"^(?:/[a-z]{2}(?:-[a-z]{2})?)?/[^/?#]+/[^?#]+/\d+/(\d+)/?$", re.IGNORECASE
+)
 _LD_JSON_RE = re.compile(
     r"<script[^>]+type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
     re.IGNORECASE | re.DOTALL,
@@ -285,11 +289,17 @@ class TalentBrewScraper(BaseScraper):
         added = 0
         fresh = 0
         seen_on_page: set[str] = set()
-        for link in fragment.select("a[data-job-id][href]"):
+        links = fragment.select("a[data-job-id][href]")
+        if not links:
+            # Some sites put the id on a button beside the link, not on it.
+            links = fragment.select("a[href]")
+        for link in links:
             href = str(link.get("href") or "")
             match = _JOB_PATH_RE.match(href)
-            job_id = str(link.get("data-job-id") or "").strip()
-            if not match or not job_id or match.group(1) != job_id:
+            if not match:
+                continue
+            job_id = str(link.get("data-job-id") or match.group(1)).strip()
+            if match.group(1) != job_id:
                 continue
             if job_id in seen_on_page:
                 continue
@@ -384,7 +394,11 @@ def _totals(fragment: BeautifulSoup) -> tuple[int, int]:
     if holder is None:
         raise ScraperError("TalentBrew result list has no data-total-results")
     try:
-        total = int(str(holder.get("data-total-results")))
+        # data-total-results also counts the site's other pages when the
+        # search covers them; data-total-job-results counts postings only.
+        total = int(
+            str(holder.get("data-total-job-results") or holder.get("data-total-results"))
+        )
         pages = int(str(holder.get("data-total-pages") or 0))
     except ValueError as exc:
         raise ScraperError("TalentBrew result totals are not numeric") from exc
