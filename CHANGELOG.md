@@ -5,8 +5,19 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-11-19
+
 ### Added
 
+- Structured fields on `Job`, set only when the source states them:
+  `locations` (each advertised place of work, with city, region, country and
+  whether it is the primary one), `workplace_type`, `compensation_components`
+  (base salary, bonus, commission, equity or allowance, with unit, bounds,
+  period and tier), `workload_percentages`, `job_category`, `engagement_type`,
+  `education_requirements` and `skill_requirements` (with the priority the
+  source gives them), and `source_created_at` / `source_updated_at`.
+  `Client.load()` returns these columns, as nulls when a file does not carry
+  them.
 - Greeting career sites.
 - Feishu Hire career sites.
 - Zoho Recruit career sites.
@@ -50,6 +61,13 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Changed
 
+- Descriptions keep the text the employer supplied. Job Bank Canada, Workable,
+  Y Combinator, Meta and jobs.ch read the full posting when the listing has no
+  body, Wanted and MANFRED add the sections they left out, and Workable drops
+  the widget header and Apply footer.
+- EURES no longer builds a description from skills, application instructions
+  or employer text, and jobs.ch and Programathor no longer use the page's SEO
+  summary: a posting without a body has no description.
 - The hosted dataset moves to `https://storage.stapply.ai/jobs/v1/`, the new
   default manifest URL. `jobhive/v1` keeps working as a mirror.
 - Dataset downloads (`search`, `Client`, `Manifest.fetch`) identify themselves
@@ -75,6 +93,23 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   as before.
 - Cloud browsers read a page behind an AWS WAF challenge once the challenge has
   reloaded the real page, and read again a page that is still navigating.
+- jobs.ch: a 403 that follows answered requests pauses every search request
+  (30 seconds, growing to 300) and resumes at a slower pace, instead of skipping
+  the refused date windows and pages. A block that outlasts every pause fails
+  the fetch instead of returning part of the board.
+- jobs.ch: a posting's detail that its route refuses (403) or cannot reach is
+  read through the other route, the scraper's own address or `PROXY`, and the
+  next detail starts on the route that last answered.
+- Paycom: a listing that changes while it is read, a job posted or closed
+  between two pages, is read again from the start, up to 3 reads, instead of
+  failing the count check.
+- WinTalent: a recruit type whose pages disagree, page 1 being served from a
+  stale cache, is read again from page 1 after 330 seconds, up to 3 reads,
+  instead of failing.
+- Programathor: badge text nested in a job card's title is removed from the
+  title.
+- Fetcher: the timeout given to httpcloak is passed in seconds, the unit
+  httpcloak expects, instead of being multiplied by 1000.
 - Avature: a board refused with 406 to both httpx and httpcloak raises instead
   of returning no jobs. The `proxy` argument is now used for listing and job
   pages.
