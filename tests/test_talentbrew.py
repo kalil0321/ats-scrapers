@@ -296,6 +296,49 @@ def test_locale_prefixed_job_links_are_read(httpx_mock) -> None:
     assert str(job.url) == "https://jobs.example.com/en/job/norfolk/engineer/4832/100"
 
 
+def test_job_links_named_in_another_language_are_read(httpx_mock) -> None:
+    rows = [
+        '<li><a href="/emploi/alma/associe/37255/100" data-job-id="100"><h2>Associé</h2></a></li>',
+        '<li><a href="/fr/emploi/laval/commis/37255/101" data-job-id="101"><h2>Commis</h2></a></li>',
+    ]
+    httpx_mock.add_response(url=SEARCH, json=_fragment(rows, 2))
+
+    jobs = TalentBrewScraper(HOST, include_descriptions=False).fetch()
+
+    assert [str(job.url) for job in jobs] == [
+        "https://jobs.example.com/emploi/alma/associe/37255/100",
+        "https://jobs.example.com/fr/emploi/laval/commis/37255/101",
+    ]
+
+
+def test_job_links_without_an_id_attribute_are_read(httpx_mock) -> None:
+    rows = [
+        '<li><a href="/job/camden/nurse/338/100"><h2>Nurse</h2></a>'
+        '<span class="job-location">Camden, NJ</span>'
+        '<button data-job-id="100">Save</button></li>',
+        '<li><a href="/about-us">About us</a></li>',
+    ]
+    httpx_mock.add_response(url=SEARCH, json=_fragment(rows, 1))
+
+    jobs = TalentBrewScraper(HOST, include_descriptions=False).fetch()
+
+    assert [(job.ats_id, job.title, job.location) for job in jobs] == [
+        (f"{HOST}:100", "Nurse", "Camden, NJ"),
+    ]
+
+
+def test_the_expected_total_counts_postings_only(httpx_mock) -> None:
+    fragment = _fragment([_row("100"), _row("101")], 40)
+    fragment["results"] = fragment["results"].replace(
+        'data-total-results="40"', 'data-total-results="40" data-total-job-results="2"'
+    )
+    httpx_mock.add_response(url=SEARCH, json=fragment)
+
+    jobs = TalentBrewScraper(HOST, include_descriptions=False).fetch()
+
+    assert len(jobs) == 2
+
+
 def test_empty_site_returns_no_jobs(httpx_mock) -> None:
     httpx_mock.add_response(url=SEARCH, json=_fragment([], 0, pages=0))
 
