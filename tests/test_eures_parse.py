@@ -331,6 +331,28 @@ def test_listing_uses_translation_if_original_contains_only_markup() -> None:
     assert job.description == "E-Mail: <info@example.org>"
 
 
+@pytest.mark.parametrize(("code", "expected"), [
+    ("selfemployed", "independent_contractor"), ("apprenticeship", "apprenticeship"),
+    ("directhire", None), ("contracttohire", None),
+])
+def test_offering_code_is_separate_from_schedule(code, expected):
+    job = EuresScraper("eures")._parse(_base_item(positionOfferingCode=code, positionScheduleCodes=["parttime"]))
+    assert job.engagement_type == expected
+    assert job.commitment == code
+
+
+def test_esco_references_do_not_become_skill_labels(httpx_mock) -> None:
+    scraper = EuresScraper("any")
+    job = scraper._parse(_base_item(description=""))
+    httpx_mock.add_response(json={
+        "preferredLanguage": "en",
+        "jvProfiles": {"en": {"requiredSkills": ["http://data.europa.eu/esco/skill/example"]}},
+    })
+    assert scraper.get_description(job) is None
+    assert job.skill_requirements is None
+    assert len(httpx_mock.get_requests()) == 1
+
+
 @pytest.mark.parametrize(("value", "expected"), [
     ("&lt;p&gt;Drive trucks.&lt;/p&gt;", "Drive trucks."),
     ("<p>Use the &lt;div&gt; element.</p>", "Use the <div> element."),

@@ -38,10 +38,18 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._job_places import (
+    COUNTRY_NAMES,
+    distinct_places,
+    job_location,
+    workplace_type,
+)
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
+
+    from ats_scrapers.models import JobLocation
 
 API_URL = "https://jobs.workable.com/api/v1/jobs"
 MAX_DESCRIPTION_LEN = 25_000
@@ -68,32 +76,6 @@ _EMPLOYMENT_TYPES = {
     "temporary": "TEMPORARY",
     "internship": "INTERN",
 }
-
-# Country names as the marketplace spells them (``location.countryName``).
-# Names not listed here leave ``country_iso`` unset rather than guessed.
-_COUNTRY_ISO = {
-    "argentina": "AR", "australia": "AU", "austria": "AT", "bahrain": "BH",
-    "belgium": "BE", "brazil": "BR", "bulgaria": "BG", "canada": "CA",
-    "chile": "CL", "china": "CN", "colombia": "CO", "costa rica": "CR",
-    "croatia": "HR", "cyprus": "CY", "czech republic": "CZ", "czechia": "CZ",
-    "denmark": "DK", "egypt": "EG", "estonia": "EE", "finland": "FI",
-    "france": "FR", "germany": "DE", "ghana": "GH", "greece": "GR",
-    "hong kong": "HK", "hungary": "HU", "india": "IN", "indonesia": "ID",
-    "ireland": "IE", "israel": "IL", "italy": "IT", "japan": "JP",
-    "jordan": "JO", "kenya": "KE", "kuwait": "KW", "latvia": "LV",
-    "lebanon": "LB", "lithuania": "LT", "luxembourg": "LU", "malaysia": "MY",
-    "malta": "MT", "mexico": "MX", "morocco": "MA", "netherlands": "NL",
-    "new zealand": "NZ", "nigeria": "NG", "norway": "NO", "oman": "OM",
-    "pakistan": "PK", "peru": "PE", "philippines": "PH", "poland": "PL",
-    "portugal": "PT", "qatar": "QA", "romania": "RO", "saudi arabia": "SA",
-    "serbia": "RS", "singapore": "SG", "slovakia": "SK", "slovenia": "SI",
-    "south africa": "ZA", "south korea": "KR", "spain": "ES", "sweden": "SE",
-    "switzerland": "CH", "taiwan": "TW", "thailand": "TH", "turkey": "TR",
-    "türkiye": "TR", "ukraine": "UA", "united arab emirates": "AE",
-    "united kingdom": "GB", "united states": "US", "uruguay": "UY",
-    "vietnam": "VN",
-}
-
 
 @ScraperRegistry.register(ATSType.WORKABLE_MARKETPLACE)
 class WorkableMarketplaceScraper(BaseScraper):
@@ -246,6 +228,8 @@ def _parse_job(item: dict[str, Any], *, include_description: bool = True) -> Job
         ats_type=ATSType.WORKABLE_MARKETPLACE,
         ats_id=job_id,
         location=location,
+        locations=_marketplace_places(item),
+        workplace_type=workplace_type(workplace),
         country_iso=country_iso,
         is_remote=is_remote,
         department=department.strip() if isinstance(department, str) and department.strip() else None,
@@ -259,6 +243,24 @@ def _parse_job(item: dict[str, Any], *, include_description: bool = True) -> Job
     )
 
 
+def _marketplace_places(item: dict[str, Any]) -> list[JobLocation] | None:
+    loc = item.get("location")
+    primary = None
+    if isinstance(loc, dict):
+        primary = job_location(city=loc.get("city"), region=loc.get("subregion"),
+                               country=loc.get("countryName"))
+    labels = item.get("locations")
+    places: list[JobLocation | None] = []
+    for label in labels if isinstance(labels, list) else []:
+        if primary and label == primary.label:
+            places.append(primary)
+        else:
+            places.append(job_location(label))
+    if primary and primary not in places:
+        places.insert(0, primary)
+    return distinct_places(places)
+
+
 def _location(item: dict[str, Any]) -> tuple[str | None, str | None]:
     loc = item.get("location") if isinstance(item.get("location"), dict) else {}
     country = loc.get("countryName") if isinstance(loc.get("countryName"), str) else None
@@ -266,7 +268,7 @@ def _location(item: dict[str, Any]) -> tuple[str | None, str | None]:
         loc.get("city"), loc.get("subregion"), country,
     ]
     text = ", ".join(p.strip() for p in parts if isinstance(p, str) and p.strip())
-    country_iso = _COUNTRY_ISO.get(country.strip().lower()) if country else None
+    country_iso = COUNTRY_NAMES.get(country.strip().lower()) if country else None
     if not text:
         locations = item.get("locations")
         if isinstance(locations, list):

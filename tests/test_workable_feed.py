@@ -86,6 +86,11 @@ def test_groups_a_posting_listed_once_per_location(feed_file: Path) -> None:
     assert str(job.url) == "https://apply.workable.com/j/5A286F5DE5"
     assert job.apply_url is None
     assert job.location == "Philadelphia, PA, US | Roslyn, PA, US | CA"
+    assert [(p.city, p.region, p.country_iso, p.is_primary) for p in job.locations] == [
+        ("Philadelphia", "PA", "US", None), ("Roslyn", "PA", "US", None),
+        (None, None, "CA", None),
+    ]
+    assert job.workplace_type is None
     # Two countries: left to the location text.
     assert job.country_iso is None
     # One remote entry makes the posting remote.
@@ -93,6 +98,10 @@ def test_groups_a_posting_listed_once_per_location(feed_file: Path) -> None:
     assert job.posted_at == datetime(2026, 11, 13, 16, 20, 57, tzinfo=UTC)
     assert job.company == "KeystoneCare"
     assert job.department == "Sales"
+    assert job.job_category == "Sales"
+    assert [(q.label, q.requirement) for q in job.education_requirements] == [
+        ("Bachelor's Degree", "unspecified"),
+    ]
     assert job.employment_type == "FULL_TIME" and job.commitment == "Full-time"
     assert job.description is not None and job.description.startswith("<p>Expand access")
     assert "<strong>Requirements</strong>" in job.description
@@ -244,3 +253,13 @@ def test_download_refused(httpx_mock) -> None:
     httpx_mock.add_response(url=FEED_URL, status_code=403)
     with pytest.raises(ScraperError, match="HTTP 403"):
         WorkableFeedScraper(feed_url=FEED_URL).fetch()
+
+
+
+def test_empty_education_does_not_promote_requirements_prose(tmp_path: Path) -> None:
+    path = tmp_path / "feed.xml"
+    path.write_text(_feed(_entry("1", "Education lead", "Rome", "", "IT",
+                                category="Other", education="Unspecified")))
+    job, = WorkableFeedScraper(feed_path=path).fetch()
+    assert "Requirements" in job.description
+    assert job.job_category is None and job.education_requirements is None

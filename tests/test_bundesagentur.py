@@ -1141,3 +1141,29 @@ def test_fetch_stream_yields_same_jobs_as_legacy(monkeypatch) -> None:
 
     streamed = asyncio.run(collect_stream())
     assert sorted(j.ats_id for j in streamed) == sorted(f"R-{i}" for i in range(7))
+
+
+@pytest.mark.parametrize(("terms", "expected"), [
+    ({"vertragsdauer": "BEFRISTET", "befristungInMonaten": 24}, "fixed_term"),
+    ({"vertragsdauer": "UNBEFRISTET", "istArbeitnehmerUeberlassung": True}, "permanent"),
+    ({"stellenangebotsart": "AUSBILDUNG", "ausbildungsart": "AUSBILDUNG"}, "apprenticeship"),
+    ({"stellenangebotsart": "SELBSTAENDIGKEIT"}, "independent_contractor"),
+    ({"stellenangebotsart": "PRAKTIKUM_TRAINEE"}, None),
+    ({"istArbeitnehmerUeberlassung": True, "vertragsdauer": "KEINE_ANGABE"}, None),
+])
+def test_ba_preserves_contract_codes_independently_of_hours(terms, expected):
+    job = BundesagenturScraper("any")._parse({**_job("1", "Probe"), **terms})
+    assert job is not None and job.engagement_type == expected
+    assert job.workload_percentages is None
+    assert terms.items() <= job.raw.items()
+
+
+def test_ba_existing_detail_call_enriches_original_job(httpx_mock):
+    scraper = BundesagenturScraper("any")
+    job = scraper._parse({**_job("123", "Probe"), "stellenangebotsBeschreibung": None})
+    httpx_mock.add_response(json={"vertragsdauer": "BEFRISTET", "befristungInMonaten": 12,
+                                  "stellenangebotsBeschreibung": "Build things."})
+    assert scraper.get_description(job) == "Build things."
+    assert job.engagement_type == "fixed_term"
+    assert job.raw["befristungInMonaten"] == 12
+    assert len(httpx_mock.get_requests()) == 1

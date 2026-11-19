@@ -11,9 +11,31 @@ import httpx
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import WorkloadPercentages
 from ats_scrapers.scrapers import ArbetsformedlingenScraper
 
 _API_RE = re.compile(r"^https://jobsearch\.api\.jobtechdev\.se/search")
+
+
+@pytest.mark.parametrize(("scope", "expected"), [
+    ({"min": 0, "max": 100}, WorkloadPercentages(minimum=0, maximum=100)),
+    ({"min": 100, "max": 100}, WorkloadPercentages(minimum=100, maximum=100)),
+    ({"min": 62.5, "max": None}, WorkloadPercentages(minimum=62.5)),
+    ({"max": 80}, WorkloadPercentages(maximum=80)),
+    ({"min": None, "max": None}, None),
+    ({"min": 90, "max": 10}, None),
+    ({"min": False, "max": 80}, None),
+    ({"max": 101}, None),
+    (None, None),
+])
+def test_scope_of_work_uses_only_source_bounds(scope, expected):
+    row = _ads([datetime(2026, 11, 18)])[0]
+    row.update(scope_of_work=scope, working_hours_type={"label": "Deltid"})
+    job = ArbetsformedlingenScraper("any")._parse(row)
+    assert job.workload_percentages == expected
+    assert job.commitment == "Deltid"
+    if scope is not None:
+        assert job.raw["scope_of_work"] == scope
 
 
 def _ads(dates: list[datetime]) -> list[dict[str, object]]:
@@ -120,3 +142,49 @@ def test_empty_board(httpx_mock) -> None:
     httpx_mock.add_callback(_fake_api([]), url=_API_RE, is_reusable=True)
 
     assert ArbetsformedlingenScraper("arbetsformedlingen").fetch() == []
+
+
+def test_jobtech_primary_occupation_and_weighted_education() -> None:
+    row = _ads([datetime(2026, 11, 18)])[0]
+    row.update({
+        "occupation": {"concept_id": "occupation-example", "label": "Farmaceut/Receptarie",
+                       "legacy_ams_taxonomy_id": "other-code"},
+        "occupation_group": {"label": "Receptarier"},
+        "occupation_field": {"label": "Hälso- och sjukvård"},
+        "must_have": {"education_level": [{"label": "Gymnasial utbildning", "weight": 10}],
+                      "skills": [{"label": "Excel"}]},
+        "nice_to_have": {"education": [{"label": "Socialt arbete och omsorg", "weight": 5},
+                                       {"label": "Socialt arbete och omsorg"}],
+                         "work_experiences": [{"label": "Butikssäljare"}]},
+    })
+    job = ArbetsformedlingenScraper("arbetsformedlingen")._parse(row)
+    assert job.job_category == "Farmaceut/Receptarie"
+    assert job.department == "Hälso- och sjukvård"
+    assert [(q.label, q.requirement) for q in job.education_requirements] == [
+        ("Gymnasial utbildning", "required"), ("Socialt arbete och omsorg", "preferred"),
+    ]
+
+
+def test_jobtech_missing_or_unlabelled_concepts() -> None:
+    row = _ads([datetime(2026, 11, 18)])[0]
+    row.update({
+        "occupation": {"concept_id": "unlabelled"}, "occupation_field": {"label": "Education"},
+        "must_have": {"education": [{"concept_id": "x"}, {"label": " "}], "education_level": "3"},
+        "nice_to_have": {"skills": [{"label": "Teaching"}]},
+    })
+    job = ArbetsformedlingenScraper("arbetsformedlingen")._parse(row)
+    assert job.job_category is None and job.education_requirements is None
+
+
+def test_native_skill_groups_set_priority_independently_of_weights() -> None:
+    row = _ads([datetime(2026, 11, 18)])[0]
+    row.update({
+        "must_have": {"skills": [{"label": "C#", "weight": None}, {"label": " C# "}, {"concept_id": "s1"}],
+                      "languages": [{"label": "English"}]},
+        "nice_to_have": {"skills": [{"label": "SQL", "weight": 10}], "education": [{"label": "Diploma"}]},
+    })
+    job = ArbetsformedlingenScraper("any")._parse(row)
+    assert [(s.label, s.requirement) for s in job.skill_requirements] == [
+        ("C#", "required"), ("SQL", "preferred"),
+    ]
+    assert [(q.label, q.requirement) for q in job.education_requirements] == [("Diploma", "preferred")]

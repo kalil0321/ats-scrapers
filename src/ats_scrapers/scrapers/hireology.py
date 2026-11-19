@@ -17,6 +17,7 @@ from urllib.parse import quote, unquote, urlparse
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
 from ats_scrapers.scrapers._bs4 import bs4_soup
+from ats_scrapers.scrapers._source_timestamp import source_timestamp
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 CAREERS_URL = "https://careers.hireology.com/{tenant}/"
@@ -331,6 +332,7 @@ class HireologyScraper(BaseScraper):
             commitment=employment,
             description=description[:25_000] if description else None,
             posted_at=_parse_datetime(item.get("created_at")),
+            source_created_at=source_timestamp(item.get("created_at")),
             fetched_at=datetime.now(UTC),
             raw=raw,
         )

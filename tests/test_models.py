@@ -142,6 +142,53 @@ def test_job_minimal_construction() -> None:
     assert job.salary is None
 
 
+def test_source_fields_keep_distinct_events_and_explicit_zero() -> None:
+    job = _minimal_job(
+        source_created_at="2026-03-03T10:00:00+02:00", workload_percentages=[0, 80, 100],
+        compensation_components=[{"kind": "equity", "unit": "percent", "minimum": 0, "maximum": 1.5}],
+        job_category="Software development",
+        engagement_type="fixed_term", education_requirements=[{"label": "Bachelor or equivalent"}],
+    )
+    assert job.source_created_at == datetime(2026, 3, 3, 8, tzinfo=UTC)
+    assert job.posted_at is None and job.source_updated_at is None
+    assert job.workload_percentages.values == [0, 80, 100]
+    assert job.compensation_components[0].minimum == 0
+    assert job.education_requirements[0].requirement == "unspecified"
+    assert job == Job.model_validate_json(job.model_dump_json())
+
+
+@pytest.mark.parametrize("fields", [
+    {"source_updated_at": "2026-03-03T10:00:00"}, {"source_created_at": "2026-03-03"},
+    {"workload_percentages": [True]}, {"workload_percentages": [110]},
+    {"workload_percentages": {"values": [80], "minimum": 50}},
+    {"workload_percentages": {"minimum": 100, "maximum": 80}},
+    {"workload_percentages": {"values": []}}, {"workload_percentages": {}},
+    {"workload_percentages": "80–100%"}, {"workload_percentages": {"maximum": True}},
+    {"job_category": {"label": "Software development"}}, {"job_category": ""},
+    {"workplace_type": "unknown"}, {"locations": [{"city": "Paris"}]},
+    {"skill_requirements": [{"label": "SQL", "requirement": "yes"}]},
+    {"compensation_components": [{"kind": "commission", "maximum": float("inf")}]},
+])
+def test_source_fields_reject_ambiguous_or_invalid_values(fields) -> None:
+    with pytest.raises(ValidationError):
+        _minimal_job(**fields)
+
+
+def test_work_terms_preserve_ranges_and_qualification_priority() -> None:
+    job = _minimal_job(
+        workload_percentages={"minimum": 80, "maximum": 100},
+        workplace_type="hybrid", locations=[{"label": "Paris"}, {"label": "Berlin"}],
+        education_requirements=[{"label": "Degree or equivalent", "requirement": "optional"}],
+        skill_requirements=[{"label": "SQL", "requirement": "required"}, {"label": "Python"}],
+    )
+    assert job.workload_percentages.model_dump(exclude_none=True) == {"minimum": 80, "maximum": 100}
+    assert _minimal_job(workload_percentages={"maximum": 80}).workload_percentages.minimum is None
+    assert [place.label for place in job.locations] == ["Paris", "Berlin"]
+    assert [item.requirement for item in job.skill_requirements] == ["required", "unspecified"]
+    assert job.education_requirements[0].requirement == "optional"
+    assert Job.model_validate_json(job.model_dump_json()) == job
+
+
 def test_job_with_salary_returns_salary_object() -> None:
     job = _minimal_job(
         ats_type=ATSType.ASHBY,

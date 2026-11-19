@@ -51,6 +51,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import quote
@@ -59,7 +60,7 @@ import httpx
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.fetch import Fetcher, FetchResponse, proxy_url_from_env
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, Job, WorkloadPercentages
 from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers._posting_detail import body_text, fill_missing, job_posting
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -68,12 +69,21 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from typing import Any
 
+    from ats_scrapers.models import EngagementType
+    from ats_scrapers.scrapers._htmltree import Node
+
 log = logging.getLogger(__name__)
 
 API_URL = "https://www.jobs.ch/api/v1/public/search"
 PER_PAGE = 20  # API hard-caps ``rows`` at 20 (>20 → 422).
 MAX_CONCURRENCY = 4
 DETAIL_CONCURRENCY = 4
+# Public jobs.ch translation keys employment_type.1 through employment_type.6.
+# ID 4 ("Supplementary income") does not specify a contractual relationship.
+_ENGAGEMENT_TYPES: dict[str, EngagementType] = {
+    "1": "temporary", "2": "independent_contractor", "3": "internship",
+    "5": "permanent", "6": "apprenticeship",
+}
 # The API hard-caps deep pagination at start=2000 (==page 100). Any
 # per-query fetch therefore tops out at 2 000 rows.
 MAX_USABLE_OFFSET = 2000
@@ -437,6 +447,7 @@ class JobsChScraper(BaseScraper):
                 if response.status_code == 200:
                     item = response.json()
                     if isinstance(item, dict) and item.get("job_id") == job.ats_id:
+                        _apply_employment_fields(job, item)
                         job.description = _api_description(item)
                         if job.description:
                             return False
@@ -451,7 +462,10 @@ class JobsChScraper(BaseScraper):
         except httpx.HTTPError:
             return False
         if page.status_code == 200:
-            job.description = _extract_description(page.text)
+            tree = parse_html(page.text)
+            if job.workload_percentages is None:
+                job.workload_percentages = _page_workload(tree)
+            job.description = _extract_description(page.text, tree)
         return page.status_code == 403
 
     async def _fetch_page(
@@ -523,22 +537,11 @@ class JobsChScraper(BaseScraper):
         place = (item.get("place") or "").strip() or None
         location = f"{place}, Switzerland" if place else "Switzerland"
 
-        # employment_grades is a list like [100] (% time). When the
-        # only value is below 100 the role is part-time; when 100 it's
-        # full-time; mixed lists indicate flexibility.
-        grades = item.get("employment_grades") or []
-        is_full_time = grades == [100]
-        employment_type = "FULL_TIME" if is_full_time else (
-            "PART_TIME" if grades and all(g < 100 for g in grades) else None
-        )
-
         posted_at = _parse_iso(
             item.get("publication_date") or item.get("initial_publication_date")
         )
 
         raw: dict[str, Any] = {}
-        if grades:
-            raw["employment_grades"] = grades
         languages = [
             entry.get("language") for entry in (item.get("language_skills") or [])
             if isinstance(entry, dict) and entry.get("language")
@@ -550,7 +553,7 @@ class JobsChScraper(BaseScraper):
         if item.get("company_segmentation"):
             raw["company_segmentation"] = item["company_segmentation"]
 
-        return Job(
+        job = Job(
             url=url,
             title=title,
             company=company or "Unknown",
@@ -558,11 +561,33 @@ class JobsChScraper(BaseScraper):
             ats_id=ats_id,
             description=_api_description(item),
             location=location,
-            employment_type=employment_type,
             posted_at=posted_at,
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+        _apply_employment_fields(job, item)
+        return job
+
+
+def _apply_employment_fields(job: Job, item: dict[str, Any]) -> None:
+    raw = dict(job.raw or {})
+    if grades := item.get("employment_grades"):
+        raw["employment_grades"] = grades
+        if isinstance(grades, list) and all(
+            type(n) in (int, float) and 0 <= n <= 100 for n in grades
+        ):
+            job.workload_percentages = WorkloadPercentages(values=list(dict.fromkeys(grades)))
+            if all(n == 100 for n in grades):
+                job.employment_type = "FULL_TIME"
+            elif all(n < 100 for n in grades):
+                job.employment_type = "PART_TIME"
+            else:
+                job.employment_type = None
+    if isinstance(ids := item.get("employment_type_ids"), list) and ids:
+        raw["employment_type_ids"] = ids
+        choices = {_ENGAGEMENT_TYPES.get(str(value)) for value in ids}
+        job.engagement_type = choices.pop() if len(choices) == 1 else None
+    job.raw = raw or None
 
 
 def _detail_url(item: dict[str, Any], job_id: str) -> str:
@@ -607,10 +632,25 @@ def _api_description(item: dict[str, Any]) -> str | None:
     return None
 
 
-def _extract_description(page: str) -> str | None:
+def _page_workload(tree: Node) -> WorkloadPercentages | None:
+    for node in tree.walk():
+        if node.attrs.get("data-cy") != "info-workload":
+            continue
+        match = re.fullmatch(r"(\d+(?:[.,]\d+)?)\s*(?:%?\s*[–-]\s*(\d+(?:[.,]\d+)?)\s*)?%", node.text())
+        if match:
+            low = float(match[1].replace(",", "."))
+            high = float(match[2].replace(",", ".")) if match[2] else low
+            if 0 <= low <= high <= 100:
+                if match[2] is None:
+                    return WorkloadPercentages(values=[low])
+                return WorkloadPercentages(minimum=low, maximum=high)
+    return None
+
+
+def _extract_description(page: str, tree: Node) -> str | None:
     # The JSON-LD can be automatically translated. The visible vacancy
     # section preserves the original and may also contain a separate summary.
-    for node in parse_html(page).walk():
+    for node in tree.walk():
         if node.attrs.get("data-cy") == "vacancy-description":
             labels = {"About the job", "Über den Job", "À propos de l’emploi"}
             node.children = [

@@ -16,11 +16,21 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    FiniteFloat,
+    HttpUrl,
+    field_validator,
+    model_validator,
+)
 
 log = logging.getLogger(__name__)
 
@@ -149,6 +159,20 @@ class ATSType(StrEnum):
 
 SalaryPeriod = Literal["HOUR", "DAY", "WEEK", "MONTH", "YEAR"]
 
+_COMPENSATION_PERIODS: dict[str, SalaryPeriod] = {
+    "HOUR": "HOUR", "HOURLY": "HOUR", "DAY": "DAY", "DAILY": "DAY",
+    "WEEK": "WEEK", "WEEKLY": "WEEK", "MONTH": "MONTH", "MONTHLY": "MONTH",
+    "YEAR": "YEAR", "YEARLY": "YEAR", "ANNUAL": "YEAR", "ANNUALLY": "YEAR",
+}
+
+
+def normalize_compensation_period(value: object) -> SalaryPeriod | None:
+    """Map single-period pay rates such as '1 YEAR' to a salary period."""
+    if not isinstance(value, str):
+        return None
+    token = value.strip().upper()
+    return _COMPENSATION_PERIODS.get(re.sub(r"^(?:1|PER)\s+", "", token))
+
 
 class Salary(BaseModel):
     """Compensation range attached to a job posting.
@@ -178,7 +202,82 @@ class Company(BaseModel):
     website: HttpUrl | None = None
 
 
+class CompensationComponent(BaseModel):
+    """One source-reported pay component in one compensation tier."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["base_salary", "bonus", "commission", "equity", "allowance", "other"]
+    source_label: str | None = None
+    unit: Literal["money", "percent", "shares"] | None = None
+    currency: str | None = None
+    period: SalaryPeriod | None = None
+    minimum: FiniteFloat | None = None
+    maximum: FiniteFloat | None = None
+    tier: str | None = Field(default=None, description="Source name of the applicable tier or package.")
+    summary: str | None = None
+
+
+RequirementLevel = Literal["required", "preferred", "optional", "unspecified"]
+
+
+class _Requirement(BaseModel):
+    """Original wording and the priority explicitly indicated by the source."""
+
+    model_config = ConfigDict(frozen=True, str_strip_whitespace=True)
+
+    label: str = Field(min_length=1)
+    requirement: RequirementLevel = "unspecified"
+
+
+class EducationRequirement(_Requirement):
+    """An educational qualification attached to the posting."""
+
+
+class SkillRequirement(_Requirement):
+    """A skill attached to the posting."""
+
+
+class JobLocation(BaseModel):
+    """One advertised place of work as identified by the source."""
+
+    model_config = ConfigDict(frozen=True, str_strip_whitespace=True)
+
+    label: str = Field(min_length=1)
+    city: str | None = None
+    region: str | None = Field(default=None, description="Administrative area of this location.")
+    country_iso: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
+    is_primary: bool | None = Field(default=None, strict=True)
+
+
+WorkplaceType = Literal["onsite", "hybrid", "remote", "onsite_or_remote"]
+WorkloadPercentage = Annotated[float, Field(strict=True, ge=0, le=100)]
+
+
+class WorkloadPercentages(BaseModel):
+    """Advertised percentages as discrete values or a range with inclusive bounds."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    values: list[WorkloadPercentage] | None = Field(default=None, min_length=1)
+    minimum: WorkloadPercentage | None = None
+    maximum: WorkloadPercentage | None = None
+
+    @model_validator(mode="after")
+    def _check_representation(self) -> Self:
+        has_bounds = self.minimum is not None or self.maximum is not None
+        if (self.values is not None) == has_bounds:
+            raise ValueError("Supply discrete values or a minimum or maximum")
+        if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
+            raise ValueError("Minimum workload exceeds maximum workload")
+        return self
+
+
 EmploymentType = Literal["FULL_TIME", "PART_TIME", "CONTRACT", "INTERN", "TEMPORARY"]
+EngagementType = Literal[
+    "permanent", "fixed_term", "independent_contractor", "temporary", "apprenticeship", "internship",
+]
+SourceTimestamp = Annotated[AwareDatetime, AfterValidator(lambda value: value.astimezone(UTC))]
 
 
 # Control characters that would corrupt a CSV / JSON line if they
@@ -195,14 +294,14 @@ class Job(BaseModel):
     on field names is part of the public contract** — renaming a field
     is a breaking change.
 
-    The fields fall into four groups, listed in the order they appear
+    The fields fall into six groups, listed in the order they appear
     below:
 
     1. **Identity** (``global_id``, ``url``, ``title``, ``company``,
        ``ats_type``, ``ats_id``). What the row *is*.
 
     2. **Location** (``location``, ``country_iso``, ``region``,
-       ``lat``, ``lon``, ``is_remote``). Where the role lives.
+       ``lat``, ``lon``, ``is_remote``, ``locations``, ``workplace_type``). Where the role lives.
        ``is_remote`` is *narrowly* inferred from the ``title`` by
        ``ats_scrapers.enrichment.infer_is_remote`` when the ATS doesn't
        surface a flag — it only ever returns ``True`` (never
@@ -212,18 +311,20 @@ class Job(BaseModel):
        by the downstream LLM enrichment pass / a geocoding service.
 
     3. **Compensation** (``salary_currency``, ``salary_period``,
-       ``salary_summary``, ``salary_min``, ``salary_max``).
+       ``salary_summary``, ``salary_min``, ``salary_max``, ``compensation_components``).
        ``salary_min`` / ``salary_max`` are *derived* from
        ``salary_summary`` via ``ats_scrapers.enrichment.parse_salary_range``
        when the ATS exposes only free text.
 
     4. **Classification** (``experience``, ``employment_type``,
        ``department``, ``team``, ``requisition_id``, ``apply_url``,
-       ``commitment``). Optional — set when the source API exposes
+       ``commitment``, ``workload_percentages``, ``job_category``,
+       ``engagement_type``, ``education_requirements``, ``skill_requirements``). Optional — set when the source API exposes
        them, ``None`` otherwise.
 
     5. **Content & timing** (``description``, ``posted_at``,
-       ``fetched_at``, ``application_deadline``, ``language``).
+       ``source_created_at``, ``source_updated_at``, ``fetched_at``,
+       ``application_deadline``, ``language``).
        ``application_deadline`` is an explicit deadline the ATS exposes
        (``None`` when unavailable, never inferred from other timestamps).
        ``language`` is the listing's locale code (ISO 639-1, e.g.
@@ -379,6 +480,9 @@ class Job(BaseModel):
         ),
     )
 
+    workplace_type: WorkplaceType | None = Field(default=None, description="Source-stated attendance arrangement.")
+    locations: list[JobLocation] | None = Field(default=None, description="Advertised places of work in source order.")
+
     # --- Compensation -----------------------------------------------------
 
     salary_currency: str | None = Field(
@@ -423,8 +527,27 @@ class Job(BaseModel):
         ),
     )
 
+    compensation_components: list[CompensationComponent] | None = Field(
+        default=None, description="Source pay components, with their original unit, bounds and applicable tier.",
+    )
+
     # --- Classification ---------------------------------------------------
 
+    workload_percentages: WorkloadPercentages | None = Field(
+        default=None, description="Explicit percentages of a full-time role, given individually or as a range.",
+    )
+    job_category: str | None = Field(
+        default=None, min_length=1, description="Category label assigned to the posting by its source.",
+    )
+    engagement_type: EngagementType | None = Field(
+        default=None, description="Explicit contractual relationship or duration, independent of working hours.",
+    )
+    education_requirements: list[EducationRequirement] | None = Field(
+        default=None, description="Educational qualifications the source attaches to the job and their stated status.",
+    )
+    skill_requirements: list[SkillRequirement] | None = Field(
+        default=None, description="Source-listed skills and their stated priority.",
+    )
     experience: int | None = Field(
         default=None,
         description=(
@@ -511,6 +634,12 @@ class Job(BaseModel):
             "on aggregator sites and some legacy ATSes."
         ),
     )
+    source_created_at: SourceTimestamp | None = Field(
+        default=None, description="UTC time at which the source says this posting record was created.",
+    )
+    source_updated_at: SourceTimestamp | None = Field(
+        default=None, description="UTC time at which the source says this posting record was last edited.",
+    )
     fetched_at: datetime | None = Field(
         default=None,
         description="When ats-scrapers last saw this posting (UTC).",
@@ -555,6 +684,13 @@ class Job(BaseModel):
             "dict in parquet."
         ),
     )
+
+    @field_validator("workload_percentages", mode="before")
+    @classmethod
+    def _read_workload_list(cls, value: object) -> object:
+        if isinstance(value, list):
+            return {"values": value} if value else None
+        return value
 
     @model_validator(mode="after")
     def _populate_global_id(self) -> Self:

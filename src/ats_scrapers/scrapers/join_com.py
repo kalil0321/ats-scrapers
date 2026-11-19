@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._source_timestamp import source_timestamp
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -318,6 +319,7 @@ class JoinComScraper(BaseScraper):
             is_remote=is_remote,
             commitment=employment_type,
             posted_at=_parse_iso(item.get("publishedAt") or item.get("createdAt")),
+            source_created_at=source_timestamp(item.get("createdAt")),
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )

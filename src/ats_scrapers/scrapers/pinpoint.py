@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers._slug import require_host_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -175,7 +176,7 @@ class PinpointScraper(BaseScraper):
         )
 
         raw: dict[str, Any] = {}
-        for k in ("workplace_type", "experience_level", "office",
+        for k in ("employment_type", "workplace_type", "experience_level", "office",
                   "schedule", "tags", "remote_country_restriction"):
             v = item.get(k)
             if v:
@@ -190,6 +191,7 @@ class PinpointScraper(BaseScraper):
             location=_format_location(item.get("location")),
             is_remote=_extract_is_remote(item.get("workplace_type")),
             employment_type=_map_employment_type(item.get("employment_type")),
+            engagement_type=engagement_from_label(item.get("employment_type")),
             department=department,
             commitment=item.get("schedule") if isinstance(item.get("schedule"), str) else None,
             requisition_id=item.get("reference") if isinstance(item.get("reference"), str) else None,

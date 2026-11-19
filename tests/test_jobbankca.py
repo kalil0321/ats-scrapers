@@ -688,6 +688,42 @@ def test_detail_fetch_preserves_route_and_language(httpx_mock, language, posting
     assert scraper.get_description(job) is None
 
 
+@pytest.mark.parametrize(("term", "hours", "engagement", "labels", "status"), [
+    ("Permanent employment", "Part time", "permanent",
+     ["Bachelor's degree", "or equivalent experience"], "required"),
+    ("Permanent", "Temps plein", "permanent", ["Diplôme collégial"], "required"),
+    ("", "Full time", None, ["No degree, certificate or diploma"], None),
+    ("", "Part time", None, ["Diploma preferred"], "preferred"),
+    ("", "Part time", None, ["Diploma (optional)"], "optional"),
+    ("", "Temps partiel", None, ["Diplôme facultatif"], "optional"),
+    ("Term or contract", "Full time", None, ["College/CEGEP"], "required"),
+    ("Temporaire", "Temps partiel", "temporary", ["Aucun certificat, diplôme ou grade"], None),
+])
+def test_jobbank_detail_classifies_only_role_properties(httpx_mock, term, hours, engagement, labels, status):
+    scraper = JobBankCAScraper("any")
+    job = scraper._parse_job(_article(job_id="123"))
+    assert job is not None
+    education = "".join(f"<li>{label}</li>" for label in labels)
+    httpx_mock.add_response(text=f"""
+        <div class="job-posting-details-body">
+        <span property="employmentType">{term}<span>{hours}</span></span>
+        <ul property="educationRequirements qualification">{education}</ul>
+        <p property="experienceRequirements qualification">Two years</p>
+        </div>""")
+    assert scraper.get_description(job) is None
+    assert job.engagement_type == engagement
+    assert job.workload_percentages is None
+    assert job.raw["employment_terms"] == job.commitment == f"{term} {hours}".strip()
+    assert job.raw["education_requirements"] == [" ".join(labels)]
+    if status is None:
+        assert job.education_requirements is None
+    else:
+        assert [(r.label, r.requirement) for r in job.education_requirements] == [
+            (" ".join(labels), status)
+        ]
+    assert len(httpx_mock.get_requests()) == 1
+
+
 def test_unavailable_postings_leave_the_rest_of_the_batch_described(httpx_mock) -> None:
     scraper = JobBankCAScraper("jobbankca")
     timed_out, refused, served = (scraper._parse_job(_article(job_id=i)) for i in "123")

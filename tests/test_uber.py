@@ -95,6 +95,7 @@ def test_parses_current_api_fields(httpx_mock, monkeypatch) -> None:
     assert job.team == "University"
     assert job.employment_type == "INTERN"
     assert job.commitment == "Full time / Intern"
+    assert job.engagement_type == "internship"
     assert job.requisition_id == "R-300886"
     assert job.salary_currency == "USD"
     assert job.salary_period == "YEAR"

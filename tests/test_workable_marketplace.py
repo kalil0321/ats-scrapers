@@ -216,3 +216,15 @@ def test_skips_unpublished_and_incomplete(httpx_mock) -> None:
         ),
     )
     assert [j.ats_id for j in _scraper().fetch()] == ["a"]
+
+
+def test_named_locations_keep_structured_fields_only_for_the_matching_label() -> None:
+    from ats_scrapers.scrapers.workable_marketplace import _parse_job
+
+    item = _job(locations=["TELECOMMUTE", "Reno, Nevada", "Boise, Idaho, United States"])
+    job = _parse_job(item)
+    assert job.workplace_type == "remote"
+    assert [(p.label, p.city, p.region, p.country_iso) for p in job.locations] == [
+        ("Reno, Nevada", None, None, None),
+        ("Boise, Idaho, United States", "Boise", "Idaho", "US"),
+    ]

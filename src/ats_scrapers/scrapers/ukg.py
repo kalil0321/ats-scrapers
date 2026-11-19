@@ -16,6 +16,7 @@ from pydantic import HttpUrl
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._source_timestamp import source_timestamp
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -179,7 +180,11 @@ class UKGProScraper(BaseScraper):
                     asyncio.Semaphore(1),
                     copy,
                 )
-            return enriched.description if enriched is not None else None
+            if enriched is None:
+                return None
+            if job.source_updated_at is None:
+                job.source_updated_at = enriched.source_updated_at
+            return enriched.description
 
         return self._run_sync(run())
 
@@ -408,6 +413,8 @@ def _apply_detail(job: Job, detail: dict[str, Any]) -> None:
         raw = dict(job.raw or {})
         raw["updated_at"] = updated.isoformat()
         job.raw = raw
+    if job.source_updated_at is None:
+        job.source_updated_at = source_timestamp(detail.get("UpdatedDate"))
     location, country_iso, lat, lon = _locations(detail.get("Locations"))
     if location:
         job.location = location

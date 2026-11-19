@@ -550,3 +550,8 @@ def test_window_is_read_and_shortfall_logged_when_no_facet_splits(
 
     assert len(found) == 4
     assert "announced 7 jobs, collected 4" in caplog.text
+
+
+def test_explicit_job_type_is_mapped():
+    job = PhenomScraper(BASE)._parse_job({**_job(), "jobType": "Permanent"})
+    assert job.engagement_type == "permanent" and job.commitment == "Permanent"

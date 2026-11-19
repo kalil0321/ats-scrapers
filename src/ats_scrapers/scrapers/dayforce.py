@@ -13,6 +13,7 @@ from pydantic import HttpUrl, ValidationError
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
+from ats_scrapers.scrapers._job_classification import classification_label, education_level
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 API_ROOT = "https://www.dayforcehcm.com/api"
@@ -206,6 +207,8 @@ class DayforceScraper(BaseScraper):
             employment_type=_employment_type(employment_label),
             department=_string(item.get("JobFamily")),
             team=_string(item.get("JobFunction")),
+            job_category=classification_label(item.get("JobFunction")),
+            education_requirements=education_level(item.get("Education"), requirement="required"),
             description=description,
             posted_at=_parse_date(item.get("DatePosted")),
             fetched_at=datetime.now(tz=UTC),

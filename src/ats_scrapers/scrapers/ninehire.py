@@ -15,6 +15,7 @@ from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
 from ats_scrapers.scrapers._bs4 import bs4_soup
 from ats_scrapers.scrapers._htmltree import parse_html
+from ats_scrapers.scrapers._source_timestamp import source_timestamp
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -316,6 +317,7 @@ class NinehireScraper(BaseScraper):
             apply_url=canonical_url,
             commitment=", ".join(employment_values) or None,
             posted_at=_parse_datetime(item.get("createdAt")),
+            source_created_at=source_timestamp(item.get("createdAt")),
             fetched_at=datetime.now(UTC),
             # ``endAt`` is set only when the employer chose a closing date
             # (``deadlineType`` "custom_deadline"); it is null for

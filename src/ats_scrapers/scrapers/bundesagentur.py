@@ -60,7 +60,7 @@ import httpx
 from pydantic import HttpUrl
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
+from ats_scrapers.models import ATSType, EmploymentType, EngagementType, Job, SalaryPeriod
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 logger = logging.getLogger(__name__)
@@ -352,12 +352,14 @@ class BundesagenturScraper(BaseScraper):
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
-        copy = job.model_copy()
 
+        copy = job.model_copy()
         async def run() -> str | None:
             async with self._client() as client:
                 sem = asyncio.Semaphore(1)
                 await self._enrich_description(client, sem, copy)
+            job.engagement_type = copy.engagement_type
+            job.raw = copy.raw
             return copy.description
 
         return self._run_sync(run())
@@ -512,6 +514,12 @@ class BundesagenturScraper(BaseScraper):
             detail = response.json()
         except ValueError:
             return
+        if not isinstance(detail, dict):
+            return
+        terms = {k: detail[k] for k in _CONTRACT_FIELDS if detail.get(k) is not None}
+        if terms:
+            job.raw = {**(job.raw or {}), **terms}
+            job.engagement_type = _engagement_type(job.raw)
         description = detail.get("stellenangebotsBeschreibung")
         if isinstance(description, str) and description.strip():
             job.description = description.strip()[:25_000]
@@ -992,12 +1000,10 @@ class BundesagenturScraper(BaseScraper):
             "branche",
             "chiffrenummer",
             "hauptberuf",
-            "istArbeitnehmerUeberlassung",
+            *_CONTRACT_FIELDS,
             "istGeringfuegigeBeschaeftigung",
             "quereinstiegGeeignet",
-            "stellenangebotsart",
             "stellenlokationen",
-            "vertragsdauer",
         ):
             v = item.get(k)
             if v not in (None, "", [], {}):
@@ -1027,6 +1033,7 @@ class BundesagenturScraper(BaseScraper):
             department=department,
             team=team,
             employment_type=employment_type,
+            engagement_type=_engagement_type(item),
             commitment=commitment,
             apply_url=HttpUrl(apply_url) if apply_url else None,
             requisition_id=_text(item.get("chiffrenummer") or item.get("hashId")),
@@ -1159,6 +1166,28 @@ def _result_total(payload: dict[str, Any]) -> int:
 
 def _item_reference(item: dict[str, Any]) -> str:
     return str(item.get("referenznummer") or item.get("refnr") or "").strip()
+
+
+_CONTRACT_FIELDS = (
+    "stellenangebotsart", "ausbildungsart", "vertragsdauer", "befristungInMonaten",
+    "istArbeitnehmerUeberlassung", "arbeitszeit", "zeitarbeit", "befristung",
+)
+
+
+def _engagement_type(item: dict[str, Any]) -> EngagementType | None:
+    kind = item.get("stellenangebotsart")
+    if kind == "SELBSTAENDIGKEIT" or item.get("arbeitszeit") == "selb":
+        return "independent_contractor"
+    if kind == "AUSBILDUNG" and item.get("ausbildungsart") == "AUSBILDUNG":
+        return "apprenticeship"
+    # PRAKTIKUM_TRAINEE covers both internships and trainee jobs. Agency
+    # placement also does not tell us whether the worker's contract expires.
+    duration = item.get("vertragsdauer")
+    if duration == "UNBEFRISTET":
+        return "permanent"
+    if duration == "BEFRISTET":
+        return "fixed_term"
+    return None
 
 
 def _employment_details(
