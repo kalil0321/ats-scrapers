@@ -75,4 +75,12 @@ async def fill_missing(
         for job in pending:
             await enrich(job)
 
-    await asyncio.gather(*(worker() for _ in range(min(concurrency, len(jobs)))))
+    workers = [asyncio.ensure_future(worker()) for _ in range(min(concurrency, len(jobs)))]
+    try:
+        await asyncio.gather(*workers)
+    finally:
+        # One failure ends the pass: no worker may go on reading through a
+        # client its caller is about to close.
+        for task in workers:
+            task.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)

@@ -69,6 +69,8 @@ class ATSType(StrEnum):
     GUPY = "gupy"
     HERP = "herp"
     HIREOLOGY = "hireology"
+    # HiringThing boards, under its own name or a partner's domain.
+    HIRINGTHING = "hiringthing"
     HRMOS = "hrmos"
     ICIMS = "icims"
     # isolved Hire portals: the ApplicantPro platform under its own host.

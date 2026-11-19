@@ -43,6 +43,7 @@ from ats_scrapers.scrapers.greeting import GreetingScraper
 from ats_scrapers.scrapers.gupy import GupyScraper
 from ats_scrapers.scrapers.herp import HerpScraper
 from ats_scrapers.scrapers.hireology import HireologyScraper
+from ats_scrapers.scrapers.hiringthing import HiringThingScraper
 from ats_scrapers.scrapers.hrmos import HrmosScraper
 from ats_scrapers.scrapers.icims import iCIMSScraper
 from ats_scrapers.scrapers.infojobs_es import InfoJobsSpainScraper
@@ -144,6 +145,7 @@ __all__ = [
     "GupyScraper",
     "HerpScraper",
     "HireologyScraper",
+    "HiringThingScraper",
     "HrmosScraper",
     "InfoJobsSpainScraper",
     "IsolvedHireScraper",

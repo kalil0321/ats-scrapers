@@ -248,6 +248,11 @@ RESOLVES = [
         "bemobile",
     ),
     (
+        "https://yoursmartsource.hiringthing.com/job/1075819/operations-director",
+        ATSType.HIRINGTHING,
+        "yoursmartsource",
+    ),
+    (
         "https://www.wantedly.com/companies/Acme_Japan/projects",
         ATSType.WANTEDLY,
         "Acme_Japan",

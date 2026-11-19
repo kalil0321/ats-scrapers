@@ -8,6 +8,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 ### Added
 
 - CareerPlug hiring sites (`careerplug`).
+- HiringThing job boards, on its own and on partner domains (`hiringthing`).
 - isolved Hire career portals (`isolved_hire`).
 - `Job.uuid`: the UUIDv7 the hosted dataset gives a posting the first time it
   publishes it, kept while the posting keeps its `global_id`.
@@ -30,6 +31,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - iCIMS: a board the catalog names only by its host label (`retail-shaneco`)
   takes the employer name from the posting page.
 - TalentBrew: job links are read on sites whose paths are not in English.
+- CareerPlug, jobs.ch, Y Combinator: when the page of one job fails, the reads
+  still under way for the others stop with it.
 
 ## [0.4.0] — 2026-11-19
 
