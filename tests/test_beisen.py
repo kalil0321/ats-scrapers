@@ -98,7 +98,7 @@ def test_parses_nested_config_and_current_listing(httpx_mock) -> None:
 
     assert result.ats_type is ATSType.BEISEN
     assert result.ats_id == "123"
-    assert result.global_id == "beisen:123"
+    assert result.global_id == "beisen:fixturecorp.zhiye.com:123"
     assert result.title == "平台工程师"
     assert result.company == "测试公司"
     assert result.location == "上海, 北京"
