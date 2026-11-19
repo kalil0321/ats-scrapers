@@ -28,8 +28,11 @@ def posting_tenant(ats_type: str, url: str) -> str | None:
         org = parse_qs(parts.query).get("org", [""])[0].strip()
         return f"{host}/{org.upper()}" if org else host
     if ats_type == "jobvite":
-        company = parts.path.strip("/").split("/", 1)[0].lower()
-        return f"{host}/{company}" if company else host
+        segments = parts.path.strip("/").lower().split("/")
+        if segments[0] == "careers":
+            # ``/careers/{company}/job/{id}`` and ``/{company}/job/{id}`` are one board.
+            segments = segments[1:]
+        return f"{host}/{segments[0]}" if segments and segments[0] else host
     return host
 
 

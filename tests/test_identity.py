@@ -64,6 +64,9 @@ def test_same_id_on_two_boards_gives_two_global_ids(ats: str, ats_id: str, first
     ("taleo", "https://acme.taleo.net/careersection/2/jobdetail.ftl?job=1", "acme.taleo.net"),
     ("jobvite", "https://jobs.jobvite.com/JBS/job/oZPMAfwU", "jobs.jobvite.com/jbs"),
     ("jobvite", "https://jobs.jobvite.com/", "jobs.jobvite.com"),
+    ("jobvite", "https://jobs.jobvite.com/careers/LoanDepot/job/oA1b", "jobs.jobvite.com/loandepot"),
+    ("jobvite", "https://jobs.jobvite.com/loandepot/job/oA1b", "jobs.jobvite.com/loandepot"),
+    ("jobvite", "https://jobs.jobvite.com/careers", "jobs.jobvite.com"),
 ])
 def test_board_read_from_the_url(ats: str, url: str, board: str) -> None:
     assert posting_tenant(ats, url) == board
@@ -145,3 +148,18 @@ def test_client_scoped_row_without_url_keeps_the_short_id() -> None:
 def test_client_without_url_column_keeps_the_short_id() -> None:
     frame = pd.DataFrame({"ats_type": ["icims"], "ats_id": ["1"]})
     assert list(client_module._normalize_dataset(frame)["global_id"]) == ["icims:1"]
+
+
+@pytest.mark.parametrize("columns", [
+    {"ats_type": ["lever"], "ats_id": ["a"], "url": ["https://jobs.lever.co/acme/a"]},
+    {"ats_type": ["lever"], "ats_id": ["a"], "global_id": ["lever:a"]},
+])
+def test_client_adds_a_null_uuid_to_files_without_it(columns: dict) -> None:
+    frame = client_module._normalize_dataset(pd.DataFrame(columns))
+    assert frame["uuid"].isna().all()
+
+
+def test_client_keeps_a_published_uuid() -> None:
+    v7 = "01936f2a-7c4e-7b3a-9f10-2c3d4e5f6a7b"
+    frame = pd.DataFrame({"ats_type": ["lever"], "ats_id": ["a"], "global_id": ["lever:a"], "uuid": [v7]})
+    assert list(client_module._normalize_dataset(frame)["uuid"]) == [v7]

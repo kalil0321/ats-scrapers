@@ -323,6 +323,8 @@ def _normalize_dataset(df: pd.DataFrame) -> pd.DataFrame:
             df[name] = _source_times(df[name])
         else:
             df[name] = pd.Series(pd.NaT, index=df.index, dtype="datetime64[us, UTC]")
+    if "uuid" not in df:
+        df["uuid"] = None
     if "global_id" in df:
         return df
 
