@@ -108,6 +108,24 @@ def test_parses_basic_rss(httpx_mock) -> None:
     assert str(job.url) == "https://acme.teamtailor.com/jobs/123-engineer"
 
 
+def test_reads_a_career_site_on_the_employers_own_domain(httpx_mock) -> None:
+    link = "https://careers.example.com/jobs/123-engineer"
+    httpx_mock.add_response(
+        url="https://careers.example.com/jobs.rss", text=_rss([_item(link=link)])
+    )
+    scraper = TeamtailorScraper("https://careers.example.com/")
+    jobs = scraper.fetch()
+    assert scraper.company_slug == "https://careers.example.com"
+    assert [job.ats_id for job in jobs] == ["123"]
+    assert jobs[0].company == "careers.example.com"
+    assert str(jobs[0].url) == link
+
+
+def test_an_address_that_is_not_public_is_refused() -> None:
+    with pytest.raises(ScraperError):
+        TeamtailorScraper("https://localhost/")
+
+
 def test_parses_multiple_items_preserves_order(httpx_mock) -> None:
     httpx_mock.add_response(url=RSS_URL, text=_rss([
         _item(title="A", link="https://acme.teamtailor.com/jobs/1-a", guid="g1"),

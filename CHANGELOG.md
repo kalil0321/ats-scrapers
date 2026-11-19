@@ -20,6 +20,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
   another employer; 77 remain, each the same requisition listed twice by one
   employer. `Client.load()` builds the same ids for files without the column.
   Ids of the other providers are unchanged.
+- Teamtailor: a career site served on the employer's own domain is read by
+  passing its address as the slug.
 
 ### Fixed
 
