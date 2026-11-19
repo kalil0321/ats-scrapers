@@ -31,6 +31,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - iCIMS: a board the catalog names only by its host label (`retail-shaneco`)
   takes the employer name from the posting page.
 - TalentBrew: job links are read on sites whose paths are not in English.
+- CareerPlug, jobs.ch, Y Combinator: when the page of one job fails, the reads
+  still under way for the others stop with it.
 
 ## [0.4.0] — 2026-11-19
 
