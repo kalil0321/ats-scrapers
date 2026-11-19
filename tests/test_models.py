@@ -300,7 +300,7 @@ def test_global_id_keeps_internal_colons() -> None:
     contract documents 'split on FIRST colon' so consumers can
     recover ats_type + ats_id."""
     job = _minimal_job(ats_type=ATSType.TALEO, ats_id="acme:req:12345")
-    assert job.global_id == "taleo:acme:req:12345"
+    assert job.global_id == "taleo:example.com:acme:req:12345"
 
 
 def test_global_id_keeps_special_chars() -> None:
@@ -309,7 +309,7 @@ def test_global_id_keeps_special_chars() -> None:
     job = _minimal_job(
         ats_type=ATSType.ICIMS, ats_id="job-2026.04/eng_(remote)"
     )
-    assert job.global_id == "icims:job-2026.04/eng_(remote)"
+    assert job.global_id == "icims:example.com:job-2026.04/eng_(remote)"
 
 
 def test_global_id_uuid_when_ats_id_none(caplog) -> None:

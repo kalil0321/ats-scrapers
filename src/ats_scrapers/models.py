@@ -32,6 +32,8 @@ from pydantic import (
     model_validator,
 )
 
+from ats_scrapers.identity import compose_global_id
+
 log = logging.getLogger(__name__)
 
 
@@ -297,7 +299,7 @@ class Job(BaseModel):
     The fields fall into six groups, listed in the order they appear
     below:
 
-    1. **Identity** (``global_id``, ``url``, ``title``, ``company``,
+    1. **Identity** (``global_id``, ``uuid``, ``url``, ``title``, ``company``,
        ``ats_type``, ``ats_id``). What the row *is*.
 
     2. **Location** (``location``, ``country_iso``, ``region``,
@@ -356,13 +358,27 @@ class Job(BaseModel):
             "Globally unique identifier for the posting, formatted as "
             "``{ats_type}:{ats_id}`` when both are set (e.g. "
             "``ashby:engineer-2026`` or "
-            "``workday:acme.wd1.myworkdayjobs.com/job/USA/Engineer_R-1``). The "
-            "separator is a colon — parsers should split on the FIRST "
-            "colon since ``ats_id`` may itself contain colons. When "
+            "``workday:acme.wd1.myworkdayjobs.com/job/USA/Engineer_R-1``). "
+            "Providers whose ids repeat across employers (iCIMS, BambooHR, "
+            "Phenom, ...) add the board taken from ``url``: "
+            "``{ats_type}:{board}:{ats_id}`` (e.g. "
+            "``icims:careers-acme.icims.com:1234``). The separator is a "
+            "colon; split on the first colon only and treat the rest as "
+            "opaque. When "
             "``ats_id`` is missing, malformed, or contains control "
             "characters, falls back to a random UUID4 and an error is "
             "logged. Populated automatically by a model validator; do "
             "not pass this field to ``Job(...)`` constructors."
+        ),
+    )
+    uuid: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        description=(
+            "UUIDv7 the hosted dataset gives a posting the first time it "
+            "publishes it, kept for as long as the posting keeps its "
+            "``global_id``. Its timestamp is that first publication. "
+            "``None`` on jobs read with a scraper."
         ),
     )
     url: HttpUrl = Field(
@@ -694,7 +710,7 @@ class Job(BaseModel):
 
     @model_validator(mode="after")
     def _populate_global_id(self) -> Self:
-        """Compute ``global_id`` from ``ats_type`` + ``ats_id``.
+        """Compute ``global_id`` from ``ats_type`` + ``ats_id`` (+ the board in ``url``).
 
         Runs after the rest of the model is validated so we can read
         the validated values. ``ats_id`` may be missing, empty, or
@@ -723,7 +739,8 @@ class Job(BaseModel):
             if normalized_id != self.ats_id:
                 object.__setattr__(self, "ats_id", normalized_id)
             object.__setattr__(
-                self, "global_id", f"{self.ats_type.value}:{normalized_id}"
+                self, "global_id",
+                compose_global_id(self.ats_type.value, normalized_id, str(self.url)),
             )
         return self
 

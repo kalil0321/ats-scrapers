@@ -217,7 +217,7 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
                 response = await fetch.request("GET", str(job.url))
             except ScraperError:
                 return
-        _apply_jsonld_to_job(job, response.text)
+        _apply_jsonld_to_job(job, response.text, replace_company=self._name_is_host_label())
 
     def _resolve_base_url(self, slug: str) -> str:
         if slug.startswith(("http://", "https://")):
@@ -277,8 +277,17 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
         return jobs
 
     def _company_name(self) -> str:
-        if self._configured_company_name:
-            return self._configured_company_name
+        return self._configured_company_name or self._host_label()
+
+    def _name_is_host_label(self) -> bool:
+        """Whether the company name stands in for a missing display name: no
+        name was given, or the catalog repeated the board's slug."""
+        name = self._configured_company_name
+        return name is None or name.casefold() in {
+            self._host_label().casefold(), self.company_slug.casefold(),
+        }
+
+    def _host_label(self) -> str:
         # `careers-peraton.icims.com` → `peraton`
         # `uscareers-rws.icims.com` → `rws`
         host = self.base_url.replace("https://", "").replace("http://", "")
@@ -290,7 +299,7 @@ class iCIMSScraper(BaseScraper):  # noqa: N801  matches public iCIMS branding
         return host.split(".", 1)[0]
 
 
-def _apply_jsonld_to_job(job: Job, html_text: str) -> None:
+def _apply_jsonld_to_job(job: Job, html_text: str, *, replace_company: bool = False) -> None:
     """Hydrate ``job`` from the schema.org JobPosting JSON-LD on iCIMS
     detail pages.
 
@@ -303,11 +312,19 @@ def _apply_jsonld_to_job(job: Job, html_text: str) -> None:
     * ``occupationalCategory`` — the iCIMS "Category" facet.
     * ``jobLocation`` — structured ``Place`` object with addressLocality.
 
+    ``replace_company``: ``job.company`` is the board's host label, so the
+    posting's ``hiringOrganization`` name replaces it.
+
     Best-effort: silently skips jobs without a parseable LD block.
     """
     posting = _find_job_posting(html_text)
     if posting is None:
         return
+
+    if replace_company:
+        employer = _hiring_organization(posting.get("hiringOrganization"))
+        if employer:
+            job.company = employer
 
     if not job.description:
         desc_html = posting.get("description")
@@ -338,6 +355,14 @@ def _apply_jsonld_to_job(job: Job, html_text: str) -> None:
         loc_str = _location_from_jsonld(posting.get("jobLocation"))
         if loc_str:
             job.location = loc_str
+
+
+def _hiring_organization(value: object) -> str | None:
+    name = value.get("name") if isinstance(value, dict) else None
+    if not isinstance(name, str):
+        return None
+    name = " ".join(name.split())
+    return name if name and name.upper() != "UNAVAILABLE" else None
 
 
 def _find_job_posting(html_text: str) -> dict | None:

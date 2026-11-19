@@ -5,6 +5,27 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- `Job.uuid`: the UUIDv7 the hosted dataset gives a posting the first time it
+  publishes it, kept while the posting keeps its `global_id`.
+
+### Changed
+
+- `global_id` carries the board for the providers whose job ids repeat
+  across employers (Avature, BambooHR, Beisen, Cornerstone, Eightfold, iCIMS,
+  Jobvite, Personio, Phenom, SuccessFactors, Taleo):
+  `icims:careers-acme.icims.com:6983` instead of `icims:6983`. In the
+  2026-11-18 snapshot, 210,355 rows shared their `global_id` with a posting of
+  another employer; 77 remain, each the same requisition listed twice by one
+  employer. `Client.load()` builds the same ids for files without the column.
+  Ids of the other providers are unchanged.
+
+### Fixed
+
+- iCIMS: a board the catalog names only by its host label (`retail-shaneco`)
+  takes the employer name from the posting page.
+
 ## [0.4.0] — 2026-11-19
 
 ### Added
