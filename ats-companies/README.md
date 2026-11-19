@@ -36,6 +36,7 @@ Acme Corp,acme,https://acme.greenhouse.io
 | beisen | `https://<slug>.zhiye.com` |
 | beisen_legacy | `https://<slug>.zhiye.com/Social` |
 | breezy | `https://<slug>.breezy.hr` |
+| careerplug | `https://<slug>.careerplug.com/jobs` |
 | cornerstone | `https://<slug>.csod.com` |
 | darwinbox | `https://<slug>.darwinbox.{in,com}/ms/candidate/careers` |
 | eightfold | `https://<slug>.eightfold.ai/careers` |

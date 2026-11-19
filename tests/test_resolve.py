@@ -243,6 +243,11 @@ RESOLVES = [
         "accel",
     ),
     (
+        "https://bemobile.careerplug.com/jobs/3692843",
+        ATSType.CAREERPLUG,
+        "bemobile",
+    ),
+    (
         "https://www.wantedly.com/companies/Acme_Japan/projects",
         ATSType.WANTEDLY,
         "Acme_Japan",

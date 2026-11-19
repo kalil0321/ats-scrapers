@@ -176,7 +176,7 @@ more, plus company career APIs and public employment services.
 <summary>All sources with a scraper</summary>
 
 **ATS platforms:** ADP Workforce Now, ApplicantPro, Ashby, Avature, BambooHR,
-Breezy HR, CATS, Cegid Talentsoft, ClearCompany, Cornerstone, Dayforce,
+Breezy HR, CareerPlug, CATS, Cegid Talentsoft, ClearCompany, Cornerstone, Dayforce,
 Eightfold, Frontline AppliTrack, Gem, Greenhouse, Hireology, iCIMS, iCIMS Jibe,
 isolved Hire, JazzHR, Jobvite, JOIN, Lever, Manatal, Oracle Recruiting, PageUp, Paycom,
 Paylocity, PeopleAdmin, Personio, Phenom, Pinpoint, Radancy TalentBrew,
