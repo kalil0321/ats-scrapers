@@ -20,7 +20,8 @@ Three quirks to handle:
     from the ``PROXY`` env var (``http://host:port:user:pass``,
     matching Tesla / Meta).
     Without ``PROXY`` set we raise a clear error rather than
-    silently 0-scraping.
+    silently 0-scraping. Detail requests keep to the route that last
+    answered and move to the other one when it answers 403.
 
   - Blocks partway through a run: through the proxy, jobs.ch starts
     answering 403 to every request partway through a run and keeps
@@ -48,6 +49,7 @@ Single-source scraper: ``company_slug`` is informational and ignored.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 from datetime import UTC, datetime, timedelta
@@ -88,6 +90,9 @@ MAX_USABLE_OFFSET = 2000
 # Default cap on pages per query — 100 × 20 rows = the API's per-query
 # ceiling. Lower via ``max_pages`` for quick smoke runs.
 DEFAULT_MAX_PAGES = 100
+
+# Errors that say a detail request's route is down, not the posting.
+_ROUTE_DOWN = (httpx.ProxyError, httpx.ConnectError, httpx.ConnectTimeout)
 
 # Lower bound of the publication-date walk; live postings are far younger.
 EARLIEST_PUBLICATION = datetime(2000, 1, 1)
@@ -246,11 +251,14 @@ class JobsChScraper(BaseScraper):
         self.max_pages = max_pages
         self._windows = 0
         self.query_seeds: tuple[str, ...] = tuple(query_seeds or ())
+        # Route of the next detail request: a proxy URL, or this scraper's
+        # own ``proxy`` (``None`` reads directly).
+        self._detail_route: str | None = self.proxy
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
-        self._run_sync(self._enrich_descriptions([job], proxy_url=self.proxy or proxy_url_from_env()))
+        self._run_sync(self._enrich_descriptions([job]))
         return job.description
 
     async def afetch(self) -> list[Job]:
@@ -326,8 +334,9 @@ class JobsChScraper(BaseScraper):
                 await self._drain(search, params, first, absorb)
                 log.info("jobs.ch: query=%s → total %d unique rows", seed, len(all_jobs))
 
+        self._detail_route = proxy_url if proxy_url is not None else self.proxy
         if self.include_descriptions and all_jobs:
-            await self._enrich_descriptions(all_jobs, proxy_url=proxy_url)
+            await self._enrich_descriptions(all_jobs)
         return all_jobs
 
     async def _check_date_filter(self, search: _Search, latest: datetime) -> None:
@@ -402,47 +411,62 @@ class JobsChScraper(BaseScraper):
 
         await _gather([one(PER_PAGE * i) for i in range(1, page_count)])
 
-    async def _enrich_descriptions(
-        self, jobs: list[Job], *, proxy_url: str | None
-    ) -> None:
-        client_kwargs: dict[str, Any] = {
-            "timeout": self.timeout,
-            "follow_redirects": True,
-        }
-        if proxy_url is not None:
-            client_kwargs["proxy"] = proxy_url
+    async def _enrich_descriptions(self, jobs: list[Job]) -> None:
+        """Fill descriptions, reading a job on the other route when one answers 403."""
+        routes = list(dict.fromkeys([self._detail_route, self.proxy, proxy_url_from_env()]))
+        clients: dict[str | None, httpx.AsyncClient] = {}
 
-        async with httpx.AsyncClient(**client_kwargs) as client:
+        async with contextlib.AsyncExitStack() as stack:
+            def client(route: str | None) -> httpx.AsyncClient:
+                if route not in clients:
+                    clients[route] = httpx.AsyncClient(
+                        timeout=self.timeout, follow_redirects=True, proxy=route,
+                    )
+                    stack.push_async_callback(clients[route].aclose)
+                return clients[route]
+
             async def enrich(job: Job) -> None:
-                await self._enrich_description(client, job)
+                first = self._detail_route
+                for route in [first, *(r for r in routes if r != first)]:
+                    if not await self._enrich_description(client(route), job):
+                        self._detail_route = route
+                        return
 
             await fill_missing(jobs, enrich, DETAIL_CONCURRENCY)
 
-    async def _enrich_description(self, client: httpx.AsyncClient, job: Job) -> None:
+    async def _enrich_description(self, client: httpx.AsyncClient, job: Job) -> bool:
+        """Fill ``job.description`` and return whether the route was refused or down."""
         if job.ats_id:
             url = f"{API_URL}/job/{quote(job.ats_id, safe='')}"
             try:
                 response = await client.get(url, headers={"Accept": "application/json"})
-                if response.status_code in {401, 403, 410, 429}:
-                    return
+                if response.status_code == 403:
+                    return True
+                if response.status_code in {401, 410, 429}:
+                    return False
                 if response.status_code == 200:
                     item = response.json()
                     if isinstance(item, dict) and item.get("job_id") == job.ats_id:
                         _apply_employment_fields(job, item)
                         job.description = _api_description(item)
                         if job.description:
-                            return
+                            return False
+            except _ROUTE_DOWN:
+                return True
             except (httpx.HTTPError, ValueError):
                 pass
         try:
             page = await client.get(str(job.url), headers={"Accept": "text/html"})
+        except _ROUTE_DOWN:
+            return True
         except httpx.HTTPError:
-            return
+            return False
         if page.status_code == 200:
             tree = parse_html(page.text)
             if job.workload_percentages is None:
                 job.workload_percentages = _page_workload(tree)
             job.description = _extract_description(page.text, tree)
+        return page.status_code == 403
 
     async def _fetch_page(
         self,
