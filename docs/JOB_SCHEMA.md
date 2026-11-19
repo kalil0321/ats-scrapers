@@ -15,14 +15,14 @@ the Pydantic descriptions are the source of truth; please update both.
 
 | Group | Fields |
 |---|---|
-| **Identity** | `global_id`, `url`, `title`, `company`, `ats_type`, `ats_id` |
+| **Identity** | `global_id`, `uuid`, `url`, `title`, `company`, `ats_type`, `ats_id` |
 | **Location** | `location`, `country_iso`, `region`, `lat`, `lon`, `is_remote`, `locations`, `workplace_type` |
 | **Compensation** | `salary_currency`, `salary_period`, `salary_summary`, `salary_min`, `salary_max`, `compensation_components` |
 | **Classification** | `experience`, `employment_type`, `department`, `team`, `requisition_id`, `apply_url`, `commitment`, `workload_percentages`, `job_category`, `engagement_type`, `education_requirements`, `skill_requirements` |
 | **Content & timing** | `description`, `posted_at`, `source_created_at`, `source_updated_at`, `fetched_at`, `application_deadline`, `language` |
 | **Provider overflow** | `raw` |
 
-The library model has 40 fields. Published files can carry a subset of these
+The library model has 41 fields. Published files can carry a subset of these
 columns; `Client.load()` adds the missing ones as nulls.
 
 > **Heuristic vs LLM split.** The publisher's hardcoded inference is
@@ -42,21 +42,35 @@ columns; `Client.load()` adds the missing ones as nulls.
 ### `global_id` &nbsp;`str` &nbsp;*(derived)*
 
 Globally unique identifier for the posting, formatted as
-`{ats_type}:{ats_id}` when both are present.
+`{ats_type}:{ats_id}` when both are present, or `{ats_type}:{board}:{ats_id}`
+for the providers whose ids repeat across employers.
 
 - **Examples:** `ashby:engineer-2026`,
-  `workday:acme.wd1.myworkdayjobs.com/job/USA/Engineer_R-1`, `greenhouse:6849563`.
-- **Separator:** `:`. Parsers should split on the **first** colon —
-  `ats_id` may itself contain colons (some Taleo URLs encode multiple).
-  Example: `"taleo:acme:req:12345"` parses as
-  `("taleo", "acme:req:12345")`.
+  `workday:acme.wd1.myworkdayjobs.com/job/USA/Engineer_R-1`, `greenhouse:6849563`,
+  `icims:careers-acme.icims.com:6983`, `taleo:phg.tbe.taleo.net/COMACOUN:7371`.
+- **Board:** Avature, BambooHR, Beisen, Cornerstone, Eightfold, iCIMS,
+  Jobvite, Personio, Phenom, SuccessFactors and Taleo number jobs per
+  employer, so the same `ats_id` belongs to several employers. Their
+  `global_id` carries the board read from `url`: its host (without `www.`),
+  plus the `org` parameter on Taleo Business Edition and the company path on
+  Jobvite, whose hosts are shared. The same requisition listed on two career
+  sites of one employer keeps one `global_id`.
+- **Separator:** `:`. Split on the **first** colon only and treat the rest
+  as opaque: the board and `ats_id` may contain colons.
 - **Fallback:** when `ats_id` is missing, empty after whitespace strip,
   or contains control characters (`\n` / `\t` / `\0`), `global_id`
   becomes a fresh UUID4 string and the offending row is logged with an
   ERROR. This keeps the scrape moving instead of crashing on bad data;
   the responsible scraper still gets flagged in the logs.
 - **Don't pass it manually.** A `model_validator` computes it from
-  `ats_type` + `ats_id`, overwriting any value you supplied.
+  `ats_type` + `ats_id` (+ `url` for the providers above), overwriting any
+  value you supplied.
+
+### `uuid` &nbsp;`str | None`
+
+UUIDv7 the hosted dataset gives a posting the first time it publishes it,
+kept for as long as the posting keeps its `global_id`. Its timestamp is that
+first publication. `None` on jobs read with a scraper.
 - **Case is preserved.** Workday's `R0136150` ≠ `r0136150` — collapsing
   case would risk merging legitimately distinct postings.
 
@@ -362,7 +376,8 @@ a JSON string in CSV exports, native dict in parquet.
 - `ats_id` is the ATS-platform's internal id (different per platform).
 - `requisition_id` is the *employer's* internal id (same across
   platforms when one job is mirrored on multiple ATSes).
-- `global_id` is ats-scrapers's `{ats_type}:{ats_id}` composite — the unique
+- `global_id` is ats-scrapers's `{ats_type}:{ats_id}` composite (with the
+  board for providers whose ids repeat across employers), the unique
   identifier for the row in the dataset.
 
 **`employment_type` vs `commitment`** —
