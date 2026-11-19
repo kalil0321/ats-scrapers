@@ -107,6 +107,7 @@ _PATH_HOSTS: dict[str, ATSType] = {
 _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
     ".applicantpro.com": ATSType.APPLICANTPRO,
     ".careerplug.com": ATSType.CAREERPLUG,
+    ".hiringthing.com": ATSType.HIRINGTHING,
     ".isolvedhire.com": ATSType.ISOLVED_HIRE,
     ".recruitee.com": ATSType.RECRUITEE,
     ".teamtailor.com": ATSType.TEAMTAILOR,
@@ -130,7 +131,9 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
 }
 
 # Hosts under a tenant suffix that belong to the platform, not to a tenant.
-_PLATFORM_HOSTS = frozenset({"app.careerplug.com", "www.careerplug.com"})
+_PLATFORM_HOSTS = frozenset({
+    "app.careerplug.com", "www.careerplug.com", "www.hiringthing.com",
+})
 
 # Full-URL tenants: the scraper's slug IS the careers URL.
 _MANATAL_SLUG_RE = re.compile(r"-?[A-Za-z0-9][A-Za-z0-9._~-]*")
