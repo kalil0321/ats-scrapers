@@ -618,7 +618,10 @@ def test_detail_refused_directly_is_read_through_the_proxy(httpx_mock, _proxy_en
     assert _detail_routes(httpx_mock) == ["direct", "proxy", "proxy"]
 
 
-@pytest.mark.parametrize("refusal", ["403", "proxy error"])
+@pytest.mark.parametrize("refusal", [
+    "403", httpx.ProxyError("402 Payment Required"), httpx.ConnectError("refused"),
+    httpx.ConnectTimeout("timed out"),
+])
 def test_detail_the_proxy_refuses_after_the_search_fell_back_is_read_directly(
     httpx_mock, _proxy_env, _routes, refusal,
 ) -> None:
@@ -627,9 +630,7 @@ def test_detail_the_proxy_refuses_after_the_search_fell_back_is_read_directly(
     if refusal == "403":
         httpx_mock.add_response(url=_DETAIL, match_headers={"X-Route": "proxy"}, status_code=403)
     else:
-        httpx_mock.add_exception(
-            httpx.ProxyError("402 Payment Required"), url=_DETAIL, match_headers={"X-Route": "proxy"},
-        )
+        httpx_mock.add_exception(refusal, url=_DETAIL, match_headers={"X-Route": "proxy"})
     httpx_mock.add_response(url=_DETAIL, match_headers={"X-Route": "direct"}, json=_DETAIL_BODY)
 
     job, = JobsChScraper("any").fetch()

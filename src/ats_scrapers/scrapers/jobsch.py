@@ -81,6 +81,9 @@ MAX_USABLE_OFFSET = 2000
 # ceiling. Lower via ``max_pages`` for quick smoke runs.
 DEFAULT_MAX_PAGES = 100
 
+# Errors that say a detail request's route is down, not the posting.
+_ROUTE_DOWN = (httpx.ProxyError, httpx.ConnectError, httpx.ConnectTimeout)
+
 # Lower bound of the publication-date walk; live postings are far younger.
 EARLIEST_PUBLICATION = datetime(2000, 1, 1)
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -422,7 +425,7 @@ class JobsChScraper(BaseScraper):
             await fill_missing(jobs, enrich, DETAIL_CONCURRENCY)
 
     async def _enrich_description(self, client: httpx.AsyncClient, job: Job) -> bool:
-        """Fill ``job.description`` and return whether the route was refused."""
+        """Fill ``job.description`` and return whether the route was refused or down."""
         if job.ats_id:
             url = f"{API_URL}/job/{quote(job.ats_id, safe='')}"
             try:
@@ -437,13 +440,13 @@ class JobsChScraper(BaseScraper):
                         job.description = _api_description(item)
                         if job.description:
                             return False
-            except httpx.ProxyError:
+            except _ROUTE_DOWN:
                 return True
             except (httpx.HTTPError, ValueError):
                 pass
         try:
             page = await client.get(str(job.url), headers={"Accept": "text/html"})
-        except httpx.ProxyError:
+        except _ROUTE_DOWN:
             return True
         except httpx.HTTPError:
             return False
