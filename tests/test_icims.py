@@ -378,3 +378,36 @@ def test_extracts_requisition_id(httpx_mock) -> None:
     httpx_mock.add_response(url=_page_url("acme", 1), text=_page([]))
     jobs = iCIMSScraper("acme").fetch()
     assert jobs[0].requisition_id == "2026-100"
+
+
+# --- employer name from the detail page -----------------------------------------
+
+def _detail_page(organization: object) -> str:
+    import json as _json
+    posting = {"@context": "https://schema.org", "@type": "JobPosting", "title": "Nurse",
+               "hiringOrganization": organization}
+    return f'<script type="application/ld+json">{_json.dumps(posting)}</script>'
+
+
+def _icims_job(company: str):
+    from ats_scrapers.models import ATSType, Job
+    return Job(url="https://careers-daytonfreight.icims.com/jobs/1/nurse/job", title="Nurse",
+               company=company, ats_type=ATSType.ICIMS, ats_id="1")
+
+
+@pytest.mark.parametrize(("company", "organization", "expected"), [
+    ("daytonfreight", {"@type": "Organization", "name": "Dayton Freight"}, "Dayton Freight"),
+    ("retail-shaneco", {"@type": "Organization", "name": " Shane  Co. "}, "Shane Co."),
+    # A display name from the catalog stays.
+    ("Dayton Freight Lines", {"@type": "Organization", "name": "Dayton Freight"}, "Dayton Freight Lines"),
+    ("retail-shaneco", {"@type": "Organization", "name": "UNAVAILABLE"}, "retail-shaneco"),
+    ("retail-shaneco", {"@type": "Organization", "name": ""}, "retail-shaneco"),
+    ("retail-shaneco", "Shane Co.", "retail-shaneco"),
+    ("retail-shaneco", None, "retail-shaneco"),
+])
+def test_slug_company_takes_the_hiring_organization(company, organization, expected) -> None:
+    from ats_scrapers.scrapers.icims import _apply_jsonld_to_job
+
+    job = _icims_job(company)
+    _apply_jsonld_to_job(job, _detail_page(organization))
+    assert job.company == expected

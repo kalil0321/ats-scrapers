@@ -5,6 +5,11 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ## [Unreleased]
 
+### Fixed
+
+- iCIMS: a board the catalog names only by its host label (`retail-shaneco`)
+  takes the employer name from the posting page.
+
 ## [0.4.0] — 2026-11-19
 
 ### Added

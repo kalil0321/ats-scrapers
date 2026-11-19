@@ -309,6 +309,11 @@ def _apply_jsonld_to_job(job: Job, html_text: str) -> None:
     if posting is None:
         return
 
+    if _SLUG_NAME.fullmatch(job.company):
+        employer = _hiring_organization(posting.get("hiringOrganization"))
+        if employer:
+            job.company = employer
+
     if not job.description:
         desc_html = posting.get("description")
         if isinstance(desc_html, str) and desc_html.strip():
@@ -338,6 +343,19 @@ def _apply_jsonld_to_job(job: Job, html_text: str) -> None:
         loc_str = _location_from_jsonld(posting.get("jobLocation"))
         if loc_str:
             job.location = loc_str
+
+
+# A company name that is the board's host label ("retail-shaneco"): the
+# catalog had no display name for the tenant.
+_SLUG_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def _hiring_organization(value: object) -> str | None:
+    name = value.get("name") if isinstance(value, dict) else None
+    if not isinstance(name, str):
+        return None
+    name = " ".join(name.split())
+    return name if name and name.upper() != "UNAVAILABLE" else None
 
 
 def _find_job_posting(html_text: str) -> dict | None:
