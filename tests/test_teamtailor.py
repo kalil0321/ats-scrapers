@@ -121,6 +121,32 @@ def test_reads_a_career_site_on_the_employers_own_domain(httpx_mock) -> None:
     assert str(jobs[0].url) == link
 
 
+@pytest.mark.parametrize(
+    "address",
+    [
+        "https://careers.example.com/?utm_source=linkedin",
+        "https://careers.example.com/#openings",
+        "https://careers.example.com",
+    ],
+)
+def test_the_feed_address_ignores_a_query_string_and_a_fragment(httpx_mock, address: str) -> None:
+    httpx_mock.add_response(
+        url="https://careers.example.com/jobs.rss",
+        text=_rss([_item(link="https://careers.example.com/jobs/123-engineer")]),
+    )
+    scraper = TeamtailorScraper(address)
+    assert [job.ats_id for job in scraper.fetch()] == ["123"]
+    assert scraper.company_slug == "https://careers.example.com"
+
+
+def test_a_site_under_a_path_keeps_it(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://example.com/careers/jobs.rss",
+        text=_rss([_item(link="https://example.com/careers/jobs/123-engineer")]),
+    )
+    assert len(TeamtailorScraper("https://example.com/careers/").fetch()) == 1
+
+
 def test_an_address_that_is_not_public_is_refused() -> None:
     with pytest.raises(ScraperError):
         TeamtailorScraper("https://localhost/")

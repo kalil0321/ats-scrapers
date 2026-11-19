@@ -75,11 +75,12 @@ class TeamtailorScraper(BaseScraper):
         )
         slug = company_slug.strip()
         if slug.startswith(("http://", "https://")):
-            self.company_slug = require_http_url(
-                slug, provider="TeamtailorScraper"
-            ).rstrip("/")
+            # The feed sits under the site's path: a query string or a
+            # fragment in the address is not part of it.
+            site = urlparse(require_http_url(slug, provider="TeamtailorScraper"))
+            self.company_slug = f"{site.scheme}://{site.netloc}{site.path.rstrip('/')}"
             self._feed_url = f"{self.company_slug}/jobs.rss"
-            self._company = urlparse(self.company_slug).hostname or self.company_slug
+            self._company = site.hostname or self.company_slug
         else:
             self.company_slug = require_host_label(slug, provider="TeamtailorScraper")
             self._feed_url = RSS_TEMPLATE.format(slug=self.company_slug)
