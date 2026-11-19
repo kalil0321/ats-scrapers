@@ -69,6 +69,8 @@ class ATSType(StrEnum):
     HIREOLOGY = "hireology"
     HRMOS = "hrmos"
     ICIMS = "icims"
+    # isolved Hire portals: the ApplicantPro platform under its own host.
+    ISOLVED_HIRE = "isolved_hire"
     # iCIMS career sites (formerly Jibe) on the employer's own domain.
     JIBE = "jibe"
     JOBVITE = "jobvite"

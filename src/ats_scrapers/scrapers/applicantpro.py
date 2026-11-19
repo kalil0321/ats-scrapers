@@ -19,11 +19,9 @@ if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
 
 
-CAREERS_URL = "https://{tenant}.applicantpro.com/jobs/"
-LISTING_API_URL = "https://{tenant}.applicantpro.com/core/jobs/{domain_id}"
-DETAIL_API_URL = (
-    "https://{tenant}.applicantpro.com/core/jobs/{domain_id}/{job_id}/job-details"
-)
+CAREERS_URL = "https://{tenant}.{host}/jobs/"
+LISTING_API_URL = "https://{tenant}.{host}/core/jobs/{domain_id}"
+DETAIL_API_URL = "https://{tenant}.{host}/core/jobs/{domain_id}/{job_id}/job-details"
 DETAIL_CONCURRENCY = 8
 _DOMAIN_ID_RE = re.compile(r"\bdomainId\s*:\s*([0-9]+)")
 _TITLE_PREFIX_RE = re.compile(r"^Job Listings\s*-\s*", re.IGNORECASE)
@@ -198,6 +196,9 @@ class ApplicantProScraper(BaseScraper):
     """Scrape one public ApplicantPro employer portal."""
 
     ats = ATSType.APPLICANTPRO
+    # Portals live at ``{tenant}.{host}``. The platform also runs under other
+    # hosts (see ``isolved.py``); a subclass only names its host.
+    host: ClassVar[str] = "applicantpro.com"
     default_headers: ClassVar[dict[str, str]] = {
         "Accept": "application/json,text/html,application/xhtml+xml",
         "User-Agent": "Mozilla/5.0",
@@ -220,7 +221,7 @@ class ApplicantProScraper(BaseScraper):
         )
         self.company_slug = require_host_label(
             company_slug,
-            provider="ApplicantProScraper",
+            provider=type(self).__name__,
         ).casefold()
         self.company_name = (
             company_name.strip()
@@ -229,13 +230,14 @@ class ApplicantProScraper(BaseScraper):
         )
 
     async def afetch(self) -> list[Job]:
-        careers_url = CAREERS_URL.format(tenant=self.company_slug)
+        careers_url = CAREERS_URL.format(tenant=self.company_slug, host=self.host)
         async with self.make_fetcher() as fetch:
             page = await fetch.get_text(careers_url)
             domain_id, page_company = _portal_identity(page, self.company_slug)
             payload = await fetch.get_json(
                 LISTING_API_URL.format(
                     tenant=self.company_slug,
+                    host=self.host,
                     domain_id=domain_id,
                 ),
                 params={"getParams": json.dumps({}, separators=(",", ":"))},
@@ -354,7 +356,7 @@ class ApplicantProScraper(BaseScraper):
         department = _clean_text(item.get("orgTitle"))
         team = _clean_text(item.get("parentTitle"))
         posted_at = _parse_date(item.get("startDateRef"))
-        url = f"https://{self.company_slug}.applicantpro.com/jobs/{job_id}"
+        url = f"https://{self.company_slug}.{self.host}/jobs/{job_id}"
         raw = {
             "domain_id": domain_id,
             "site_id": item.get("siteId"),
@@ -369,7 +371,7 @@ class ApplicantProScraper(BaseScraper):
             url=url,
             title=title,
             company=company,
-            ats_type=ATSType.APPLICANTPRO,
+            ats_type=self.ats,
             ats_id=f"{self.company_slug}:{job_id}",
             location=location,
             country_iso=country_iso,
@@ -402,6 +404,7 @@ class ApplicantProScraper(BaseScraper):
             return False
         url = DETAIL_API_URL.format(
             tenant=self.company_slug,
+            host=self.host,
             domain_id=domain_id,
             job_id=job_id,
         )

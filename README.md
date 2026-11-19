@@ -178,7 +178,7 @@ more, plus company career APIs and public employment services.
 **ATS platforms:** ADP Workforce Now, ApplicantPro, Ashby, Avature, BambooHR,
 Breezy HR, CATS, Cegid Talentsoft, ClearCompany, Cornerstone, Dayforce,
 Eightfold, Frontline AppliTrack, Gem, Greenhouse, Hireology, iCIMS, iCIMS Jibe,
-JazzHR, Jobvite, JOIN, Lever, Manatal, Oracle Recruiting, PageUp, Paycom,
+isolved Hire, JazzHR, Jobvite, JOIN, Lever, Manatal, Oracle Recruiting, PageUp, Paycom,
 Paylocity, PeopleAdmin, Personio, Phenom, Pinpoint, Radancy TalentBrew,
 Recruitee, Recruiterbox, Rippling, SmartRecruiters, Softgarden, SuccessFactors,
 Taleo Business Edition, Taleo Enterprise, Teamtailor, UKG Pro, Varbi, Workable,
