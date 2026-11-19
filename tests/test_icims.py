@@ -7,6 +7,8 @@ we hit ``/jobs/search?in_iframe=1`` directly.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
@@ -395,19 +397,57 @@ def _icims_job(company: str):
                company=company, ats_type=ATSType.ICIMS, ats_id="1")
 
 
-@pytest.mark.parametrize(("company", "organization", "expected"), [
-    ("daytonfreight", {"@type": "Organization", "name": "Dayton Freight"}, "Dayton Freight"),
-    ("retail-shaneco", {"@type": "Organization", "name": " Shane  Co. "}, "Shane Co."),
-    # A display name from the catalog stays.
-    ("Dayton Freight Lines", {"@type": "Organization", "name": "Dayton Freight"}, "Dayton Freight Lines"),
-    ("retail-shaneco", {"@type": "Organization", "name": "UNAVAILABLE"}, "retail-shaneco"),
-    ("retail-shaneco", {"@type": "Organization", "name": ""}, "retail-shaneco"),
-    ("retail-shaneco", "Shane Co.", "retail-shaneco"),
-    ("retail-shaneco", None, "retail-shaneco"),
+@pytest.mark.parametrize(("organization", "expected"), [
+    ({"@type": "Organization", "name": "Dayton Freight"}, "Dayton Freight"),
+    ({"@type": "Organization", "name": " Dayton  Freight "}, "Dayton Freight"),
+    ({"@type": "Organization", "name": "UNAVAILABLE"}, "daytonfreight"),
+    ({"@type": "Organization", "name": ""}, "daytonfreight"),
+    ("Dayton Freight", "daytonfreight"),
+    (None, "daytonfreight"),
 ])
-def test_slug_company_takes_the_hiring_organization(company, organization, expected) -> None:
+def test_host_label_company_takes_the_hiring_organization(organization, expected) -> None:
     from ats_scrapers.scrapers.icims import _apply_jsonld_to_job
 
-    job = _icims_job(company)
-    _apply_jsonld_to_job(job, _detail_page(organization))
+    job = _icims_job("daytonfreight")
+    _apply_jsonld_to_job(job, _detail_page(organization), replace_company=True)
     assert job.company == expected
+
+
+def test_a_given_company_name_is_kept() -> None:
+    from ats_scrapers.scrapers.icims import _apply_jsonld_to_job
+
+    job = _icims_job("bcore")
+    _apply_jsonld_to_job(job, _detail_page({"@type": "Organization", "name": "Explore"}))
+    assert job.company == "bcore"
+
+
+@pytest.mark.parametrize(("slug", "company_name", "is_host_label"), [
+    ("daytonfreight", None, True),
+    ("retail-shaneco", "retail-shaneco", True),
+    ("https://retail-shaneco.icims.com", "Retail-Shaneco", True),
+    ("https://uscareers-rws.icims.com", "rws", True),
+    ("explore", "bcore", False),
+    ("clinical-acme", "acme", False),
+    ("daytonfreight", "Dayton Freight", False),
+])
+def test_which_names_stand_in_for_a_missing_one(slug, company_name, is_host_label) -> None:
+    assert iCIMSScraper(slug, company_name=company_name)._name_is_host_label() is is_host_label
+
+
+def test_detail_pages_name_the_employer_of_a_host_label_board(httpx_mock) -> None:
+    scraper = iCIMSScraper("daytonfreight", company_name="daytonfreight")
+    job = _icims_job("daytonfreight")
+    httpx_mock.add_response(url=str(job.url), text=_detail_page({"@type": "Organization", "name": "Dayton Freight"}))
+    asyncio.run(_enrich_one(scraper, job))
+    assert job.company == "Dayton Freight"
+
+    named = iCIMSScraper("daytonfreight", company_name="DF Lines")
+    other = _icims_job("DF Lines")
+    httpx_mock.add_response(url=str(other.url), text=_detail_page({"@type": "Organization", "name": "Dayton Freight"}))
+    asyncio.run(_enrich_one(named, other))
+    assert other.company == "DF Lines"
+
+
+async def _enrich_one(scraper, job) -> None:
+    async with scraper.make_fetcher() as fetch:
+        await scraper._enrich_detail(fetch, asyncio.Semaphore(1), job)
