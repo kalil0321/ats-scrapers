@@ -106,6 +106,7 @@ _PATH_HOSTS: dict[str, ATSType] = {
 # Subdomain tenants: https://{slug}.{suffix}/...
 _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
     ".applicantpro.com": ATSType.APPLICANTPRO,
+    ".careerplug.com": ATSType.CAREERPLUG,
     ".isolvedhire.com": ATSType.ISOLVED_HIRE,
     ".recruitee.com": ATSType.RECRUITEE,
     ".teamtailor.com": ATSType.TEAMTAILOR,
@@ -127,6 +128,9 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
     ".peopleadmin.com": ATSType.PEOPLEADMIN,
     ".talent-soft.com": ATSType.TALENTSOFT,
 }
+
+# Hosts under a tenant suffix that belong to the platform, not to a tenant.
+_PLATFORM_HOSTS = frozenset({"app.careerplug.com", "www.careerplug.com"})
 
 # Full-URL tenants: the scraper's slug IS the careers URL.
 _MANATAL_SLUG_RE = re.compile(r"-?[A-Za-z0-9][A-Za-z0-9._~-]*")
@@ -559,6 +563,9 @@ def resolve_careers_url(url: str) -> ResolvedCareersUrl | None:
         if site and _FEISHU_HIRE_SITE_RE.fullmatch(site):
             return ResolvedCareersUrl(ATSType.FEISHU_HIRE, f"https://{host}/{site}")
         return ResolvedCareersUrl(ATSType.FEISHU_HIRE, tenant)
+
+    if host in _PLATFORM_HOSTS:
+        return None
 
     for suffix, ats in _SUBDOMAIN_SUFFIXES.items():
         if host.endswith(suffix):

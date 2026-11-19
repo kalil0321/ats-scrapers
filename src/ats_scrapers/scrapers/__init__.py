@@ -25,6 +25,7 @@ from ats_scrapers.scrapers.brightermonday import BrighterMondayScraper
 from ats_scrapers.scrapers.builtin import BuiltInScraper
 from ats_scrapers.scrapers.bundesagentur import BundesagenturScraper
 from ats_scrapers.scrapers.bytedance import BytedanceScraper
+from ats_scrapers.scrapers.careerplug import CareerPlugScraper
 from ats_scrapers.scrapers.catsone import CatsOneScraper
 from ats_scrapers.scrapers.clearcompany import ClearCompanyScraper
 from ats_scrapers.scrapers.cornerstone import CornerstoneScraper
@@ -125,6 +126,7 @@ __all__ = [
     "BuiltInScraper",
     "BundesagenturScraper",
     "BytedanceScraper",
+    "CareerPlugScraper",
     "CatsOneScraper",
     "ClearCompanyScraper",
     "CornerstoneScraper",

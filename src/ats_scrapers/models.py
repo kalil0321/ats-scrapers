@@ -52,6 +52,8 @@ class ATSType(StrEnum):
     AVATURE = "avature"
     BEISEN = "beisen"
     BEISEN_LEGACY = "beisen_legacy"
+    # CareerPlug hiring sites ({account}.careerplug.com).
+    CAREERPLUG = "careerplug"
     # CATS careers portals ({tenant}.catsone.com).
     CATSONE = "catsone"
     # ClearCompany hosted career sites (apply.clearcompany.com/{site}).
