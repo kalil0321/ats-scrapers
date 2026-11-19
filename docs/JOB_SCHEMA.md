@@ -22,7 +22,8 @@ the Pydantic descriptions are the source of truth; please update both.
 | **Content & timing** | `description`, `posted_at`, `source_created_at`, `source_updated_at`, `fetched_at`, `application_deadline`, `language` |
 | **Provider overflow** | `raw` |
 
-The library model has 40 fields. Older files can contain a subset of these columns.
+The library model has 40 fields. Published files can carry a subset of these
+columns; `Client.load()` adds the missing ones as nulls.
 
 > **Heuristic vs LLM split.** The publisher's hardcoded inference is
 > intentionally narrow: title-only `is_remote` (returns `True` or
