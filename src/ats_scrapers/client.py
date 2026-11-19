@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from ats_scrapers.exceptions import StorageError
+from ats_scrapers.identity import TENANT_SCOPED_ATS, compose_global_id
 from ats_scrapers.manifest import DEFAULT_MANIFEST_URL, USER_AGENT, Manifest
 from ats_scrapers.models import ATSType, normalize_compensation_period
 
@@ -294,10 +295,10 @@ def _source_times(values: pd.Series) -> pd.Series:
 def _normalize_dataset(df: pd.DataFrame) -> pd.DataFrame:
     """Bring older hosted slices up to the current client schema.
 
-    Dataset schema v2 predates ``Job.global_id``. Derive it with the current
-    model's composite format so callers get a stable public column while old
-    hosted artifacts are phased out. Invalid identifiers receive the model's
-    UUID fallback instead of producing malformed composite IDs.
+    Dataset schema v2 predates ``Job.global_id``. Derive it the way the model
+    does, board included for tenant-scoped providers. Invalid identifiers
+    receive the model's UUID fallback instead of producing malformed
+    composite IDs.
     """
     if not {"ats_type", "ats_id"}.issubset(df.columns):
         return df
@@ -322,6 +323,8 @@ def _normalize_dataset(df: pd.DataFrame) -> pd.DataFrame:
             df[name] = _source_times(df[name])
         else:
             df[name] = pd.Series(pd.NaT, index=df.index, dtype="datetime64[us, UTC]")
+    if "uuid" not in df:
+        df["uuid"] = None
     if "global_id" in df:
         return df
 
@@ -337,6 +340,13 @@ def _normalize_dataset(df: pd.DataFrame) -> pd.DataFrame:
 
     global_ids = pd.Series(index=df.index, dtype="string")
     global_ids.loc[valid] = ats_types.loc[valid].str.cat(ats_ids.loc[valid], sep=":")
+    scoped = valid & ats_types.isin(TENANT_SCOPED_ATS)
+    if scoped.any() and "url" in df:
+        urls = df.loc[scoped, "url"].astype("string")
+        global_ids.loc[scoped] = [
+            compose_global_id(ats, ats_id, None if pd.isna(url) else url)
+            for ats, ats_id, url in zip(ats_types.loc[scoped], ats_ids.loc[scoped], urls, strict=True)
+        ]
     invalid_count = int((~valid).sum())
     if invalid_count:
         global_ids.loc[~valid] = [str(uuid4()) for _ in range(invalid_count)]
