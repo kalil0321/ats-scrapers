@@ -101,14 +101,18 @@ class CareerPlugScraper(BaseScraper):
         async with self.make_fetcher(follow_redirects=False) as fetch:
             first = await self._page(fetch, 1)
             pages = [first]
+            if first.last_page > MAX_PAGES:
+                raise self._too_long()
             if first.last_page > 1:
                 semaphore = asyncio.Semaphore(PAGE_CONCURRENCY)
                 pages += await asyncio.gather(*(
                     self._page(fetch, number, semaphore)
-                    for number in range(2, min(first.last_page, MAX_PAGES) + 1)
+                    for number in range(2, first.last_page + 1)
                 ))
             # The pager names the last page. Should a site not, keep turning.
-            while pages[-1].has_next and len(pages) < MAX_PAGES:
+            while pages[-1].has_next:
+                if len(pages) >= MAX_PAGES:
+                    raise self._too_long()
                 pages.append(await self._page(fetch, len(pages) + 1))
         listed: dict[str, Job] = {}
         for page in pages:
@@ -118,6 +122,12 @@ class CareerPlugScraper(BaseScraper):
         if self.include_descriptions:
             await self._describe(jobs)
         return jobs
+
+    def _too_long(self) -> ScraperError:
+        # A list cut short would pass for a complete one.
+        return ScraperError(
+            f"CareerPlug ({self.company_slug}) lists more than {MAX_PAGES} pages of jobs"
+        )
 
     def get_description(self, job: Job) -> str | None:
         if not job.description:

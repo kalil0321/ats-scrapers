@@ -8,7 +8,7 @@ import pytest
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.resolve import resolve_careers_url
-from ats_scrapers.scrapers import CareerPlugScraper
+from ats_scrapers.scrapers import CareerPlugScraper, careerplug
 from ats_scrapers.scrapers.base import ScraperRegistry
 
 LIST_URL = "https://acme.careerplug.com/jobs"
@@ -182,6 +182,28 @@ def test_keeps_turning_when_the_pager_names_no_last_page(httpx_mock) -> None:
     jobs = CareerPlugScraper("acme", include_descriptions=False).fetch()
 
     assert [job.ats_id for job in jobs] == ["1", "2"]
+
+
+def test_a_list_longer_than_the_page_limit_is_an_error(httpx_mock, monkeypatch) -> None:
+    monkeypatch.setattr(careerplug, "MAX_PAGES", 1)
+    httpx_mock.add_response(
+        url=LIST_URL, text=_page([_row(1, "Cook", "TX-Austin-78701")], pager=PAGER),
+    )
+
+    with pytest.raises(ScraperError, match="more than 1 pages"):
+        CareerPlugScraper("acme", include_descriptions=False).fetch()
+
+
+def test_a_list_still_turning_at_the_page_limit_is_an_error(httpx_mock, monkeypatch) -> None:
+    monkeypatch.setattr(careerplug, "MAX_PAGES", 2)
+    only_next = '<div class="pagination"><a class="next_page" href="/jobs?later=1">next</a></div>'
+    for url, job_id in ((LIST_URL, 1), (f"{LIST_URL}?page=2", 2)):
+        httpx_mock.add_response(
+            url=url, text=_page([_row(job_id, "Cook", "TX-Austin-78701")], pager=only_next),
+        )
+
+    with pytest.raises(ScraperError, match="more than 2 pages"):
+        CareerPlugScraper("acme", include_descriptions=False).fetch()
 
 
 def test_reads_a_missing_description_from_the_posting_page(httpx_mock) -> None:
