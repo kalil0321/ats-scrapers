@@ -106,6 +106,7 @@ _PATH_HOSTS: dict[str, ATSType] = {
 # Subdomain tenants: https://{slug}.{suffix}/...
 _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
     ".applicantpro.com": ATSType.APPLICANTPRO,
+    ".isolvedhire.com": ATSType.ISOLVED_HIRE,
     ".recruitee.com": ATSType.RECRUITEE,
     ".teamtailor.com": ATSType.TEAMTAILOR,
     ".breezy.hr": ATSType.BREEZY,

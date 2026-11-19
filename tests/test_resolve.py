@@ -238,6 +238,11 @@ RESOLVES = [
         "kirkhill",
     ),
     (
+        "https://accel.isolvedhire.com/jobs/1907340",
+        ATSType.ISOLVED_HIRE,
+        "accel",
+    ),
+    (
         "https://www.wantedly.com/companies/Acme_Japan/projects",
         ATSType.WANTEDLY,
         "Acme_Japan",
