@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -18,7 +19,7 @@ import httpx
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType
+from ats_scrapers.models import ATSType, WorkloadPercentages
 from ats_scrapers.scrapers import JobsChScraper, ScraperRegistry
 
 _API_RE = re.compile(r"^https://www\.jobs\.ch/api/v1/public/search(?:\?|$)")
@@ -578,3 +579,149 @@ def test_complete_template_in_api_avoids_page_fetch(httpx_mock) -> None:
     })
     assert scraper.get_description(job) == "Test systems.\nCollaborate."
     assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.parametrize(("grades", "ids", "percentages", "engagement"), [
+    ([80, 85, 90, 95, 100], ["5"], [80, 85, 90, 95, 100], "permanent"),
+    ([80, 100], ["1"], [80, 100], "temporary"),
+    ([62.5, 0, 62.5], [2], [62.5, 0], "independent_contractor"),
+    ([100], ["3"], [100], "internship"),
+    ([60], ["6"], [60], "apprenticeship"),
+    ("80–100%", ["4"], None, None),
+    ([20, True], ["5", "1"], None, None),
+    ([101], ["5", "unknown"], None, None),
+    ([-1], [], None, None),
+])
+def test_jobsch_normalizes_explicit_choices_only(grades, ids, percentages, engagement):
+    item = {**_doc(job_id="a", title="Engineer"), "employment_grades": grades,
+            "employment_type_ids": ids}
+    job = JobsChScraper("any")._parse(item)
+    assert job is not None
+    expected = WorkloadPercentages(values=percentages) if percentages else None
+    assert job.workload_percentages == expected
+    assert job.engagement_type == engagement
+    assert job.raw["employment_grades"] == grades
+    if ids:
+        assert job.raw["employment_type_ids"] == ids
+
+
+def test_jobsch_reads_detail_only_fields_in_existing_request(httpx_mock):
+    scraper = JobsChScraper("any")
+    job = scraper._parse(_doc(job_id="detail-test", title="Engineer"))
+    httpx_mock.add_response(json={"job_id": "detail-test", "template_text": "Build systems.",
+                                  "employment_type_ids": ["5"], "employment_grades": [60, 80]})
+    assert scraper.get_description(job) == "Build systems."
+    assert (job.engagement_type, job.employment_type) == ("permanent", "PART_TIME")
+    assert job.workload_percentages == WorkloadPercentages(values=[60, 80])
+    assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.parametrize(("grades", "display", "expected"), [
+    ([], "80 – 100%", WorkloadPercentages(minimum=80, maximum=100)),
+    ([], "62,5%", WorkloadPercentages(values=[62.5])),
+    ([60, 80], "60 – 80%", WorkloadPercentages(values=[60, 80])),
+    ([], "100–80%", None),
+    ([], "120%", None),
+    ([], "Part-time", None),
+])
+def test_explicit_workload_on_existing_page_fallback(httpx_mock, grades, display, expected):
+    scraper = JobsChScraper("any")
+    job = scraper._parse(_doc(job_id="detail-test", title="Engineer 50–90%", grades=grades))
+    httpx_mock.add_response(url="https://www.jobs.ch/api/v1/public/search/job/detail-test",
+                            json={"job_id": "detail-test"})
+    httpx_mock.add_response(url=str(job.url), text=(
+        '<article data-cy="vacancy-description">Travel 25%.</article>'
+        f'<li data-cy="info-workload"><div><span>{display}</span></div></li>'
+    ))
+    assert scraper.get_description(job) == "Travel 25%."
+    assert job.workload_percentages == expected
+    assert len(httpx_mock.get_requests()) == 2
+
+
+# --- detail routes ----------------------------------------------------------
+
+_DETAIL = "https://www.jobs.ch/api/v1/public/search/job/detail-test"
+_DETAIL_BODY = {"job_id": "detail-test", "template_text": "<p>Read it.</p>"}
+
+
+@pytest.fixture
+def _routes(monkeypatch) -> None:
+    """Tag each detail request with the route its client takes."""
+    from ats_scrapers.scrapers import jobsch
+
+    class Tagged(httpx.AsyncClient):
+        def __init__(self, *, proxy: str | None = None, **kwargs: Any) -> None:
+            super().__init__(proxy=proxy, **kwargs)
+            self.headers["X-Route"] = "proxy" if proxy else "direct"
+
+    monkeypatch.setattr(jobsch, "httpx", SimpleNamespace(**{**vars(httpx), "AsyncClient": Tagged}))
+
+
+def _detail_routes(httpx_mock) -> list[str]:
+    return [r.headers["X-Route"] for r in httpx_mock.get_requests() if "/job/" in r.url.path]
+
+
+def test_detail_refused_directly_is_read_through_the_proxy(httpx_mock, _proxy_env, _routes) -> None:
+    scraper = JobsChScraper("any")
+    one, two = (scraper._parse(_doc(job_id="detail-test", title=t)) for t in ("One", "Two"))
+    httpx_mock.add_response(url=_DETAIL, match_headers={"X-Route": "direct"}, status_code=403)
+    httpx_mock.add_response(
+        url=_DETAIL, match_headers={"X-Route": "proxy"}, json=_DETAIL_BODY, is_reusable=True,
+    )
+
+    assert scraper.get_description(one) == "Read it."
+    # The route that answered is asked first for the next posting.
+    assert scraper.get_description(two) == "Read it."
+    assert _detail_routes(httpx_mock) == ["direct", "proxy", "proxy"]
+
+
+@pytest.mark.parametrize("refusal", [
+    "403", httpx.ProxyError("402 Payment Required"), httpx.ConnectError("refused"),
+    httpx.ConnectTimeout("timed out"),
+])
+def test_detail_the_proxy_refuses_after_the_search_fell_back_is_read_directly(
+    httpx_mock, _proxy_env, _routes, refusal,
+) -> None:
+    httpx_mock.add_response(url=_API_RE, status_code=403)
+    httpx_mock.add_response(url=_API_RE, json=_page([_doc(job_id="detail-test", title="One")], 1))
+    if refusal == "403":
+        httpx_mock.add_response(url=_DETAIL, match_headers={"X-Route": "proxy"}, status_code=403)
+    else:
+        httpx_mock.add_exception(refusal, url=_DETAIL, match_headers={"X-Route": "proxy"})
+    httpx_mock.add_response(url=_DETAIL, match_headers={"X-Route": "direct"}, json=_DETAIL_BODY)
+
+    job, = JobsChScraper("any").fetch()
+
+    assert job.description == "Read it."
+    assert _detail_routes(httpx_mock) == ["proxy", "direct"]
+
+
+def test_job_page_refused_directly_is_read_through_the_proxy(httpx_mock, _proxy_env, _routes) -> None:
+    scraper = JobsChScraper("any")
+    job = scraper._parse(_doc(job_id="detail-test", title="One"))
+    httpx_mock.add_response(url=_DETAIL, json={"job_id": "detail-test"}, is_reusable=True)
+    httpx_mock.add_response(url=str(job.url), match_headers={"X-Route": "direct"}, status_code=403)
+    httpx_mock.add_response(url=str(job.url), match_headers={"X-Route": "proxy"}, text="""
+      <section data-cy="vacancy-description"><h4>About the job</h4>
+      <div>Original <b>text</b>.</div></section>""")
+
+    assert scraper.get_description(job) == "Original text."
+    assert _detail_routes(httpx_mock) == ["direct", "proxy"]
+
+
+def test_detail_refused_on_every_route_is_asked_once_on_each(httpx_mock, _proxy_env, _routes) -> None:
+    scraper = JobsChScraper("any")
+    job = scraper._parse(_doc(job_id="detail-test", title="One"))
+    httpx_mock.add_response(url=_DETAIL, status_code=403, is_reusable=True)
+
+    assert scraper.get_description(job) is None
+    assert _detail_routes(httpx_mock) == ["direct", "proxy"]
+
+
+def test_detail_refused_without_a_proxy_is_asked_once(httpx_mock, _routes) -> None:
+    scraper = JobsChScraper("any")
+    job = scraper._parse(_doc(job_id="detail-test", title="One"))
+    httpx_mock.add_response(url=_DETAIL, status_code=403)
+
+    assert scraper.get_description(job) is None
+    assert _detail_routes(httpx_mock) == ["direct"]

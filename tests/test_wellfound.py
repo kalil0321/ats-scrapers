@@ -399,3 +399,20 @@ def test_get_description_of_a_failing_posting_is_none(httpx_mock) -> None:
         ats_id="2",
     )
     assert _scraper().get_description(job) is None
+
+
+@pytest.mark.parametrize(("kind", "expected"), [
+    ("ONSITE_OR_REMOTE", "onsite_or_remote"), ("REMOTE", "remote"), ("ONSITE", "onsite"),
+    ("UNSPECIFIED", None), (None, None),
+])
+def test_work_config_and_advertised_locations_are_separate_from_eligibility(kind, expected) -> None:
+    item = _listing(1, remote=True, remoteConfig={"kind": kind, "wfhFlexible": True},
+                    locationNames=["Barcelona, Spain", "Lisbon"],
+                    acceptedRemoteLocationNames=["Portugal", "Spain", "France"])
+    job = _scraper()._parse_listing({"name": "Acme"}, item)
+    assert job.workplace_type == expected and job.is_remote is True
+    assert [(p.label, p.city, p.country_iso) for p in job.locations] == [
+        ("Barcelona, Spain", None, None), ("Lisbon", None, None),
+    ]
+    item["locationNames"] = []
+    assert _scraper()._parse_listing({"name": "Acme"}, item).locations is None

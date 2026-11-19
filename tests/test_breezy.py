@@ -235,3 +235,30 @@ def test_jobposting_description_is_used_when_visible_block_is_empty() -> None:
       <script type="application/ld+json">{"@type":"JobPosting",
       "description":"<p>Write C#.</p><p>Run tests.</p>"}</script>"""
     assert _extract_description(page) == "Write C#.\nRun tests."
+
+
+def test_multisite_remote_location_preserves_each_structured_address() -> None:
+    primary = {"name": "Cambridge office", "city": "Cambridge", "primary": True,
+               "state": {"name": "Massachusetts"}, "country": {"id": "us"},
+               "remote_details": {"value": "remote-location"}}
+    secondary = {"name": "Cambridge office", "city": "Cambridge", "primary": False,
+                 "country": {"id": "gb"}, "remote_details": {"value": "remote-location"}}
+    item = {**_position(), "location": primary, "locations": [secondary, primary, primary]}
+    scraper = BreezyScraper("acme")
+    job = scraper._parse_position(item)
+    assert job.workplace_type == "remote"
+    assert [(p.label, p.city, p.region, p.country_iso, p.is_primary) for p in job.locations] == [
+        ("Cambridge office", "Cambridge", None, "GB", False),
+        ("Cambridge office", "Cambridge", "Massachusetts", "US", True),
+    ]
+    secondary["remote_details"] = {"value": "hybrid"}
+    assert scraper._parse_position(item).workplace_type is None
+
+
+def test_breezy_legacy_remote_flag_does_not_imply_a_workplace_type() -> None:
+    scraper = BreezyScraper("acme")
+    item = _position(is_remote=True)
+    job = scraper._parse_position(item)
+    assert job.is_remote is True and job.workplace_type is None
+    item["location"]["remote_details"] = {"value": "hybrid"}
+    assert scraper._parse_position(item).workplace_type == "hybrid"

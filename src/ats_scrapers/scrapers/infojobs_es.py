@@ -61,6 +61,8 @@ log = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from typing import Any
 
+    from ats_scrapers.models import EngagementType
+
 API_ROOT = "https://www.infojobs.net"
 LISTING_URL = f"{API_ROOT}/ofertas-trabajo"
 DEFAULT_MAX_PAGES = 3500  # ~66k offers / 22 per page = ~3000 pages
@@ -92,6 +94,14 @@ _CONTRACT_TYPE_MAP: dict[str, str] = {
     "Otros contratos": "CONTRACT",
     "Otro tipo de contrato": "CONTRACT",
     "A tiempo parcial": "PART_TIME",
+}
+
+_CONTRACT_ENGAGEMENT: dict[str, EngagementType] = {
+    "indefinido": "permanent",
+    "fijo discontinuo": "permanent",
+    "duración determinada": "fixed_term",
+    "prácticas": "internship",
+    "autónomo": "independent_contractor",
 }
 
 # Working-method label → is_remote. "Remoto" / "100% remoto" → fully
@@ -257,6 +267,10 @@ class InfoJobsSpainScraper(BaseScraper):
             location = location.strip() or None
 
         contract_type_raw = offer.get("contractType")
+        contract_label = (
+            contract_type_raw.casefold().removeprefix("contrato ").removeprefix("de ")
+            if isinstance(contract_type_raw, str) else ""
+        )
         employment_type = (
             _CONTRACT_TYPE_MAP.get(contract_type_raw)
             if isinstance(contract_type_raw, str)
@@ -304,6 +318,7 @@ class InfoJobsSpainScraper(BaseScraper):
             salary_min=salary_min,
             salary_max=salary_max,
             employment_type=employment_type,  # type: ignore[arg-type]
+            engagement_type=_CONTRACT_ENGAGEMENT.get(contract_label),
             commitment=contract_type_raw if isinstance(contract_type_raw, str) else None,
             description=description,
             posted_at=posted_at,

@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, CompensationComponent, Job, normalize_compensation_period
 from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers._posting_detail import (
     body_text,
@@ -36,6 +36,8 @@ from ats_scrapers.scrapers._posting_detail import (
     fill_missing,
     job_posting,
 )
+from ats_scrapers.scrapers._posting_fields import finite_number
+from ats_scrapers.scrapers._skill_tags import skill_tags
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -263,7 +265,7 @@ class YCombinatorScraper(BaseScraper):
         raw: dict[str, Any] = {}
         for key in (
             "role", "prettyRole", "roleSpecificType", "minSchoolYear",
-            "visa", "skills", "equityRange", "companyBatchName",
+            "visa", "skills", "salaryRange", "equityRange", "companyBatchName",
             "lastActive", "askUs",
         ):
             v = item.get(key)
@@ -281,8 +283,10 @@ class YCombinatorScraper(BaseScraper):
             location=location,
             salary_currency=salary_currency,
             salary_period="YEAR" if salary_currency else None,
+            compensation_components=_pay_components(item.get("salaryRange"), item.get("equityRange")),
             salary_min=salary_min,
             salary_max=salary_max,
+            skill_requirements=skill_tags(item.get("skills")),
             experience=experience,
             employment_type=employment_type,
             commitment=item.get("type") if isinstance(item.get("type"), str) else None,
@@ -411,6 +415,78 @@ def _scale_amount(num: str, suffix: str | None) -> float | None:
     return v
 
 
+_EQUITY_RANGE_RE = re.compile(r"(\d+(?:\.\d+)?)%\s*(?:(?:-|–|to)\s*(\d+(?:\.\d+)?)%)?")
+
+
+_COMPONENT_RANGE_RE = re.compile(
+    r"([$€£₹])(\d+(?:\.\d+)?)\s*([KkMm])?"
+    r"(?:\s*(?:-|–|to)\s*([$€£₹])?(\d+(?:\.\d+)?)\s*([KkMm])?)?"
+    r"(?:\s+([A-Z]{3}))?"
+)
+_SYMBOL_CURRENCY = {"$": "USD", "€": "EUR", "£": "GBP", "₹": "INR"}
+
+
+def _component_bounds(raw: object) -> tuple[float | None, float | None, str | None]:
+    match = _COMPONENT_RANGE_RE.fullmatch(raw.strip()) if isinstance(raw, str) else None
+    if not match:
+        return None, None, None
+    symbol, low, low_scale, second_symbol, high, high_scale, currency = match.groups()
+    if second_symbol and second_symbol != symbol:
+        return None, None, None
+    lo = _scale_amount(low, low_scale)
+    hi = _scale_amount(high, high_scale or low_scale) if high else lo
+    if finite_number(lo) is None or finite_number(hi) is None:
+        return None, None, None
+    return lo, hi, currency or _SYMBOL_CURRENCY[symbol]
+
+
+def _base_pay(display: object, structured: object) -> CompensationComponent | None:
+    data = structured if isinstance(structured, dict) else {}
+    bounds = data.get("value")
+    bounds = bounds if isinstance(bounds, dict) else {}
+    summary = display.strip() if isinstance(display, str) else ""
+    amount, _, suffix = summary.partition(" / ")
+    lo, hi, currency = _component_bounds(amount)
+    period = normalize_compensation_period(suffix or bounds.get("unitText"))
+    if suffix and period is None:
+        return None
+    label = "salaryRange"
+    if not currency:
+        # Keep the display authoritative if present (the page's JSON-LD
+        # sometimes labels non-US salaries USD).
+        if summary:
+            return None
+        lo = finite_number(bounds.get("minValue", bounds.get("value")))
+        hi = finite_number(bounds.get("maxValue", bounds.get("value")))
+        currency = data.get("currency")
+        label = "baseSalary"
+    lo, hi = finite_number(lo), finite_number(hi)
+    if lo is None and hi is None:
+        return None
+    return CompensationComponent(
+        kind="base_salary", source_label=label, unit="money",
+        currency=currency if isinstance(currency, str) else None,
+        period=period,
+        minimum=lo, maximum=hi, summary=summary or None, tier=None,
+    )
+
+
+def _pay_components(
+    salary: object, equity: object, structured_salary: object = None,
+) -> list[CompensationComponent] | None:
+    base = _base_pay(salary, structured_salary)
+    components = [base] if base else []
+    if isinstance(equity, str) and (match := _EQUITY_RANGE_RE.fullmatch(equity.strip())):
+        lo = finite_number(match[1])
+        hi = finite_number(match[2] if match[2] is not None else match[1])
+        if lo is not None and hi is not None:
+            components.append(CompensationComponent(
+                kind="equity", source_label="equityRange", unit="percent",
+                minimum=lo, maximum=hi, summary=equity, period=None, tier=None,
+            ))
+    return components or None
+
+
 _EXPERIENCE_RE = re.compile(r"^\s*(\d+)")
 
 
@@ -492,6 +568,17 @@ def _apply_detail(job: Job, page: str) -> None:
                 return
             props_job = candidate
             break
+
+    job.skill_requirements = skill_tags(props_job.get("skills"), existing=job.skill_requirements)
+
+    if props_job or posting:
+        listing = {part.kind: part.summary for part in job.compensation_components or []}
+        salary = (props_job.get("salaryRange") or (job.raw or {}).get("salaryRange")
+                  or job.salary_summary or listing.get("base_salary"))
+        equity = props_job.get("equityRange") or (job.raw or {}).get("equityRange") or listing.get("equity")
+        components = _pay_components(salary, equity, posting.get("baseSalary"))
+        if components:
+            job.compensation_components = components
 
     description = body_text(posting.get("description"))
     if description:

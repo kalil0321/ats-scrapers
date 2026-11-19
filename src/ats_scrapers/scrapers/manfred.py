@@ -25,11 +25,20 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import (
+    ATSType,
+    CompensationComponent,
+    Job,
+    RequirementLevel,
+    SkillRequirement,
+)
+from ats_scrapers.scrapers._job_classification import classification_label
+from ats_scrapers.scrapers._posting_fields import finite_number
+from ats_scrapers.scrapers._source_timestamp import source_timestamp
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    from typing import Any
+    from typing import Any, Literal
 
     from ats_scrapers.fetch import Fetcher
 
@@ -101,6 +110,9 @@ class ManfredScraper(BaseScraper):
             async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
                 await self._enrich_description(fetch, sem, copy)
+            if job.source_updated_at is None:
+                job.source_updated_at = copy.source_updated_at
+            job.skill_requirements = copy.skill_requirements
             return copy.description
 
         return self._run_sync(run())
@@ -143,6 +155,11 @@ class ManfredScraper(BaseScraper):
                 # Detail enrichment is best-effort — a missing or broken
                 # detail endpoint must not sink the listing row.
                 return
+        if isinstance(detail, dict):
+            if job.source_updated_at is None:
+                job.source_updated_at = source_timestamp(detail.get("updatedAt"))
+            if skills := _skills(detail):
+                job.skill_requirements = skills
         description = _compose_description(detail, self.lang)
         if description and not job.description:
             job.description = description[:25_000]
@@ -210,10 +227,78 @@ class ManfredScraper(BaseScraper):
             salary_min=salary_min,
             salary_max=salary_max,
             requisition_id=ic if isinstance(ic, str) else None,
+            compensation_components=_pay_components(item),
+            source_updated_at=source_timestamp(item.get("updatedAt")),
             posted_at=posted_at,
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+_SKILL_SECTIONS: dict[str, RequirementLevel] = {
+    "MUST": "required", "COULD": "preferred", "EXTRA": "optional",
+}
+
+
+def _skills(detail: dict[str, Any]) -> list[SkillRequirement] | None:
+    skills: list[SkillRequirement] = []
+    for key in ("techs", "softSkills"):
+        entries = detail.get(key)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict) or not (label := classification_label(entry.get("name"))):
+                continue
+            section = entry.get("section")
+            level = _SKILL_SECTIONS.get(section, "unspecified") if isinstance(section, str) else "unspecified"
+            skill = SkillRequirement(label=label, requirement=level)
+            if skill not in skills:
+                skills.append(skill)
+    return skills or None
+
+
+def _pay_components(item: dict[str, Any]) -> list[CompensationComponent] | None:
+    # Zero is the API's sentinel for a missing bound. The range 0..1
+    # renders as “Up to 1%”. An all-zero pair has no corresponding offer.
+    def bound(key: str) -> float | None:
+        number = finite_number(item.get(key))
+        return number if number is not None and number > 0 else None
+
+    symbol = item.get("currency")
+    symbol = symbol.strip() if isinstance(symbol, str) else ""
+    currency = {"€": "EUR", "£": "GBP", "US$": "USD", "MXN$": "MXN"}.get(symbol)
+    if re.fullmatch(r"[A-Z]{3}", symbol):
+        currency = symbol
+    components = []
+    salary_min, salary_max = bound("salaryFrom"), bound("salaryTo")
+    if salary_min is not None or salary_max is not None:
+        components.append(CompensationComponent(
+            kind="base_salary", source_label="Salary", unit="money", currency=currency,
+            minimum=salary_min, maximum=salary_max, period=None, tier=None,
+        ))
+    bonus_source = item.get("bonus")
+    bonus_text = bonus_source.strip() if isinstance(bonus_source, str) else ""
+    percent_text = bonus_text if bonus_text.endswith("%") else None
+    bonus = finite_number(percent_text[:-1]) if percent_text else bound("bonus")
+    if bonus is not None and bonus > 0:
+        # Manfred displays this as "Variable + €5K" when the offer gives a
+        # currency. A bare bonus amount does not identify its own unit.
+        bonus_unit: Literal["money", "percent"] | None = "money" if currency else None
+        if percent_text or symbol == "%":
+            bonus_unit = "percent"
+        components.append(CompensationComponent(
+            kind="bonus", source_label="Variable", unit=bonus_unit,
+            currency=currency if bonus_unit == "money" else None, summary=percent_text,
+            minimum=bonus, maximum=bonus,
+        ))
+    equity_min, equity_max = bound("equityInf"), bound("equitySup")
+    equity_bounds = [value for value in (equity_min, equity_max) if value is not None]
+    if equity_bounds and max(equity_bounds) <= 100:
+        components.append(CompensationComponent(
+            kind="equity", source_label="Equity", unit="percent",
+            minimum=equity_min, maximum=equity_max, period=None, tier=None,
+        ))
+    return components or None
 
 
 def _format_location(value: object) -> str | None:

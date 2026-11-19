@@ -1493,3 +1493,22 @@ def test_get_description_runs_after_block_in_earlier_fetch(
     assert scraper.get_description(job) == "<p>Later</p>"
     assert len(_detail_requests(httpx_mock)) == 2
 
+
+
+def test_posting_keeps_structured_offices_and_workplace_type() -> None:
+    raw = {
+        "id": "100", "title": "Engineer", "workLocationOption": "Hybrid",
+        "primaryLocation": {"city": "Berlin", "country": "Germany"},
+        "locations": [
+            {"city": "Berlin", "country": "Germany"},
+            {"city": "Vienna", "country": "Austria"},
+        ],
+    }
+    job = EightfoldScraper("example")._parse_job(raw)
+    assert job.workplace_type == "hybrid"
+    assert [(p.city, p.country_iso, p.is_primary) for p in job.locations] == [
+        ("Berlin", "DE", True), ("Vienna", "AT", None),
+    ]
+    raw["standardizedLocations"] = ["Munich, Germany", "Berlin, Germany"]
+    job = EightfoldScraper("example")._parse_job(raw)
+    assert [p.label for p in job.locations] == ["Munich, Germany", "Berlin, Germany"]

@@ -631,3 +631,13 @@ def test_skips_gracefully_when_httpcloak_missing(
         jobs = InfoJobsSpainScraper("any", max_pages=1).fetch()
     assert jobs == []
     assert any("httpcloak" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize(("label", "expected"), [
+    ("Contrato de duración determinada", "fixed_term"), ("Contrato fijo discontinuo", "permanent"),
+    ("Contrato autónomo", "independent_contractor"), ("Prácticas", "internship"),
+    ("A tiempo parcial", None), ("Otros contratos", None),
+])
+def test_engagement_from_spanish_contract_labels(label, expected):
+    job = InfoJobsSpainScraper("any")._parse_offer(_offer(contract_type=label))
+    assert job.engagement_type == expected and job.raw["contract_type"] == label

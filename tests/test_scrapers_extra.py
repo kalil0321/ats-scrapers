@@ -1081,6 +1081,7 @@ def test_oracle_enriches_single_page_job_with_raw_source_id(httpx_mock) -> None:
         json={
             "items": [{
                 "ExternalDescriptionStr": "<p>Maintain databases.</p>",
+                "ContractType": "Fixed term",
                 "ExternalResponsibilitiesStr": "<p>Ship backups.</p>",
             }]
         },
@@ -1089,6 +1090,7 @@ def test_oracle_enriches_single_page_job_with_raw_source_id(httpx_mock) -> None:
     [job] = OracleScraper(base).fetch()
 
     assert job.description == "Maintain databases.\n\nShip backups."
+    assert job.engagement_type == "fixed_term" and job.raw["ContractType"] == "Fixed term"
 
 
 def test_oracle_detail_replaces_listing_short_description(httpx_mock) -> None:
@@ -1363,3 +1365,120 @@ def test_oracle_shortfall_is_logged(httpx_mock, monkeypatch, caplog) -> None:
 
     assert len(jobs) == 5
     assert "announced 8 jobs, collected 5" in caplog.text
+
+
+def test_smartrecruiters_job_function_requires_an_explicit_label() -> None:
+    scraper = SmartRecruitersScraper("acme")
+    posting = {"id": "123", "name": "Education Manager", "department": {"label": "Education"}}
+    job = scraper._parse_job({**posting, "function": {"id": "management", "label": "Management"}})
+    assert job.job_category == "Management"
+    for value in (None, {}, {"id": "other", "label": "Autre"}, {"id": "engineering"}):
+        missing = scraper._parse_job({**posting, "function": value})
+        assert missing.department == "Education"
+        assert missing.job_category is None and missing.education_requirements is None
+
+
+def test_workable_widget_maps_function_and_education_separately_from_department() -> None:
+    scraper = WorkableScraper("example")
+    posting = {"url": "https://apply.workable.com/j/EXAMPLE123", "shortcode": "EXAMPLE123",
+               "title": "Office Assistant", "department": "Sales",
+               "description": "<p>Support the team.</p>", "benefits": "<p>Flexible hours.</p>"}
+    job = scraper._parse_job({**posting, "function": "Administrative",
+                              "education": "High School or equivalent"}, "Example")
+    assert job.job_category == "Administrative"
+    assert job.department == "Sales"
+    assert job.description == "Support the team.\n\nFlexible hours."
+    assert [(q.label, q.requirement) for q in job.education_requirements] == [
+        ("High School or equivalent", "unspecified"),
+    ]
+    missing = scraper._parse_job({**posting, "function": "Other", "education": "Unspecified",
+                                  "industry": "Higher Education", "experience": "Associate"}, "Example")
+    assert missing.job_category is None and missing.education_requirements is None
+
+
+def test_personio_schedule_cannot_hide_employment_contract():
+    job = PersonioScraper("acme")._parse_job(
+        {"id": "1", "name": "Tester", "employmentType": "Permanent employee", "schedule": "part-time"},
+        "https://acme.jobs.personio.com",
+    )
+    assert job.engagement_type == "permanent" and job.commitment == "part-time"
+    assert job.raw["employmentType"] == "Permanent employee"
+
+
+def test_oracle_contract_is_independent_of_worker_type():
+    base = "https://example.fa.oraclecloud.com"
+    job = OracleScraper(base)._parse_job(
+        {"Id": "1", "Title": "Engineer", "WorkerType": "Employee", "ContractType": "Fixed term"},
+        base, "CX_1",
+    )
+    assert job.engagement_type == "fixed_term" and job.raw["ContractType"] == "Fixed term"
+
+
+@pytest.mark.parametrize(("flags", "expected"), [
+    ({"remote": True, "hybrid": False}, "remote"), ({"hybrid": True}, "hybrid"),
+    ({"remote": False, "hybrid": False}, "onsite"), ({"remote": False}, None),
+    ({"remote": True, "hybrid": True}, None),
+])
+def test_smartrecruiters_workplace_uses_the_explicit_location_flags(flags, expected) -> None:
+    job = SmartRecruitersScraper("acme")._parse_job({
+        "id": "test", "name": "Analyst",
+        "location": {"fullLocation": "Paris, Île-de-France, France", "city": "Paris",
+                     "region": "Île-de-France", "country": "fr", **flags},
+    })
+    assert job.workplace_type == expected
+    [place] = job.locations
+    assert (place.label, place.city, place.region, place.country_iso, place.is_primary) == (
+        "Paris, Île-de-France, France", "Paris", "Île-de-France", "FR", None,
+    )
+
+
+def test_workable_keeps_all_visible_places_across_duplicate_jobs(httpx_mock) -> None:
+    item = {"shortcode": "sample", "title": "Analyst", "url": "https://example.org/a",
+            "telecommuting": False}
+    a = {"city": "Washington, D.C.", "country": "United States", "countryCode": "us"}
+    b = {"city": "Ottawa", "region": "Ontario", "country": "Canada", "countryCode": "CA"}
+    httpx_mock.add_response(url="https://apply.workable.com/api/v1/widget/accounts/acme",
+                            json={"jobs": [{**item, "locations": [a]},
+                                           {**item, "locations": [b, a, {"city": "Secret", "hidden": True}]}]})
+    [job] = WorkableScraper("acme", include_descriptions=False).fetch()
+    assert job.workplace_type is None and job.is_remote is False
+    assert [(p.city, p.region, p.country_iso, p.is_primary) for p in job.locations] == [
+        ("Washington, D.C.", None, "US", None), ("Ottawa", "Ontario", "CA", None),
+    ]
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_workable_existing_detail_request_can_supply_workplace_and_locations(httpx_mock) -> None:
+    scraper = WorkableScraper("acme", include_descriptions=False)
+    job = scraper._parse_job({"title": "Analyst", "url": "https://example.org/a",
+                               "shortcode": "sample"}, "Acme")
+    httpx_mock.add_response(url="https://apply.workable.com/api/v2/accounts/acme/jobs/sample",
+                            json={"description": "Work here.", "workplace": "on_site",
+                                  "location": {"city": "Lille", "countryCode": "fr"}})
+    assert scraper.get_description(job) == "Work here."
+    assert job.workplace_type == "onsite"
+    assert [(p.city, p.country_iso) for p in job.locations] == [("Lille", "FR")]
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_smartrecruiters_existing_detail_call_updates_places_on_the_original_job(httpx_mock) -> None:
+    scraper = SmartRecruitersScraper("acme")
+    job = scraper._parse_job({"id": "sample", "name": "Analyst",
+                              "location": {"fullLocation": "Paris, France", "city": "Paris"}})
+    httpx_mock.add_response(
+        url="https://api.smartrecruiters.com/v1/companies/acme/postings/sample",
+        json={"location": {"country": "fr", "fullLocation": "Paris, France", "hybrid": True},
+              "jobAd": {"sections": {"jobDescription": {"text": "Review reports."}}}},
+    )
+    assert scraper.get_description(job) == "Review reports."
+    assert job.workplace_type == "hybrid"
+    assert [(p.label, p.city, p.country_iso) for p in job.locations] == [("Paris, France", "Paris", "FR")]
+
+
+def test_workable_conflicting_modes_on_duplicate_rows_stay_unknown(httpx_mock) -> None:
+    item = {"shortcode": "sample", "title": "Analyst", "url": "https://example.org/a"}
+    httpx_mock.add_response(url="https://apply.workable.com/api/v1/widget/accounts/acme",
+                            json={"jobs": [{**item, "workplace": mode} for mode in
+                                           ("remote", "hybrid", "hybrid")]})
+    [job] = WorkableScraper("acme", include_descriptions=False).fetch()
+    assert job.workplace_type is None

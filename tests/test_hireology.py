@@ -128,6 +128,8 @@ def test_fetches_structured_public_jobs(httpx_mock) -> None:
     assert job.department == "Service"
     assert job.requisition_id == "2827500"
     assert job.description == "Role\nDiagnose and repair customer vehicles."
+    assert job.source_created_at == datetime(2026, 7, 27, 19, 10, 31, 370000, tzinfo=UTC)
+    assert job.source_updated_at is None
     assert job.posted_at == datetime(
         2026,
         7,

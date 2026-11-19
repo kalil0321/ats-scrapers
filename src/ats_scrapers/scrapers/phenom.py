@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -390,6 +391,7 @@ class PhenomScraper(BaseScraper):
             is_remote=is_remote,
             department=item.get("department") or item.get("category"),
             employment_type=employment_type,
+            engagement_type=engagement_from_label(commitment),
             commitment=commitment,
             requisition_id=str(item.get("jobSeqNo")) if item.get("jobSeqNo") else None,
             # Prefer the full ``description`` field. ``descriptionTeaser`` is

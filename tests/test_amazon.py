@@ -82,3 +82,21 @@ def test_small_catalogue_is_paginated_without_buckets(httpx_mock) -> None:
     jobs = AmazonScraper("amazon").fetch()
 
     assert sorted(job.ats_id for job in jobs) == ["1", "2"]
+
+
+def test_primary_job_family_and_category_fallback() -> None:
+    scraper = AmazonScraper("amazon")
+    [job] = scraper._parse_hit(_hit(
+        job_family="Software Development", job_category="Corporate Operations",
+        business_category="example-product-group", job_function_id="unverified",
+        basic_qualifications="Degree or equivalent experience",
+    ))
+    assert job.job_category == "Software Development"
+    assert job.department == "Corporate Operations"
+    assert job.education_requirements is None
+
+    [legacy] = scraper._parse_hit({"fields": {"icimsJobId": ["1"], "jobCategory": ["Human Resources"]}})
+    assert legacy.job_category == "Human Resources"
+
+    [unclassified] = scraper._parse_hit(_hit(teamCategory="Cloud services", business_category="retail"))
+    assert unclassified.department == "Cloud services" and unclassified.job_category is None

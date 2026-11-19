@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -154,6 +155,8 @@ class OracleScraper(BaseScraper):
             async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
                 await self._enrich_detail(fetch, sem, detail_url, copy)
+            job.engagement_type = copy.engagement_type
+            job.raw = copy.raw
             return copy.description
 
         return self._run_sync(run())
@@ -268,6 +271,10 @@ class OracleScraper(BaseScraper):
         if not items or not isinstance(items[0], dict):
             return
         detail = items[0]
+        contract = detail.get("ContractType")
+        if isinstance(contract, str) and contract.strip():
+            job.raw = {**(job.raw or {}), "ContractType": contract}
+            job.engagement_type = engagement_from_label(contract)
 
         # Concatenate the three external sections — description /
         # qualifications / responsibilities — into a single plain-text
@@ -402,6 +409,7 @@ class OracleScraper(BaseScraper):
             department=department,
             team=team,
             employment_type=employment_type,
+            engagement_type=engagement_from_label(item.get("ContractType")),
             commitment=commitment,
             description=description,
             requisition_id=requisition_id,

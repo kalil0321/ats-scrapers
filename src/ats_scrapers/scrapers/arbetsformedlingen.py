@@ -21,8 +21,12 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar
 
+from pydantic import ValidationError
+
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, EducationRequirement, Job, WorkloadPercentages
+from ats_scrapers.scrapers._job_classification import classification_label
+from ats_scrapers.scrapers._skill_tags import skill_tags
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -30,6 +34,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from ats_scrapers.fetch import Fetcher
+    from ats_scrapers.models import SkillRequirement
 
 log = logging.getLogger(__name__)
 
@@ -254,16 +259,14 @@ class ArbetsformedlingenScraper(BaseScraper):
             hours_label.strip() if isinstance(hours_label, str) and hours_label.strip()
             else None
         )
-        if not commitment:
-            scope = item.get("scope_of_work") or {}
-            if isinstance(scope, dict):
-                lo, hi = scope.get("min"), scope.get("max")
-                if isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and hi > 0:
-                    commitment = (
-                        f"{int(hi)} %" if lo == hi
-                        else f"{int(lo)}–{int(hi)} %"
-                    )
+        workload = _workload(item.get("scope_of_work"))
+        if not commitment and workload is not None:
+            lo, hi = workload.minimum, workload.maximum
+            if lo is not None and hi is not None and hi > 0:
+                commitment = f"{lo:g} %" if lo == hi else f"{lo:g}–{hi:g} %"
 
+        primary = item.get("occupation")
+        category = classification_label(primary.get("label")) if isinstance(primary, dict) else None
         # ``occupation_field`` is the high-level domain (Pedagogik,
         # Hälso- och sjukvård, IT-data, etc.) — Arbetsförmedlingen's
         # closest analog to a department label.
@@ -307,9 +310,13 @@ class ArbetsformedlingenScraper(BaseScraper):
             is_remote=is_remote,
             team=team if isinstance(team, str) and team.strip() else None,
             description=description,
+            job_category=category,
+            education_requirements=_education_requirements(item),
+            skill_requirements=_skill_requirements(item),
             department=department if isinstance(department, str) else None,
             employment_type=employment_type,
             commitment=commitment,
+            workload_percentages=workload,
             apply_url=apply_url if isinstance(apply_url, str) and apply_url.startswith("http") else None,
             requisition_id=requisition_id,
             salary_summary=salary_summary,
@@ -317,6 +324,48 @@ class ArbetsformedlingenScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _workload(scope: object) -> WorkloadPercentages | None:
+    if not isinstance(scope, dict) or (scope.get("min") is None and scope.get("max") is None):
+        return None
+    try:
+        return WorkloadPercentages(minimum=scope.get("min"), maximum=scope.get("max"))
+    except ValidationError:
+        return None
+
+
+def _education_requirements(item: dict[str, Any]) -> list[EducationRequirement] | None:
+    qualifications: list[EducationRequirement] = []
+    for key in ("must_have", "nice_to_have"):
+        block = item.get(key)
+        if not isinstance(block, dict):
+            continue
+        for field in ("education", "education_level"):
+            entries = block.get(field)
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict) or not (label := classification_label(entry.get("label"))):
+                    continue
+                qualification = EducationRequirement(
+                    label=label, requirement="required" if key == "must_have" else "preferred",
+                )
+                if qualification not in qualifications:
+                    qualifications.append(qualification)
+    return qualifications or None
+
+
+def _skill_requirements(item: dict[str, Any]) -> list[SkillRequirement] | None:
+    skills: list[SkillRequirement] = []
+    for key in ("must_have", "nice_to_have"):
+        block = item.get(key)
+        if isinstance(block, dict):
+            skills.extend(skill_tags(
+                block.get("skills"), label_key="label",
+                requirement="required" if key == "must_have" else "preferred",
+            ) or [])
+    return skills or None
 
 
 # Swedish employment-type labels → our shared enum. The labels come from

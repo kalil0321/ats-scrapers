@@ -12,6 +12,7 @@ Implementation notes:
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from importlib.util import find_spec
 from io import BytesIO
@@ -19,11 +20,12 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import httpx
+import numpy as np
 import pandas as pd
 
 from ats_scrapers.exceptions import StorageError
 from ats_scrapers.manifest import DEFAULT_MANIFEST_URL, USER_AGENT, Manifest
-from ats_scrapers.models import ATSType
+from ats_scrapers.models import ATSType, normalize_compensation_period
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -222,7 +224,7 @@ class Client:
                     "is installed. Install with `pip install ats-scrapers[parquet]`, "
                     "or load a per-ATS CSV slice with `Client(prefer_parquet=False).load(ats=...)`."
                 ) from exc
-        return pd.read_csv(buffer)
+        return pd.read_csv(buffer, dtype={"job_category": "string"})
 
 
 @lru_cache(maxsize=1)
@@ -234,6 +236,61 @@ def _has_parquet_engine() -> bool:
     return find_spec("pyarrow") is not None or find_spec("fastparquet") is not None
 
 
+def _nested_cell(value: object) -> object:
+    if isinstance(value, str):
+        return json.loads(value)
+    return _native_nested(value)
+
+
+def _native_nested(value: object) -> object:
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+    if isinstance(value, list):
+        return [_native_nested(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _native_nested(item) for key, item in value.items()}
+    return value
+
+
+def _workload_cell(value: object) -> object:
+    value = _nested_cell(value)
+    if isinstance(value, list):
+        return {"values": value} if value else None
+    if isinstance(value, dict):
+        return {key: item for key, item in value.items() if item is not None}
+    return value
+
+
+def _compensation_cell(value: object) -> object:
+    value = _nested_cell(value)
+    if isinstance(value, list):
+        for component in value:
+            if isinstance(component, dict) and "period" in component:
+                component["period"] = normalize_compensation_period(component["period"])
+    return value
+
+
+def _archived_category(value: object) -> str | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    label = value.get("label") if isinstance(value, dict) else None
+    if isinstance(label, str):
+        return label.strip() or None
+    return None
+
+
+def _source_times(values: pd.Series) -> pd.Series:
+    if isinstance(values.dtype, pd.DatetimeTZDtype):
+        normalized: pd.Series = values.dt.tz_convert("UTC")
+        return normalized
+    text = values.astype("string")
+    has_offset = text.str.contains(r"(?:Z|[+-]\d{2}:?\d{2})$", na=False)
+    return pd.to_datetime(text.where(has_offset), utc=True, format="ISO8601", errors="coerce")
+
+
 def _normalize_dataset(df: pd.DataFrame) -> pd.DataFrame:
     """Bring older hosted slices up to the current client schema.
 
@@ -242,7 +299,30 @@ def _normalize_dataset(df: pd.DataFrame) -> pd.DataFrame:
     hosted artifacts are phased out. Invalid identifiers receive the model's
     UUID fallback instead of producing malformed composite IDs.
     """
-    if "global_id" in df.columns or not {"ats_type", "ats_id"}.issubset(df.columns):
+    if not {"ats_type", "ats_id"}.issubset(df.columns):
+        return df
+    df = df.copy(deep=False)
+    if "occupation" in df:
+        labels = df.pop("occupation").map(_archived_category)
+        df["job_category"] = df["job_category"].fillna(labels) if "job_category" in df else labels
+    for name, decode in (
+        ("workload_percentages", _workload_cell), ("compensation_components", _compensation_cell),
+        ("education_requirements", _nested_cell),
+        ("skill_requirements", _nested_cell), ("locations", _nested_cell),
+    ):
+        if name in df:
+            df[name] = df[name].map(decode, na_action="ignore")
+        else:
+            df[name] = None
+    for name in ("engagement_type", "workplace_type", "job_category"):
+        if name not in df:
+            df[name] = None
+    for name in ("source_created_at", "source_updated_at"):
+        if name in df:
+            df[name] = _source_times(df[name])
+        else:
+            df[name] = pd.Series(pd.NaT, index=df.index, dtype="datetime64[us, UTC]")
+    if "global_id" in df:
         return df
 
     ats_types = df["ats_type"].astype("string").str.strip()

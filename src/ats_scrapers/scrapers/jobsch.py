@@ -20,7 +20,8 @@ Three quirks to handle:
     from the ``PROXY`` env var (``http://host:port:user:pass``,
     matching Tesla / Meta).
     Without ``PROXY`` set we raise a clear error rather than
-    silently 0-scraping.
+    silently 0-scraping. Detail requests keep to the route that last
+    answered and move to the other one when it answers 403.
 
   - Blocks partway through a run: through the proxy, jobs.ch starts
     answering 403 to every request partway through a run and keeps
@@ -48,7 +49,9 @@ Single-source scraper: ``company_slug`` is informational and ignored.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import quote
@@ -57,7 +60,7 @@ import httpx
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.fetch import Fetcher, FetchResponse, proxy_url_from_env
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, Job, WorkloadPercentages
 from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers._posting_detail import body_text, fill_missing, job_posting
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -66,18 +69,30 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from typing import Any
 
+    from ats_scrapers.models import EngagementType
+    from ats_scrapers.scrapers._htmltree import Node
+
 log = logging.getLogger(__name__)
 
 API_URL = "https://www.jobs.ch/api/v1/public/search"
 PER_PAGE = 20  # API hard-caps ``rows`` at 20 (>20 → 422).
 MAX_CONCURRENCY = 4
 DETAIL_CONCURRENCY = 4
+# Public jobs.ch translation keys employment_type.1 through employment_type.6.
+# ID 4 ("Supplementary income") does not specify a contractual relationship.
+_ENGAGEMENT_TYPES: dict[str, EngagementType] = {
+    "1": "temporary", "2": "independent_contractor", "3": "internship",
+    "5": "permanent", "6": "apprenticeship",
+}
 # The API hard-caps deep pagination at start=2000 (==page 100). Any
 # per-query fetch therefore tops out at 2 000 rows.
 MAX_USABLE_OFFSET = 2000
 # Default cap on pages per query — 100 × 20 rows = the API's per-query
 # ceiling. Lower via ``max_pages`` for quick smoke runs.
 DEFAULT_MAX_PAGES = 100
+
+# Errors that say a detail request's route is down, not the posting.
+_ROUTE_DOWN = (httpx.ProxyError, httpx.ConnectError, httpx.ConnectTimeout)
 
 # Lower bound of the publication-date walk; live postings are far younger.
 EARLIEST_PUBLICATION = datetime(2000, 1, 1)
@@ -236,11 +251,14 @@ class JobsChScraper(BaseScraper):
         self.max_pages = max_pages
         self._windows = 0
         self.query_seeds: tuple[str, ...] = tuple(query_seeds or ())
+        # Route of the next detail request: a proxy URL, or this scraper's
+        # own ``proxy`` (``None`` reads directly).
+        self._detail_route: str | None = self.proxy
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
-        self._run_sync(self._enrich_descriptions([job], proxy_url=self.proxy or proxy_url_from_env()))
+        self._run_sync(self._enrich_descriptions([job]))
         return job.description
 
     async def afetch(self) -> list[Job]:
@@ -316,8 +334,9 @@ class JobsChScraper(BaseScraper):
                 await self._drain(search, params, first, absorb)
                 log.info("jobs.ch: query=%s → total %d unique rows", seed, len(all_jobs))
 
+        self._detail_route = proxy_url if proxy_url is not None else self.proxy
         if self.include_descriptions and all_jobs:
-            await self._enrich_descriptions(all_jobs, proxy_url=proxy_url)
+            await self._enrich_descriptions(all_jobs)
         return all_jobs
 
     async def _check_date_filter(self, search: _Search, latest: datetime) -> None:
@@ -392,43 +411,62 @@ class JobsChScraper(BaseScraper):
 
         await _gather([one(PER_PAGE * i) for i in range(1, page_count)])
 
-    async def _enrich_descriptions(
-        self, jobs: list[Job], *, proxy_url: str | None
-    ) -> None:
-        client_kwargs: dict[str, Any] = {
-            "timeout": self.timeout,
-            "follow_redirects": True,
-        }
-        if proxy_url is not None:
-            client_kwargs["proxy"] = proxy_url
+    async def _enrich_descriptions(self, jobs: list[Job]) -> None:
+        """Fill descriptions, reading a job on the other route when one answers 403."""
+        routes = list(dict.fromkeys([self._detail_route, self.proxy, proxy_url_from_env()]))
+        clients: dict[str | None, httpx.AsyncClient] = {}
 
-        async with httpx.AsyncClient(**client_kwargs) as client:
+        async with contextlib.AsyncExitStack() as stack:
+            def client(route: str | None) -> httpx.AsyncClient:
+                if route not in clients:
+                    clients[route] = httpx.AsyncClient(
+                        timeout=self.timeout, follow_redirects=True, proxy=route,
+                    )
+                    stack.push_async_callback(clients[route].aclose)
+                return clients[route]
+
             async def enrich(job: Job) -> None:
-                await self._enrich_description(client, job)
+                first = self._detail_route
+                for route in [first, *(r for r in routes if r != first)]:
+                    if not await self._enrich_description(client(route), job):
+                        self._detail_route = route
+                        return
 
             await fill_missing(jobs, enrich, DETAIL_CONCURRENCY)
 
-    async def _enrich_description(self, client: httpx.AsyncClient, job: Job) -> None:
+    async def _enrich_description(self, client: httpx.AsyncClient, job: Job) -> bool:
+        """Fill ``job.description`` and return whether the route was refused or down."""
         if job.ats_id:
             url = f"{API_URL}/job/{quote(job.ats_id, safe='')}"
             try:
                 response = await client.get(url, headers={"Accept": "application/json"})
-                if response.status_code in {401, 403, 410, 429}:
-                    return
+                if response.status_code == 403:
+                    return True
+                if response.status_code in {401, 410, 429}:
+                    return False
                 if response.status_code == 200:
                     item = response.json()
                     if isinstance(item, dict) and item.get("job_id") == job.ats_id:
+                        _apply_employment_fields(job, item)
                         job.description = _api_description(item)
                         if job.description:
-                            return
+                            return False
+            except _ROUTE_DOWN:
+                return True
             except (httpx.HTTPError, ValueError):
                 pass
         try:
             page = await client.get(str(job.url), headers={"Accept": "text/html"})
+        except _ROUTE_DOWN:
+            return True
         except httpx.HTTPError:
-            return
+            return False
         if page.status_code == 200:
-            job.description = _extract_description(page.text)
+            tree = parse_html(page.text)
+            if job.workload_percentages is None:
+                job.workload_percentages = _page_workload(tree)
+            job.description = _extract_description(page.text, tree)
+        return page.status_code == 403
 
     async def _fetch_page(
         self,
@@ -499,22 +537,11 @@ class JobsChScraper(BaseScraper):
         place = (item.get("place") or "").strip() or None
         location = f"{place}, Switzerland" if place else "Switzerland"
 
-        # employment_grades is a list like [100] (% time). When the
-        # only value is below 100 the role is part-time; when 100 it's
-        # full-time; mixed lists indicate flexibility.
-        grades = item.get("employment_grades") or []
-        is_full_time = grades == [100]
-        employment_type = "FULL_TIME" if is_full_time else (
-            "PART_TIME" if grades and all(g < 100 for g in grades) else None
-        )
-
         posted_at = _parse_iso(
             item.get("publication_date") or item.get("initial_publication_date")
         )
 
         raw: dict[str, Any] = {}
-        if grades:
-            raw["employment_grades"] = grades
         languages = [
             entry.get("language") for entry in (item.get("language_skills") or [])
             if isinstance(entry, dict) and entry.get("language")
@@ -526,7 +553,7 @@ class JobsChScraper(BaseScraper):
         if item.get("company_segmentation"):
             raw["company_segmentation"] = item["company_segmentation"]
 
-        return Job(
+        job = Job(
             url=url,
             title=title,
             company=company or "Unknown",
@@ -534,11 +561,33 @@ class JobsChScraper(BaseScraper):
             ats_id=ats_id,
             description=_api_description(item),
             location=location,
-            employment_type=employment_type,
             posted_at=posted_at,
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+        _apply_employment_fields(job, item)
+        return job
+
+
+def _apply_employment_fields(job: Job, item: dict[str, Any]) -> None:
+    raw = dict(job.raw or {})
+    if grades := item.get("employment_grades"):
+        raw["employment_grades"] = grades
+        if isinstance(grades, list) and all(
+            type(n) in (int, float) and 0 <= n <= 100 for n in grades
+        ):
+            job.workload_percentages = WorkloadPercentages(values=list(dict.fromkeys(grades)))
+            if all(n == 100 for n in grades):
+                job.employment_type = "FULL_TIME"
+            elif all(n < 100 for n in grades):
+                job.employment_type = "PART_TIME"
+            else:
+                job.employment_type = None
+    if isinstance(ids := item.get("employment_type_ids"), list) and ids:
+        raw["employment_type_ids"] = ids
+        choices = {_ENGAGEMENT_TYPES.get(str(value)) for value in ids}
+        job.engagement_type = choices.pop() if len(choices) == 1 else None
+    job.raw = raw or None
 
 
 def _detail_url(item: dict[str, Any], job_id: str) -> str:
@@ -583,10 +632,25 @@ def _api_description(item: dict[str, Any]) -> str | None:
     return None
 
 
-def _extract_description(page: str) -> str | None:
+def _page_workload(tree: Node) -> WorkloadPercentages | None:
+    for node in tree.walk():
+        if node.attrs.get("data-cy") != "info-workload":
+            continue
+        match = re.fullmatch(r"(\d+(?:[.,]\d+)?)\s*(?:%?\s*[–-]\s*(\d+(?:[.,]\d+)?)\s*)?%", node.text())
+        if match:
+            low = float(match[1].replace(",", "."))
+            high = float(match[2].replace(",", ".")) if match[2] else low
+            if 0 <= low <= high <= 100:
+                if match[2] is None:
+                    return WorkloadPercentages(values=[low])
+                return WorkloadPercentages(minimum=low, maximum=high)
+    return None
+
+
+def _extract_description(page: str, tree: Node) -> str | None:
     # The JSON-LD can be automatically translated. The visible vacancy
     # section preserves the original and may also contain a separate summary.
-    for node in parse_html(page).walk():
+    for node in tree.walk():
         if node.attrs.get("data-cy") == "vacancy-description":
             labels = {"About the job", "Über den Job", "À propos de l’emploi"}
             node.children = [

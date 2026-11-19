@@ -32,6 +32,7 @@ from xml.etree import ElementTree as ET
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -457,6 +458,7 @@ class SuccessFactorsScraper(BaseScraper):
             description=description,
             department=department,
             employment_type=employment_type,
+            engagement_type=engagement_from_label(job_type_text),
             commitment=commitment,
             posted_at=posted_at,
             application_deadline=application_deadline,

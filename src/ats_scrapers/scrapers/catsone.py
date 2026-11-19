@@ -53,6 +53,7 @@ from urllib.parse import urlparse
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._htmltree import parse_html
+from ats_scrapers.scrapers._source_timestamp import source_timestamp
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -206,6 +207,8 @@ class CatsOneScraper(BaseScraper):
             commitment=kind,
             department=_text(fields.get("department")),
             posted_at=_date(row.get("datePosted")),
+            source_created_at=source_timestamp(row.get("dateCreated")),
+            source_updated_at=source_timestamp(row.get("dateModified")),
             fetched_at=datetime.now(UTC),
             raw=raw,
         )

@@ -183,6 +183,27 @@ def test_detail_preserves_paragraphs_and_literal_text(monkeypatch: pytest.Monkey
     assert len(site.requests) == 1
 
 
+def test_detail_reports_each_location_and_attendance(monkeypatch: pytest.MonkeyPatch) -> None:
+    site = _Site(monkeypatch, lambda request: httpx.Response(200, json={"hiringOrganization": {"name": "Example SA"},
+        "jobPostingInfo": {
+        "jobDescription": "Design tools.", "location": "Basel, CH", "remoteType": "Hybrid",
+        "jobRequisitionLocation": {"descriptor": "Basel, CH", "country": {"alpha2Code": "CH"}},
+        "additionalLocations": ["Basel, CH", "Nice, France"], "startDate": "2026-01-01", "endDate": "2026-03-01",
+    }}))
+    scraper = WorkdayScraper(URL)
+    job = _job(location="2 Locations")
+    assert scraper.get_description(job) == "Design tools."
+    assert job.workplace_type == "hybrid"
+    assert job.company == "Example SA"
+    assert job.location == "Basel, CH | Nice, France"
+    assert job.posted_at.date().isoformat() == "2026-01-01"
+    assert job.application_deadline.date().isoformat() == "2026-03-01"
+    assert [(p.label, p.country_iso, p.is_primary) for p in job.locations] == [
+        ("Basel, CH", "CH", True), ("Nice, France", None, False),
+    ]
+    assert len(site.requests) == 1
+
+
 def test_entity_encoded_description_is_read_as_markup() -> None:
     info = {"jobDescription": "&lt;p&gt;Build APIs.&lt;/p&gt;"}
     assert workday._extract_description(info) == "Build APIs."

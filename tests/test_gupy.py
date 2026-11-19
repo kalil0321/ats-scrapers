@@ -178,6 +178,10 @@ def test_employment_type_mapping(httpx_mock, vacancy_type, expected) -> None:
     job = GupyScraper("petz", include_descriptions=False).fetch()[0]
     assert job.employment_type == expected
     assert job.commitment == vacancy_type
+    assert job.engagement_type == {
+        "vacancy_type_internship": "internship", "vacancy_type_apprentice": "apprenticeship",
+        "vacancy_type_temporary": "temporary",
+    }.get(vacancy_type)
 
 
 @pytest.mark.parametrize(

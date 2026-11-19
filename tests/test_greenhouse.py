@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
@@ -52,6 +54,16 @@ def test_parses_basic_job(httpx_mock) -> None:
     assert job.ats_type is ATSType.GREENHOUSE
     assert job.company == "acme"
     assert job.location == "Remote"
+
+
+def test_post_update_is_separate_from_publication_and_requisition(httpx_mock) -> None:
+    row = {**_job(), "first_published": "2026-03-09T16:05:19-04:00",
+           "updated_at": "2026-11-09T19:03:42-05:00", "internal_job_id": 42}
+    httpx_mock.add_response(url=API, json={"jobs": [row]})
+    job = GreenhouseScraper("acme").fetch()[0]
+    assert job.posted_at == datetime(2026, 3, 9, 20, 5, 19, tzinfo=UTC)
+    assert job.source_updated_at == datetime(2026, 11, 10, 0, 3, 42, tzinfo=UTC)
+    assert job.source_created_at is None
 
 
 def test_returns_empty_for_no_jobs(httpx_mock) -> None:

@@ -108,6 +108,9 @@ def test_parses_full_item(httpx_mock) -> None:
     assert j.posted_at is not None
     assert j.raw is not None
     assert j.raw.get("skills") == ["Python", "Postgres"]
+    assert [(s.label, s.requirement) for s in j.skill_requirements] == [
+        ("Python", "unspecified"), ("Postgres", "unspecified"),
+    ]
 
 
 # --- cross-feed dedup -------------------------------------------------------

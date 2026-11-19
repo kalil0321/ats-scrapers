@@ -24,6 +24,7 @@ from pydantic import HttpUrl
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
+from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers._htmltree import parse_html
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -194,6 +195,7 @@ class ZohoRecruitScraper(BaseScraper):
             location=", ".join(dict.fromkeys(place)) or None,
             is_remote=True if item.get("Remote_Job") is True else None,
             employment_type=_employment_type(job_type),
+            engagement_type=engagement_from_label(job_type),
             commitment=job_type,
             description=(
                 _description_text(item.get("Job_Description"))

@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -228,7 +229,7 @@ class PersonioScraper(BaseScraper):
         raw: dict[str, Any] = {}
         for k in ("subcompany", "department", "office", "occupation",
                   "occupationCategory", "yearsOfExperience",
-                  "employment_type", "schedule", "category"):
+                  "employment_type", "employmentType", "schedule", "category"):
             v = item.get(k)
             if v:
                 raw[k] = v
@@ -246,6 +247,7 @@ class PersonioScraper(BaseScraper):
             location=_extract_location(item),
             department=department if isinstance(department, str) else None,
             employment_type=employment_type,
+            engagement_type=engagement_from_label(item.get("employment_type") or item.get("employmentType")),
             commitment=commitment if isinstance(commitment, str) else None,
             posted_at=_parse_iso(item.get("createdAt") or item.get("created_at")),
             fetched_at=datetime.now(UTC),

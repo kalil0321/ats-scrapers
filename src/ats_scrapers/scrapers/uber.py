@@ -17,6 +17,7 @@ from pydantic import HttpUrl
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
+from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -206,6 +207,7 @@ class UberScraper(BaseScraper):
             salary_min=_number(salary.get("MinValue")),
             salary_max=_number(salary.get("MaxValue")),
             employment_type=_employment_type(commitment),
+            engagement_type=engagement_from_label(contract_type) or engagement_from_label(work_pattern),
             department=_text(item.get("AdditionalText")),
             team=", ".join(teams) or None,
             requisition_id=_text(item.get("Reference")) or job_id,

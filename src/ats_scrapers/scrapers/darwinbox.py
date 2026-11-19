@@ -21,6 +21,7 @@ from pydantic import HttpUrl
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job
+from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -319,6 +320,7 @@ class DarwinboxScraper(BaseScraper):
             team=functional_area,
             requisition_id=_coerce_string(item.get("internal_job_code")),
             employment_type=_map_employment_type(commitment),
+            engagement_type=engagement_from_label(commitment),
             commitment=commitment,
             experience=_coerce_int(
                 _first_present(item.get("experience_from"), item.get("experience_from_num"))

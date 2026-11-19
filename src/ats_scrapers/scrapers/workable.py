@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._job_classification import classification_label, education_level
+from ats_scrapers.scrapers._job_places import distinct_places, job_location, workplace_type
 from ats_scrapers.scrapers._posting_detail import body_text
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -23,6 +25,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from ats_scrapers.fetch import Fetcher
+    from ats_scrapers.models import JobLocation
 
 API_TEMPLATE = "https://apply.workable.com/api/v1/widget/accounts/{slug}"
 MARKDOWN_TEMPLATE = (
@@ -78,6 +81,7 @@ class WorkableScraper(BaseScraper):
             if not isinstance(company_name, str) or not company_name.strip():
                 company_name = self.company_slug
             jobs_by_id: dict[str, Job] = {}
+            conflicting_modes: set[str] = set()
             for item in payload.get("jobs", []):
                 job = self._parse_job(item, company_name.strip())
                 key = job.ats_id or str(job.url)
@@ -87,6 +91,13 @@ class WorkableScraper(BaseScraper):
                     continue
                 if not existing.description:
                     existing.description = job.description
+                if key not in conflicting_modes and job.workplace_type:
+                    if existing.workplace_type in (None, job.workplace_type):
+                        existing.workplace_type = job.workplace_type
+                    else:
+                        existing.workplace_type = None
+                        conflicting_modes.add(key)
+                existing.locations = distinct_places([*(existing.locations or []), *(job.locations or [])])
                 existing.location = _combine_locations(
                     existing.location,
                     job.location,
@@ -109,11 +120,11 @@ class WorkableScraper(BaseScraper):
 
         async def run() -> str | None:
             async with self.make_fetcher() as fetch:
-                return await self._fetch_detail(fetch, shortcode)
+                return await self._fetch_detail(fetch, job, shortcode)
 
         return self._run_sync(run())
 
-    async def _fetch_detail(self, fetch: Fetcher, shortcode: str) -> str | None:
+    async def _fetch_detail(self, fetch: Fetcher, job: Job, shortcode: str) -> str | None:
         url = f"https://apply.workable.com/api/v2/accounts/{self.company_slug}/jobs/{shortcode}"
         try:
             response = await fetch.request("GET", url, handled=_DETAIL_HANDLED)
@@ -122,8 +133,12 @@ class WorkableScraper(BaseScraper):
             detail = response.json() if response.status_code == 200 else None
         except (ValueError, ScraperError):
             detail = None
-        if isinstance(detail, dict) and (description := _posting_body(detail)):
-            return description
+        if isinstance(detail, dict):
+            job.workplace_type = workplace_type(detail.get("workplace")) or job.workplace_type
+            if places := _widget_places(detail, allow_flat=False):
+                job.locations = distinct_places([*(job.locations or []), *places])
+            if description := _posting_body(detail):
+                return description
         return await self._fetch_markdown(fetch, shortcode)
 
     async def _fetch_markdown(self, fetch: Fetcher, shortcode: str) -> str | None:
@@ -154,7 +169,7 @@ class WorkableScraper(BaseScraper):
         if job.description or not job.ats_id:
             return
         async with sem:
-            description = await self._fetch_detail(fetch, job.ats_id)
+            description = await self._fetch_detail(fetch, job, job.ats_id)
         if description:
             job.description = description
 
@@ -197,8 +212,12 @@ class WorkableScraper(BaseScraper):
             company=company_name,
             ats_type=ATSType.WORKABLE,
             ats_id=item.get("shortcode") or item.get("code") or str(item.get("id", "")),
+            job_category=classification_label(item.get("function")),
+            education_requirements=education_level(item.get("education")),
             description=_posting_body(item) if self.include_descriptions else None,
             location=_extract_location(item),
+            locations=_widget_places(item),
+            workplace_type=workplace_type(item.get("workplace")),
             is_remote=is_remote,
             department=item.get("department") if isinstance(item.get("department"), str) else None,
             employment_type=employment_type,
@@ -208,6 +227,23 @@ class WorkableScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _widget_places(item: dict[str, Any], *, allow_flat: bool = True) -> list[JobLocation] | None:
+    places = item.get("locations")
+    if not isinstance(places, list) or not places:
+        loc = item.get("location")
+        if isinstance(loc, dict):
+            places = [loc]
+        elif allow_flat:
+            places = [item]
+        else:
+            return None
+    return distinct_places(
+        job_location(city=place.get("city"), region=place.get("region") or place.get("state"),
+                     country=place.get("country"), country_code=place.get("countryCode"))
+        for place in places if isinstance(place, dict) and place.get("hidden") is not True
+    )
 
 
 def _posting_body(item: dict[str, Any]) -> str | None:

@@ -713,3 +713,9 @@ def test_legacy_feed_waits_for_a_slow_first_byte(httpx_mock) -> None:
     SuccessFactorsScraper(LEGACY_CAREER_URL).fetch()
     request = httpx_mock.get_requests()[0]
     assert request.extensions["timeout"]["read"] >= 120
+
+
+def test_rss_job_type_carries_contract():
+    item = _item().replace("</item>", "<g:job_type>Freelance</g:job_type></item>")
+    job, = SuccessFactorsScraper(FEED_URL)._parse_feed(_rss([item]))
+    assert job.engagement_type == "independent_contractor" and job.commitment == "Freelance"

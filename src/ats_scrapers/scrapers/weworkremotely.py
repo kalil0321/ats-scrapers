@@ -26,6 +26,7 @@ from xml.etree import ElementTree as ET
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._skill_tags import skill_tags
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -138,6 +139,7 @@ class WeWorkRemotelyScraper(BaseScraper):
             ats_id=guid,
             location=location,
             is_remote=True,  # WWR is, by definition, remote-only.
+            skill_requirements=skill_tags(raw.get("skills")),
             commitment=commitment,
             description=description,
             posted_at=posted_at,

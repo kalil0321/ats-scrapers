@@ -32,6 +32,7 @@ from ats_scrapers import fetch as fetch_layer
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._htmltree import parse_html
+from ats_scrapers.scrapers._job_places import distinct_places, job_location, workplace_type
 from ats_scrapers.scrapers._posting_detail import body_text, job_posting
 from ats_scrapers.scrapers._slug import require_host_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from ats_scrapers.fetch import Fetcher
+    from ats_scrapers.models import JobLocation, WorkplaceType
 
 API_TEMPLATE = "https://{slug}.breezy.hr/json"
 # Per-tenant concurrent detail-page fetches. Tenants are usually
@@ -232,6 +234,7 @@ class BreezyScraper(BaseScraper):
             if v:
                 raw[k] = v
 
+        places, mode = _breezy_places(item)
         return Job(
             url=url,
             title=title,
@@ -239,6 +242,8 @@ class BreezyScraper(BaseScraper):
             ats_type=ATSType.BREEZY,
             ats_id=ats_id,
             location=_format_location(item.get("location")),
+            locations=places,
+            workplace_type=mode,
             is_remote=_extract_is_remote(item.get("location")),
             department=item.get("department") or None,
             salary_summary=item.get("salary") or None,
@@ -247,6 +252,32 @@ class BreezyScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _breezy_places(item: dict[str, Any]) -> tuple[list[JobLocation] | None, WorkplaceType | None]:
+    places = item.get("locations")
+    records = [p for p in places if isinstance(p, dict)] if isinstance(places, list) else []
+    primary = item.get("location")
+    if not records and isinstance(primary, dict):
+        records = [primary]
+    locations = []
+    modes = set()
+    for place in records:
+        state = place.get("state")
+        country = place.get("country")
+        locations.append(job_location(
+            place.get("name"), city=place.get("city"),
+            region=(state.get("name") or state.get("id")) if isinstance(state, dict) else None,
+            country=country.get("name") if isinstance(country, dict) else None,
+            country_code=country.get("id") if isinstance(country, dict) else None,
+            primary=place.get("primary"),
+        ))
+        details = place.get("remote_details")
+        if details is None and place.get("primary") is True and isinstance(primary, dict):
+            details = primary.get("remote_details")
+        value = details.get("value") if isinstance(details, dict) else None
+        modes.add(workplace_type("remote" if value == "remote-location" else value))
+    return distinct_places(locations), modes.pop() if len(modes) == 1 else None
 
 
 def _extract_description(html: str) -> str | None:

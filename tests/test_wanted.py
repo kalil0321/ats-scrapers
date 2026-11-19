@@ -32,6 +32,7 @@ def _stub_detail_endpoint(httpx_mock) -> None:
     def detail(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"data": {"job": {
             "id": int(request.url.path.split("/")[-2]),
+            "skill_tags": [{"tag_type_id": 1, "text": "SQL"}, {"tag_type_id": 2}],
             "detail": {
                 "intro": "Build hiring products.",
                 "main_tasks": "Own the platform.",
@@ -286,3 +287,12 @@ def test_persistent_500_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=_API_RE, status_code=500, is_reusable=True)
     with pytest.raises(ScraperError):
         WantedScraper("any", country_codes=["kr"]).fetch()
+
+
+def test_deferred_detail_exposes_only_named_skill_tags(httpx_mock) -> None:
+    scraper = WantedScraper("any", include_descriptions=False)
+    job = scraper._parse_job(_job(job_id=1, position="Developer"), country="kr")
+    assert job.skill_requirements is None
+    assert scraper.get_description(job)
+    assert [(s.label, s.requirement) for s in job.skill_requirements] == [("SQL", "unspecified")]
+    assert len(httpx_mock.get_requests()) == 1

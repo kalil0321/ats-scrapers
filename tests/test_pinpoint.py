@@ -242,3 +242,13 @@ def test_malformed_json_raises(httpx_mock) -> None:
     httpx_mock.add_response(url=URL, text="not json")
     with pytest.raises(ScraperError, match="malformed JSON"):
         PinpointScraper("acme").fetch()
+
+
+@pytest.mark.parametrize(("code", "expected"), [
+    ("fixed_term_full_time", "fixed_term"), ("permanent_part_time", "permanent"),
+    ("full_time", None), ("contract", None),
+])
+def test_engagement_from_combined_code(code, expected):
+    job = PinpointScraper("acme")._parse_posting(_posting(employment=code))
+    assert job.engagement_type == expected
+    assert job.raw["employment_type"] == code

@@ -29,18 +29,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, CompensationComponent, Job, normalize_compensation_period
+from ats_scrapers.scrapers._job_places import distinct_places, job_location, workplace_type
+from ats_scrapers.scrapers._posting_fields import finite_number
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
 
     from ats_scrapers.fetch import Fetcher
+    from ats_scrapers.models import JobLocation
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +182,9 @@ class AshbyScraper(BaseScraper):
         return [item for item in items if item is not None]
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
-        comp = item.get("compensation") or {}
+        comp = item.get("compensation")
+        if not isinstance(comp, dict):
+            comp = {}
         summary = (
             comp.get("compensationTierSummary")
             or comp.get("scrapeableCompensationSalarySummary")
@@ -246,6 +252,12 @@ class AshbyScraper(BaseScraper):
             ats_type=ATSType.ASHBY,
             ats_id=item["id"],
             location=item.get("location"),
+            workplace_type=workplace_type(item.get("workplaceType")),
+            locations=distinct_places([
+                _ashby_place(item, primary=True),
+                *(_ashby_place(loc, primary=False) for loc in secondary_locations
+                  if isinstance(loc, dict)),
+            ]),
             is_remote=is_remote,
             description=description,
             employment_type=employment_type,
@@ -255,12 +267,23 @@ class AshbyScraper(BaseScraper):
             salary_currency=currency,
             salary_period=period,
             salary_summary=summary,
+            compensation_components=_compensation_components(comp, raw),
             salary_min=salary_min,
             salary_max=salary_max,
             posted_at=_parse_iso(item.get("publishedAt")),
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _ashby_place(item: dict[str, Any], *, primary: bool) -> JobLocation | None:
+    address = item.get("address")
+    postal = address.get("postalAddress", address) if isinstance(address, dict) else {}
+    if not isinstance(postal, dict):
+        postal = {}
+    return job_location(item.get("location"), city=postal.get("addressLocality"),
+                        region=postal.get("addressRegion"), country=postal.get("addressCountry"),
+                        primary=primary)
 
 
 def _app_data(page: str, url: str) -> dict[str, Any]:
@@ -440,6 +463,83 @@ def _hosted_item(
     return item
 
 
+_COMPONENT_TYPES = {
+    "Salary": ("base_salary", "money"),
+    "Bonus": ("bonus", None),
+    "Commission": ("commission", None),
+    "EquityCashValue": ("equity", "money"),
+    "EquityPercentage": ("equity", "percent"),
+    "EquityShares": ("equity", "shares"),
+    "Allowance": ("allowance", None),
+}
+_TOTAL_PAY = re.compile(r"\b(?:on[ -]target earnings|OTE|total (?:compensation|pay))\b", re.I)
+_PERCENT = re.compile(r"\d\s*(?:%|per\s*cent\b)|\bpercentage\b", re.I)
+
+
+def _components_in_tier(
+    records: object, tier: str | None, tier_summary: object,
+) -> list[CompensationComponent]:
+    components: list[CompensationComponent] = []
+    if not isinstance(records, list):
+        return components
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        label = record.get("compensationType")
+        if not isinstance(label, str) or not label.strip():
+            continue
+        summary = record.get("summary")
+        summary = summary if isinstance(summary, str) else None
+        # Only a single-component tier summary can describe this row alone.
+        if not summary and len(records) == 1 and isinstance(tier_summary, str):
+            summary = tier_summary
+        currency = record.get("currencyCode")
+        currency = currency if isinstance(currency, str) and re.fullmatch(r"[A-Z]{3}", currency) else None
+        kind, unit = _COMPONENT_TYPES.get(label, ("other", None))
+        if kind in {"bonus", "commission", "allowance"}:
+            if _PERCENT.search(summary or ""):
+                unit = "percent"
+            elif currency or re.search(r"[$€£¥₹]\s*\d", summary or ""):
+                unit = "money"
+        if label == "Salary" and _TOTAL_PAY.search(summary or ""):
+            kind = "other"
+        components.append(CompensationComponent.model_validate({
+            "kind": kind, "source_label": label, "unit": unit,
+            "currency": currency if unit == "money" else None,
+            "period": normalize_compensation_period(record.get("interval")),
+            "minimum": finite_number(record.get("minValue")),
+            "maximum": finite_number(record.get("maxValue")),
+            "tier": tier, "summary": summary,
+        }))
+    return components
+
+
+def _compensation_components(comp: dict[str, Any], raw: dict[str, Any]) -> list[CompensationComponent] | None:
+    components = []
+    tiers = comp.get("compensationTiers")
+    if isinstance(tiers, list):
+        for tier in tiers:
+            if not isinstance(tier, dict):
+                continue
+            scope = " — ".join(
+                v for v in (tier.get("title"), tier.get("additionalInformation"))
+                if isinstance(v, str) and v.strip()
+            )
+            if not scope and len(tiers) > 1 and isinstance(tier.get("id"), str):
+                scope = tier["id"]
+            components.extend(_components_in_tier(
+                tier.get("components"), scope or None, tier.get("tierSummary"),
+            ))
+    # summaryComponents aggregates the tiers, so never append it to their rows.
+    if components:
+        return components
+    records = comp.get("summaryComponents")
+    components = _components_in_tier(records, None, comp.get("compensationTierSummary"))
+    if components:
+        raw["compensation_summary_components"] = records
+    return components or None
+
+
 def _parse_comp(
     comp: dict[str, Any] | None,
 ) -> tuple[float | None, float | None, str | None, str | None]:
@@ -450,11 +550,13 @@ def _parse_comp(
     component level (`minValue`, `maxValue`, `currencyCode`) — not nested in
     `compensationValue` as some older docs suggest.
     """
-    if not comp:
+    if not comp or not isinstance(comp.get("compensationTiers"), list):
         return None, None, None, None
-    for tier in comp.get("compensationTiers") or []:
-        for component in tier.get("components") or []:
-            if component.get("compensationType") != "Salary":
+    for tier in comp["compensationTiers"]:
+        if not isinstance(tier, dict) or not isinstance(tier.get("components"), list):
+            continue
+        for component in tier["components"]:
+            if not isinstance(component, dict) or component.get("compensationType") != "Salary":
                 continue
             interval = _INTERVAL_MAP.get(component.get("interval", ""), "YEAR")
             return (

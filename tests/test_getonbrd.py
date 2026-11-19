@@ -137,6 +137,8 @@ def test_parses_full_job_payload(httpx_mock) -> None:
     assert j.is_remote is False
     assert j.employment_type == "CONTRACT"  # Freelance → CONTRACT
     assert j.commitment == "Freelance"
+    assert j.engagement_type == "independent_contractor"
+    assert j.raw["modality_code"] == "freelance"
     assert j.salary_currency == "USD"
     assert j.salary_period == "MONTH"
     assert j.salary_min == 3500

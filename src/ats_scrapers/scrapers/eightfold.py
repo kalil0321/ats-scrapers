@@ -33,7 +33,8 @@ from typing import TYPE_CHECKING, Literal
 import httpx
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
-from ats_scrapers.models import ATSType, Job
+from ats_scrapers.models import ATSType, Job, JobLocation
+from ats_scrapers.scrapers._job_places import distinct_places, job_location, workplace_type
 from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -656,6 +657,8 @@ class EightfoldScraper(BaseScraper):
             ats_type=self.ats,
             ats_id=ats_id,
             location=_format_location(item),
+            locations=_posting_places(item),
+            workplace_type=next((mode for key in _WORKPLACE_KEYS if (mode := workplace_type(item.get(key)))), None),
             is_remote=_extract_remote(item),
             department=item.get("department"),
             requisition_id=str(requisition_id) if requisition_id else None,
@@ -809,16 +812,34 @@ def _dict_location_label(loc: dict[str, Any]) -> str | None:
     return ", ".join(part for part in (text("city"), text("country")) if part) or text("name") or None
 
 
+def _posting_places(item: dict[str, Any]) -> list[JobLocation] | None:
+    primary = item.get("primaryLocation") or item.get("primary_location")
+    primary_label = _dict_location_label(primary) if isinstance(primary, dict) else primary
+
+    def place(value: object) -> JobLocation | None:
+        if isinstance(value, dict):
+            label = _dict_location_label(value)
+            return job_location(label, city=value.get("city"), region=value.get("state"),
+                                country=value.get("country"), primary=True if label == primary_label else None)
+        return job_location(value, primary=True if value == primary_label else None)
+
+    for key in ("standardizedLocations", "locations"):
+        entries = item.get(key)
+        if isinstance(entries, list) and (places := distinct_places(place(value) for value in entries)):
+            return places
+    return distinct_places([place(primary)])
+
+
+_WORKPLACE_KEYS = ("workLocationOption", "work_location_option", "locationFlexibility", "location_flexibility")
+
+
 def _extract_remote(item: dict[str, Any]) -> bool | None:
     """Eightfold encodes remote/hybrid in `workLocationOption` (string) or
     `locationFlexibility` (string). Common values: 'Remote', 'Hybrid',
     'Onsite', 'Up to 100% work from home'. We map the obvious ones; unknowns
     fall through to None so consumers can still tell "we don't know" from
     "we know it's not remote"."""
-    for key in (
-        "workLocationOption", "work_location_option",
-        "locationFlexibility", "location_flexibility",
-    ):
+    for key in _WORKPLACE_KEYS:
         value = item.get(key)
         if not isinstance(value, str):
             continue

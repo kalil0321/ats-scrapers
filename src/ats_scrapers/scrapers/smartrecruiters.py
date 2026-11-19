@@ -26,12 +26,15 @@ from typing import TYPE_CHECKING
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._job_classification import classification_label
+from ats_scrapers.scrapers._job_places import distinct_places, job_location
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
     from typing import Any
 
     from ats_scrapers.fetch import Fetcher
+    from ats_scrapers.models import JobLocation, WorkplaceType
 
 API_TEMPLATE = "https://api.smartrecruiters.com/v1/companies/{slug}/postings"
 DETAIL_TEMPLATE = (
@@ -84,6 +87,9 @@ class SmartRecruitersScraper(BaseScraper):
             async with self.make_fetcher() as fetch:
                 sem = asyncio.Semaphore(1)
                 await self._enrich_detail(fetch, sem, copy)
+            job.job_category = copy.job_category
+            job.workplace_type = copy.workplace_type
+            job.locations = copy.locations
             return copy.description
 
         return self._run_sync(run())
@@ -191,7 +197,10 @@ class SmartRecruitersScraper(BaseScraper):
             company=self.company_slug,
             ats_type=ATSType.SMARTRECRUITERS,
             ats_id=item["id"],
+            job_category=_job_function(item.get("function")),
             location=loc_str,
+            locations=distinct_places([_posting_place(location)]),
+            workplace_type=_posting_mode(location),
             is_remote=is_remote,
             department=department,
             team=team,
@@ -214,6 +223,19 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
     single body, capped at 25k chars, with the actual job description
     first so consumers see the most relevant content if truncated.
     """
+    location = detail.get("location")
+    if place := _posting_place(location):
+        if job.locations and job.locations[0].label == place.label:
+            listed = job.locations[0]
+            place = place.model_copy(update={
+                key: getattr(listed, key) for key in ("city", "region", "country_iso")
+                if getattr(place, key) is None
+            })
+        job.locations = [place]
+    if mode := _posting_mode(location):
+        job.workplace_type = mode
+    if job.job_category is None:
+        job.job_category = _job_function(detail.get("function"))
     if not job.description:
         sections = (detail.get("jobAd") or {}).get("sections") or {}
         if isinstance(sections, dict):
@@ -236,6 +258,37 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
         apply_url = detail.get("applyUrl")
         if isinstance(apply_url, str) and apply_url.strip():
             job.apply_url = apply_url.strip()
+
+
+def _posting_place(loc: object) -> JobLocation | None:
+    if not isinstance(loc, dict):
+        return None
+    country = loc.get("country")
+    if isinstance(country, str) and country.lower() == "remote":
+        country = None
+    return job_location(loc.get("fullLocation"), city=loc.get("city"), region=loc.get("region"),
+                        country=country, country_code=country)
+
+
+def _posting_mode(loc: object) -> WorkplaceType | None:
+    if not isinstance(loc, dict):
+        return None
+    remote, hybrid = loc.get("remote"), loc.get("hybrid")
+    if remote is True and hybrid is True:
+        return None
+    if hybrid is True:
+        return "hybrid"
+    if remote is True:
+        return "remote"
+    if remote is False and hybrid is False:
+        return "onsite"
+    return None
+
+
+def _job_function(value: object) -> str | None:
+    if not isinstance(value, dict) or value.get("id") == "other":
+        return None
+    return classification_label(value.get("label"))
 
 
 def _format_location(location: dict[str, Any]) -> str | None:
