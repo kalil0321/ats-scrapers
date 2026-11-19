@@ -9,7 +9,7 @@ def test_hireology_catalog_contains_only_validated_canonical_portals() -> None:
     with Path("ats-companies/hireology.csv").open(newline="") as handle:
         rows = list(csv.DictReader(handle))
 
-    assert len(rows) == 4_314
+    assert len(rows) == 4_746
     assert len({row["slug"] for row in rows}) == len(rows)
     assert len({row["url"] for row in rows}) == len(rows)
     assert all(row["name"].strip() for row in rows)
