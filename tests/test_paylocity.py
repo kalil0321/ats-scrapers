@@ -8,7 +8,7 @@ import json
 import httpx
 import pytest
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import paylocity
 from ats_scrapers.scrapers.paylocity import (
@@ -305,6 +305,25 @@ def test_duplicate_external_job_ids_fail_closed(httpx_mock) -> None:
 
     with pytest.raises(ScraperError, match="duplicate job id"):
         PaylocityScraper(BOARD_ID, include_descriptions=False).fetch()
+
+
+def test_board_redirected_to_job_not_found_is_not_found(httpx_mock) -> None:
+    not_found_url = "https://recruiting.paylocity.com/Recruiting/Jobs/JobNotFound"
+    httpx_mock.add_response(
+        url=LISTING_URL,
+        status_code=302,
+        headers={"Location": "/Recruiting/Jobs/JobNotFound"},
+    )
+    httpx_mock.add_response(
+        url=not_found_url,
+        text=(
+            "<html><title>Job Not Found</title><p>We're sorry, that job does "
+            "not exist or is not currently active.</p></html>"
+        ),
+    )
+
+    with pytest.raises(CompanyNotFoundError, match=BOARD_ID):
+        PaylocityScraper(BOARD_ID).fetch()
 
 
 @pytest.mark.parametrize(
