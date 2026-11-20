@@ -14,17 +14,23 @@ iCIMS apply URL.
 Two limits shape the walk:
 
 * ``limit`` is capped at 100 (a larger value returns HTTP 422).
-* Paging stops at page 100. Later pages repeat page 100, so one query
-  can return at most 10,000 postings.
+* Some sites stop paging at a depth of their own, and past it every
+  page repeats the last one served: ``jobs.uhsinc.com`` and
+  ``careers.costco.com`` serve 5,100 rows a query, while
+  ``careers.ulta.com`` serves all of its 11,000. A walk ends at the
+  first page that brings mostly rows it has already read.
 
-Tenants above the cap are split by state. The state list comes from
-the ``state`` facet when the site exposes it (``filter.facetList.state``)
-and otherwise from the location list (``filter.locations.all``); the
-``state`` query parameter filters on it either way. A state that is
-itself above the cap is split again by category. Postings without a
-state are then picked up category by category. The ``descending``
-parameter does not change the order, so walking a list "from the other
-end" is not an option.
+A query cut short this way is read again sorted by title
+(``sortBy=title``), once from each end: ``descending`` reverses the
+title order whatever its value, though it does not change the default
+order. The two ends cover a query of up to twice the cap. A larger
+query, or one the two ends still leave short, is split by state, then
+by category, and each part is read the same way. The state list comes
+from the ``state`` facet when the site exposes it
+(``filter.facetList.state``) and otherwise from the location list
+(``filter.locations.all``); the ``state`` query parameter filters on it
+either way. Categories are tried on a query whose states do not add up
+to its total: postings without a state are reachable only that way.
 
 The scraper fails closed: a walk that ends with fewer than 90% of the
 announced rows raises instead of returning a partial board. Coverage is
@@ -51,8 +57,12 @@ if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
 
 PAGE_SIZE = 100
-MAX_PAGE = 100  # pages past this one repeat it
-QUERY_CAP = PAGE_SIZE * MAX_PAGE
+TITLE_ORDERS: tuple[dict[str, str], ...] = (
+    {"sortBy": "title"},
+    {"sortBy": "title", "descending": "true"},
+)
+# The query parameters a query past the cap is split on, in order.
+SPLITS = ("state", "categories")
 # A finished walk must hold at least this share of the announced total.
 MIN_COVERAGE = 0.9
 MAX_DESCRIPTION_LEN = 25_000
@@ -110,36 +120,15 @@ class JibeScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         jobs: dict[str, Job] = {}
-        # One entry per valid row the API returned. A requisition listed in
-        # several places or languages is several rows but one posting, so
-        # coverage is measured on rows, not on postings.
-        rows_seen: set[str] = set()
         async with self.make_fetcher() as fetch:
             first = await self._page(fetch, 1, {})
             total = _total(first)
             if total == 0:
                 return []
-            self._absorb(first, jobs, rows_seen)
-
-            if total <= QUERY_CAP:
-                await self._walk(fetch, {}, total, jobs, rows_seen, start=2)
-            else:
-                categories = _categories(first)
-                for term, count in _state_facet(first) or _states_from_locations(first):
-                    if count <= QUERY_CAP:
-                        await self._walk(fetch, {"state": term}, count, jobs, rows_seen)
-                        continue
-                    for category, _ in categories:
-                        await self._walk(
-                            fetch, {"state": term, "categories": category},
-                            QUERY_CAP, jobs, rows_seen,
-                        )
-                if len(rows_seen) < total:
-                    # Postings without a state.
-                    for category, count in categories:
-                        await self._walk(fetch, {"categories": category}, count, jobs, rows_seen)
-                if len(rows_seen) < total:
-                    await self._walk(fetch, {}, total, jobs, rows_seen, start=2)
+            # One entry per valid row the API returned. A requisition listed
+            # in several places or languages is several rows but one posting,
+            # so coverage is measured on rows, not on postings.
+            rows_seen = await self._exhaust(fetch, {}, first, jobs)
 
         if len(rows_seen) < math.ceil(total * MIN_COVERAGE):
             raise ScraperError(
@@ -148,21 +137,78 @@ class JibeScraper(BaseScraper):
             )
         return list(jobs.values())
 
+    async def _exhaust(
+        self,
+        fetch: Fetcher,
+        filters: dict[str, str],
+        first: dict[str, Any],
+        jobs: dict[str, Job],
+    ) -> set[str]:
+        """Read every row of one query; return the keys of the rows read."""
+        rows: set[str] = set()
+        cap, latest = await self._walk(fetch, filters, jobs, rows, first=first)
+        # A posting closed during the read lowers the total; one opened
+        # during it is left for the next run.
+        total = min(_total(first), latest)
+        if cap is None or len(rows) >= total:
+            return rows
+        if total <= 2 * cap:
+            for order in TITLE_ORDERS:
+                _, latest = await self._walk(
+                    fetch, {**filters, **order}, jobs, rows, until=total,
+                )
+                total = min(total, latest)
+                if len(rows) >= total:
+                    return rows
+        for name in SPLITS:
+            if name in filters:
+                continue
+            values = _split_values(first, name)
+            for value, _ in values:
+                part = {**filters, name: value}
+                rows |= await self._exhaust(fetch, part, await self._page(fetch, 1, part), jobs)
+                if len(rows) >= total:
+                    return rows
+            if sum(count for _, count in values) >= total:
+                break
+        return rows
+
     async def _walk(
         self,
         fetch: Fetcher,
         filters: dict[str, str],
-        expected: int,
         jobs: dict[str, Job],
-        rows_seen: set[str],
+        rows: set[str],
         *,
-        start: int = 1,
-    ) -> None:
-        last_page = min(MAX_PAGE, max(1, math.ceil(expected / PAGE_SIZE)))
-        for page in range(start, last_page + 1):
+        first: dict[str, Any] | None = None,
+        until: int | None = None,
+    ) -> tuple[int | None, int]:
+        """Read one query page by page, until ``rows`` holds ``until`` keys.
+
+        Returns the number of rows the site serves before its pages repeat
+        (None when the walk ends without a repeat) and the total the last
+        page announced.
+        """
+        payload = first if first is not None else await self._page(fetch, 1, filters)
+        walked: set[str] = set()
+        page = 1
+        while True:
+            total = _total(payload)
+            keys = self._absorb(payload, jobs)
+            rows |= keys
+            # Past the cap a page repeats the last one served, give or take
+            # a row the default order moves between two requests.
+            if len(keys - walked) * 2 < len(keys):
+                return (page - 1) * PAGE_SIZE, total
+            walked |= keys
+            if (
+                len(payload["jobs"]) < PAGE_SIZE
+                or page >= math.ceil(total / PAGE_SIZE)
+                or (until is not None and len(rows) >= until)
+            ):
+                return None, total
+            page += 1
             payload = await self._page(fetch, page, filters)
-            if self._absorb(payload, jobs, rows_seen) < PAGE_SIZE:
-                break
 
     async def _page(
         self,
@@ -183,23 +229,21 @@ class JibeScraper(BaseScraper):
             )
         return payload
 
-    def _absorb(
-        self, payload: dict[str, Any], jobs: dict[str, Job], rows_seen: set[str],
-    ) -> int:
-        """Add a page's postings to ``jobs``; return how many rows the page held.
+    def _absorb(self, payload: dict[str, Any], jobs: dict[str, Job]) -> set[str]:
+        """Add a page's postings to ``jobs``; return the keys of its rows.
 
-        Only rows that parse into a posting are recorded in ``rows_seen``,
-        so a feed whose rows lost their id or title fails the coverage check.
+        Only rows that parse into a posting have a key, so a feed whose rows
+        lost their id or title fails the coverage check.
         """
-        rows = payload["jobs"]
-        for row in rows:
+        keys: set[str] = set()
+        for row in payload["jobs"]:
             data = row.get("data") if isinstance(row, dict) else None
             if not isinstance(data, dict):
                 raise ScraperError(f"Jibe ({self.host}) returned a posting without data")
             job = self._parse_job(data)
             if job is None or not job.ats_id:
                 continue
-            rows_seen.add(_row_key(job.ats_id, data))
+            keys.add(_row_key(job.ats_id, data))
             # English first: the list is not ordered by language, so a
             # translated twin never replaces a row already kept.
             existing = jobs.get(job.ats_id)
@@ -207,7 +251,7 @@ class JibeScraper(BaseScraper):
                 (existing.language or "") != "en" and job.language == "en"
             ):
                 jobs[job.ats_id] = job
-        return len(rows)
+        return keys
 
     def _parse_job(self, data: dict[str, Any]) -> Job | None:
         slug = _text(data.get("slug")) or _text(data.get("req_id"))
@@ -300,6 +344,13 @@ def _row_key(ats_id: str, data: dict[str, Any]) -> str:
         for key in ("language", "location_name", "full_location", "city", "postal_code")
     )
     return "|".join((ats_id, *parts))
+
+
+def _split_values(payload: dict[str, Any], name: str) -> list[tuple[str, int]]:
+    """The values of query parameter ``name`` the response offers, with counts."""
+    if name == "state":
+        return _state_facet(payload) or _states_from_locations(payload)
+    return _categories(payload)
 
 
 def _state_facet(payload: dict[str, Any]) -> list[tuple[str, int]]:

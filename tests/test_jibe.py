@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlparse
 
@@ -14,7 +15,6 @@ from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers.base import ScraperRegistry
 from ats_scrapers.scrapers.jibe import (
     PAGE_SIZE,
-    QUERY_CAP,
     JibeScraper,
     _normalize_host,
     _parse_datetime,
@@ -137,65 +137,104 @@ def test_walks_every_page(httpx_mock) -> None:
     assert pages == [1, 2, 3]
 
 
-def test_capped_board_is_split_by_state_then_category(httpx_mock) -> None:
-    """A board above the 10,000 cap is walked state by state.
-
-    ``Big`` is itself above the cap, so it is split by category. One
-    posting has no state and is only reachable through its category.
-    """
-    total = QUERY_CAP + 300
-    small = [_posting(f"s{i}", state="Small") for i in range(150)]
-    big_a = [_posting(f"a{i}", state="Big", categories=[{"name": "A"}]) for i in range(120)]
-    big_b = [_posting(f"b{i}", state="Big", categories=[{"name": "B"}]) for i in range(30)]
-    stateless = [_posting("x1", state="", categories=[{"name": "B"}])]
-    filters = {
-        "filter": {
-            "facetList": {
-                "state": [
-                    {"term": "Small", "count": 150},
-                    {"term": "Big", "count": QUERY_CAP + 149},
-                ],
-            },
-            "categories": {
-                "all": [
-                    {"category": "A", "numJobs": 120},
-                    {"category": "B", "numJobs": 31},
-                ],
-            },
-        },
-    }
-    seen: list[tuple[str | None, str | None, int]] = []
+def test_walks_past_page_100_when_the_site_serves_it(httpx_mock) -> None:
+    total = 100 * PAGE_SIZE + 5
 
     def reply(request: httpx.Request) -> httpx.Response:
-        query = parse_qs(urlparse(str(request.url)).query)
-        state = query.get("state", [None])[0]
-        category = query.get("categories", [None])[0]
-        page = int(query["page"][0])
-        seen.append((state, category, page))
-        if state == "Small":
-            pool = small
-        elif state == "Big":
-            pool = big_a if category == "A" else big_b
-        elif category == "A":
-            pool = big_a
-        elif category == "B":
-            pool = big_b + stateless
-        else:
-            pool = small[:1]
-        rows = pool[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
-        return httpx.Response(200, json=_payload(rows, total, **filters))
+        page = int(parse_qs(urlparse(str(request.url)).query)["page"][0])
+        first = (page - 1) * PAGE_SIZE
+        rows = [_posting(str(i)) for i in range(first, min(first + PAGE_SIZE, total))]
+        return httpx.Response(200, json=_payload(rows, total))
 
     httpx_mock.add_callback(reply, url=API, is_reusable=True)
-    scraper = JibeScraper(HOST, include_descriptions=False)
-    # The fixture holds 301 postings, far below the announced total.
-    with pytest.raises(ScraperError, match="returned 301 of 10300 announced rows"):
-        scraper.fetch()
 
-    assert ("Small", None, 1) in seen and ("Small", None, 2) in seen
-    assert ("Big", "A", 1) in seen and ("Big", "A", 2) in seen
-    assert ("Big", "B", 1) in seen
-    assert ("Big", None, 1) not in seen
-    assert (None, "B", 1) in seen
+    jobs = JibeScraper(HOST, include_descriptions=False).fetch()
+
+    assert len(jobs) == total
+    assert len(httpx_mock.get_requests()) == 101
+
+
+def _site(httpx_mock, postings: list[dict], *, served: int) -> list[dict[str, str]]:
+    """A career site over ``postings`` that stops paging after ``served``
+    rows a query and repeats its last page from there on.
+
+    It filters on ``state`` and ``categories``, sorts by title from either
+    end, and announces the states and categories of each query. Returns
+    the queries asked.
+    """
+    asked: list[dict[str, str]] = []
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        query = {key: values[0] for key, values in parse_qs(request.url.query.decode()).items()}
+        asked.append(query)
+        pool = [posting["data"] for posting in postings]
+        if "state" in query:
+            pool = [data for data in pool if data["state"] == query["state"]]
+        if "categories" in query:
+            pool = [
+                data for data in pool
+                if query["categories"] in {entry["name"] for entry in data["categories"]}
+            ]
+        if query.get("sortBy") == "title":
+            pool.sort(key=lambda data: data["title"], reverse="descending" in query)
+        page = min(int(query["page"]), served // PAGE_SIZE)
+        rows = pool[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
+        states = Counter(data["state"] for data in pool if data["state"])
+        categories = Counter(entry["name"] for data in pool for entry in data["categories"])
+        facets = {
+            "facetList": {"state": [{"term": t, "count": n} for t, n in states.items()]},
+            "categories": {"all": [{"category": c, "numJobs": n} for c, n in categories.items()]},
+        }
+        return httpx.Response(
+            200, json=_payload([{"data": data} for data in rows], len(pool), filter=facets),
+        )
+
+    httpx_mock.add_callback(reply, url=API, is_reusable=True)
+    return asked
+
+
+def test_query_cut_short_is_read_from_both_ends_of_the_title_order(httpx_mock) -> None:
+    postings = [_posting(str(i), state="", categories=[]) for i in range(450)]
+    asked = _site(httpx_mock, postings, served=3 * PAGE_SIZE)
+
+    jobs = JibeScraper(HOST, include_descriptions=False).fetch()
+
+    assert len(jobs) == 450
+    orders = [(query.get("sortBy"), "descending" in query, query["page"]) for query in asked]
+    # Each walk stops at the first page that repeats the one before it.
+    assert orders[:8] == [
+        *((None, False, str(page)) for page in range(1, 5)),
+        *(("title", False, str(page)) for page in range(1, 5)),
+    ]
+    assert ("title", True, "1") in orders
+    assert not any("state" in query or "categories" in query for query in asked)
+
+
+def test_query_past_twice_the_cap_is_split_by_state_then_category(httpx_mock) -> None:
+    """``Big`` is itself past twice the cap, so it is split by category.
+    One posting has no state and is only reachable through its category."""
+    postings = [
+        *(_posting(f"s{i}", state="Small", categories=[{"name": "A"}]) for i in range(150)),
+        *(_posting(f"a{i}", state="Big", categories=[{"name": "A"}]) for i in range(250)),
+        *(_posting(f"b{i}", state="Big", categories=[{"name": "B"}]) for i in range(200)),
+        _posting("x1", state="", categories=[{"name": "B"}]),
+    ]
+    asked = _site(httpx_mock, postings, served=2 * PAGE_SIZE)
+
+    jobs = JibeScraper(HOST, include_descriptions=False).fetch()
+
+    assert len(jobs) == 601
+    queries = {(query.get("state"), query.get("categories")) for query in asked}
+    assert {("Small", None), ("Big", None), ("Big", "A"), ("Big", "B"), (None, "B")} <= queries
+    assert ("Small", "A") not in queries
+
+
+def test_capped_query_that_no_split_completes_fails_closed(httpx_mock) -> None:
+    postings = [_posting(str(i), state="", categories=[]) for i in range(1000)]
+    _site(httpx_mock, postings, served=3 * PAGE_SIZE)
+
+    with pytest.raises(ScraperError, match="returned 300 of 1000 announced rows"):
+        JibeScraper(HOST, include_descriptions=False).fetch()
 
 
 def test_translated_twin_does_not_replace_english_row(httpx_mock) -> None:
@@ -353,33 +392,17 @@ def test_coverage_floor_rounds_up(httpx_mock, returned: int, raises: bool) -> No
 
 
 def test_capped_board_with_repeated_locations_is_complete(httpx_mock) -> None:
-    """Above the cap, a requisition listed in two cities is two rows, one posting."""
-    total = QUERY_CAP + 2 * PAGE_SIZE
-    per_state = total // 2
-    filters = {
-        "filter": {
-            "facetList": {
-                "state": [{"term": "East", "count": per_state}, {"term": "West", "count": per_state}],
-            },
-        },
-    }
-
-    def reply(request: httpx.Request) -> httpx.Response:
-        query = parse_qs(urlparse(str(request.url)).query)
-        state = query.get("state", ["East"])[0]
-        page = int(query["page"][0])
-        first = (page - 1) * PAGE_SIZE
-        rows = [
-            _posting(str(i), state=state, city=state, full_location=state, location_name=state)
-            for i in range(first, min(first + PAGE_SIZE, per_state))
-        ]
-        return httpx.Response(200, json=_payload(rows, total, **filters))
-
-    httpx_mock.add_callback(reply, url=API, is_reusable=True)
+    """Past the cap, a requisition listed in two cities is two rows, one posting."""
+    postings = [
+        _posting(str(i), state=state, city=state, full_location=state, location_name=state)
+        for state in ("East", "West")
+        for i in range(150)
+    ]
+    _site(httpx_mock, postings, served=PAGE_SIZE)
 
     jobs = JibeScraper(HOST, include_descriptions=False).fetch()
 
-    assert len(jobs) == per_state
+    assert len(jobs) == 150
 
 
 def test_states_from_locations_sums_cities() -> None:
