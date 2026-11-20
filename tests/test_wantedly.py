@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
@@ -67,7 +68,9 @@ def test_lists_the_projects_of_one_company(httpx_mock) -> None:
 
     jobs = WantedlyScraper(SLUG).fetch()
 
-    assert _asked(httpx_mock) == [{"company_id": SLUG, "per_page": "10", "page": "1"}]
+    assert _asked(httpx_mock) == [
+        {"company_id": SLUG, "type": "recent", "per_page": "10", "page": "1"}
+    ]
     request = httpx_mock.get_requests()[0]
     assert request.headers["X-Requested-With"] == "XMLHttpRequest"
     (job,) = jobs
@@ -129,9 +132,9 @@ def test_every_page_is_read(httpx_mock) -> None:
     assert sorted(int(job.ats_id) for job in jobs) == list(range(1, 15))
 
 
-def test_pages_are_read_again_when_the_moving_order_skips_a_project(httpx_mock) -> None:
-    """The listing's order moves between two requests: project 10 shows on
-    both pages of the first pass and project 11 on none."""
+def test_pages_are_read_again_when_a_pass_skips_a_project(httpx_mock) -> None:
+    """A project published during the read shifts the pages: project 10
+    shows on both pages of the first pass and project 11 on none."""
     first_pass = [
         _listing([_project(i) for i in range(1, 11)], total=12),
         _listing([_project(10), _project(12)], total=12),
@@ -169,12 +172,106 @@ def test_list_close_to_the_announced_total_is_kept(httpx_mock) -> None:
     assert len(WantedlyScraper(SLUG).fetch()) == 9
 
 
-def test_more_pages_than_the_site_serves_is_refused(httpx_mock) -> None:
-    httpx_mock.add_response(
-        url=API, json=_listing([_project(1)], total=1500, pages=150)
-    )
+# --- Companies past the 100-page cap ----------------------------------------
 
-    with pytest.raises(ScraperError, match="only 100 pages can be read"):
+FILTERS = ("occupation_types[]", "hiring_types[]", "locations[]")
+
+
+def _serve(httpx_mock, projects: list[tuple[int, dict[str, set[str]]]]) -> None:
+    """The listing as the site serves it: each filter keeps the projects
+    tagged with its value, ten a page, and nothing past page 100."""
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
+        pool = [
+            project_id
+            for project_id, tags in projects
+            if all(params[key] in tags.get(key, set()) for key in FILTERS if key in params)
+        ]
+        page = int(params["page"])
+        shown = pool[(page - 1) * 10 : page * 10] if page <= 100 else []
+        return httpx.Response(
+            200, json=_listing([_project(i) for i in shown], total=len(pool))
+        )
+
+    httpx_mock.add_callback(reply, url=API, is_reusable=True)
+
+
+def _tags(occupation: str, hiring: str = "mid_career", *areas: str) -> dict[str, set[str]]:
+    tags = {"hiring_types[]": {hiring}, "locations[]": set(areas or ("tokyo", "kanto"))}
+    if occupation:
+        tags["occupation_types[]"] = {occupation}
+    return tags
+
+
+def _narrowed(httpx_mock) -> set[tuple[str, ...]]:
+    return {
+        tuple(f"{key}={value}" for key, value in params.items() if key in FILTERS)
+        for params in _asked(httpx_mock)
+    }
+
+
+def test_company_past_the_page_cap_is_read_one_occupation_at_a_time(httpx_mock) -> None:
+    projects = [(i, _tags("jp__engineering")) for i in range(1, 601)]
+    projects += [(i, _tags("jp__sales")) for i in range(601, 1006)]
+    _serve(httpx_mock, projects)
+
+    jobs = WantedlyScraper(SLUG).fetch()
+
+    assert sorted(int(job.ats_id) for job in jobs) == list(range(1, 1006))
+    asked = _asked(httpx_mock)
+    assert max(int(params["page"]) for params in asked) == 60
+    assert all(params["type"] == "recent" for params in asked)
+    assert ("occupation_types[]=jp__sales",) in _narrowed(httpx_mock)
+    assert not any(len(filters) > 1 for filters in _narrowed(httpx_mock))
+
+
+def test_occupation_past_the_page_cap_is_split_by_hiring_type(httpx_mock) -> None:
+    projects = [(i, _tags("jp__engineering", "mid_career")) for i in range(1, 701)]
+    projects += [(i, _tags("jp__engineering", "freelance")) for i in range(701, 1201)]
+    _serve(httpx_mock, projects)
+
+    jobs = WantedlyScraper(SLUG).fetch()
+
+    assert len({job.ats_id for job in jobs}) == 1200
+    assert (
+        "occupation_types[]=jp__engineering",
+        "hiring_types[]=freelance",
+    ) in _narrowed(httpx_mock)
+
+
+def test_overlapping_areas_are_read_once(httpx_mock) -> None:
+    """``tokyo`` lies in ``kanto``: a project listed in both is one job."""
+    projects = [(i, _tags("jp__sales", "mid_career", "tokyo", "kanto")) for i in range(1, 601)]
+    projects += [(i, _tags("jp__sales", "mid_career", "osaka", "kinki")) for i in range(601, 1101)]
+    _serve(httpx_mock, projects)
+
+    jobs = WantedlyScraper(SLUG).fetch()
+
+    assert sorted(int(job.ats_id) for job in jobs) == list(range(1, 1101))
+
+
+def test_slice_that_no_filter_brings_under_the_cap_is_refused(httpx_mock) -> None:
+    _serve(httpx_mock, [(i, _tags("jp__sales", "mid_career", "tokyo")) for i in range(1, 1011)])
+
+    with pytest.raises(
+        ScraperError,
+        match=(
+            r"occupation_types\[\]=jp__sales, hiring_types\[\]=mid_career, "
+            r"locations\[\]=tokyo\) announces 1010 projects on 101 pages; "
+            "only 100 pages can be read"
+        ),
+    ):
+        WantedlyScraper(SLUG).fetch()
+
+
+def test_projects_outside_every_slice_fail_the_coverage_check(httpx_mock) -> None:
+    """Projects without an occupation are in no occupation's slice."""
+    projects = [(i, _tags("jp__sales")) for i in range(1, 901)]
+    projects += [(i, _tags("")) for i in range(901, 1051)]
+    _serve(httpx_mock, projects)
+
+    with pytest.raises(ScraperError, match="announces 1050 projects and listed 900"):
         WantedlyScraper(SLUG).fetch()
 
 

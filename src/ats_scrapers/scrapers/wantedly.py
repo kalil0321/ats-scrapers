@@ -6,20 +6,26 @@ its openings there as "projects".
 
 The site's own JSON API lists the projects of one company::
 
-    GET https://www.wantedly.com/api/v1/projects?company_id={slug}&per_page=10&page={n}
+    GET https://www.wantedly.com/api/v1/projects?company_id={slug}&type=recent&per_page=10&page={n}
 
 - ``company_id`` takes the company's slug as written in its page address,
   capitals included. A slug the site does not know answers HTTP 500.
 - ``per_page`` is capped at 10 and a listing ends after page 100, so one
-  company can show at most 1,000 projects. ``_metadata`` gives the total and
-  the number of pages. A company that announces more is refused: its list
-  would be cut short without notice.
+  listing shows at most 1,000 projects. ``_metadata`` gives the total and
+  the number of pages.
+- ``occupation_types[]``, ``hiring_types[]`` and ``locations[]`` narrow the
+  listing, and the narrowed listing announces its own total. A company with
+  more than 100 pages is read slice by slice: one occupation at a time, then
+  one hiring type, then one area, until every slice fits. A slice that still
+  does not fit is refused, since its list would be cut short without notice.
 - Each project carries its full text (``description``), so no project page is
   read.
-- The order of a listing is a ranking that moves between two requests, and
-  no parameter fixes it. A project can therefore appear on two pages while
-  another is skipped. The pages are read again, up to ``MAX_PASSES`` times,
-  until every announced project has been seen.
+- ``type=recent`` sorts by publication, newest first, and one pass sees
+  every project. The default order is a ranking that moves between two
+  requests, so one pass of it misses projects, and it lists new projects
+  up to a day late. A project published during a read still shifts the
+  pages by one, so a pass that falls short is read again, up to
+  ``MAX_PASSES`` times.
 
 Without ``company_id`` the same endpoint lists 1,000 projects out of some
 190,000, which is why this scraper works company by company. The company
@@ -49,7 +55,11 @@ from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from ats_scrapers.fetch import Fetcher
+
+    _Reader = Callable[[int, dict[str, str]], Awaitable[dict[str, Any]]]
 
 API_URL = "https://www.wantedly.com/api/v1/projects"
 PROJECT_URL = "https://www.wantedly.com/projects/{id}"
@@ -61,10 +71,54 @@ MAX_PAGES = 100
 # to a client that asks for several at once for long.
 PAGE_CONCURRENCY = 1
 # How many times the pages of one listing are read to collect the projects
-# its moving order skipped, and the share of the announced total below which
-# the list is refused.
+# a pass skipped, and the share of the announced total below which the list
+# is refused.
 MAX_PASSES = 4
 MIN_COVERAGE = 0.9
+# The filters a listing past ``MAX_PAGES`` is split on, in order. A project
+# has one occupation and one hiring type, so their slices do not overlap; an
+# area can hold another (``tokyo`` lies in ``kanto``). A value the site does
+# not know is ignored, and the slice then lists the whole company.
+SPLIT_FILTERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "occupation_types[]",
+        (
+            "jp__engineering",
+            "jp__design_and_art",
+            "jp__pm_and_web_direction",
+            "jp__editing_and_writing",
+            "jp__marketing",
+            "jp__sales",
+            "jp__customer_success_and_support",
+            "jp__corporate",
+            "jp__consulting",
+            "jp__medical",
+            "jp__others",
+        ),
+    ),
+    (
+        "hiring_types[]",
+        ("newgrad", "internship", "mid_career", "side_job", "freelance", "part_time"),
+    ),
+    (
+        "locations[]",
+        (
+            "tokyo",
+            "osaka",
+            "nagoya",
+            "kyoto",
+            "fukuoka",
+            "sapporo",
+            "tohoku",
+            "kanto",
+            "hokuriku",
+            "tokai",
+            "kinki",
+            "chugoku",
+            "kyushu",
+        ),
+    ),
+)
 # Two projects of one company are the same opening when their role label and
 # their text are the same. A text shorter than this is too little to tell.
 MIN_REPOST_TEXT_CHARS = 200
@@ -115,38 +169,14 @@ class WantedlyScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         found: dict[str, dict[str, Any]] = {}
-        total = 0
         async with self.make_fetcher() as fetch:
             semaphore = asyncio.Semaphore(PAGE_CONCURRENCY)
 
-            async def read(page: int) -> dict[str, Any]:
+            async def read(page: int, filters: dict[str, str]) -> dict[str, Any]:
                 async with semaphore:
-                    return await self._page(fetch, page)
+                    return await self._page(fetch, page, filters)
 
-            # Projects are collected across the passes on purpose. One pass
-            # of a moving ranking is never the whole list, so a pass cannot
-            # stand alone. The price is small: a project closed between two
-            # passes is still returned, a minute old at most, and is gone
-            # at the next run.
-            for _ in range(MAX_PASSES):
-                first = await read(1)
-                total, pages = _listing_size(first, self.company_slug)
-                payloads = [first]
-                if pages > 1:
-                    payloads += await asyncio.gather(
-                        *(read(page) for page in range(2, pages + 1))
-                    )
-                for payload in payloads:
-                    for item in _items(payload, self.company_slug):
-                        project_id = _project_id(item)
-                        if project_id is None:
-                            raise ScraperError(
-                                f"Wantedly ({self.company_slug}) listed a "
-                                "project without an id"
-                            )
-                        found.setdefault(project_id, item)
-                if len(found) >= total:
-                    break
+            total = await self._collect(read, {}, await read(1, {}), found, SPLIT_FILTERS)
 
         company_ids = {_company_id(item) for item in found.values()}
         if len(company_ids) > 1:
@@ -156,7 +186,6 @@ class WantedlyScraper(BaseScraper):
                 f"Wantedly ({self.company_slug}) listed projects of "
                 f"{len(company_ids)} companies"
             )
-        # ``total`` is the one the last pass announced.
         if len(found) < math.ceil(total * MIN_COVERAGE):
             raise ScraperError(
                 f"Wantedly ({self.company_slug}) announces {total} projects "
@@ -168,11 +197,82 @@ class WantedlyScraper(BaseScraper):
             for projects in _openings(list(found.values()), self.collapse_reposts)
         ]
 
-    async def _page(self, fetch: Fetcher, page: int) -> dict[str, Any]:
+    async def _collect(
+        self,
+        read: _Reader,
+        filters: dict[str, str],
+        first: dict[str, Any],
+        found: dict[str, dict[str, Any]],
+        splits: tuple[tuple[str, tuple[str, ...]], ...],
+    ) -> int:
+        """Add to ``found`` the projects of the listing narrowed by
+        ``filters``, whose first page is ``first``, and return its total.
+
+        A listing past the page cap is read as one slice per value of the
+        first filter of ``splits``."""
+        total, pages = _listing_size(first, self.company_slug)
+        if pages <= MAX_PAGES:
+            return await self._read_listing(read, filters, first, found)
+        if not splits:
+            narrowed = "".join(f", {key}={value}" for key, value in filters.items())
+            raise ScraperError(
+                f"Wantedly ({self.company_slug}{narrowed}) announces {total} "
+                f"projects on {pages} pages; only {MAX_PAGES} pages can be read"
+            )
+        (key, values), rest = splits[0], splits[1:]
+        for value in values:
+            narrower = {**filters, key: value}
+            await self._collect(read, narrower, await read(1, narrower), found, rest)
+        return total
+
+    async def _read_listing(
+        self,
+        read: _Reader,
+        filters: dict[str, str],
+        first: dict[str, Any],
+        found: dict[str, dict[str, Any]],
+    ) -> int:
+        """Add to ``found`` the projects of a listing within the page cap,
+        and return the total its last pass announced."""
+        listed: dict[str, dict[str, Any]] = {}
+        total = 0
+        # Projects are collected across the passes on purpose: a project
+        # published during a pass shifts its pages, so a pass cannot stand
+        # alone. The price is small: a project closed between two passes is
+        # still returned, a minute old at most, and is gone at the next run.
+        for attempt in range(MAX_PASSES):
+            head = first if attempt == 0 else await read(1, filters)
+            total, pages = _listing_size(head, self.company_slug)
+            payloads = [head]
+            last = min(pages, MAX_PAGES)
+            if last > 1:
+                payloads += await asyncio.gather(
+                    *(read(page, filters) for page in range(2, last + 1))
+                )
+            for payload in payloads:
+                for item in _items(payload, self.company_slug):
+                    project_id = _project_id(item)
+                    if project_id is None:
+                        raise ScraperError(
+                            f"Wantedly ({self.company_slug}) listed a "
+                            "project without an id"
+                        )
+                    listed.setdefault(project_id, item)
+            if len(listed) >= total:
+                break
+        for project_id, item in listed.items():
+            found.setdefault(project_id, item)
+        return total
+
+    async def _page(
+        self, fetch: Fetcher, page: int, filters: dict[str, str]
+    ) -> dict[str, Any]:
         payload = await fetch.get_json(
             API_URL,
             params={
                 "company_id": self.company_slug,
+                **filters,
+                "type": "recent",
                 "per_page": PAGE_SIZE,
                 "page": page,
             },
@@ -294,13 +394,6 @@ def _listing_size(payload: dict[str, Any], slug: str) -> tuple[int, int]:
     pages = _count(metadata.get("total_pages")) if isinstance(metadata, dict) else None
     if total is None or pages is None:
         raise ScraperError(f"Wantedly ({slug}) listing gave no total")
-    if pages > MAX_PAGES:
-        # The site shows no page past the cap: the list would be cut short
-        # without notice.
-        raise ScraperError(
-            f"Wantedly ({slug}) announces {total} projects on {pages} pages; "
-            f"only {MAX_PAGES} pages can be read"
-        )
     return total, pages
 
 
