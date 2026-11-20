@@ -475,10 +475,17 @@ _INCAPSULA_PAGE = (
 
 def test_incapsula_challenge_is_sent_again(httpx_mock) -> None:
     _seed_csrf(httpx_mock)
-    httpx_mock.add_response(url=WIDGETS_URL, text=_INCAPSULA_PAGE)
+    # The challenge hands out the session cookie the next request must carry.
+    httpx_mock.add_response(
+        url=WIDGETS_URL,
+        text=_INCAPSULA_PAGE,
+        headers={"Set-Cookie": "incap_ses_1=granted; Path=/"},
+    )
     httpx_mock.add_response(url=WIDGETS_URL, json=_search_response([_job()], 1))
 
     assert len(PhenomScraper(BASE).fetch()) == 1
+    retry = httpx_mock.get_requests(url=WIDGETS_URL)[-1]
+    assert "incap_ses_1=granted" in retry.headers.get("cookie", "")
 
 
 def test_persistent_incapsula_challenge_reads_as_a_refusal(httpx_mock) -> None:
