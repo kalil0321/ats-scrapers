@@ -92,6 +92,13 @@ DEFAULT_TIMEOUT = 30.0
 _RETRYABLE_STATUSES = frozenset({408, 429}) | frozenset(range(500, 600))
 _BLOCKED_STATUSES = frozenset({403, 406})
 _X509_V_ERR_HOSTNAME_MISMATCH = 62
+# The name does not exist, or (glibc) exists without an address.
+_NO_ADDRESS_ERRNOS = frozenset(
+    code
+    for code in (socket.EAI_NONAME, getattr(socket, "EAI_NODATA", None))
+    if code is not None
+)
+_DOES_NOT_RESOLVE = "does not resolve"
 
 
 def proxy_url_from_env() -> str | None:
@@ -185,12 +192,13 @@ class Fetcher:
         escalates to httpcloak, which cannot use it. Use it from the event
         loop it was made for.
     missing_host_not_found:
-        Raise :class:`CompanyNotFoundError` when the last attempt failed
-        because the host name does not resolve, presents a certificate
-        for another name, or sits behind a CDN that can no longer resolve
-        its origin. Only for scrapers whose host belongs to the tenant
-        (its own subdomain or custom domain), where each means the board
-        was taken down.
+        Raise :class:`CompanyNotFoundError` when the host name does not
+        resolve, or when the last attempt failed because the host presents
+        a certificate for another name or sits behind a CDN that can no
+        longer resolve its origin. A name that does not resolve is not
+        retried: resolvers cache that answer. Only for scrapers whose host
+        belongs to the tenant (its own subdomain or custom domain), where
+        each means the board was taken down.
     """
 
     def __init__(
@@ -334,16 +342,16 @@ class Fetcher:
                 raise
             except Exception as exc:  # network layer (httpx transport, cloak)
                 last_error = str(exc)
+                reason = (
+                    _missing_host_reason(exc, via_proxy=self._uses_proxy())
+                    if self.missing_host_not_found
+                    else None
+                )
+                if reason and (reason == _DOES_NOT_RESOLVE or attempt == retries):
+                    raise CompanyNotFoundError(
+                        f"{self.label}: {urlparse(url).hostname} {reason}"
+                    ) from exc
                 if attempt == retries:
-                    reason = (
-                        _missing_host_reason(exc, via_proxy=self._uses_proxy())
-                        if self.missing_host_not_found
-                        else None
-                    )
-                    if reason:
-                        raise CompanyNotFoundError(
-                            f"{self.label}: {urlparse(url).hostname} {reason}"
-                        ) from exc
                     raise RetryExhaustedError(
                         f"{self.label}: {method} {url} failed after "
                         f"{retries} attempts: {exc}"
@@ -569,8 +577,8 @@ def _missing_host_reason(exc: BaseException, *, via_proxy: bool) -> str | None:
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if isinstance(current, socket.gaierror):
-            if current.errno == socket.EAI_NONAME and not via_proxy:
-                return "does not resolve"
+            if current.errno in _NO_ADDRESS_ERRNOS and not via_proxy:
+                return _DOES_NOT_RESOLVE
             return None
         if isinstance(current, ssl.SSLCertVerificationError):
             if current.verify_code == _X509_V_ERR_HOSTNAME_MISMATCH:
