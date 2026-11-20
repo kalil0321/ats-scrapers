@@ -332,19 +332,43 @@ def test_multiple_locations_preserved_and_remote_detected(httpx_mock) -> None:
     ]
 
 
-def test_inverted_positive_salary_range_fails_closed(httpx_mock) -> None:
+def test_backwards_salary_range_is_swapped(httpx_mock) -> None:
     item = _item()
     item["payGradeRange"] = {
-        "minimumRate": {"amountValue": 50, "currencyCode": "USD"},
-        "maximumRate": {"amountValue": 40, "currencyCode": "USD"},
+        "minimumRate": {"amountValue": 68000, "currencyCode": "USD"},
+        "maximumRate": {"amountValue": 65000, "currencyCode": "USD"},
     }
     httpx_mock.add_response(url=LISTING_RE, json=_page([item]))
 
-    with pytest.raises(ScraperError, match="inverted positive salary"):
-        ADPWorkforceNowScraper(
-            CAREERS_URL,
-            include_descriptions=False,
-        ).fetch()
+    [job] = ADPWorkforceNowScraper(
+        CAREERS_URL,
+        include_descriptions=False,
+    ).fetch()
+
+    assert (job.salary_min, job.salary_max) == (65000, 68000)
+    assert job.salary_currency == "USD"
+
+
+def test_salary_mixing_pay_periods_is_dropped_but_posting_kept(httpx_mock) -> None:
+    mixed = _item(item_id="9205836396592_1", title="Tourism Coordinator")
+    mixed["payGradeRange"] = {
+        "minimumRate": {"amountValue": 60000, "currencyCode": "USD"},
+        "maximumRate": {"amountValue": 28.85, "currencyCode": "USD"},
+    }
+    httpx_mock.add_response(url=LISTING_RE, json=_page([mixed, _item()]))
+
+    first, second = ADPWorkforceNowScraper(
+        CAREERS_URL,
+        include_descriptions=False,
+    ).fetch()
+
+    assert first.title == "Tourism Coordinator"
+    assert first.salary_min is None
+    assert first.salary_max is None
+    assert first.salary_currency is None
+    assert first.salary_period is None
+    assert first.salary_summary is None
+    assert (second.salary_min, second.salary_max) == (40, 45)
 
 
 @pytest.mark.parametrize(
