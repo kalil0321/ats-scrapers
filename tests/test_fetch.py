@@ -154,17 +154,23 @@ def _certificate_error(verify_code: int) -> ssl.SSLCertVerificationError:
 
 
 @pytest.mark.parametrize(
-    ("cause", "reason"),
+    ("cause", "reason", "attempts"),
     [
         (
             socket.gaierror(socket.EAI_NONAME, "Name or service not known"),
             "does not resolve",
+            1,
         ),
-        (_certificate_error(62), "certificate for another name"),
+        (
+            socket.gaierror(socket.EAI_NODATA, "No address associated with hostname"),
+            "does not resolve",
+            1,
+        ),
+        (_certificate_error(62), "certificate for another name", 3),
     ],
 )
 async def test_missing_host_is_not_found_when_enabled(
-    httpx_mock, monkeypatch, cause: BaseException, reason: str
+    httpx_mock, monkeypatch, cause: BaseException, reason: str, attempts: int
 ) -> None:
     for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
         monkeypatch.delenv(name, raising=False)
@@ -172,12 +178,14 @@ async def test_missing_host_is_not_found_when_enabled(
     async with _fetcher(missing_host_not_found=True) as fetch:
         with pytest.raises(CompanyNotFoundError, match=reason):
             await fetch.get_text(URL)
-    assert len(httpx_mock.get_requests()) == 3
+    assert len(httpx_mock.get_requests()) == attempts
 
 
-async def test_missing_host_that_comes_back_is_fetched(httpx_mock) -> None:
+async def test_lookup_that_fails_for_a_moment_is_retried(httpx_mock, monkeypatch) -> None:
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
     httpx_mock.add_exception(
-        _connect_error(socket.gaierror(socket.EAI_NONAME, "unknown"))
+        _connect_error(socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution"))
     )
     httpx_mock.add_response(url=URL, text="ok")
     async with _fetcher(missing_host_not_found=True) as fetch:
