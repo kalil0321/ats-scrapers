@@ -37,7 +37,11 @@ class _Answers:
 
     async def post(self, *_args, **_kwargs):
         self.calls += 1
-        return SimpleNamespace(status_code=self.status, headers=self.headers)
+        return SimpleNamespace(status_code=self.status, headers=self.headers, json=_no_json)
+
+
+def _no_json():
+    raise ValueError("no JSON body")
 
 
 def _search(scraper: WorkdayScraper, client: object) -> None:
@@ -311,6 +315,48 @@ def test_workday_migrated_tenant_is_not_found(httpx_mock) -> None:
     )
     with pytest.raises(CompanyNotFoundError, match="another Workday data center"):
         WorkdayScraper(URL, include_descriptions=False).fetch()
+
+
+def test_workday_closed_site_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=API,
+        status_code=403,
+        json={"errorCode": "S22", "httpStatus": 403, "message": "permission denied", "messageParams": {}},
+    )
+    with pytest.raises(CompanyNotFoundError, match="closed this site"):
+        WorkdayScraper(URL, include_descriptions=False).fetch()
+    # Not found at once: no retries or slower routes for a closed site.
+    assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        None,
+        {"errorCode": "S21", "httpStatus": 403, "message": "permission denied"},
+        {"errorCode": "S22", "httpStatus": 403, "message": "request blocked"},
+        {"errorCode": "S22", "httpStatus": 403},
+        {"errorCode": "S22", "httpStatus": 403, "message": None},
+        ["S22", "permission denied"],
+    ],
+)
+def test_workday_other_403_is_retried_as_a_refusal(
+    httpx_mock, monkeypatch: pytest.MonkeyPatch, body
+) -> None:
+    async def fake_sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    for _ in range(3):
+        if body is None:
+            httpx_mock.add_response(method="POST", url=API, status_code=403, text="<html>Access denied</html>")
+        else:
+            httpx_mock.add_response(method="POST", url=API, status_code=403, json=body)
+    with pytest.raises(ScraperError, match="HTTP 403") as exc_info:
+        WorkdayScraper(URL, include_descriptions=False).fetch()
+    assert not isinstance(exc_info.value, CompanyNotFoundError)
+    assert len(httpx_mock.get_requests()) == 3
 
 
 @pytest.mark.parametrize(

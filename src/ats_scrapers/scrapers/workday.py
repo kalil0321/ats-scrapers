@@ -1007,19 +1007,31 @@ def _tenant_gone(response: Any) -> str | None:
 
     A tenant that moved to another data center answers 410
     ``ERR_TENANT_MIGRATED``. A host that serves no such tenant answers 422
-    ``HTTP_422``; Workday answers a malformed search with 400 instead.
+    ``HTTP_422``; Workday answers a malformed search with 400 instead. A
+    closed site answers 403 ``S22`` "permission denied" from Workday itself,
+    not Cloudflare, and its page shows "Workday is currently unavailable".
     """
-    if response.status_code not in (410, 422):
+    if response.status_code not in (403, 410, 422):
         return None
     try:
         payload = response.json()
     except ValueError:
         return None
-    code = payload.get("errorCode") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    code = payload.get("errorCode")
     if response.status_code == 410 and code == "ERR_TENANT_MIGRATED":
         return "moved to another Workday data center"
     if response.status_code == 422 and code == "HTTP_422":
         return "is not served from this host: it moved or left Workday"
+    message = payload.get("message")
+    if (
+        response.status_code == 403
+        and code == "S22"
+        and isinstance(message, str)
+        and message.strip().casefold() == "permission denied"
+    ):
+        return "closed this site: Workday refuses its search (403 S22, permission denied)"
     return None
 
 
