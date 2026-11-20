@@ -61,6 +61,11 @@ _PAGE_BASE_URL_RE = re.compile(r'"baseUrl"\s*:\s*"(https?://[^"]+)"')
 _USER_AGENT = "Mozilla/5.0 (compatible; ats-scrapers/1.0)"
 # Every page of a Phenom site loads its client from these names.
 _PHENOM_PAGE_MARKERS = ("phApp", "phenompeople")
+# Imperva Incapsula in front of some sites answers the first requests of a
+# session with a challenge page that loads this script, then lets the same
+# session through.
+_INCAPSULA_MARKER = "/_Incapsula_Resource"
+CHALLENGE_ATTEMPTS = 3
 
 _BASE_HEADERS = {
     "User-Agent": _USER_AGENT,
@@ -273,18 +278,24 @@ class PhenomScraper(BaseScraper):
         if csrf:
             headers["x-csrf-token"] = csrf
 
-        response = await fetch.request(
-            "POST",
-            f"{self.base_url}/widgets",
-            json=payload,
-            headers=headers,
+        for _ in range(CHALLENGE_ATTEMPTS):
+            response = await fetch.request(
+                "POST",
+                f"{self.base_url}/widgets",
+                json=payload,
+                headers=headers,
+            )
+            try:
+                return response.json()
+            except ValueError as exc:
+                if _INCAPSULA_MARKER not in response.text:
+                    raise ScraperError(
+                        f"Phenom returned malformed JSON for {self.base_url}: {exc}"
+                    ) from exc
+        raise ScraperError(
+            f"Phenom ({self.base_url}) answered the search with an Imperva "
+            f"Incapsula bot challenge {CHALLENGE_ATTEMPTS} times"
         )
-        try:
-            return response.json()
-        except ValueError as exc:
-            raise ScraperError(
-                f"Phenom returned malformed JSON for {self.base_url}: {exc}"
-            ) from exc
 
     # --- extraction ----------------------------------------------------
 
