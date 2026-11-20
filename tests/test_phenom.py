@@ -466,6 +466,30 @@ def test_malformed_json_raises_clean_error(httpx_mock) -> None:
         PhenomScraper(BASE).fetch()
 
 
+_INCAPSULA_PAGE = (
+    '<html><head><META NAME="robots" CONTENT="noindex,nofollow">'
+    '<script src="/_Incapsula_Resource?SWJIYLWA=5074a744e2e3d891814e9a2dace20bd4">'
+    "</script><body></body></html>"
+)
+
+
+def test_incapsula_challenge_is_sent_again(httpx_mock) -> None:
+    _seed_csrf(httpx_mock)
+    httpx_mock.add_response(url=WIDGETS_URL, text=_INCAPSULA_PAGE)
+    httpx_mock.add_response(url=WIDGETS_URL, json=_search_response([_job()], 1))
+
+    assert len(PhenomScraper(BASE).fetch()) == 1
+
+
+def test_persistent_incapsula_challenge_reads_as_a_refusal(httpx_mock) -> None:
+    _seed_csrf(httpx_mock)
+    httpx_mock.add_response(url=WIDGETS_URL, text=_INCAPSULA_PAGE, is_reusable=True)
+
+    with pytest.raises(ScraperError, match="Incapsula bot challenge 3 times"):
+        PhenomScraper(BASE).fetch()
+    assert len(httpx_mock.get_requests(url=WIDGETS_URL)) == phenom.CHALLENGE_ATTEMPTS
+
+
 def test_network_error_raises(httpx_mock) -> None:
     _seed_csrf(httpx_mock)
     httpx_mock.add_exception(
