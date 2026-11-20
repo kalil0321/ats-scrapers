@@ -971,6 +971,206 @@ def test_smartapply_405_waits_out_the_block(monkeypatch, httpx_mock) -> None:
     assert [j.title for j in jobs] == ["Sales Advisor"]
 
 
+# --- Rate limit (429) on the listing ----------------------------------------
+# ``asyncio.sleep`` is faked in these tests, so the clock stands still and a
+# recorded sleep is the distance from the pause start to the request's slot.
+
+
+def _two_page_board(httpx_mock, *, second: list[dict[str, Any]] | None = None) -> None:
+    httpx_mock.add_response(
+        url=_mock_url(0),
+        json=_page([_position(job_id=f"A{i}") for i in range(10)], count=20),
+    )
+    for response in second or []:
+        httpx_mock.add_response(url=_mock_url(10), **response)
+
+
+def test_listing_429_past_the_first_page_pauses_then_reads_on(
+    monkeypatch, httpx_mock
+) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+    sleeps = _record_sleeps(monkeypatch)
+    _two_page_board(httpx_mock, second=[
+        {"status_code": 429},
+        {"json": _page([_position(job_id=f"B{i}") for i in range(10)], count=20)},
+    ])
+
+    jobs = EightfoldScraper("dolby", include_descriptions=False).fetch()
+
+    assert len(jobs) == 20
+    assert sleeps == [pytest.approx(ef.RATE_LIMIT_COOLOFF_DELAYS[0], abs=0.1)]
+
+
+def test_listing_429_that_persists_fails_after_every_pause(monkeypatch, httpx_mock) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+    sleeps = _record_sleeps(monkeypatch)
+    _two_page_board(httpx_mock, second=[{"status_code": 429, "is_reusable": True}])
+
+    with pytest.raises(
+        ScraperError, match=r"rate-limited \(429\) at start=10 after waiting 225s"
+    ):
+        EightfoldScraper("dolby", include_descriptions=False).fetch()
+
+    assert sleeps == [pytest.approx(d, abs=0.1) for d in ef.RATE_LIMIT_COOLOFF_DELAYS]
+    assert len(httpx_mock.get_requests(url=_mock_url(10))) == len(ef.RATE_LIMIT_COOLOFF_DELAYS) + 1
+
+
+def test_listing_429_with_a_long_retry_after_is_a_refusal(monkeypatch, httpx_mock) -> None:
+    sleeps = _record_sleeps(monkeypatch)
+    _two_page_board(httpx_mock, second=[{"status_code": 429, "headers": {"Retry-After": "3600"}}])
+
+    with pytest.raises(ScraperError, match=r"start=10, Retry-After 3600s"):
+        EightfoldScraper("dolby", include_descriptions=False).fetch()
+
+    assert sleeps == []
+
+
+def test_listing_429_waits_at_least_the_retry_after(monkeypatch, httpx_mock) -> None:
+    sleeps = _record_sleeps(monkeypatch)
+    _two_page_board(httpx_mock, second=[
+        {"status_code": 429, "headers": {"Retry-After": "40"}},
+        {"json": _page([_position(job_id="B")], count=20)},
+    ])
+
+    jobs = EightfoldScraper("dolby", include_descriptions=False).fetch()
+
+    assert len(jobs) == 11
+    assert sleeps == [pytest.approx(40.0, abs=0.1)]
+
+
+def test_listing_429_on_the_first_page_fails_after_the_retries(
+    monkeypatch, httpx_mock
+) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+    monkeypatch.setattr(ef, "MAX_RETRIES", 3)
+    sleeps = _record_sleeps(monkeypatch)
+    httpx_mock.add_response(url=_mock_url(0), status_code=429, is_reusable=True)
+
+    with pytest.raises(ScraperError, match=r"rate-limited \(429\) at start=0 after 3 retries"):
+        EightfoldScraper("dolby").fetch()
+
+    assert len(httpx_mock.get_requests()) == 3
+    assert all(s < ef.RATE_LIMIT_COOLOFF_DELAYS[0] for s in sleeps)
+
+
+def test_smartapply_429_past_the_first_page_pauses_then_reads_on(
+    monkeypatch, httpx_mock
+) -> None:
+    _record_sleeps(monkeypatch)
+    api = "https://frontier.eightfold.ai/api/pcsx/search"
+    httpx_mock.add_response(
+        url=_mock_url(0, base=api, domain="frontier.com"),
+        status_code=403,
+        json={"message": "PCSX is not enabled for this user."},
+    )
+    httpx_mock.add_response(
+        url=_smartapply_url(0),
+        json={"positions": [{"id": 1, "name": "A"}], "count": 11},
+    )
+    httpx_mock.add_response(url=_smartapply_url(10), status_code=429)
+    httpx_mock.add_response(
+        url=_smartapply_url(10),
+        json={"positions": [{"id": 2, "name": "B"}], "count": 11},
+    )
+
+    jobs = EightfoldScraper("frontier", domain="frontier.com").fetch()
+
+    assert [j.title for j in jobs] == ["A", "B"]
+
+
+def test_listing_pace_pauses_once_per_burst_then_spaces_requests(monkeypatch) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+    sleeps = _record_sleeps(monkeypatch)
+
+    async def run() -> None:
+        pace = ef._ListingPace("Dolby")
+        first, second = await pace.wait(), await pace.wait()
+        pace.back_off(generation=first, retry_after=None, start=10)
+        # Sent before the pause began: the same pause covers it.
+        pace.back_off(generation=second, retry_after=None, start=20)
+        for _ in range(3):
+            await pace.wait()
+
+    asyncio.run(run())
+
+    assert sleeps == pytest.approx([15.0, 15.5, 16.0], abs=0.1)
+
+
+def test_listing_pace_moves_a_waiting_request_behind_a_new_pause(monkeypatch) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+    sleeps: list[float] = []
+
+    async def run() -> None:
+        pace = ef._ListingPace("Dolby")
+        pace.back_off(generation=0, retry_after=None, start=10)
+
+        async def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            if len(sleeps) == 1:
+                # Another page meets a 429 while this one waits for its slot.
+                pace.back_off(generation=1, retry_after=None, start=20)
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        assert await pace.wait() == 2
+
+    asyncio.run(run())
+
+    # No page was served between the two pauses, so the second one is longer.
+    assert sleeps == pytest.approx([15.0, 30.0], abs=0.1)
+
+
+def test_listing_pace_served_page_resets_the_pause_length(monkeypatch) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+    sleeps = _record_sleeps(monkeypatch)
+
+    async def run() -> None:
+        pace = ef._ListingPace("Dolby")
+        pace.back_off(generation=0, retry_after=None, start=10)
+        pace.note_served(await pace.wait())
+        pace.back_off(generation=1, retry_after=None, start=20)
+        await pace.wait()
+        assert pace.interval == 2 * ef.RATE_LIMITED_INTERVAL
+
+    asyncio.run(run())
+
+    assert sleeps == pytest.approx([15.0, 15.0], abs=0.1)
+
+
+def test_listing_pace_429_before_any_page_is_served_keeps_the_interval(
+    monkeypatch,
+) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+    _record_sleeps(monkeypatch)
+
+    async def run() -> None:
+        pace = ef._ListingPace("Dolby")
+        pace.back_off(generation=0, retry_after=None, start=10)
+        pace.back_off(generation=await pace.wait(), retry_after=None, start=10)
+        assert pace.interval == ef.RATE_LIMITED_INTERVAL
+
+    asyncio.run(run())
+
+
+def test_listing_pace_page_sent_before_the_pause_keeps_the_pause_length(
+    monkeypatch,
+) -> None:
+    import ats_scrapers.scrapers.eightfold as ef
+    sleeps = _record_sleeps(monkeypatch)
+
+    async def run() -> None:
+        pace = ef._ListingPace("Dolby")
+        first, second = await pace.wait(), await pace.wait()
+        pace.back_off(generation=first, retry_after=None, start=10)
+        pace.note_served(second)
+        await pace.wait()
+        pace.back_off(generation=1, retry_after=None, start=10)
+        await pace.wait()
+
+    asyncio.run(run())
+
+    assert sleeps == pytest.approx([15.0, 30.0], abs=0.1)
+
+
 # --- Extra fields extraction (department, is_remote) -----------------------
 
 
