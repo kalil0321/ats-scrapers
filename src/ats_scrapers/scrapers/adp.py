@@ -57,6 +57,10 @@ _EMPLOYMENT_TYPE_PATTERNS: tuple[tuple[str, EmploymentType], ...] = (
     ("regular", "FULL_TIME"),
 )
 
+# Employers type some ranges backwards (68000 to 65000). Bounds further
+# apart than this usually mix two pay periods (60000 to 28.85 hourly).
+_SWAPPED_RANGE_MAX_RATIO = 2
+
 _SALARY_PERIODS: dict[str, SalaryPeriod] = {
     "AN": "YEAR",
     "ANNUAL": "YEAR",
@@ -287,13 +291,16 @@ class ADPWorkforceNowScraper(BaseScraper):
         country_iso = _country_iso(item, locations)
         worker_category = _nested_string(item, "workLevelCode", "shortName")
         employment_type = _employment_type(worker_category)
-        salary_min, salary_max, salary_currency = _salary_range(item)
+        salary = _salary_range(item)
+        salary_min, salary_max, salary_currency = salary or (None, None, None)
         salary_type_code, salary_type_label = _code_field(
             item,
             "SalaryType",
         )
-        salary_period = _salary_period(salary_type_code, salary_type_label)
-        salary_summary = _string_field(item, "SalaryRange")
+        salary_period = (
+            _salary_period(salary_type_code, salary_type_label) if salary else None
+        )
+        salary_summary = _string_field(item, "SalaryRange") if salary else None
         external_job_id = _string_field(item, "ExternalJobID")
         department = _string_field(item, "HomeDepartment")
         job_class = _string_field(item, "JobClass")
@@ -421,7 +428,8 @@ def _country_iso(item: dict[str, Any], locations: list[str]) -> str | None:
 
 def _salary_range(
     item: dict[str, Any],
-) -> tuple[float | None, float | None, str | None]:
+) -> tuple[float | None, float | None, str | None] | None:
+    """Bounds and currency, or None when the bounds contradict each other."""
     pay_range = item.get("payGradeRange")
     if not isinstance(pay_range, dict):
         return None, None, None
@@ -442,7 +450,9 @@ def _salary_range(
         and max_value > 0
         and min_value > max_value
     ):
-        raise ScraperError("ADP returned an inverted positive salary range")
+        if min_value > max_value * _SWAPPED_RANGE_MAX_RATIO:
+            return None
+        min_value, max_value = max_value, min_value
     return min_value, max_value, currency
 
 
