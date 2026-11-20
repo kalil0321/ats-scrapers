@@ -436,3 +436,42 @@ async def test_run_all_raises_the_first_error_after_the_others_end() -> None:
 
     assert ended == ["other", "other"]
     assert await _run_all([asyncio.sleep(0, result=n) for n in (1, 2)]) == [1, 2]
+
+
+class _OnePage:
+    """A listing that announces ``total`` jobs on a single short page."""
+
+    def __init__(self, total: int) -> None:
+        self.total = total
+
+    async def post(self, *_args, **_kwargs):
+        return SimpleNamespace(
+            status_code=200,
+            headers={},
+            json=lambda: {"total": self.total, "jobPostings": []},
+        )
+
+
+@pytest.mark.parametrize(
+    ("seconds_per_job", "depth", "extra"),
+    [(0.5, 0, 5.0), (0.0, 0, 0.0), (0.5, 1, 0.0)],
+)
+def test_workday_board_gets_time_for_each_job_it_announces(seconds_per_job, depth, extra) -> None:
+    scraper = WorkdayScraper(URL, max_fetch_seconds=60, seconds_per_job=seconds_per_job)
+    start = time.monotonic() + 100
+    scraper._deadline = start
+
+    async def run() -> None:
+        await scraper._exhaust_query(
+            _OnePage(10), API, asyncio.Semaphore(1),
+            applied_facets={}, absorb=lambda _postings: None, depth=depth,
+        )
+
+    asyncio.run(run())
+    # Only the board's own first search sizes the budget, not a filtered one.
+    assert scraper._deadline == pytest.approx(start + extra)
+
+
+def test_workday_deadline_error_names_the_time_per_job() -> None:
+    scraper = WorkdayScraper(URL, max_fetch_seconds=900, seconds_per_job=0.1)
+    assert "max_fetch_seconds=900 plus 0.1 s per job" in str(scraper._deadline_error())

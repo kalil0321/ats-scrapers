@@ -173,6 +173,7 @@ class WorkdayScraper(BaseScraper):
         *,
         timeout: float = 30.0,
         max_fetch_seconds: float | None = None,
+        seconds_per_job: float = 0.0,
         company_name: str | None = None,
         include_descriptions: bool = True,
         proxy: str | None = None,
@@ -184,7 +185,11 @@ class WorkdayScraper(BaseScraper):
         ``httpx.BaseTransport`` as well. The scraper never closes it.
 
         ``pacer`` spaces the requests to each host, shared with any other
-        scraper given the same pacer."""
+        scraper given the same pacer.
+
+        ``seconds_per_job`` extends ``max_fetch_seconds`` by that much for
+        each job the board announces, so a large board read through a
+        shared pacer gets the time its pages take."""
         super().__init__(
             company_slug,
             timeout=timeout,
@@ -193,6 +198,7 @@ class WorkdayScraper(BaseScraper):
             transport=transport,
         )
         self.max_fetch_seconds = max_fetch_seconds
+        self.seconds_per_job = max(0.0, seconds_per_job)
         self.pacer = pacer
         self.company_name = (
             company_name.strip()
@@ -254,14 +260,19 @@ class WorkdayScraper(BaseScraper):
         finally:
             self._deadline = None
 
+    def _extend_deadline(self, jobs: int) -> None:
+        if self._deadline is not None and self.seconds_per_job and jobs > 0:
+            self._deadline += jobs * self.seconds_per_job
+
     def _check_deadline(self) -> None:
         if self._deadline is not None and time.monotonic() >= self._deadline:
             raise self._deadline_error()
 
     def _deadline_error(self) -> ScraperError:
+        extra = f" plus {self.seconds_per_job:g} s per job" if self.seconds_per_job else ""
         return ScraperError(
             f"Workday tenant exceeded max_fetch_seconds="
-            f"{self.max_fetch_seconds:g}: {self.company_slug}"
+            f"{self.max_fetch_seconds:g}{extra}: {self.company_slug}"
         )
 
     def _remaining(self) -> float | None:
@@ -536,6 +547,8 @@ class WorkdayScraper(BaseScraper):
         if first is None:
             return
         total = int(first.get("total", 0))
+        if depth == 0:
+            self._extend_deadline(total)
         absorb(first.get("jobPostings") or [])
         if total <= PAGE_LIMIT:
             return
