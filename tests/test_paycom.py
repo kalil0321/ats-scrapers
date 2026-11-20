@@ -249,6 +249,50 @@ def test_search_count_mismatch_fails_closed(httpx_mock) -> None:
         PaycomScraper(TOKEN, include_descriptions=False).fetch()
 
 
+def test_jobs_listed_beyond_the_count_are_kept(httpx_mock) -> None:
+    httpx_mock.add_response(url=PORTAL_URL, text=_bootstrap())
+    httpx_mock.add_response(
+        url=SEARCH_URL,
+        json=_search([_preview(index) for index in range(1, 17)], count=14),
+    )
+
+    jobs = PaycomScraper(TOKEN, include_descriptions=False).fetch()
+
+    assert len({job.ats_id for job in jobs}) == len(jobs) == 16
+    assert len(httpx_mock.get_requests(url=SEARCH_URL)) == 1
+
+
+def test_full_page_at_the_count_reads_the_next_page(httpx_mock) -> None:
+    httpx_mock.add_response(url=PORTAL_URL, text=_bootstrap())
+    httpx_mock.add_response(
+        url=SEARCH_URL,
+        json=_search([_preview(index) for index in range(1, 101)], count=100),
+    )
+    httpx_mock.add_response(
+        url=SEARCH_URL,
+        json=_search([_preview(101), _preview(102)], count=100),
+    )
+
+    jobs = PaycomScraper(TOKEN, include_descriptions=False).fetch()
+
+    assert len({job.ats_id for job in jobs}) == len(jobs) == 102
+
+
+def test_full_page_repeated_past_the_count_ends_the_read(httpx_mock) -> None:
+    first_page = [_preview(index) for index in range(1, 101)]
+    httpx_mock.add_response(url=PORTAL_URL, text=_bootstrap())
+    httpx_mock.add_response(
+        url=SEARCH_URL,
+        json=_search(first_page, count=100),
+        is_reusable=True,
+    )
+
+    jobs = PaycomScraper(TOKEN, include_descriptions=False).fetch()
+
+    assert len(jobs) == 100
+    assert len(httpx_mock.get_requests(url=SEARCH_URL)) == 2
+
+
 def test_duplicate_job_ids_fail_closed(httpx_mock) -> None:
     httpx_mock.add_response(url=PORTAL_URL, text=_bootstrap())
     httpx_mock.add_response(

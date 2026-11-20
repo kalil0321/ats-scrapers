@@ -253,10 +253,12 @@ class PaycomScraper(BaseScraper):
         service_url: str,
         headers: dict[str, str],
     ) -> list[dict[str, Any]]:
-        previews: list[dict[str, Any]] = []
+        # A page can come back one row short, and the next page then repeats
+        # a row of the previous one. The count is of distinct jobs.
+        unique: dict[int, dict[str, Any]] = {}
         expected_total: int | None = None
         skip = 0
-        while expected_total is None or skip < expected_total:
+        while True:
             response = await fetch.request(
                 "POST",
                 f"{service_url}{SEARCH_PATH}",
@@ -269,17 +271,17 @@ class PaycomScraper(BaseScraper):
                     f"Paycom ({self.portal_token}) search response was not an object"
                 )
             raw_total = payload.get("jobPostingPreviewsCount")
-            valid_total = isinstance(raw_total, int) and raw_total >= 0
+            total = raw_total if isinstance(raw_total, int) and raw_total >= 0 else None
             if expected_total is None:
-                if not valid_total:
+                if total is None:
                     raise ScraperError(
                         f"Paycom ({self.portal_token}) search omitted a valid count"
                     )
-                expected_total = raw_total
-            elif valid_total and raw_total != expected_total:
+                expected_total = total
+            elif total is not None and total != expected_total:
                 raise _ListingMovedError(
                     f"Paycom ({self.portal_token}) job count changed from "
-                    f"{expected_total} to {raw_total} while reading"
+                    f"{expected_total} to {total} while reading"
                 )
             page = payload.get("jobPostingPreviews")
             if not isinstance(page, list):
@@ -288,20 +290,22 @@ class PaycomScraper(BaseScraper):
                 )
             if not page:
                 break
+            known = len(unique)
             for index, item in enumerate(page):
                 if not isinstance(item, dict):
                     raise ScraperError(
                         f"Paycom ({self.portal_token}) row {skip + index} "
                         "was not an object"
                     )
-                previews.append(item)
+                unique.setdefault(_job_id(item.get("jobId")), item)
             skip += len(page)
-        # A page can come back one row short, and the next page then repeats
-        # a row of the previous one. The count is of distinct jobs.
-        unique: dict[int, dict[str, Any]] = {}
-        for item in previews:
-            unique.setdefault(_job_id(item.get("jobId")), item)
-        if expected_total != len(unique):
+            # The count can leave out live jobs that the pages still list, so
+            # a full page of new jobs past it may not be the last.
+            if skip >= expected_total and (
+                len(page) < PAGE_SIZE or len(unique) == known
+            ):
+                break
+        if len(unique) < expected_total:
             raise _ListingMovedError(
                 f"Paycom ({self.portal_token}) expected {expected_total} jobs "
                 f"but received {len(unique)}"
