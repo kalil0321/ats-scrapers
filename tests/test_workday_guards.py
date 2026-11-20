@@ -441,14 +441,15 @@ async def test_run_all_raises_the_first_error_after_the_others_end() -> None:
 class _OnePage:
     """A listing that announces ``total`` jobs on a single short page."""
 
-    def __init__(self, total: int) -> None:
+    def __init__(self, total: int, facets: list | None = None) -> None:
         self.total = total
+        self.facets = facets or []
 
     async def post(self, *_args, **_kwargs):
         return SimpleNamespace(
             status_code=200,
             headers={},
-            json=lambda: {"total": self.total, "jobPostings": []},
+            json=lambda: {"total": self.total, "jobPostings": [], "facets": self.facets},
         )
 
 
@@ -475,3 +476,46 @@ def test_workday_board_gets_time_for_each_job_it_announces(seconds_per_job, dept
 def test_workday_deadline_error_names_the_time_per_job() -> None:
     scraper = WorkdayScraper(URL, max_fetch_seconds=900, seconds_per_job=0.1)
     assert "max_fetch_seconds=900 plus 0.1 s per job" in str(scraper._deadline_error())
+
+
+def test_workday_capped_board_gets_time_for_the_jobs_its_facets_count() -> None:
+    facets = [{
+        "facetParameter": "timeType",
+        "values": [{"id": "ft", "descriptor": "Full", "count": 6000}, {"id": "pt", "descriptor": "Part", "count": 4000}],
+    }]
+
+    class CappedRoot:
+        async def post(self, *_args, json=None, **_kwargs):
+            # The board's own search is capped at 2,000; each filtered one is small.
+            filtered = bool((json or {}).get("appliedFacets"))
+            return SimpleNamespace(
+                status_code=200,
+                headers={},
+                json=lambda: {"total": 10 if filtered else 2000, "jobPostings": [], "facets": facets},
+            )
+
+    scraper = WorkdayScraper(URL, max_fetch_seconds=60, seconds_per_job=0.1)
+    start = time.monotonic() + 100
+    scraper._deadline = start
+
+    async def run() -> None:
+        await scraper._exhaust_query(
+            CappedRoot(), API, asyncio.Semaphore(1),
+            applied_facets={}, absorb=lambda _postings: None, depth=0,
+        )
+
+    asyncio.run(run())
+    # Time for the 10,000 jobs the facet counts, once, not for the capped 2,000.
+    assert scraper._deadline == pytest.approx(start + 1000)
+
+
+def test_workday_retry_past_the_deadline_names_the_time_per_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    scraper = WorkdayScraper(URL, max_fetch_seconds=60, seconds_per_job=0.1)
+    scraper._deadline = time.monotonic() + 5
+
+    async def run() -> None:
+        await scraper._wait_to_retry(10, "HTTP 429")
+
+    with pytest.raises(ScraperError, match=r"max_fetch_seconds=60 plus 0.1 s per job: .*\(waiting out HTTP 429\)"):
+        asyncio.run(run())
+

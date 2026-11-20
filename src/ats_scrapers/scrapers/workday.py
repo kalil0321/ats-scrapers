@@ -268,11 +268,12 @@ class WorkdayScraper(BaseScraper):
         if self._deadline is not None and time.monotonic() >= self._deadline:
             raise self._deadline_error()
 
-    def _deadline_error(self) -> ScraperError:
+    def _deadline_error(self, waiting_out: str | None = None) -> ScraperError:
         extra = f" plus {self.seconds_per_job:g} s per job" if self.seconds_per_job else ""
+        reason = f" (waiting out {waiting_out})" if waiting_out else ""
         return ScraperError(
             f"Workday tenant exceeded max_fetch_seconds="
-            f"{self.max_fetch_seconds:g}{extra}: {self.company_slug}"
+            f"{self.max_fetch_seconds:g}{extra}: {self.company_slug}{reason}"
         )
 
     def _remaining(self) -> float | None:
@@ -548,7 +549,7 @@ class WorkdayScraper(BaseScraper):
             return
         total = int(first.get("total", 0))
         if depth == 0:
-            self._extend_deadline(total)
+            self._extend_deadline(_job_count(total, first.get("facets") or []))
         absorb(first.get("jobPostings") or [])
         if total <= PAGE_LIMIT:
             return
@@ -724,10 +725,7 @@ class WorkdayScraper(BaseScraper):
 
     async def _wait_to_retry(self, delay: float, last_error: str) -> None:
         if self._deadline is not None and time.monotonic() + delay >= self._deadline:
-            raise ScraperError(
-                f"Workday tenant exceeded max_fetch_seconds="
-                f"{self.max_fetch_seconds:g}: {self.company_slug} (waiting out {last_error})"
-            )
+            raise self._deadline_error(last_error)
         await asyncio.sleep(delay)
 
     def _parse_job(
@@ -1147,6 +1145,16 @@ def _extract_description(job_posting_info: dict[str, Any]) -> str | None:
     return None
 
 
+def _job_count(total: int, facets: list[dict[str, Any]]) -> int:
+    """A search's job count: its total, or more when the total is capped and
+    the counts of a single-value facet add up to more."""
+    values = _facet_values(facets)
+    return max(
+        [total]
+        + [sum(count for _, count in values[p]) for p in _SINGLE_VALUE_FACETS if p in values]
+    )
+
+
 def _pick_subdivision_facet(
     facets: list[dict[str, Any]],
     *,
@@ -1171,10 +1179,7 @@ def _pick_subdivision_facet(
         for param, items in values.items()
         if param not in already_applied and len(items) >= 2
     }
-    size = max(
-        [size or 0]
-        + [sum(count for _, count in values[p]) for p in _SINGLE_VALUE_FACETS if p in values]
-    )
+    size = _job_count(size or 0, facets)
     if size:
         # Counts drift by a few jobs between two searches.
         complete = {
