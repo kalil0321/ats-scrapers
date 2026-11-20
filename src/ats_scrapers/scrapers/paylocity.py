@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, EmploymentType, Job, SalaryPeriod
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -27,6 +27,8 @@ BASE_URL = "https://recruiting.paylocity.com"
 # read eight at a time.
 DETAIL_CONCURRENCY = 8
 _PAGE_DATA_RE = re.compile(r"\bwindow\.pageData\s*=\s*")
+# Retired and unknown boards redirect to this "Job Not Found" page.
+_BOARD_NOT_FOUND_PATH = "/recruiting/jobs/jobnotfound"
 _EMPLOYMENT_TYPE_MAP: dict[str, EmploymentType] = {
     "FULL_TIME": "FULL_TIME",
     "FULLTIME": "FULL_TIME",
@@ -126,8 +128,13 @@ class PaylocityScraper(BaseScraper):
 
     async def afetch(self) -> list[Job]:
         async with self.make_fetcher() as fetch:
-            listing_html = await fetch.get_text(self.listing_url)
-            payload = _extract_page_data(listing_html)
+            response = await fetch.request("GET", self.listing_url)
+            final_path = urlparse(response.url or "").path.rstrip("/")
+            if final_path.casefold() == _BOARD_NOT_FOUND_PATH:
+                raise CompanyNotFoundError(
+                    f"Paylocity board {self.board_id} does not exist"
+                )
+            payload = _extract_page_data(response.text)
             jobs = self._parse_listing(payload)
             if not self.include_descriptions or not jobs:
                 return jobs
