@@ -173,6 +173,7 @@ class WorkdayScraper(BaseScraper):
         *,
         timeout: float = 30.0,
         max_fetch_seconds: float | None = None,
+        seconds_per_job: float = 0.0,
         company_name: str | None = None,
         include_descriptions: bool = True,
         proxy: str | None = None,
@@ -184,7 +185,11 @@ class WorkdayScraper(BaseScraper):
         ``httpx.BaseTransport`` as well. The scraper never closes it.
 
         ``pacer`` spaces the requests to each host, shared with any other
-        scraper given the same pacer."""
+        scraper given the same pacer.
+
+        ``seconds_per_job`` extends ``max_fetch_seconds`` by that much for
+        each job the board announces, so a large board read through a
+        shared pacer gets the time its pages take."""
         super().__init__(
             company_slug,
             timeout=timeout,
@@ -193,6 +198,7 @@ class WorkdayScraper(BaseScraper):
             transport=transport,
         )
         self.max_fetch_seconds = max_fetch_seconds
+        self.seconds_per_job = max(0.0, seconds_per_job)
         self.pacer = pacer
         self.company_name = (
             company_name.strip()
@@ -254,14 +260,20 @@ class WorkdayScraper(BaseScraper):
         finally:
             self._deadline = None
 
+    def _extend_deadline(self, jobs: int) -> None:
+        if self._deadline is not None and self.seconds_per_job and jobs > 0:
+            self._deadline += jobs * self.seconds_per_job
+
     def _check_deadline(self) -> None:
         if self._deadline is not None and time.monotonic() >= self._deadline:
             raise self._deadline_error()
 
-    def _deadline_error(self) -> ScraperError:
+    def _deadline_error(self, waiting_out: str | None = None) -> ScraperError:
+        extra = f" plus {self.seconds_per_job:g} s per job" if self.seconds_per_job else ""
+        reason = f" (waiting out {waiting_out})" if waiting_out else ""
         return ScraperError(
             f"Workday tenant exceeded max_fetch_seconds="
-            f"{self.max_fetch_seconds:g}: {self.company_slug}"
+            f"{self.max_fetch_seconds:g}{extra}: {self.company_slug}{reason}"
         )
 
     def _remaining(self) -> float | None:
@@ -536,6 +548,8 @@ class WorkdayScraper(BaseScraper):
         if first is None:
             return
         total = int(first.get("total", 0))
+        if depth == 0:
+            self._extend_deadline(_job_count(total, first.get("facets") or []))
         absorb(first.get("jobPostings") or [])
         if total <= PAGE_LIMIT:
             return
@@ -711,10 +725,7 @@ class WorkdayScraper(BaseScraper):
 
     async def _wait_to_retry(self, delay: float, last_error: str) -> None:
         if self._deadline is not None and time.monotonic() + delay >= self._deadline:
-            raise ScraperError(
-                f"Workday tenant exceeded max_fetch_seconds="
-                f"{self.max_fetch_seconds:g}: {self.company_slug} (waiting out {last_error})"
-            )
+            raise self._deadline_error(last_error)
         await asyncio.sleep(delay)
 
     def _parse_job(
@@ -1146,6 +1157,16 @@ def _extract_description(job_posting_info: dict[str, Any]) -> str | None:
     return None
 
 
+def _job_count(total: int, facets: list[dict[str, Any]]) -> int:
+    """A search's job count: its total, or more when the total is capped and
+    the counts of a single-value facet add up to more."""
+    values = _facet_values(facets)
+    return max(
+        [total]
+        + [sum(count for _, count in values[p]) for p in _SINGLE_VALUE_FACETS if p in values]
+    )
+
+
 def _pick_subdivision_facet(
     facets: list[dict[str, Any]],
     *,
@@ -1170,10 +1191,7 @@ def _pick_subdivision_facet(
         for param, items in values.items()
         if param not in already_applied and len(items) >= 2
     }
-    size = max(
-        [size or 0]
-        + [sum(count for _, count in values[p]) for p in _SINGLE_VALUE_FACETS if p in values]
-    )
+    size = _job_count(size or 0, facets)
     if size:
         # Counts drift by a few jobs between two searches.
         complete = {
