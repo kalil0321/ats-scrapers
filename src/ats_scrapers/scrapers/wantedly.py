@@ -14,10 +14,13 @@ The site's own JSON API lists the projects of one company::
   listing shows at most 1,000 projects. ``_metadata`` gives the total and
   the number of pages.
 - ``occupation_types[]``, ``hiring_types[]`` and ``locations[]`` narrow the
-  listing, and the narrowed listing announces its own total. A company with
-  more than 100 pages is read slice by slice: one occupation at a time, then
-  one hiring type, then one area, until every slice fits. A slice that still
-  does not fit is refused, since its list would be cut short without notice.
+  listing, and the narrowed listing announces its own total. A listing of
+  more than 100 pages, found on any pass, is read slice by slice: one
+  occupation at a time, and a slice still too long one hiring type or one
+  region at a time. The totals of the slices must add up to the listing's,
+  or a project outside every slice would be lost: the listing is then
+  split on the next filter instead. A listing no filter splits that way is
+  refused, since its list would be cut short without notice.
 - Each project carries its full text (``description``), so no project page is
   read.
 - ``type=recent`` sorts by publication, newest first, and one pass sees
@@ -76,9 +79,11 @@ PAGE_CONCURRENCY = 1
 MAX_PASSES = 4
 MIN_COVERAGE = 0.9
 # The filters a listing past ``MAX_PAGES`` is split on, in order. A project
-# has one occupation and one hiring type, so their slices do not overlap; an
-# area can hold another (``tokyo`` lies in ``kanto``). A value the site does
-# not know is ignored, and the slice then lists the whole company.
+# has one occupation, one hiring type and one place, so the slices of one
+# filter do not overlap and their totals add up to the listing's. The areas
+# are the seven regions; the site's city areas (``tokyo``) lie within them.
+# A value the site does not know is ignored, and the slice then lists the
+# whole company.
 SPLIT_FILTERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "occupation_types[]",
@@ -102,21 +107,7 @@ SPLIT_FILTERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "locations[]",
-        (
-            "tokyo",
-            "osaka",
-            "nagoya",
-            "kyoto",
-            "fukuoka",
-            "sapporo",
-            "tohoku",
-            "kanto",
-            "hokuriku",
-            "tokai",
-            "kinki",
-            "chugoku",
-            "kyushu",
-        ),
+        ("tohoku", "kanto", "hokuriku", "tokai", "kinki", "chugoku", "kyushu"),
     ),
 )
 # Two projects of one company are the same opening when their role label and
@@ -208,22 +199,32 @@ class WantedlyScraper(BaseScraper):
         """Add to ``found`` the projects of the listing narrowed by
         ``filters``, whose first page is ``first``, and return its total.
 
-        A listing past the page cap is read as one slice per value of the
-        first filter of ``splits``."""
+        A listing past the page cap is read as one slice per value of a
+        filter of ``splits``: the first whose slices hold the whole listing."""
         total, pages = _listing_size(first, self.company_slug)
         if pages <= MAX_PAGES:
-            return await self._read_listing(read, filters, first, found)
-        if not splits:
-            narrowed = "".join(f", {key}={value}" for key, value in filters.items())
-            raise ScraperError(
-                f"Wantedly ({self.company_slug}{narrowed}) announces {total} "
-                f"projects on {pages} pages; only {MAX_PAGES} pages can be read"
-            )
-        (key, values), rest = splits[0], splits[1:]
-        for value in values:
-            narrower = {**filters, key: value}
-            await self._collect(read, narrower, await read(1, narrower), found, rest)
-        return total
+            total, grown = await self._read_listing(read, filters, first, found)
+            if grown is None:
+                return total
+            total, pages = _listing_size(grown, self.company_slug)
+        for key, values in splits:
+            rest = tuple(split for split in splits if split[0] != key)
+            held = 0
+            for value in values:
+                narrower = {**filters, key: value}
+                held += await self._collect(read, narrower, await read(1, narrower), found, rest)
+            # A project closed during the read is missing from the slices and
+            # from the listing read again; a project in no slice only from the
+            # slices.
+            now, _ = _listing_size(await read(1, filters), self.company_slug)
+            if held >= min(total, now):
+                return total
+        narrowed = "".join(f", {key}={value}" for key, value in filters.items())
+        raise ScraperError(
+            f"Wantedly ({self.company_slug}{narrowed}) announces {total} "
+            f"projects on {pages} pages; only {MAX_PAGES} pages can be read, "
+            "and no filter splits them into slices that hold them all"
+        )
 
     async def _read_listing(
         self,
@@ -231,11 +232,14 @@ class WantedlyScraper(BaseScraper):
         filters: dict[str, str],
         first: dict[str, Any],
         found: dict[str, dict[str, Any]],
-    ) -> int:
-        """Add to ``found`` the projects of a listing within the page cap,
-        and return the total its last pass announced."""
+    ) -> tuple[int, dict[str, Any] | None]:
+        """Add to ``found`` the projects of a listing within the page cap.
+
+        Returns the total its last pass announced, and the first page of a
+        pass that found the listing grown past the cap, None if none did."""
         listed: dict[str, dict[str, Any]] = {}
         total = 0
+        grown = None
         # Projects are collected across the passes on purpose: a project
         # published during a pass shifts its pages, so a pass cannot stand
         # alone. The price is small: a project closed between two passes is
@@ -243,11 +247,13 @@ class WantedlyScraper(BaseScraper):
         for attempt in range(MAX_PASSES):
             head = first if attempt == 0 else await read(1, filters)
             total, pages = _listing_size(head, self.company_slug)
+            if pages > MAX_PAGES:
+                grown = head
+                break
             payloads = [head]
-            last = min(pages, MAX_PAGES)
-            if last > 1:
+            if pages > 1:
                 payloads += await asyncio.gather(
-                    *(read(page, filters) for page in range(2, last + 1))
+                    *(read(page, filters) for page in range(2, pages + 1))
                 )
             for payload in payloads:
                 for item in _items(payload, self.company_slug):
@@ -262,7 +268,7 @@ class WantedlyScraper(BaseScraper):
                 break
         for project_id, item in listed.items():
             found.setdefault(project_id, item)
-        return total
+        return total, grown
 
     async def _page(
         self, fetch: Fetcher, page: int, filters: dict[str, str]

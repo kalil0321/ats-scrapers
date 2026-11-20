@@ -641,8 +641,9 @@ company's slug as written in its page address (capitals included) and
   (`looking_for`) and the same text as one job. When reporting what a
   catalogue brings, give both figures.
 - One listing stops at 1,000 projects (100 pages of 10). The scraper reads a
-  larger company one occupation at a time, then one hiring type, then one
-  area, and refuses it only when a slice still holds more than 1,000.
+  larger company one occupation at a time, then one hiring type or one
+  region, and refuses it when a slice still holds more than 1,000 or no
+  filter's slices hold every project of the company.
 - The listing also returns the names of staff members. Do not read or keep
   them.
 
