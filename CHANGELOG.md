@@ -7,6 +7,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Added
 
+- Pandapé career pages (`pandape`).
 - CareerPlug hiring sites (`careerplug`).
 - HiringThing job boards, on its own and on partner domains (`hiringthing`).
 - isolved Hire career portals (`isolved_hire`).

@@ -243,6 +243,11 @@ RESOLVES = [
         "accel",
     ),
     (
+        "https://acme.pandape.infojobs.com.br/Detail/3951659",
+        ATSType.PANDAPE,
+        "acme",
+    ),
+    (
         "https://bemobile.careerplug.com/jobs/3692843",
         ATSType.CAREERPLUG,
         "bemobile",

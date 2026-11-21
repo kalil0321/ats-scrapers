@@ -68,6 +68,7 @@ from ats_scrapers.scrapers.mycareersfuture import MyCareersFutureScraper
 from ats_scrapers.scrapers.ninehire import NinehireScraper
 from ats_scrapers.scrapers.oracle import OracleScraper
 from ats_scrapers.scrapers.pageup import PageUpScraper
+from ats_scrapers.scrapers.pandape import PandapeScraper
 from ats_scrapers.scrapers.paycom import PaycomScraper
 from ats_scrapers.scrapers.paylocity import PaylocityScraper
 from ats_scrapers.scrapers.peopleadmin import PeopleAdminScraper
@@ -169,6 +170,7 @@ __all__ = [
     "NinehireScraper",
     "OracleScraper",
     "PageUpScraper",
+    "PandapeScraper",
     "PaycomScraper",
     "PaylocityScraper",
     "PeopleAdminScraper",
