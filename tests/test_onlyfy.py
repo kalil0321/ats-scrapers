@@ -22,13 +22,15 @@ def _card(job_id: str, title: str, info: str, *, locale: str = "en", query: str 
     )
 
 
-def _page(cards: list[str], *, count: str | None = None, found: str = "2 jobs found") -> str:
+def _page(cards: list[str], *, count: str | None = None, found: str | None = None) -> str:
     pager = f'<span data-testid="pagination-items-count">{count}</span>' if count else ""
     body = (
         f'<ul data-testid="jobs-list">{"".join(cards)}</ul>{pager}'
         if cards
         else '<div data-testid="jobs-empty-state"></div>'
     )
+    if found is None:
+        found = f"{len(cards)} jobs found" if cards else "No job openings right now"
     return (
         "<html><head><title>Acme GmbH &amp; Co. KG</title></head><body>"
         f'<p data-testid="jobs-results-announcement">{found}</p>'
@@ -97,6 +99,15 @@ def test_reads_a_company_from_its_list(httpx_mock) -> None:
         ("Graz | Werkstudent | 01.02.2026", "INTERN", "internship", "Graz"),
         ("Bonn | Freelancer | 01.02.2026", "CONTRACT", "independent_contractor", "Bonn"),
         ("Köln | Vollzeit | 31.02.2026", "FULL_TIME", None, "Köln"),
+        ("Ulm | Unbefristet | 01.02.2026", None, "permanent", "Ulm"),
+        ("Ulm | Vollzeit, unbefristet | 01.02.2026", "FULL_TIME", "permanent", "Ulm"),
+        ("Ulm | Teilzeit, befristet | 01.02.2026", "PART_TIME", "temporary", "Ulm"),
+        ("Kiel | Befristet/Saisonal | 01.02.2026", "TEMPORARY", "temporary", "Kiel"),
+        ("Kiel | Stand-in / temporary | 01.02.2026", "TEMPORARY", "temporary", "Kiel"),
+        ("Bern | Part-time / full-time | 01.02.2026", None, None, "Bern"),
+        ("Bern | Marginal employment | 01.02.2026", None, None, "Bern"),
+        ("Bonn | Internationales Marketing | 01.02.2026", None, None, "Bonn"),
+        ("Bonn | Aus- und Weiterbildung | 01.02.2026", None, None, "Bonn"),
         ("Remote", None, None, "Remote"),
         ("", None, None, None),
     ],
@@ -113,21 +124,21 @@ def test_reads_what_a_card_prints(
     )
 
 
-def test_turns_every_page_and_keeps_a_job_once(httpx_mock) -> None:
+def test_turns_every_page_and_keeps_a_job_once(httpx_mock, monkeypatch) -> None:
+    monkeypatch.setattr(onlyfy, "PAGE_SIZE", 2)
     httpx_mock.add_response(url=f"{SITE}/en", text=_page(
-        [_card("a1", "A", ""), _card("a2", "B", "")], count="<b>1-10</b> out of <b>25 jobs</b>",
+        [_card("a1", "A", ""), _card("a2", "B", "")],
+        count="<b>1-2</b> out of <b>3 jobs</b>", found="3 jobs found",
     ))
     httpx_mock.add_response(url=f"{SITE}/en?page=2", text=_page([
         _card("a2", "B", "", query="?page=2"), _card("a3", "C", "", query="?page=2"),
-    ]))
-    httpx_mock.add_response(
-        url=f"{SITE}/en?page=3", status_code=307, headers={"location": "/en"},
-    )
+    ], found="3 jobs found"))
 
     jobs = OnlyfyScraper("acme", include_descriptions=False).fetch()
 
     assert [job.ats_id for job in jobs] == ["a1", "a2", "a3"]
     assert str(jobs[-1].url) == f"{SITE}/en/job/a3"
+    assert jobs[0].commitment is None
 
 
 def test_a_list_longer_than_the_page_limit_is_an_error(httpx_mock, monkeypatch) -> None:
@@ -232,29 +243,45 @@ def test_rejects_what_is_not_a_company(slug: str) -> None:
         OnlyfyScraper(slug)
 
 
-def test_a_list_that_breaks_off_before_its_end_is_an_error(httpx_mock) -> None:
-    httpx_mock.add_response(url=f"{SITE}/en", text=_page(
-        [_card("a1", "A", "")], count="<b>1-10</b> out of <b>35 jobs</b>",
+def test_a_list_that_stays_short_is_read_twice_and_then_an_error(httpx_mock, monkeypatch) -> None:
+    monkeypatch.setattr(onlyfy, "PAGE_SIZE", 1)
+    httpx_mock.add_response(url=f"{SITE}/en", is_reusable=True, text=_page(
+        [_card("a1", "A", "")], count="<b>1-1</b> out of <b>3 jobs</b>", found="3 jobs found",
     ))
-    httpx_mock.add_response(url=f"{SITE}/en?page=2", text=_page([_card("a2", "B", "")]))
     httpx_mock.add_response(
-        url=f"{SITE}/en?page=3", status_code=307, headers={"location": "/en"},
+        url=f"{SITE}/en?page=2", is_reusable=True, text=_page([_card("a2", "B", "")]),
     )
-    httpx_mock.add_response(url=f"{SITE}/en?page=4", text=_page([_card("a4", "D", "")]))
+    httpx_mock.add_response(
+        url=f"{SITE}/en?page=3", is_reusable=True, status_code=307, headers={"location": "/en"},
+    )
 
-    with pytest.raises(ScraperError, match="broke off at page 3 of 4"):
+    with pytest.raises(ScraperError, match="listed 2 of the 3 jobs it announces"):
         OnlyfyScraper("acme", include_descriptions=False).fetch()
 
+    assert len(httpx_mock.get_requests()) == 6
 
-def test_a_page_without_jobs_before_the_end_is_an_error(httpx_mock) -> None:
-    httpx_mock.add_response(url=f"{SITE}/en", text=_page(
-        [_card("a1", "A", "")], count="<b>1-10</b> out of <b>25 jobs</b>",
-    ))
-    httpx_mock.add_response(url=f"{SITE}/en?page=2", text=_page([], found="25 jobs found"))
-    httpx_mock.add_response(url=f"{SITE}/en?page=3", text=_page([_card("a3", "C", "")]))
 
-    with pytest.raises(ScraperError, match="broke off at page 2 of 3"):
-        OnlyfyScraper("acme", include_descriptions=False).fetch()
+def test_a_job_that_moved_between_two_pages_is_found_on_the_second_reading(
+    httpx_mock, monkeypatch,
+) -> None:
+    monkeypatch.setattr(onlyfy, "PAGE_SIZE", 2)
+    first = _page(
+        [_card("a1", "A", ""), _card("a2", "B", "")],
+        count="<b>1-2</b> out of <b>4 jobs</b>", found="4 jobs found",
+    )
+    httpx_mock.add_response(url=f"{SITE}/en", text=first)
+    # A job was published between the two reads: "a2" is listed again and "a3" is skipped.
+    httpx_mock.add_response(url=f"{SITE}/en?page=2", text=_page([
+        _card("a2", "B", ""), _card("a4", "D", ""),
+    ]))
+    httpx_mock.add_response(url=f"{SITE}/en", text=first)
+    httpx_mock.add_response(url=f"{SITE}/en?page=2", text=_page([
+        _card("a3", "C", ""), _card("a4", "D", ""),
+    ]))
+
+    jobs = OnlyfyScraper("acme", include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["a1", "a2", "a3", "a4"]
 
 
 def test_an_inner_page_that_is_not_a_job_list_is_an_error(httpx_mock) -> None:
@@ -336,10 +363,11 @@ def test_a_refused_job_page_fails_the_read(httpx_mock, status: int, words: str) 
         OnlyfyScraper("acme").fetch()
 
 
-def test_a_first_page_that_announces_jobs_and_lists_none_is_an_error(httpx_mock) -> None:
+@pytest.mark.parametrize("pager", ["", "<b>1-10</b> out of <b>12 jobs</b>"])
+def test_a_first_page_that_announces_jobs_and_lists_none_is_an_error(httpx_mock, pager: str) -> None:
     page = _page([], found="12 jobs found").replace(
         '<div data-testid="jobs-empty-state"></div>',
-        '<span data-testid="pagination-items-count"><b>1-10</b> out of <b>12 jobs</b></span>',
+        f'<span data-testid="pagination-items-count">{pager}</span>' if pager else "",
     )
     httpx_mock.add_response(url=f"{SITE}/en", text=page)
 

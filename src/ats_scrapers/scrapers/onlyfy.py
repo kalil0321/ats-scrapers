@@ -5,7 +5,8 @@ posting as schema.org data, description included.
 ``include_descriptions=False`` reads the list alone.
 
 A list is returned whole or not at all: a refused or failed page fails the
-read, and so does a page that comes back empty before the end of the list.
+read. A list that changes while its pages are read, or comes back shorter than
+the count the page announces, is read once more and fails if it is short again.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ PAGE_SIZE = 10
 PAGE_CONCURRENCY = 4
 DETAIL_CONCURRENCY = 4
 MAX_PAGES = 1_000
+MAX_LIST_ATTEMPTS = 2
 
 _REDIRECTS = frozenset({301, 302, 303, 307, 308})
 _MISSING = frozenset({404})
@@ -52,14 +54,23 @@ _POSTED_EMPLOYMENT: dict[str, EmploymentType] = {
     "INTERN": "INTERN",
 }
 # What a card calls the kind of work, in the two languages a page is printed in.
-_LISTED: tuple[tuple[tuple[str, ...], EmploymentType | None, EngagementType | None], ...] = (
-    (("apprenticeship", "ausbildung"), None, "apprenticeship"),
-    (("internship", "praktik", "working student", "werkstudent"), "INTERN", "internship"),
-    (("freelance", "freiberuf"), "CONTRACT", "independent_contractor"),
-    (("temporary", "befristet"), "TEMPORARY", "temporary"),
-    (("part-time", "teilzeit"), "PART_TIME", None),
-    (("full-time", "vollzeit"), "FULL_TIME", None),
+# Whole words: the same place on a card can carry a department of the company's own.
+_FULL_TIME = re.compile(r"\b(full-time|vollzeit)\b", re.IGNORECASE)
+_PART_TIME = re.compile(r"\b(part-time|teilzeit)\b", re.IGNORECASE)
+_APPRENTICE = re.compile(r"\b(apprenticeship|ausbildung)\b", re.IGNORECASE)
+_INTERN = re.compile(
+    r"\b(intern|internship|praktikum|praktikant(in)?|werkstudent(in)?|working student)\b",
+    re.IGNORECASE,
 )
+_FREELANCE = re.compile(r"\b(freelance|freelancer|freiberuflich|freiberufler)\b", re.IGNORECASE)
+_PERMANENT = re.compile(r"\b(unbefristet|permanent)\b", re.IGNORECASE)
+# ``unbefristet`` is the opposite of ``befristet``: the word must start there.
+_TEMPORARY = re.compile(r"\b(befristet|temporary|aushilfe|stand-in)\b", re.IGNORECASE)
+_MARGINAL = re.compile(r"\b(marginal employment|geringfügig)\b", re.IGNORECASE)
+
+
+class _ListChangedError(ScraperError):
+    """The list changed, or came back short, while its pages were read."""
 
 
 @ScraperRegistry.register(ATSType.ONLYFY)
@@ -94,6 +105,18 @@ class OnlyfyScraper(BaseScraper):
         self._company = self.company_slug
 
     async def afetch(self) -> list[Job]:
+        for attempt in range(1, MAX_LIST_ATTEMPTS + 1):
+            try:
+                jobs = await self._list()
+                break
+            except _ListChangedError:
+                if attempt == MAX_LIST_ATTEMPTS:
+                    raise
+        if self.include_descriptions:
+            await self._describe(jobs)
+        return jobs
+
+    async def _list(self) -> list[Job]:
         async with self.make_fetcher(follow_redirects=False) as fetch:
             locale, first = await self._first_page(fetch)
             pages = [first]
@@ -109,21 +132,17 @@ class OnlyfyScraper(BaseScraper):
                     self._page(fetch, locale, number, semaphore)
                     for number in range(2, last_page + 1)
                 )
-                # Only the last page may have emptied while the list was read.
-                for number, page in enumerate(pages[:-1], start=1):
-                    if not page.jobs:
-                        raise ScraperError(
-                            f"onlyfy ({self.company_slug}) list broke off at "
-                            f"page {number} of {last_page}"
-                        )
         listed: dict[str, Job] = {}
         for page in pages:
             for job in page.jobs:
                 listed.setdefault(job.ats_id, job)
-        jobs = list(listed.values())
-        if self.include_descriptions:
-            await self._describe(jobs)
-        return jobs
+        if len(listed) < first.total:
+            # A job that moved between two pages while they were read is on neither.
+            raise _ListChangedError(
+                f"onlyfy ({self.company_slug}) listed {len(listed)} of the "
+                f"{first.total} jobs it announces"
+            )
+        return list(listed.values())
 
     def get_description(self, job: Job) -> str | None:
         if not job.description:
@@ -140,7 +159,8 @@ class OnlyfyScraper(BaseScraper):
             if response.status_code in _REDIRECTS:
                 raise self._astray(response)
         tree = parse_html(response.text)
-        if _marked(tree, "jobs-results-announcement") is None:
+        announcement = _marked(tree, "jobs-results-announcement")
+        if announcement is None:
             raise ScraperError(
                 f"onlyfy ({self.company_slug}) returned an unrecognized career page"
             )
@@ -148,8 +168,12 @@ class OnlyfyScraper(BaseScraper):
         self._company = " ".join(title.text().split()) if title is not None else ""
         self._company = self._company or self.company_slug
         jobs = self._jobs(tree, locale)
-        count = _marked(tree, "pagination-items-count")
         total = len(jobs)
+        # "12 jobs found": the first number is the whole list.
+        announced = _TOTAL.findall(announcement.text())
+        if announced:
+            total = max(total, int(announced[0]))
+        count = _marked(tree, "pagination-items-count")
         if count is not None:
             # "1-10 out of 20 jobs": the last number is the whole list.
             numbers = _TOTAL.findall(count.text())
@@ -302,15 +326,38 @@ def _facts(text: str) -> dict[str, Any]:
                     int(date.group(3)), int(date.group(2)), int(date.group(1)), tzinfo=UTC,
                 )
             continue
-        label = part.casefold()
-        kind = next((found for found in _LISTED if any(word in label for word in found[0])), None)
-        if kind and "commitment" not in facts:
+        kind = _kind(part)
+        if kind is not None and "commitment" not in facts:
             facts["commitment"] = part
-            facts["employment_type"] = kind[1]
-            facts["engagement_type"] = kind[2]
-        elif index == 0:
+            facts["employment_type"], facts["engagement_type"] = kind
+        elif kind is None and index == 0:
             facts["location"] = part
     return facts
+
+
+def _kind(label: str) -> tuple[EmploymentType | None, EngagementType | None] | None:
+    """The kind of work a label names, or ``None`` when it names something else."""
+    full = _FULL_TIME.search(label) is not None
+    part = _PART_TIME.search(label) is not None
+    employment: EmploymentType | None = None
+    engagement: EngagementType | None = None
+    if _APPRENTICE.search(label):
+        engagement = "apprenticeship"
+    elif _INTERN.search(label):
+        employment, engagement = "INTERN", "internship"
+    elif _FREELANCE.search(label):
+        employment, engagement = "CONTRACT", "independent_contractor"
+    elif _PERMANENT.search(label):
+        engagement = "permanent"
+    elif _TEMPORARY.search(label):
+        engagement = "temporary"
+    if employment is None and full != part:
+        # "Part-time / full-time" offers both: neither is claimed.
+        employment = "FULL_TIME" if full else "PART_TIME"
+    if employment is None and engagement == "temporary" and not (full or part):
+        employment = "TEMPORARY"
+    known = full or part or engagement is not None or _MARGINAL.search(label) is not None
+    return (employment, engagement) if known else None
 
 
 def _address(posting: dict[str, Any]) -> dict[str, str]:
