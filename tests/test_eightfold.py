@@ -1171,6 +1171,37 @@ def test_listing_pace_page_sent_before_the_pause_keeps_the_pause_length(
     assert sleeps == pytest.approx([15.0, 30.0], abs=0.1)
 
 
+def test_listing_pace_holds_concurrent_requests_through_a_new_pause(monkeypatch) -> None:
+    # Real sleeps, scaled down. Only lower bounds are checked: a sleep never
+    # ends early, but a busy machine can end it late.
+    import ats_scrapers.scrapers.eightfold as ef
+    monkeypatch.setattr(ef, "RATE_LIMIT_COOLOFF_DELAYS", (0.1, 0.2, 0.4, 0.8))
+    monkeypatch.setattr(ef, "RATE_LIMITED_INTERVAL", 0.02)
+
+    async def run() -> tuple[float, list[float]]:
+        loop = asyncio.get_running_loop()
+        pace = ef._ListingPace("Dolby")
+        pace.back_off(generation=await pace.wait(), retry_after=None, start=10)
+        starts: list[float] = []
+
+        async def request() -> None:
+            await pace.wait()
+            starts.append(loop.time())
+
+        tasks = [asyncio.create_task(request()) for _ in range(4)]
+        await asyncio.sleep(0)  # each task takes its slot and sleeps
+        # Another page meets a 429 while the four wait for their slots.
+        second_pause = loop.time()
+        pace.back_off(generation=1, retry_after=None, start=20)
+        await asyncio.gather(*tasks)
+        return second_pause, sorted(starts)
+
+    second_pause, starts = asyncio.run(run())
+
+    for k, start in enumerate(starts):
+        assert start >= second_pause + 0.2 + k * 0.02 - 0.005
+
+
 # --- Extra fields extraction (department, is_remote) -----------------------
 
 
