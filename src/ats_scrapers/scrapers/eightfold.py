@@ -58,6 +58,17 @@ SLOW_REQUEST_THRESHOLD = 5.0  # log a warning for any single request slower than
 # has sent too many requests, and serves it again a few minutes after the
 # requests stop. A listing page that meets it waits these delays in turn.
 BLOCK_COOLOFF_DELAYS: tuple[float, ...] = (30.0, 90.0, 180.0)
+# A board answers 429 to an address that sends it a few hundred search requests
+# in a burst (about 300 at MAX_CONCURRENCY_HTTPX), whatever the offset, while
+# 3 requests per second pass for 600 pages. Past the first page, a 429 pauses
+# every listing request of the board for these delays in turn, then the board
+# is paced. Each pause that ends with no page served moves to the next delay.
+RATE_LIMIT_COOLOFF_DELAYS: tuple[float, ...] = (15.0, 30.0, 60.0, 120.0)
+# Seconds between listing requests once a board answered 429. A 429 that follows
+# a page served at this pace doubles it; one met before any page only lengthens
+# the pause.
+RATE_LIMITED_INTERVAL = 0.5
+MAX_RATE_LIMITED_INTERVAL = 4.0
 # Eightfold's 404 page for a host whose company group no longer exists. A live
 # tenant asked with a wrong ``domain`` answers a plain "Page Not Found".
 _GROUP_NOT_FOUND = "Group ID not found"
@@ -190,10 +201,11 @@ class EightfoldScraper(BaseScraper):
                 return
             offsets = list(range(PAGE_SIZE, count, PAGE_SIZE))
             sem = asyncio.Semaphore(MAX_CONCURRENCY_HTTPX)
+            pace = _ListingPace(self.company_name)
 
             async def task(offset: int) -> None:
                 async with sem:
-                    page = await self._fetch_page_httpx(client, start=offset)
+                    page = await self._fetch_page_httpx(client, start=offset, pace=pace)
                     self._collect(page.get("positions") or [], seen, all_jobs)
 
             # ``asyncio.gather`` leaves sibling tasks running when one raises
@@ -234,11 +246,12 @@ class EightfoldScraper(BaseScraper):
                 return
             offsets = list(range(PAGE_SIZE, count, PAGE_SIZE))
             sem = asyncio.Semaphore(MAX_CONCURRENCY_HTTPX)
+            pace = _ListingPace(self.company_name)
 
             async def task(offset: int) -> None:
                 async with sem:
                     page = await self._fetch_page_smartapply_httpx(
-                        client, start=offset
+                        client, start=offset, pace=pace
                     )
                     self._collect(page.get("positions") or [], seen, all_jobs)
 
@@ -341,18 +354,50 @@ class EightfoldScraper(BaseScraper):
         self._detail_blocked = True
 
     async def _fetch_page_httpx(
-        self, client: httpx.AsyncClient, *, start: int
+        self,
+        client: httpx.AsyncClient,
+        *,
+        start: int,
+        pace: _ListingPace | None = None,
     ) -> dict[str, Any]:
-        return await self._wait_out_block(
-            self._fetch_page_httpx_once, client, start=start
+        return await self._wait_out_rate_limit(
+            self._fetch_page_httpx_once, client, start=start, pace=pace
         )
 
     async def _fetch_page_smartapply_httpx(
-        self, client: httpx.AsyncClient, *, start: int
+        self,
+        client: httpx.AsyncClient,
+        *,
+        start: int,
+        pace: _ListingPace | None = None,
     ) -> dict[str, Any]:
-        return await self._wait_out_block(
-            self._fetch_page_smartapply_httpx_once, client, start=start
+        return await self._wait_out_rate_limit(
+            self._fetch_page_smartapply_httpx_once, client, start=start, pace=pace
         )
+
+    async def _wait_out_rate_limit(
+        self,
+        fetch_page: Callable[..., Awaitable[dict[str, Any]]],
+        client: httpx.AsyncClient,
+        *,
+        start: int,
+        pace: _ListingPace | None,
+    ) -> dict[str, Any]:
+        """Without a pace (the first page), a 429 is retried a few times by
+        ``fetch_page`` and then fails the board."""
+        while True:
+            try:
+                page = await self._wait_out_block(
+                    fetch_page, client, start=start, pace=pace
+                )
+            except _RateLimited as exc:
+                if pace is None:
+                    raise
+                pace.back_off(
+                    generation=exc.generation, retry_after=exc.retry_after, start=start
+                )
+                continue
+            return page
 
     async def _wait_out_block(
         self,
@@ -360,10 +405,11 @@ class EightfoldScraper(BaseScraper):
         client: httpx.AsyncClient,
         *,
         start: int,
+        pace: _ListingPace | None = None,
     ) -> dict[str, Any]:
         for delay in BLOCK_COOLOFF_DELAYS:
             try:
-                return await fetch_page(client, start=start)
+                return await fetch_page(client, start=start, pace=pace)
             except _EdgeBlocked:
                 import logging
                 logging.getLogger(__name__).warning(
@@ -372,7 +418,7 @@ class EightfoldScraper(BaseScraper):
                 )
                 await asyncio.sleep(delay)
         try:
-            return await fetch_page(client, start=start)
+            return await fetch_page(client, start=start, pace=pace)
         except _EdgeBlocked as exc:
             raise ScraperError(
                 f"Eightfold ({self.company_name}) blocked (405) at start={start} "
@@ -380,12 +426,18 @@ class EightfoldScraper(BaseScraper):
             ) from exc
 
     async def _fetch_page_httpx_once(
-        self, client: httpx.AsyncClient, *, start: int
+        self,
+        client: httpx.AsyncClient,
+        *,
+        start: int,
+        pace: _ListingPace | None = None,
     ) -> dict[str, Any]:
         """One page with retry on 429/5xx (ported from the legacy Microsoft
-        scraper, where ~1% of requests hit transient 502s on Eightfold)."""
+        scraper, where ~1% of requests hit transient 502s on Eightfold).
+        With a ``pace``, a 429 is left to the pace instead."""
         last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
+            generation = await pace.wait() if pace is not None else 0
             t0 = asyncio.get_event_loop().time()
             try:
                 response = await client.get(
@@ -422,12 +474,16 @@ class EightfoldScraper(BaseScraper):
                 )
 
             if response.status_code == 200:
+                if pace is not None:
+                    pace.note_served(generation)
                 return response.json().get("data") or {}
             if response.status_code == 403:
                 if _is_pcsx_unavailable(response):
                     raise _SmartApplyRequired(self.company_name)
                 raise _WAFBlocked(self.company_name, start)
             if response.status_code == 429:  # rate-limited
+                if pace is not None:
+                    raise _RateLimited(generation, _retry_after_header(response))
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
                         f"Eightfold ({self.company_name}) rate-limited (429) at "
@@ -458,10 +514,15 @@ class EightfoldScraper(BaseScraper):
         )
 
     async def _fetch_page_smartapply_httpx_once(
-        self, client: httpx.AsyncClient, *, start: int
+        self,
+        client: httpx.AsyncClient,
+        *,
+        start: int,
+        pace: _ListingPace | None = None,
     ) -> dict[str, Any]:
         last_exc: Exception | None = None
         for attempt in range(1, MAX_RETRIES + 1):
+            generation = await pace.wait() if pace is not None else 0
             try:
                 response = await client.get(
                     f"{self.base_url}/api/apply/v2/jobs",
@@ -495,10 +556,14 @@ class EightfoldScraper(BaseScraper):
                         f"Eightfold ({self.company_name}) SmartApply returned "
                         f"malformed JSON at start={start}: {exc}"
                     ) from exc
+                if pace is not None:
+                    pace.note_served(generation)
                 return {
                     "positions": payload.get("positions") or [],
                     "count": payload.get("count") or 0,
                 }
+            if response.status_code == 429 and pace is not None:
+                raise _RateLimited(generation, _retry_after_header(response))
             if response.status_code in (429, 500, 502, 503, 504):
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
@@ -704,6 +769,82 @@ class _EdgeBlocked(Exception):  # noqa: N818
     """Internal signal that a listing page met the edge's 405 block."""
 
 
+class _RateLimited(Exception):  # noqa: N818
+    """Internal signal that a paced listing page answered 429."""
+
+    def __init__(self, generation: int, retry_after: float | None) -> None:
+        super().__init__("rate-limited (429)")
+        self.generation = generation
+        self.retry_after = retry_after
+
+
+class _ListingPace:
+    """Spaces the listing requests of one board once it has answered 429.
+
+    The limit counts the board's requests, so a 429 pauses every request of
+    the board, not just the one that met it.
+    """
+
+    def __init__(self, company_name: str) -> None:
+        self.company_name = company_name
+        self.interval = 0.0
+        self._next_slot = 0.0
+        self._generation = 0  # number of pauses so far
+        self._strikes = 0
+
+    async def wait(self) -> int:
+        """Wait for this request's slot; returns the pause generation it is
+        sent under, for ``back_off``."""
+        loop = asyncio.get_running_loop()
+        while True:
+            generation = self._generation
+            now = loop.time()
+            slot = max(now, self._next_slot)
+            self._next_slot = slot + self.interval
+            if slot > now:
+                await asyncio.sleep(slot - now)
+            # A pause that began while this request waited for its slot
+            # moves it behind the pause.
+            if generation == self._generation:
+                return generation
+
+    def note_served(self, generation: int) -> None:
+        # A page sent before the latest pause says nothing about how it ends.
+        if generation == self._generation:
+            self._strikes = 0
+
+    def back_off(self, *, generation: int, retry_after: float | None, start: int) -> None:
+        """Pause the board after a 429; raises once the board keeps refusing."""
+        if generation != self._generation:
+            # Sent before the latest pause began: that pause already covers it.
+            return
+        longest = max(RATE_LIMIT_COOLOFF_DELAYS)
+        if retry_after is not None and retry_after > longest:
+            raise ScraperError(
+                f"Eightfold ({self.company_name}) rate-limited (429) at start={start}, "
+                f"Retry-After {retry_after:.0f}s"
+            )
+        if self._strikes == len(RATE_LIMIT_COOLOFF_DELAYS):
+            raise ScraperError(
+                f"Eightfold ({self.company_name}) rate-limited (429) at start={start} "
+                f"after waiting {sum(RATE_LIMIT_COOLOFF_DELAYS):.0f}s"
+            )
+        delay = max(RATE_LIMIT_COOLOFF_DELAYS[self._strikes], retry_after or 0.0)
+        if self._strikes == 0:
+            self.interval = min(
+                MAX_RATE_LIMITED_INTERVAL, max(RATE_LIMITED_INTERVAL, self.interval * 2)
+            )
+        self._strikes += 1
+        self._next_slot = asyncio.get_running_loop().time() + delay
+        self._generation += 1
+        import logging
+        logging.getLogger(__name__).warning(
+            "Eightfold (%s) rate-limited (429) at start=%d; pausing %.0fs, "
+            "then one listing request every %.1fs",
+            self.company_name, start, delay, self.interval,
+        )
+
+
 class _SmartApplyRequired(Exception):  # noqa: N818
     """Internal signal that PCSX is disabled for a SmartApply tenant."""
 
@@ -721,12 +862,19 @@ def _is_pcsx_unavailable(response: httpx.Response) -> bool:
     return "pcsx is not enabled" in message or "not authorized for pcsx" in message
 
 
-def _retry_after_seconds(response: httpx.Response, attempt: int) -> float:
-    """Delay before retrying a 429: honour a numeric ``Retry-After`` header,
-    else back off exponentially from ``RETRY_BASE_DELAY``."""
+def _retry_after_header(response: httpx.Response) -> float | None:
     retry_after = response.headers.get("Retry-After")
     if retry_after and retry_after.isdigit():
         return float(retry_after)
+    return None
+
+
+def _retry_after_seconds(response: httpx.Response, attempt: int) -> float:
+    """Delay before retrying a 429: honour a numeric ``Retry-After`` header,
+    else back off exponentially from ``RETRY_BASE_DELAY``."""
+    retry_after = _retry_after_header(response)
+    if retry_after is not None:
+        return retry_after
     return float(RETRY_BASE_DELAY * (2 ** attempt))
 
 
