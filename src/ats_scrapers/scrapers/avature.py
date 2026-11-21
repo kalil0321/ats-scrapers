@@ -187,10 +187,12 @@ class _Listing:
     first_url: str = ""
     # Ids on the first two pages.
     head: list[str] = field(default_factory=list)
+    # Offset and ids of the last page that listed jobs.
+    tail: tuple[int, list[str]] | None = None
     # The walk stopped at OFFSET_CAP with more jobs to come.
     capped: bool = False
-    # The first two pages are the parent search's: the site ignored the filter
-    # value or nearly every job has it, so the slice splits nothing.
+    # The search lists the parent search's jobs at its start and at its last
+    # page: the site ignored the filter value, so the slice splits nothing.
     repeats_parent: bool = False
 
 
@@ -523,6 +525,9 @@ class AvatureScraper(BaseScraper):
                 except Exception:
                     if offset == 0:
                         raise
+                    # The bundled browsers raise on the 406 refusal.
+                    if offset >= OFFSET_CAP:
+                        raise _OffsetCapError() from None
                     raise _ListingStoppedError() from None
             return rendered.html, rendered.url or url
 
@@ -630,7 +635,9 @@ class AvatureScraper(BaseScraper):
             board.filters = await _search_filters(
                 listing.first_html, listing.first_url, options,
             )
-            await self._split(board, url, listing, frozenset())
+            # A filter the board URL already sets keeps its value.
+            preset = frozenset(key for key, _ in parse_qsl(urlparse(_search_url(base)).query))
+            await self._split(board, url, listing, preset)
         return list(board.jobs.values())
 
     async def _split(
@@ -650,8 +657,7 @@ class AvatureScraper(BaseScraper):
                 continue
             parts = await _run_all([
                 self._read_slice(
-                    board, _with_query(url, [(name, value)]), listing.head,
-                    applied | {name},
+                    board, _with_query(url, [(name, value)]), listing, applied | {name},
                 )
                 for value in values
             ])
@@ -670,9 +676,9 @@ class AvatureScraper(BaseScraper):
         return found
 
     async def _read_slice(
-        self, board: _Board, url: str, parent_head: list[str], applied: frozenset[str],
+        self, board: _Board, url: str, parent: _Listing, applied: frozenset[str],
     ) -> set[str]:
-        listing = await self._walk(board, url, parent_head=parent_head)
+        listing = await self._walk(board, url, parent=parent)
         _keep(board.jobs, listing.jobs)
         if listing.repeats_parent:
             return set()
@@ -681,12 +687,12 @@ class AvatureScraper(BaseScraper):
         return {j.ats_id for j in listing.jobs}
 
     async def _walk(
-        self, board: _Board, url: str, *, parent_head: list[str] | None = None,
+        self, board: _Board, url: str, *, parent: _Listing | None = None,
     ) -> _Listing:
         """Page through the search at ``url`` until its last page or the cap.
 
-        A search whose first two pages are ``parent_head`` stops there with
-        ``repeats_parent`` set.
+        A search that lists the first two pages and the last page of
+        ``parent`` as ``parent`` does stops there with ``repeats_parent`` set.
         """
         base = board.base
         listing = _Listing()
@@ -715,6 +721,7 @@ class AvatureScraper(BaseScraper):
                 return listing
             seen.update(j.ats_id for j in new)
             listing.jobs.extend(new)
+            listing.tail = (offset, [j.ats_id for j in page_jobs])
             if page_num < 2:
                 listing.head = [j.ats_id for j in listing.jobs]
             following = _next_page(
@@ -722,12 +729,37 @@ class AvatureScraper(BaseScraper):
             )
             if following is None:
                 return listing
-            if page_num == 1 and listing.head == parent_head:
+            if (
+                page_num == 1
+                and parent is not None
+                and listing.head == parent.head
+                and await self._lists_tail_of(board, url, parent, offset)
+            ):
                 listing.repeats_parent = True
                 return listing
             offset, link = following
             target = link or _with_query(url, _pagination_items(base, offset))
         raise _page_guard_error(base, len(listing.jobs))
+
+    async def _lists_tail_of(
+        self, board: _Board, url: str, parent: _Listing, read_to: int,
+    ) -> bool:
+        """Whether the search at ``url`` lists ``parent``'s last page read at
+        the same offset. Pages up to ``read_to`` already match."""
+        if parent.tail is None:
+            return False
+        offset, ids = parent.tail
+        if offset <= read_to:
+            return True
+        try:
+            html_text, _ = await board.fetch(
+                _with_query(url, _pagination_items(board.base, offset)), offset,
+            )
+        except _ListingStoppedError:
+            return False
+        page = [j.ats_id for j in self._parse_page(html_text, board.base, board.company)]
+        # The page may hold more rows than the parent's page link asked for.
+        return bool(ids) and page[:len(ids)] == ids
 
     def _resolve_base_url(self) -> str:
         slug = self.company_slug
