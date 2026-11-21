@@ -435,3 +435,47 @@ def test_a_refused_vacancy_page_fails_the_read(httpx_mock, status: int, words: s
 
     with pytest.raises(ScraperError, match=words):
         PandapeScraper("acme").fetch()
+
+
+@pytest.mark.parametrize("answer", [{"isLast": False, "subtotal": 80}, {"view": "", "isLast": False}])
+def test_a_page_that_lists_nothing_but_announces_more_is_an_error(
+    httpx_mock, answer: dict[str, object],
+) -> None:
+    httpx_mock.add_response(url=LIST_URL, text=_list([_card(1, "A")], last=False))
+    httpx_mock.add_response(method="POST", url=_page(2), json=answer)
+
+    with pytest.raises(ScraperError, match="page 2 lists nothing although more is announced"):
+        PandapeScraper("acme", include_descriptions=False).fetch()
+
+
+def test_a_list_that_stops_growing_on_an_empty_page_is_an_error(httpx_mock) -> None:
+    httpx_mock.add_response(url=LIST_URL, text=_list([_card(1, "A")], last=False))
+    httpx_mock.add_response(
+        method="POST", url=_page(2), json=_more([_card(2, "B")], last=False, total=40),
+    )
+    httpx_mock.add_response(method="POST", url=_page(3), json=_more([], last=False, total=41))
+
+    with pytest.raises(ScraperError, match="page 3 lists nothing although more is announced"):
+        PandapeScraper("acme", include_descriptions=False).fetch()
+
+
+@pytest.mark.parametrize("answer", [[], "busy", None])
+def test_an_answer_that_is_not_a_page_is_an_error(httpx_mock, answer: object) -> None:
+    httpx_mock.add_response(url=LIST_URL, text=_list([_card(1, "A")], last=False))
+    httpx_mock.add_response(method="POST", url=_page(2), json=answer)
+
+    with pytest.raises(ScraperError, match="unreadable page 2"):
+        PandapeScraper("acme", include_descriptions=False).fetch()
+
+
+def test_a_second_reading_takes_the_days_printed_then(httpx_mock) -> None:
+    httpx_mock.add_response(url=LIST_URL, text=_list([_card(1, "A", day="3 mar")]))
+    httpx_mock.add_response(url=LIST_URL, text=_list([_card(1, "A", day="9 jun")]))
+    scraper = PandapeScraper("acme", include_descriptions=False)
+
+    first = scraper.fetch()[0].posted_at
+    second = scraper.fetch()[0].posted_at
+
+    assert first is not None and second is not None
+    assert (first.month, first.day) == (3, 3)
+    assert (second.month, second.day) == (6, 9)

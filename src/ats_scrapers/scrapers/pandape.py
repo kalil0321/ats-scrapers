@@ -117,6 +117,8 @@ class PandapeScraper(BaseScraper):
         self._listed: dict[str, tuple[int, int]] = {}
 
     async def afetch(self) -> list[Job]:
+        # The days printed on the cards belong to one reading of the list.
+        self._listed = {}
         async with self.make_fetcher() as fetch:
             response = await fetch.request("GET", LIST_URL.format(slug=self.company_slug))
             first = self._parse_list(response.text)
@@ -199,14 +201,23 @@ class PandapeScraper(BaseScraper):
             raise ScraperError(
                 f"Pandapé ({self.company_slug}) returned an unreadable page {number}"
             ) from error
-        view = payload.get("view") if isinstance(payload, dict) else None
-        if not isinstance(view, str):
-            # An answer without a list is an empty page: the end, or a break.
-            return _Page(jobs=[], is_last=True, total=0)
+        if not isinstance(payload, dict):
+            raise ScraperError(
+                f"Pandapé ({self.company_slug}) returned an unreadable page {number}"
+            )
+        view = payload.get("view")
+        jobs = self._jobs(parse_html(view)) if isinstance(view, str) else []
+        is_last = payload.get("isLast") is not False
+        if not jobs and not is_last:
+            # More is announced and nothing is listed: a break, not the end.
+            raise ScraperError(
+                f"Pandapé ({self.company_slug}) page {number} lists nothing "
+                "although more is announced"
+            )
         total = payload.get("subtotal")
         return _Page(
-            jobs=self._jobs(parse_html(view)),
-            is_last=payload.get("isLast") is not False,
+            jobs=jobs,
+            is_last=is_last,
             total=total if isinstance(total, int) and total > 0 else 0,
         )
 
