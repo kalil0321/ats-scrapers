@@ -26,16 +26,26 @@ order of cost:
 2. The ``cloud_browser`` passed to the scraper (see
    :mod:`ats_scrapers.cloud_browser`), for the few tenants ``httpcloak``
    still can't pass. Without one, such a tenant raises.
+
+Some tenants (Koch) refuse any ``jobOffset`` of 2,000 or more with 406 and
+state only "999+ results". A board that reaches that offset is read again in
+slices, one per value of a search form filter (``?731[]=6040``), split again
+while a slice still reaches the offset.
 """
 
 from __future__ import annotations
 
 import asyncio
 import html
+import json
+import logging
 import os
 import re
 import socket
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import httpx
@@ -57,6 +67,20 @@ RETRY_BASE_DELAY = 1.5
 DETAIL_CONCURRENCY = 6
 # Job pages a cloud browser renders at once.
 BROWSER_DETAIL_CONCURRENCY = 4
+# Listing pages requested at once; slices of a large board are read in parallel.
+LISTING_CONCURRENCY = 4
+# Tenants that cap the listing answer 406 to an offset at or past this.
+OFFSET_CAP = 2_000
+# A filter with more values is not used to split a search: each value costs
+# at least one request.
+MAX_SPLIT_VALUES = 500
+# Share of a capped walk's jobs that may be in no slice of a filter that
+# still counts as splitting the search.
+COVERAGE_SLACK = 0.01
+# Serves the values of a search filter that the form loads as you type.
+_OPTIONS_API = "_wizardPortalDatasetSingleColumnOptionsSearchApi"
+
+logger = logging.getLogger(__name__)
 
 # Avature label vocabulary — multiple tenants reword the same concept.
 # These map to our standardized columns. All comparisons are
@@ -140,6 +164,48 @@ class _ChallengedTenantError(Exception):
     browser passes."""
 
 
+class _OffsetCapError(Exception):
+    """The listing refused an offset at or past ``OFFSET_CAP``."""
+
+
+class _ListingStoppedError(Exception):
+    """A page after the first could not be loaded: keep the rows read so far."""
+
+
+# ``(url, offset) -> (html, final URL)`` of one listing page.
+_PageFetch = Callable[[str, int], Awaitable[tuple[str, str]]]
+# ``(endpoint, body) -> JSON`` of the filter values API.
+_OptionsFetch = Callable[[str, dict[str, Any]], Awaitable[Any]]
+
+
+@dataclass
+class _Listing:
+    """What one walk of a search read."""
+
+    jobs: list[Job] = field(default_factory=list)
+    first_html: str = ""
+    first_url: str = ""
+    # Ids on the first two pages.
+    head: list[str] = field(default_factory=list)
+    # The walk stopped at OFFSET_CAP with more jobs to come.
+    capped: bool = False
+    # The first two pages are the parent search's: the site ignored the filter
+    # value or nearly every job has it, so the slice splits nothing.
+    repeats_parent: bool = False
+
+
+@dataclass
+class _Board:
+    """A board being read: how to load a page, and what was read so far."""
+
+    fetch: _PageFetch
+    base: str
+    company: str
+    jobs: dict[str, Job] = field(default_factory=dict)
+    # ``(param, values)`` that can split a capped search, in the order tried.
+    filters: list[tuple[str, list[str]]] = field(default_factory=list)
+
+
 _BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -154,6 +220,13 @@ _BROWSER_HEADERS = {
     "Sec-Fetch-Dest": "document",
     "Sec-Fetch-Mode": "navigate",
     "Sec-Fetch-Site": "same-origin",
+}
+
+_OPTIONS_HEADERS = {
+    "User-Agent": _BROWSER_HEADERS["User-Agent"],
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": _BROWSER_HEADERS["Accept-Language"],
+    "X-Requested-With": "XMLHttpRequest",
 }
 
 
@@ -280,36 +353,29 @@ class AvatureScraper(BaseScraper):
                 "`pip install httpcloak`."
             ) from exc
 
-        seen: set[str] = set()
-        all_jobs: list[Job] = []
-        page_size = _page_size(base)
-        offset, url = 0, None
-        for page_num in range(MAX_PAGES):
-            try:
-                html_text, page_url = await asyncio.to_thread(
-                    self._fetch_page_via_httpcloak_sync, base, offset, url
+        sem = asyncio.Semaphore(LISTING_CONCURRENCY)
+
+        async def page(url: str, offset: int) -> tuple[str, str]:
+            async with sem:
+                try:
+                    return await asyncio.to_thread(
+                        self._fetch_page_via_httpcloak_sync, base, offset, url
+                    )
+                except _BlockedTenantError:
+                    if offset == 0:
+                        raise  # Never made it past page 0: escalate.
+                    raise _ListingStoppedError() from None
+
+        async def options(endpoint: str, body: dict[str, Any]) -> Any:
+            async with sem:
+                response = await asyncio.to_thread(
+                    self._post_json_via_httpcloak_sync, endpoint, body
                 )
-            except _BlockedTenantError:
-                if page_num == 0:
-                    raise  # Never made it past page 0 — escalate.
-                break  # Mid-pagination block — keep what we have.
-            page_jobs = self._parse_page(html_text, base, company)
-            if page_num == 0 and not page_jobs:
-                _check_empty_listing(html_text, page_url, base)
-            new = [j for j in page_jobs if j.ats_id not in seen]
-            if not new:
-                break
-            for j in new:
-                seen.add(j.ats_id)
-            all_jobs.extend(new)
-            following = _next_page(
-                html_text, page_url, offset, len(page_jobs), page_size
-            )
-            if following is None:
-                break
-            offset, url = following
-        else:
-            raise _page_guard_error(base, len(all_jobs))
+            if response is None or response.status_code != 200:
+                return None
+            return json.loads(response.text)
+
+        all_jobs = await self._read_board(page, options, base, company)
 
         # Same TLS fingerprint for detail enrichment so we don't lose
         # the descriptions we just unlocked. Best-effort — a single
@@ -342,6 +408,8 @@ class AvatureScraper(BaseScraper):
                 f"offset={offset}: {exc}"
             ) from exc
         if response.status_code == 406:
+            if offset >= OFFSET_CAP:
+                raise _OffsetCapError()
             raise _BlockedTenantError()
         if response.status_code == 404:
             raise CompanyNotFoundError(f"Avature tenant not found: {base}")
@@ -378,39 +446,40 @@ class AvatureScraper(BaseScraper):
         except Exception:
             return None
 
+    def _post_json_via_httpcloak_sync(self, url: str, body: dict[str, Any]):
+        import httpcloak
+
+        try:
+            return httpcloak.post(
+                url, json=body, headers=_OPTIONS_HEADERS, timeout=self.timeout,
+                **self._httpcloak_proxy(),
+            )
+        except Exception:
+            return None
+
     def _httpcloak_proxy(self) -> dict[str, str]:
         return {"proxy": self.proxy} if self.proxy else {}
 
     async def _fetch_direct(self, base: str, company: str) -> list[Job]:
-        seen: set[str] = set()
-        all_jobs: list[Job] = []
-
         async with httpx.AsyncClient(
             timeout=self.timeout, follow_redirects=True, proxy=self.proxy,
         ) as client:
-            page_size = _page_size(base)
-            offset, url = 0, None
-            for page_num in range(MAX_PAGES):
-                html_text, page_url = await self._fetch_page(
-                    client, base, offset, url
-                )
-                page_jobs = self._parse_page(html_text, base, company)
-                if page_num == 0 and not page_jobs:
-                    _check_empty_listing(html_text, page_url, base)
-                new = [j for j in page_jobs if j.ats_id not in seen]
-                if not new:
-                    break
-                for j in new:
-                    seen.add(j.ats_id)
-                all_jobs.extend(new)
-                following = _next_page(
-                    html_text, page_url, offset, len(page_jobs), page_size
-                )
-                if following is None:
-                    break
-                offset, url = following
-            else:
-                raise _page_guard_error(base, len(all_jobs))
+            sem = asyncio.Semaphore(LISTING_CONCURRENCY)
+
+            async def page(url: str, offset: int) -> tuple[str, str]:
+                async with sem:
+                    return await self._fetch_page(client, base, offset, url)
+
+            async def options(endpoint: str, body: dict[str, Any]) -> Any:
+                async with sem:
+                    response = await client.post(
+                        endpoint, json=body, headers=_OPTIONS_HEADERS,
+                    )
+                if response.status_code != 200:
+                    return None
+                return response.json()
+
+            all_jobs = await self._read_board(page, options, base, company)
 
             # Per-job detail fetch — Avature's search-results page has
             # only title/location/department; everything else (description,
@@ -440,37 +509,24 @@ class AvatureScraper(BaseScraper):
     async def _fetch_via_browser(
         self, browser: CloudBrowser, base: str, company: str,
     ) -> list[Job]:
-        """The listing and detail flow, with each page rendered by ``browser``."""
-        all_jobs: list[Job] = []
-        seen: set[str] = set()
-        page_size = _page_size(base)
-        offset, url = 0, None
-        for page_num in range(MAX_PAGES):
-            list_url = url or _paginated_search_url(base, offset)
-            try:
-                page = await browser.render(list_url)
-            except Exception:
-                if page_num == 0:
-                    raise
-                break
-            html_text, page_url = page.html, page.url or list_url
-            page_jobs = self._parse_page(html_text, base, company)
-            if page_num == 0 and not page_jobs:
-                _check_empty_listing(html_text, page_url, base)
-            new = [j for j in page_jobs if j.ats_id not in seen]
-            if not new:
-                break
-            for j in new:
-                seen.add(j.ats_id)
-            all_jobs.extend(new)
-            following = _next_page(
-                html_text, page_url, offset, len(page_jobs), page_size
-            )
-            if following is None:
-                break
-            offset, url = following
-        else:
-            raise _page_guard_error(base, len(all_jobs))
+        """The listing and detail flow, with each page rendered by ``browser``.
+
+        Only filters whose values the search form lists can split a capped
+        board here: the browser does not call the filter values API.
+        """
+        sem = asyncio.Semaphore(BROWSER_DETAIL_CONCURRENCY)
+
+        async def page(url: str, offset: int) -> tuple[str, str]:
+            async with sem:
+                try:
+                    rendered = await browser.render(url)
+                except Exception:
+                    if offset == 0:
+                        raise
+                    raise _ListingStoppedError() from None
+            return rendered.html, rendered.url or url
+
+        all_jobs = await self._read_board(page, None, base, company)
 
         if self.include_descriptions:
             sem = asyncio.Semaphore(BROWSER_DETAIL_CONCURRENCY)
@@ -526,6 +582,8 @@ class AvatureScraper(BaseScraper):
             if response.headers.get("x-amzn-waf-action", "").lower() == "challenge":
                 raise _ChallengedTenantError(base)
             if response.status_code == 406:
+                if offset >= OFFSET_CAP:
+                    raise _OffsetCapError()
                 # 406 from Avature is usually transient rate-limit-style
                 # blocking: retry with backoff. Only the first listing page
                 # escalates to the fallback clients once every retry fails.
@@ -555,6 +613,121 @@ class AvatureScraper(BaseScraper):
                 f"Avature ({base}) returned {response.status_code} at offset={offset}"
             )
         raise ScraperError(f"Avature ({base}) exhausted retries at offset={offset}")
+
+    async def _read_board(
+        self,
+        fetch: _PageFetch,
+        options: _OptionsFetch | None,
+        base: str,
+        company: str,
+    ) -> list[Job]:
+        """Every job of the board, split by search filter past ``OFFSET_CAP``."""
+        board = _Board(fetch, base, company)
+        url = _paginated_search_url(base, 0)
+        listing = await self._walk(board, url)
+        _keep(board.jobs, listing.jobs)
+        if listing.capped:
+            board.filters = await _search_filters(
+                listing.first_html, listing.first_url, options,
+            )
+            await self._split(board, url, listing, frozenset())
+        return list(board.jobs.values())
+
+    async def _split(
+        self, board: _Board, url: str, listing: _Listing, applied: frozenset[str],
+    ) -> set[str]:
+        """Read a capped search one filter value at a time; return the ids read.
+
+        A filter is enough once the jobs the capped walk read turned up in its
+        slices. Otherwise the next filter is read as well, since a job without
+        a value for the filter is in none of its slices.
+        """
+        found = {j.ats_id for j in listing.jobs}
+        missing = set(found)
+        slack = len(found) * COVERAGE_SLACK
+        for name, values in board.filters:
+            if name in applied:
+                continue
+            parts = await _run_all([
+                self._read_slice(
+                    board, _with_query(url, [(name, value)]), listing.head,
+                    applied | {name},
+                )
+                for value in values
+            ])
+            for ids in parts:
+                found |= ids
+                missing -= ids
+            if len(missing) <= slack:
+                return found
+        logger.warning(
+            "Avature (%s): a search filtered on %s stops at offset %d and no "
+            "filter splits it; %d of its first %d jobs are in no slice, so "
+            "jobs after them may be missing",
+            board.base, sorted(applied) or "nothing", OFFSET_CAP, len(missing),
+            len(listing.jobs),
+        )
+        return found
+
+    async def _read_slice(
+        self, board: _Board, url: str, parent_head: list[str], applied: frozenset[str],
+    ) -> set[str]:
+        listing = await self._walk(board, url, parent_head=parent_head)
+        _keep(board.jobs, listing.jobs)
+        if listing.repeats_parent:
+            return set()
+        if listing.capped:
+            return await self._split(board, url, listing, applied)
+        return {j.ats_id for j in listing.jobs}
+
+    async def _walk(
+        self, board: _Board, url: str, *, parent_head: list[str] | None = None,
+    ) -> _Listing:
+        """Page through the search at ``url`` until its last page or the cap.
+
+        A search whose first two pages are ``parent_head`` stops there with
+        ``repeats_parent`` set.
+        """
+        base = board.base
+        listing = _Listing()
+        seen: set[str] = set()
+        page_size = _page_size(base)
+        offset, target = 0, url
+        for page_num in range(MAX_PAGES):
+            try:
+                html_text, page_url = await board.fetch(target, offset)
+            except _OffsetCapError:
+                listing.capped = True
+                return listing
+            except _ListingStoppedError:
+                return listing
+            page_jobs = self._parse_page(html_text, base, board.company)
+            if page_num == 0:
+                listing.first_html, listing.first_url = html_text, page_url
+                if not page_jobs:
+                    _check_empty_listing(html_text, page_url, base)
+            elif not page_jobs and offset >= OFFSET_CAP:
+                # A browser shows the 406 refusal as a page without jobs.
+                listing.capped = True
+                return listing
+            new = [j for j in page_jobs if j.ats_id not in seen]
+            if not new:
+                return listing
+            seen.update(j.ats_id for j in new)
+            listing.jobs.extend(new)
+            if page_num < 2:
+                listing.head = [j.ats_id for j in listing.jobs]
+            following = _next_page(
+                html_text, page_url, offset, len(page_jobs), page_size
+            )
+            if following is None:
+                return listing
+            if page_num == 1 and listing.head == parent_head:
+                listing.repeats_parent = True
+                return listing
+            offset, link = following
+            target = link or _with_query(url, _pagination_items(base, offset))
+        raise _page_guard_error(base, len(listing.jobs))
 
     def _resolve_base_url(self) -> str:
         slug = self.company_slug
@@ -701,25 +874,142 @@ def _search_url(base: str) -> str:
 
 def _paginated_search_url(base: str, offset: int) -> str:
     """Build a listing URL while preserving tenant-specific query params."""
-    parsed = urlparse(_search_url(base))
-    page_params = _pagination_params(base, offset)
-    page_keys = set(page_params)
-    query_items = [
+    return _with_query(_search_url(base), _pagination_items(base, offset))
+
+
+def _pagination_items(base: str, offset: int) -> list[tuple[str, str]]:
+    return [(key, str(value)) for key, value in _pagination_params(base, offset).items()]
+
+
+def _with_query(url: str, items: list[tuple[str, str]]) -> str:
+    """``url`` with ``items`` appended to its query, replacing same-name params."""
+    parsed = urlparse(url)
+    keys = {key for key, _ in items}
+    query = [
         (key, value)
         for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-        if key not in page_keys
+        if key not in keys
     ]
-    query_items.extend((key, str(value)) for key, value in page_params.items())
-    return urlunparse(
-        (
-            parsed.scheme,
-            parsed.netloc,
-            parsed.path,
-            parsed.params,
-            urlencode(query_items),
-            parsed.fragment,
-        )
-    )
+    return urlunparse(parsed._replace(query=urlencode([*query, *items])))
+
+
+def _keep(jobs: dict[str, Job], found: list[Job]) -> None:
+    for job in found:
+        jobs.setdefault(job.ats_id, job)
+
+
+async def _run_all(aws: list[Awaitable[set[str]]]) -> list[set[str]]:
+    """Await ``aws`` together. When one fails, the others are cancelled and
+    awaited before the error is raised, so none outlives the client."""
+    tasks = [asyncio.ensure_future(aw) for aw in aws]
+    try:
+        return await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _search_filters(
+    html_text: str, page_url: str, options: _OptionsFetch | None,
+) -> list[tuple[str, list[str]]]:
+    """``(param, values)`` of each filter of the search form, fewest values first.
+
+    A select lists its values, or (``731[]``) the form loads them as you type
+    from the values API, which ``options`` calls. Filters with one value or
+    more than ``MAX_SPLIT_VALUES`` are left out. Two-value filters (remote or
+    not, full or part time) come last: one of their slices is usually nearly
+    the whole search.
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html_text, "html.parser")
+    datasources = _datasources(soup) if options is not None else {}
+    found: list[tuple[str, list[str]]] = []
+    for form in soup.find_all("form"):
+        action = urlparse(str(form.get("action") or "")).path.rstrip("/").lower()
+        if form.get("role") != "search" and not action.endswith(("/searchjobs", "/searchjobsmaps")):
+            continue
+        for select in form.find_all("select"):
+            name = str(select.get("name") or "")
+            if not name:
+                continue
+            values = [
+                str(option.get("value")).strip()
+                for option in select.find_all("option")
+                if str(option.get("value") or "").strip()
+            ]
+            settings = datasources.get(name.removesuffix("[]"))
+            if not values and settings is not None and options is not None:
+                values = await _datasource_values(options, page_url, name, settings)
+            values = list(dict.fromkeys(values))
+            if 2 <= len(values) <= MAX_SPLIT_VALUES:
+                found.append((name, values))
+    return sorted(found, key=lambda item: (len(item[1]) == 2, len(item[1])))
+
+
+def _datasources(soup: Any) -> dict[str, dict[str, Any]]:
+    """Settings of the values API for each form field id that uses it."""
+    meta = soup.find("meta", attrs={"name": "avature.wizard.registrars"})
+    try:
+        wizards = json.loads(str(meta.get("content") or "")) if meta else []
+    except ValueError:
+        return {}
+    found: dict[str, dict[str, Any]] = {}
+    for wizard in wizards if isinstance(wizards, list) else []:
+        fields = wizard.get("fields") if isinstance(wizard, dict) else None
+        for item in fields if isinstance(fields, list) else []:
+            if not isinstance(item, dict):
+                continue
+            for registrar in item.get("registrars") or []:
+                if (
+                    isinstance(registrar, dict)
+                    and registrar.get("name") == "DatasetSingleColumnFieldOptionsDatasource"
+                    and isinstance(registrar.get("settings"), dict)
+                ):
+                    found[str(item.get("fieldId"))] = registrar["settings"]
+    return found
+
+
+async def _datasource_values(
+    options: _OptionsFetch, page_url: str, name: str, settings: dict[str, Any],
+) -> list[str]:
+    """Every value of the filter ``name``, or none past ``MAX_SPLIT_VALUES``."""
+    parsed = urlparse(page_url)
+    portal = str(settings.get("portalUrlPath") or "")
+    if not portal.startswith("/"):
+        portal = re.split(r"/searchjobs", parsed.path, maxsplit=1, flags=re.IGNORECASE)[0]
+    endpoint = f"{parsed.scheme}://{parsed.netloc}{portal.rstrip('/')}/{_OPTIONS_API}"
+    body = {
+        "fieldId": name.removesuffix("[]"),
+        "datasetFieldSchemaFieldId": settings.get("datasetSchemaFieldId"),
+        "schemaFieldIdToUseForIndirectFiltering": settings.get(
+            "schemaFieldIdToUseForIndirectFiltering"
+        ),
+        "filters": settings.get("datasetFilters") or [],
+        "optionFormatComponents": settings.get("optionFormatComponents") or [],
+        "searchIds": None,
+        "currentOptionsIds": [],
+        "page": 1,
+        "limit": MAX_SPLIT_VALUES,
+        "searchText": None,
+        "exactMatch": False,
+        "datasetSchemaSpecId": settings.get("datasetSchemaSpecId"),
+    }
+    try:
+        payload = await options(endpoint, body)
+    except Exception:
+        return []
+    if not isinstance(payload, dict) or payload.get("more"):
+        return []
+    results = payload.get("results")
+    if not isinstance(results, list):
+        return []
+    return [
+        str(item["id"])
+        for item in results
+        if isinstance(item, dict) and item.get("id") is not None
+    ]
 
 
 def _page_size(base: str) -> int:
