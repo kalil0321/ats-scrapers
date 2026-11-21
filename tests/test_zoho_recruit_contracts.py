@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ats_scrapers.scrapers import ZohoRecruitScraper
 
-EXPECTED_ROWS = 1352
+EXPECTED_ROWS = 4359
 URL_RE = re.compile(
     r"https://[a-z0-9][a-z0-9-]*\.zohorecruit\.(?:com|eu|in)/jobs/[^/\s?#]+"
 )
