@@ -755,7 +755,7 @@ class AvatureScraper(BaseScraper):
             html_text, _ = await board.fetch(
                 _with_query(url, _pagination_items(board.base, offset)), offset,
             )
-        except _ListingStoppedError:
+        except (_ListingStoppedError, _OffsetCapError):
             return False
         page = [j.ats_id for j in self._parse_page(html_text, board.base, board.company)]
         # The page may hold more rows than the parent's page link asked for.
