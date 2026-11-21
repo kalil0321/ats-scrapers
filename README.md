@@ -185,8 +185,8 @@ Taleo Business Edition, Taleo Enterprise, Teamtailor, UKG Pro, Varbi, Workable,
 Workday, Zoho Recruit.
 
 **Regional hiring platforms:** Beisen, Beisen (legacy), Darwinbox, Feishu Hire,
-Greeting, Gupy, HERP Hire, HRMOS, Keka, Moka, Ninehire, Pandapé, Talentio, Wanted,
-Wantedly, WinTalent.
+Greeting, Gupy, HERP Hire, HRMOS, Keka, Moka, Ninehire, onlyfy, Pandapé, Talentio,
+Wanted, Wantedly, WinTalent.
 
 **Company career APIs:** Amazon, Apple, ByteDance, Google, JD.com, Meta,
 Tesla, TikTok, Uber.

@@ -248,6 +248,11 @@ RESOLVES = [
         "acme",
     ),
     (
+        "https://acme.onlyfy.jobs/en/job/abc123",
+        ATSType.ONLYFY,
+        "acme",
+    ),
+    (
         "https://bemobile.careerplug.com/jobs/3692843",
         ATSType.CAREERPLUG,
         "bemobile",

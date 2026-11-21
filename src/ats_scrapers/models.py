@@ -85,6 +85,8 @@ class ATSType(StrEnum):
     MERCOR = "mercor"
     MOKA = "moka"
     NINEHIRE = "ninehire"
+    # onlyfy career pages ({company}.onlyfy.jobs).
+    ONLYFY = "onlyfy"
     ORACLE = "oracle"
     PAGEUP = "pageup"
     # Pandapé career pages ({company}.pandape.infojobs.com.br).

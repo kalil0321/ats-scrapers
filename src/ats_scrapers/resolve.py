@@ -105,6 +105,7 @@ _PATH_HOSTS: dict[str, ATSType] = {
 
 # Subdomain tenants: https://{slug}.{suffix}/...
 _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
+    ".onlyfy.jobs": ATSType.ONLYFY,
     ".pandape.infojobs.com.br": ATSType.PANDAPE,
     ".applicantpro.com": ATSType.APPLICANTPRO,
     ".careerplug.com": ATSType.CAREERPLUG,
@@ -136,6 +137,7 @@ _PLATFORM_HOSTS = frozenset({
     "app.careerplug.com", "www.careerplug.com", "www.hiringthing.com",
     "www.pandape.infojobs.com.br",
     "empregos.pandape.infojobs.com.br",
+    "www.onlyfy.jobs",
 })
 
 # Full-URL tenants: the scraper's slug IS the careers URL.
