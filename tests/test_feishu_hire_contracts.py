@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ats_scrapers.scrapers import FeishuHireScraper
 
-EXPECTED_ROWS = 291
+EXPECTED_ROWS = 347
 
 
 def test_feishu_hire_catalogue_is_well_formed() -> None:

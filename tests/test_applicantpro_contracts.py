@@ -8,7 +8,7 @@ def test_applicantpro_catalog_contains_only_validated_canonical_portals() -> Non
     with Path("ats-companies/applicantpro.csv").open(newline="") as handle:
         rows = list(csv.DictReader(handle))
 
-    assert len(rows) == 1_904
+    assert len(rows) == 2_398
     assert all(row["slug"].strip() for row in rows)
     assert len({row["slug"] for row in rows}) == len(rows)
     assert len({row["url"] for row in rows}) == len(rows)

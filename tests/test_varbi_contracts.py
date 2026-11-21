@@ -9,7 +9,7 @@ from ats_scrapers.scrapers import VarbiScraper
 def test_varbi_catalog_uses_unique_public_employer_boards() -> None:
     with Path("ats-companies/varbi.csv").open(encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
-    assert len(rows) == 151
+    assert len(rows) == 282
     assert len({row["slug"] for row in rows}) == len(rows)
     names = [row["name"].casefold() for row in rows]
     assert names == sorted(names)
