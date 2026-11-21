@@ -50,6 +50,7 @@ Acme Corp,acme,https://acme.greenhouse.io
 | mercor | seed file only — Mercor exposes no per-company endpoint |
 | moka | `https://app.mokahr.com/social-recruitment/<slug>/<site_id>` |
 | oracle | `https://<host>/hcmUI/CandidateExperience/...` |
+| pandape | `https://<slug>.pandape.infojobs.com.br` |
 | personio | `https://<slug>.jobs.personio.com` |
 | pinpoint | `https://<slug>.pinpointhq.com` |
 | recruitee | `https://<slug>.recruitee.com` |

@@ -87,6 +87,8 @@ class ATSType(StrEnum):
     NINEHIRE = "ninehire"
     ORACLE = "oracle"
     PAGEUP = "pageup"
+    # Pandapé career pages ({company}.pandape.infojobs.com.br).
+    PANDAPE = "pandape"
     PAYCOM = "paycom"
     PAYLOCITY = "paylocity"
     # PeopleAdmin applicant portals ({tenant}.peopleadmin.com).
