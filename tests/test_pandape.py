@@ -479,3 +479,10 @@ def test_a_second_reading_takes_the_days_printed_then(httpx_mock) -> None:
     assert first is not None and second is not None
     assert (first.month, first.day) == (3, 3)
     assert (second.month, second.day) == (6, 9)
+
+
+def test_a_first_page_that_lists_nothing_but_announces_more_is_an_error(httpx_mock) -> None:
+    httpx_mock.add_response(url=LIST_URL, text=_list([], last=False))
+
+    with pytest.raises(ScraperError, match="page 1 lists nothing although more is announced"):
+        PandapeScraper("acme", include_descriptions=False).fetch()

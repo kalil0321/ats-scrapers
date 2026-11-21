@@ -135,18 +135,18 @@ class PandapeScraper(BaseScraper):
                         self._page(fetch, number, semaphore)
                         for number in range(3, last_page + 1)
                     )
-                    # Only the last page may have emptied while the list was read.
-                    for number, page in enumerate(pages[:-1], start=1):
-                        if not page.jobs:
-                            raise ScraperError(
-                                f"Pandapé ({self.company_slug}) list broke off at "
-                                f"page {number} of {last_page}"
-                            )
                 # The count can grow while the list is read. Keep turning.
                 while not pages[-1].is_last:
                     if len(pages) >= MAX_PAGES:
                         raise self._too_long()
                     pages.append(await self._page(fetch, len(pages) + 1))
+        # Only the last page may have emptied while the list was read.
+        for number, page in enumerate(pages[:-1], start=1):
+            if not page.jobs:
+                raise ScraperError(
+                    f"Pandapé ({self.company_slug}) list broke off at "
+                    f"page {number} of {len(pages)}"
+                )
         listed: dict[str, Job] = {}
         for page in pages:
             for job in page.jobs:
@@ -178,7 +178,12 @@ class PandapeScraper(BaseScraper):
         self._company = _site_name(tree) or self.company_slug
         last = marked.get("hdn_isLast")
         is_last = last is None or last.attrs.get("value", "").lower() != "false"
-        return _Page(jobs=self._jobs(tree), is_last=is_last, total=0)
+        jobs = self._jobs(tree)
+        if not jobs and not is_last:
+            raise ScraperError(
+                f"Pandapé ({self.company_slug}) page 1 lists nothing although more is announced"
+            )
+        return _Page(jobs=jobs, is_last=is_last, total=0)
 
     async def _page(
         self, fetch: Fetcher, number: int, semaphore: asyncio.Semaphore | None = None,
