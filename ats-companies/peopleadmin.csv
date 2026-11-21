@@ -1,25 +1,34 @@
 name,slug,url
 Appalachian State University,appstate,https://appstate.peopleadmin.com
 Asheville-Buncombe Technical Community College,abtcc,https://abtcc.peopleadmin.com
+Austin Peay State University,apsu,https://apsu.peopleadmin.com
+Bowie State University,bowiestate,https://bowiestate.peopleadmin.com
 Central Community College,centralcc,https://centralcc.peopleadmin.com
 Chabot-Las Positas Community College District,clpccd,https://clpccd.peopleadmin.com
 Chapman University,chapman,https://chapman.peopleadmin.com
 Chicago State University,chicagostate,https://chicagostate.peopleadmin.com
+City of Amarillo Applicant Portal,pa3316,https://pa3316.peopleadmin.com
 Cleveland Community College,clevelandcc,https://clevelandcc.peopleadmin.com
+Coastal Bend College Applicant Portal Site,coastalbend,https://coastalbend.peopleadmin.com
+College of Petroleum Engineering & Geosciences Jobs Portal,cpg,https://cpg.peopleadmin.com
 College of the Marshall Islands,jobs-cmi,https://jobs-cmi.peopleadmin.com
 Commonwealth University,commonwealthu,https://commonwealthu.peopleadmin.com
 Connecticut College,conncoll,https://conncoll.peopleadmin.com
+CSU Stanislaus,csustan,https://csustan.peopleadmin.com
+CUPA-HR Applicant Portal,cupahr,https://cupahr.peopleadmin.com
 Danville Area Community College,danville,https://danville.peopleadmin.com
 Delaware Technical Community College,dtcc,https://dtcc.peopleadmin.com
 Delta College,delta,https://delta.peopleadmin.com
 Delta State University,deltastate,https://deltastate.peopleadmin.com
 Doane University,doane,https://doane.peopleadmin.com
 East Carolina University,ecu,https://ecu.peopleadmin.com
+East Tennessee State University,pa2858,https://pa2858.peopleadmin.com
 Eastern Iowa Community Colleges,eicc,https://eicc.peopleadmin.com
 Eastern Oregon University,eou,https://eou.peopleadmin.com
 Eastern Wyoming College,ewc,https://ewc.peopleadmin.com
 Essex County College,essex,https://essex.peopleadmin.com
 Fayetteville Technical Community College,faytechcc,https://faytechcc.peopleadmin.com
+Feather River College Portal,frc,https://frc.peopleadmin.com
 Gannon University,gannon,https://gannon.peopleadmin.com
 George Washington University,gwu-studentemployment,https://gwu-studentemployment.peopleadmin.com
 Gettysburg College,gettysburg,https://gettysburg.peopleadmin.com
@@ -30,19 +39,24 @@ Hofstra University,hofstra,https://hofstra.peopleadmin.com
 Howard Community College,howardcc,https://howardcc.peopleadmin.com
 Indiana University,indiana,https://indiana.peopleadmin.com
 Isothermal Community College,isothermal,https://isothermal.peopleadmin.com
+James Madison University,pa1227,https://pa1227.peopleadmin.com
 Jefferson College,jeffco,https://jeffco.peopleadmin.com
 John Carroll University,jcu,https://jcu.peopleadmin.com
 Juniata College,juniata,https://juniata.peopleadmin.com
 Kishwaukee College,kish,https://kish.peopleadmin.com
 La Salle University,lasalle,https://lasalle.peopleadmin.com
+Lake Superior College Portal,lsc,https://lsc.peopleadmin.com
 Lake Tahoe Community College,ltcc,https://ltcc.peopleadmin.com
 Lassen Community College,lassencollege,https://lassencollege.peopleadmin.com
 Lawrence University,lawrence,https://lawrence.peopleadmin.com
 Lees-McRae College,leesmcrae,https://leesmcrae.peopleadmin.com
 Lincoln Land Community College,llcc,https://llcc.peopleadmin.com
 Lincoln Memorial University,lincolnmu,https://lincolnmu.peopleadmin.com
+LMU Applicant Portal,pa843,https://pa843.peopleadmin.com
 Marshall University,marshall,https://marshall.peopleadmin.com
+Meridian Community College Portal,meridiancc,https://meridiancc.peopleadmin.com
 Michigan State University,rhs-msu,https://rhs-msu.peopleadmin.com
+Midland College Portal,midland,https://midland.peopleadmin.com
 MiraCosta College,mccollege,https://mccollege.peopleadmin.com
 Mississippi Gulf Coast Community College,mgccc,https://mgccc.peopleadmin.com
 Mississippi University for Women,muw,https://muw.peopleadmin.com
@@ -65,12 +79,14 @@ Prairie State College,prairiestate,https://prairiestate.peopleadmin.com
 Prince George's Community College,pgcc,https://pgcc.peopleadmin.com
 Richland Community College,richland,https://richland.peopleadmin.com
 Rio Hondo College,riohondo,https://riohondo.peopleadmin.com
+Saint Paul College Portal,saintpaul,https://saintpaul.peopleadmin.com
 Sam Houston State University,shsu,https://shsu.peopleadmin.com
 San Jose Evergreen Community College District,sjeccd,https://sjeccd.peopleadmin.com
 Sarah Lawrence College,slc,https://slc.peopleadmin.com
 Shepherd University,jobs-shepherd,https://jobs-shepherd.peopleadmin.com
 South Plains College,southplainscollege,https://southplainscollege.peopleadmin.com
 Southeast Community College,southeast,https://southeast.peopleadmin.com
+Southwest Minnesota State University Portal,smsu,https://smsu.peopleadmin.com
 Southwestern Michigan College,swmich,https://swmich.peopleadmin.com
 Spelman College,spelman,https://spelman.peopleadmin.com
 St. Catherine University,stcatherine,https://stcatherine.peopleadmin.com
@@ -88,9 +104,12 @@ Trinity College,trincoll,https://trincoll.peopleadmin.com
 Truman State University,trumansu,https://trumansu.peopleadmin.com
 Tuskegee University,tuskegee,https://tuskegee.peopleadmin.com
 "UCNJ Union College of Union County, NJ",ucc,https://ucc.peopleadmin.com
+UDM Employment Opportunties,udmercy,https://udmercy.peopleadmin.com
+UNC Talent Connect Registration,unctalentconnect,https://unctalentconnect.peopleadmin.com
 University of Guam,uog,https://uog.peopleadmin.com
 University of Hartford,hartford,https://hartford.peopleadmin.com
 University of La Verne,laverne,https://laverne.peopleadmin.com
+University of Nebraska at Kearney,unk,https://unk.peopleadmin.com
 University of Nebraska Medical Center,unmc,https://unmc.peopleadmin.com
 University of Nebraska Omaha,unomaha,https://unomaha.peopleadmin.com
 University of New England,une,https://une.peopleadmin.com
@@ -99,6 +118,7 @@ University of Portland,uportland,https://uportland.peopleadmin.com
 University of South Alabama,southalabama,https://southalabama.peopleadmin.com
 University of St. Francis,stfrancis,https://stfrancis.peopleadmin.com
 University of the Pacific,pacific,https://pacific.peopleadmin.com
+University of Tulsa Portal,universitytulsa,https://universitytulsa.peopleadmin.com
 University of Utah,utah,https://utah.peopleadmin.com
 Valencia College,valenciacollege,https://valenciacollege.peopleadmin.com
 West Valley-Mission Community College District,wvm,https://wvm.peopleadmin.com
