@@ -47,8 +47,8 @@ def _more(cards: list[str], *, last: bool, total: int) -> dict[str, object]:
     return {"view": "".join(cards), "counter": "\n", "isLast": last, "subtotal": total}
 
 
-def _page(number: int) -> str:
-    return f"{PAGE_URL}?PageNumber={number}&PageSize=20"
+def _page(number: int, size: int = 20) -> str:
+    return f"{PAGE_URL}?PageNumber={number}&PageSize={size}"
 
 
 def _posting(**fields: object) -> str:
@@ -177,33 +177,37 @@ def test_takes_the_company_name_from_the_title_when_the_page_has_no_heading(http
     assert PandapeScraper("acme", include_descriptions=False).fetch()[0].company == "Acme Brasil"
 
 
-def test_turns_every_page_and_keeps_a_vacancy_once(httpx_mock) -> None:
+def test_turns_every_page_and_keeps_a_vacancy_once(httpx_mock, monkeypatch) -> None:
+    monkeypatch.setattr(pandape, "PAGE_SIZE", 2)
     httpx_mock.add_response(url=LIST_URL, text=_list([_card(1, "A"), _card(2, "B")], last=False))
     httpx_mock.add_response(
-        method="POST", url=_page(2),
-        json=_more([_card(2, "B"), _card(3, "C")], last=False, total=45),
+        method="POST", url=_page(2, 2),
+        json=_more([_card(2, "B"), _card(3, "C")], last=False, total=5),
     )
     httpx_mock.add_response(
-        method="POST", url=_page(3), json=_more([_card(4, "D")], last=True, total=45),
+        method="POST", url=_page(3, 2),
+        json=_more([_card(4, "D"), _card(5, "E")], last=True, total=5),
     )
 
     jobs = PandapeScraper("acme", include_descriptions=False).fetch()
 
-    assert [job.ats_id for job in jobs] == ["1", "2", "3", "4"]
+    assert [job.ats_id for job in jobs] == ["1", "2", "3", "4", "5"]
 
 
-def test_keeps_turning_while_the_list_grows(httpx_mock) -> None:
-    httpx_mock.add_response(url=LIST_URL, text=_list([_card(1, "A")], last=False))
+def test_keeps_turning_while_the_list_grows(httpx_mock, monkeypatch) -> None:
+    monkeypatch.setattr(pandape, "PAGE_SIZE", 2)
+    httpx_mock.add_response(url=LIST_URL, text=_list([_card(1, "A"), _card(2, "B")], last=False))
     httpx_mock.add_response(
-        method="POST", url=_page(2), json=_more([_card(2, "B")], last=False, total=40),
+        method="POST", url=_page(2, 2),
+        json=_more([_card(3, "C"), _card(4, "D")], last=False, total=4),
     )
     httpx_mock.add_response(
-        method="POST", url=_page(3), json=_more([_card(3, "C")], last=True, total=41),
+        method="POST", url=_page(3, 2), json=_more([_card(5, "E")], last=True, total=5),
     )
 
     jobs = PandapeScraper("acme", include_descriptions=False).fetch()
 
-    assert [job.ats_id for job in jobs] == ["1", "2", "3"]
+    assert [job.ats_id for job in jobs] == ["1", "2", "3", "4", "5"]
 
 
 def test_an_answer_without_a_list_ends_the_reading(httpx_mock) -> None:
@@ -351,32 +355,82 @@ def test_rejects_what_is_not_a_company(slug: str) -> None:
         PandapeScraper(slug)
 
 
-def test_a_list_that_breaks_off_before_its_end_is_an_error(httpx_mock) -> None:
-    httpx_mock.add_response(url=LIST_URL, text=_list([_card(1, "A")], last=False))
+def test_a_list_that_breaks_off_twice_is_an_error(httpx_mock, monkeypatch) -> None:
+    monkeypatch.setattr(pandape, "PAGE_SIZE", 1)
+    httpx_mock.add_response(url=LIST_URL, text=_list([_card(1, "A")], last=False), is_reusable=True)
     httpx_mock.add_response(
-        method="POST", url=_page(2), json=_more([_card(2, "B")], last=False, total=80),
+        method="POST", url=_page(2, 1), is_reusable=True,
+        json=_more([_card(2, "B")], last=False, total=4),
     )
-    httpx_mock.add_response(method="POST", url=_page(3), json={"isLast": True})
     httpx_mock.add_response(
-        method="POST", url=_page(4), json=_more([_card(4, "D")], last=True, total=80),
+        method="POST", url=_page(3, 1), json={"isLast": True}, is_reusable=True,
+    )
+    httpx_mock.add_response(
+        method="POST", url=_page(4, 1), is_reusable=True,
+        json=_more([_card(4, "D")], last=True, total=4),
     )
 
     with pytest.raises(ScraperError, match="broke off at page 3 of 4"):
         PandapeScraper("acme", include_descriptions=False).fetch()
 
+    assert len(httpx_mock.get_requests()) == 8
 
-def test_the_last_page_may_have_emptied_while_the_list_was_read(httpx_mock) -> None:
+
+def test_a_list_that_shrank_while_it_was_read_is_read_again(httpx_mock, monkeypatch) -> None:
+    monkeypatch.setattr(pandape, "PAGE_SIZE", 1)
     httpx_mock.add_response(url=LIST_URL, text=_list([_card(1, "A")], last=False))
     httpx_mock.add_response(
-        method="POST", url=_page(2), json=_more([_card(2, "B")], last=False, total=41),
+        method="POST", url=_page(2, 1), json=_more([_card(2, "B")], last=False, total=3),
     )
     httpx_mock.add_response(
-        method="POST", url=_page(3), json={"view": "<p>Nenhuma vaga</p>", "isLast": True},
+        method="POST", url=_page(3, 1), json={"view": "<p>Nenhuma vaga</p>", "isLast": True},
+    )
+    httpx_mock.add_response(url=LIST_URL, text=_list([_card(1, "A")], last=False))
+    httpx_mock.add_response(
+        method="POST", url=_page(2, 1), json=_more([_card(2, "B")], last=True, total=2),
     )
 
     jobs = PandapeScraper("acme", include_descriptions=False).fetch()
 
     assert [job.ats_id for job in jobs] == ["1", "2"]
+
+
+def test_a_vacancy_that_moved_between_two_pages_is_found_on_the_second_reading(
+    httpx_mock, monkeypatch,
+) -> None:
+    monkeypatch.setattr(pandape, "PAGE_SIZE", 2)
+    first = _list([_card(1, "A"), _card(2, "B")], last=False)
+    httpx_mock.add_response(url=LIST_URL, text=first)
+    # A vacancy was published between the two reads: 2 is listed again and 3 is skipped.
+    httpx_mock.add_response(
+        method="POST", url=_page(2, 2),
+        json=_more([_card(2, "B"), _card(4, "D")], last=True, total=4),
+    )
+    httpx_mock.add_response(url=LIST_URL, text=first)
+    httpx_mock.add_response(
+        method="POST", url=_page(2, 2),
+        json=_more([_card(3, "C"), _card(4, "D")], last=True, total=4),
+    )
+
+    jobs = PandapeScraper("acme", include_descriptions=False).fetch()
+
+    assert [job.ats_id for job in jobs] == ["1", "2", "3", "4"]
+
+
+def test_a_list_that_stays_short_is_read_twice_and_then_an_error(httpx_mock, monkeypatch) -> None:
+    monkeypatch.setattr(pandape, "PAGE_SIZE", 2)
+    httpx_mock.add_response(
+        url=LIST_URL, text=_list([_card(1, "A"), _card(2, "B")], last=False), is_reusable=True,
+    )
+    httpx_mock.add_response(
+        method="POST", url=_page(2, 2), is_reusable=True,
+        json=_more([_card(2, "B")], last=True, total=4),
+    )
+
+    with pytest.raises(ScraperError, match="listed 2 of the 4 vacancies it announces"):
+        PandapeScraper("acme", include_descriptions=False).fetch()
+
+    assert len(httpx_mock.get_requests()) == 4
 
 
 @pytest.mark.parametrize(
