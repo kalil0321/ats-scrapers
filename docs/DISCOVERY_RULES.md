@@ -640,9 +640,10 @@ company's slug as written in its page address (capitals included) and
   prefecture. The scraper returns projects with the same role label
   (`looking_for`) and the same text as one job. When reporting what a
   catalogue brings, give both figures.
-- A company that announces more than 1,000 projects cannot be read to the
-  end (100 pages of 10) and is refused. Those seen so far republish one
-  advert thousands of times; leave them out.
+- One listing stops at 1,000 projects (100 pages of 10). The scraper reads a
+  larger company one occupation at a time, then one hiring type or one
+  region, and refuses it when a slice still holds more than 1,000 or no
+  filter's slices hold every project of the company.
 - The listing also returns the names of staff members. Do not read or keep
   them.
 
