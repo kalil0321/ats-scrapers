@@ -6,6 +6,12 @@
 </p>
 
 <p align="center">
+  <b>The library and the snapshots stay free.</b> Coming soon: a hosted API to query
+  the jobs you need directly, with no downloading or processing. Job history included.
+  <a href="https://github.com/kalil0321/ats-scrapers/issues/314">Roadmap →</a>
+</p>
+
+<p align="center">
   One Python library for job postings from as many sources as possible: ATS platforms,
   company career APIs and public job services. We keep the scrapers working and publish
   everything they collect as a free dataset. Part of <a href="https://stapply.ai">Stapply</a>.
@@ -215,16 +221,15 @@ scrapeable = [a for a in list_ats() if ScraperRegistry.has_scraper(a)]
 
 ## Hosted API (coming soon)
 
-A paid API on top of the free dataset, for when downloading snapshots isn't
-enough:
+Query the dataset over HTTP instead of downloading and processing snapshots.
+A paid API on top of the free dataset:
 
-- **Search:** query live jobs with filters, without downloading anything.
+- **Search** live jobs with filters and get back only the rows you need.
 - **Job history:** when each posting was first seen, last seen and closed.
 - **Change feeds:** new and closed jobs since your last call.
 - **Faster refreshes** than the free snapshot.
 
-The library, the snapshot and the company lists stay free. Plans, and what
-you'd want from the API, are discussed in
+The library, the snapshots and the company lists stay free. The plan is in
 [#314](https://github.com/kalil0321/ats-scrapers/issues/314).
 
 ## Contributing
