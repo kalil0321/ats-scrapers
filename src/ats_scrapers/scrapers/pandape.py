@@ -9,7 +9,8 @@ newest first, so the year steps back each time a date would otherwise fall
 after the one before it.
 
 A list is returned whole or not at all: a refused or failed page fails the
-read, and so does a page that comes back empty before the end of the list.
+read. A list that changes while its pages are read, or comes back shorter than
+the count the site announces, is read once more and fails if it is short again.
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ PAGE_SIZE = 20
 PAGE_CONCURRENCY = 4
 DETAIL_CONCURRENCY = 4
 MAX_PAGES = 2_000
+MAX_LIST_ATTEMPTS = 2
 
 # The site prints Brasília wall-clock time, which has kept one offset since 2019.
 _SITE_TIME = timezone(timedelta(hours=-3))
@@ -81,6 +83,10 @@ _POSTED_EMPLOYMENT: dict[str, EmploymentType] = {
 _PERIODS: dict[str, SalaryPeriod] = {
     "HOUR": "HOUR", "DAY": "DAY", "WEEK": "WEEK", "MONTH": "MONTH", "YEAR": "YEAR",
 }
+
+
+class _ListChangedError(ScraperError):
+    """The list changed, or came back short, while its pages were read."""
 
 
 @ScraperRegistry.register(ATSType.PANDAPE)
@@ -117,6 +123,19 @@ class PandapeScraper(BaseScraper):
         self._listed: dict[str, tuple[int, int]] = {}
 
     async def afetch(self) -> list[Job]:
+        for attempt in range(1, MAX_LIST_ATTEMPTS + 1):
+            try:
+                jobs = await self._list()
+                break
+            except _ListChangedError:
+                if attempt == MAX_LIST_ATTEMPTS:
+                    raise
+        _date_in_order(jobs, self._listed, datetime.now(_SITE_TIME).date())
+        if self.include_descriptions:
+            await self._describe(jobs)
+        return jobs
+
+    async def _list(self) -> list[Job]:
         # The days printed on the cards belong to one reading of the list.
         self._listed = {}
         async with self.make_fetcher() as fetch:
@@ -143,7 +162,7 @@ class PandapeScraper(BaseScraper):
         # Only the last page may have emptied while the list was read.
         for number, page in enumerate(pages[:-1], start=1):
             if not page.jobs:
-                raise ScraperError(
+                raise _ListChangedError(
                     f"Pandapé ({self.company_slug}) list broke off at "
                     f"page {number} of {len(pages)}"
                 )
@@ -151,11 +170,15 @@ class PandapeScraper(BaseScraper):
         for page in pages:
             for job in page.jobs:
                 listed.setdefault(job.ats_id, job)
-        jobs = list(listed.values())
-        _date_in_order(jobs, self._listed, datetime.now(_SITE_TIME).date())
-        if self.include_descriptions:
-            await self._describe(jobs)
-        return jobs
+        # The count the last page that carries one announces: the list as it stands.
+        announced = next((page.total for page in reversed(pages) if page.total), 0)
+        if len(listed) < announced:
+            # A vacancy that moved between two pages while they were read is on neither.
+            raise _ListChangedError(
+                f"Pandapé ({self.company_slug}) listed {len(listed)} of the "
+                f"{announced} vacancies it announces"
+            )
+        return list(listed.values())
 
     def _too_long(self) -> ScraperError:
         # A list cut short would pass for a complete one.
