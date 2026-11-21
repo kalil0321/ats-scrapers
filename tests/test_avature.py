@@ -18,9 +18,13 @@ These tests pin:
 
 from __future__ import annotations
 
+import html
+import json
+import logging
 import socket
 import sys
 from types import SimpleNamespace
+from urllib.parse import parse_qsl
 
 import httpx
 import pytest
@@ -852,13 +856,14 @@ def test_httpcloak_goes_through_the_proxy_argument(monkeypatch) -> None:
         calls.append(kwargs)
         return SimpleNamespace(status_code=200, text=ANCHOR_ONLY_PAGE, url=url)
 
-    monkeypatch.setitem(sys.modules, "httpcloak", SimpleNamespace(get=get))
+    monkeypatch.setitem(sys.modules, "httpcloak", SimpleNamespace(get=get, post=get))
     scraper = AvatureScraper("acme", proxy="http://proxy.example:8080")
 
     scraper._fetch_page_via_httpcloak_sync("https://acme.avature.net", 0)
     scraper._http_get_via_httpcloak_sync("https://acme.avature.net/careers/JobDetail/A/1")
+    scraper._post_json_via_httpcloak_sync("https://acme.avature.net/careers/_api", {})
 
-    assert [c.get("proxy") for c in calls] == ["http://proxy.example:8080"] * 2
+    assert [c.get("proxy") for c in calls] == ["http://proxy.example:8080"] * 3
 
 
 def test_failed_lookup_through_a_proxy_is_not_not_found(httpx_mock) -> None:
@@ -886,3 +891,255 @@ def test_5xx_exhausts_retries(monkeypatch, httpx_mock) -> None:
     httpx_mock.add_response(url=_url("acme", 0), status_code=502, is_reusable=True)
     with pytest.raises(ScraperError, match="502"):
         AvatureScraper("acme").fetch()
+
+
+# --- Offset cap ---------------------------------------------------------------
+
+
+class CappedBoard:
+    """A board that answers 406 from offset ``cap`` on and filters by the
+    params its search form names. It ignores the values in ``ignored``."""
+
+    def __init__(
+        self,
+        jobs: list[dict[str, str]],
+        filters: dict[str, list[str]],
+        *,
+        cap: int,
+        typed: tuple[str, ...] = (),
+        ignored: tuple[str, ...] = (),
+    ) -> None:
+        self.jobs = jobs
+        self.filters = filters
+        # Filters whose values the form loads from the values API.
+        self.typed = typed
+        self.ignored = ignored
+        self.cap = cap
+        self.searches: list[tuple[dict[str, str], int]] = []
+        self.value_requests: list[str] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        import ats_scrapers.scrapers.avature as av
+
+        if request.url.path.endswith(av._OPTIONS_API):
+            field_id = json.loads(request.content)["fieldId"]
+            self.value_requests.append(field_id)
+            values = self.filters[f"{field_id}[]"]
+            return httpx.Response(200, json={
+                "results": [{"id": int(v), "name": f"Value {v}"} for v in values],
+                "more": False,
+            })
+        if "/JobDetail/" in request.url.path:
+            return httpx.Response(404)
+        params = dict(parse_qsl(request.url.query.decode()))
+        offset = int(params.pop("jobOffset"))
+        params.pop("jobRecordsPerPage", None)
+        self.searches.append((params, offset))
+        if offset >= self.cap:
+            return httpx.Response(406, text="<title>Request not processed</title>")
+        applied = {
+            k: v for k, v in params.items()
+            if v in self.filters.get(k, ()) and v not in self.ignored
+        }
+        rows = [j for j in self.jobs if all(j.get(k) == v for k, v in applied.items())]
+        return httpx.Response(200, text=self.page(rows[offset:offset + 12]))
+
+    def page(self, rows: list[dict[str, str]]) -> str:
+        selects = "".join(
+            f'<select name="{name}"><option value="">Select an option</option>'
+            + "".join(
+                f'<option value="{v}">{v}</option>' for v in values if name not in self.typed
+            )
+            + "</select>"
+            for name, values in self.filters.items()
+        )
+        registrars = [{"wizardId": 18, "fields": [
+            {"fieldId": name.removesuffix("[]"), "registrars": [{
+                "type": "ValuesDatasource",
+                "name": "DatasetSingleColumnFieldOptionsDatasource",
+                "settings": {"portalUrlPath": "/careers", "datasetSchemaFieldId": "x"},
+            }]}
+            for name in self.typed
+        ]}]
+        anchors = "".join(
+            f'<a href="/careers/JobDetail/Job/{j["id"]}">Job {j["id"]}</a>' for j in rows
+        )
+        return (
+            '<html><head><meta name="avature.wizard.registrars" '
+            f'content="{html.escape(json.dumps(registrars))}"></head><body>'
+            '<form action="https://acme.avature.net/careers/SearchJobs" role="search">'
+            f"{selects}</form>{anchors}</body></html>"
+        )
+
+
+@pytest.fixture
+def offset_cap(monkeypatch: pytest.MonkeyPatch) -> int:
+    import ats_scrapers.scrapers.avature as av
+
+    monkeypatch.setattr(av, "OFFSET_CAP", 24)
+    return 24
+
+
+def _ids(jobs) -> set[str]:
+    return {j.ats_id for j in jobs}
+
+
+def test_board_past_the_offset_cap_is_read_one_filter_value_at_a_time(
+    httpx_mock, offset_cap,
+) -> None:
+    jobs = [{"id": str(i), "732": "A" if i % 2 else "B"} for i in range(40)]
+    board = CappedBoard(jobs, {"732": ["A", "B"]}, cap=offset_cap)
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    read = AvatureScraper("acme").fetch()
+
+    assert len(read) == 40
+    assert _ids(read) == {str(i) for i in range(40)}
+    assert ({}, 24) in board.searches
+    assert sorted((p["732"], offset) for p, offset in board.searches if p) == [
+        ("A", 0), ("A", 12), ("B", 0), ("B", 12),
+    ]
+
+
+def test_slice_still_at_the_cap_is_split_by_values_from_the_values_api(
+    httpx_mock, offset_cap,
+) -> None:
+    jobs = [
+        {"id": str(i), "732": "A" if i % 3 else "B", "731[]": "6040" if i % 2 else "6041"}
+        for i in range(60)
+    ]
+    board = CappedBoard(
+        jobs, {"732": ["A", "B"], "731[]": ["6040", "6041"]}, cap=offset_cap, typed=("731[]",),
+    )
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    read = AvatureScraper("acme").fetch()
+
+    assert _ids(read) == {str(i) for i in range(60)}
+    assert board.value_requests == ["731"]
+    assert ({"732": "A"}, 24) in board.searches
+    assert ({"732": "A", "731[]": "6040"}, 0) in board.searches
+
+
+def test_filter_value_the_search_ignores_is_not_walked_to_the_cap(
+    httpx_mock, monkeypatch,
+) -> None:
+    import ats_scrapers.scrapers.avature as av
+
+    monkeypatch.setattr(av, "OFFSET_CAP", 36)
+    countries = {3: "37", 7: "39"}
+    jobs = [
+        {"id": str(i), "953[]": countries.get(i % 10, "38"), "732": "ABCD"[i % 4]}
+        for i in range(60)
+    ]
+    board = CappedBoard(
+        jobs,
+        {"953[]": ["37", "38", "39"], "732": ["A", "B", "C", "D"]},
+        cap=36,
+        ignored=("38",),
+    )
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    read = AvatureScraper("acme").fetch()
+
+    assert _ids(read) == {str(i) for i in range(60)}
+    # Its first two pages and the board's last page before the cap are the
+    # board's: the walk stops there.
+    assert [s for s in board.searches if s[0] == {"953[]": "38"}] == [
+        ({"953[]": "38"}, 0), ({"953[]": "38"}, 12), ({"953[]": "38"}, 24),
+    ]
+    # The other countries leave most jobs out: the company filter is read too.
+    assert ({"732": "D"}, 0) in board.searches
+
+
+def test_two_value_filters_are_tried_last(httpx_mock, offset_cap) -> None:
+    jobs = [{"id": str(i), "730": "37" if i % 2 else "38", "732": "ABC"[i % 3]} for i in range(40)]
+    board = CappedBoard(jobs, {"730": ["37", "38"], "732": ["A", "B", "C"]}, cap=offset_cap)
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    read = AvatureScraper("acme").fetch()
+
+    assert len(read) == 40
+    assert not [s for s in board.searches if "730" in s[0]]
+
+
+def test_capped_board_without_filters_keeps_what_it_read_and_warns(
+    httpx_mock, offset_cap, caplog,
+) -> None:
+    board = CappedBoard([{"id": str(i)} for i in range(40)], {}, cap=offset_cap)
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    with caplog.at_level(logging.WARNING):
+        read = AvatureScraper("acme").fetch()
+
+    assert len(read) == 24
+    assert "no filter splits it" in caplog.text
+
+
+def test_board_under_the_offset_cap_is_read_in_one_pass(httpx_mock, offset_cap) -> None:
+    jobs = [{"id": str(i), "731[]": "6040"} for i in range(20)]
+    board = CappedBoard(jobs, {"731[]": ["6040", "6041"]}, cap=offset_cap, typed=("731[]",))
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    read = AvatureScraper("acme").fetch()
+
+    assert len(read) == 20
+    assert board.searches == [({}, 0), ({}, 12)]
+    assert board.value_requests == []
+
+
+def test_406_below_the_offset_cap_is_still_a_refusal(httpx_mock) -> None:
+    page = "".join(f'<a href="/careers/JobDetail/Job/{i}">Job {i}</a>' for i in range(12))
+    httpx_mock.add_response(url=_url("acme", 0), text=page)
+    httpx_mock.add_response(url=_url("acme", 12), status_code=406)
+
+    with pytest.raises(ScraperError, match=r"406 at offset=12"):
+        AvatureScraper("acme").fetch()
+
+
+@pytest.mark.parametrize("raises", [True, False], ids=["raises-on-406", "renders-406"])
+def test_browser_reads_a_capped_board_by_the_filters_its_form_lists(
+    refused_to_httpcloak, offset_cap, raises: bool,
+) -> None:
+    jobs = [{"id": str(i), "732": "A" if i % 2 else "B"} for i in range(40)]
+    board = CappedBoard(jobs, {"732": ["A", "B"]}, cap=offset_cap)
+
+    class BoardBrowser(CloudBrowser):
+        async def render(self, url: str) -> RenderedPage:
+            response = board(httpx.Request("GET", url))
+            if raises and response.status_code >= 400:
+                raise ScraperError(f"browser: {url} answered {response.status_code}")
+            return RenderedPage(html=response.text, url=url)
+
+    read = AvatureScraper("acme", cloud_browser=BoardBrowser()).fetch()
+
+    assert _ids(read) == {str(i) for i in range(40)}
+    assert ({"732": "B"}, 12) in board.searches
+
+
+def test_slice_that_starts_like_the_board_is_still_read(httpx_mock, monkeypatch) -> None:
+    import ats_scrapers.scrapers.avature as av
+
+    monkeypatch.setattr(av, "OFFSET_CAP", 36)
+    # Company A holds the board's first 24 jobs, then jobs past the cap.
+    jobs = [{"id": str(i), "732": "A" if i < 24 or 36 <= i < 48 else "B"} for i in range(64)]
+    board = CappedBoard(jobs, {"732": ["A", "B"]}, cap=36)
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    read = AvatureScraper("acme").fetch()
+
+    assert _ids(read) == {str(i) for i in range(64)}
+
+
+def test_filter_set_by_the_board_url_is_kept(httpx_mock, offset_cap) -> None:
+    jobs = [
+        {"id": str(i), "732": "A" if i < 40 else "B", "731[]": "6040" if i % 2 else "6041"}
+        for i in range(60)
+    ]
+    board = CappedBoard(jobs, {"732": ["A", "B"], "731[]": ["6040", "6041"]}, cap=offset_cap)
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    read = AvatureScraper("https://acme.avature.net/careers/SearchJobs/?732=A").fetch()
+
+    assert _ids(read) == {str(i) for i in range(40)}
+    assert all(params.get("732") == "A" for params, _ in board.searches)
