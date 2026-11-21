@@ -326,6 +326,23 @@ def test_project_closed_during_the_read_does_not_fail_the_split(httpx_mock) -> N
     assert not any("hiring_types[]" in params for params in _asked(httpx_mock))
 
 
+def test_coverage_is_measured_on_the_total_after_projects_closed(httpx_mock) -> None:
+    """1,100 announced, 200 closed during the read, 900 read: the read is
+    complete, though 900 is under 90% of the first total."""
+    projects = [(i, _tags("jp__sales")) for i in range(1, 601)]
+    projects += [(i, _tags("jp__engineering")) for i in range(601, 1101)]
+
+    def close_some(params: dict[str, str]) -> None:
+        if params.get("occupation_types[]") == "jp__engineering" and params["page"] == "1":
+            projects[:] = [project for project in projects if project[0] > 200]
+
+    _serve(httpx_mock, projects, after=close_some)
+
+    jobs = WantedlyScraper(SLUG).fetch()
+
+    assert sorted(int(job.ats_id) for job in jobs) == list(range(201, 1101))
+
+
 def test_listing_that_grows_past_the_cap_on_a_later_pass_is_split(httpx_mock) -> None:
     """Ten projects published while page 50 is read shift the pages, so the
     first pass falls short; the second finds 101 pages and must not stop at

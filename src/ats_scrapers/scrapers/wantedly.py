@@ -218,7 +218,7 @@ class WantedlyScraper(BaseScraper):
             # slices.
             now, _ = _listing_size(await read(1, filters), self.company_slug)
             if held >= min(total, now):
-                return total
+                return min(total, now)
         narrowed = "".join(f", {key}={value}" for key, value in filters.items())
         raise ScraperError(
             f"Wantedly ({self.company_slug}{narrowed}) announces {total} "
