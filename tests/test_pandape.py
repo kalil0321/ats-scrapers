@@ -343,12 +343,16 @@ def test_reads_the_text_of_a_vacancy_page_without_posting_data(httpx_mock) -> No
     httpx_mock.add_response(url=LIST_URL, text=_list([_card(7, "Vendedor")]))
     httpx_mock.add_response(
         url="https://acme.pandape.infojobs.com.br/Detail/7",
-        text=_printed(7, "Atender clientes.&#xA;Organizar a loja &amp; o estoque."),
+        text=_printed(
+            7, "Atender clientes.&#xA;Organizar a loja &amp; o estoque. &lt;rh@acme.com&gt;",
+        ),
     )
 
     job = PandapeScraper("acme").fetch()[0]
 
-    assert job.description == "Atender clientes.\nOrganizar a loja & o estoque."
+    assert job.description == (
+        "Atender clientes.\nOrganizar a loja & o estoque. <rh@acme.com>"
+    )
     assert job.company == "Acme Brasil"
 
 

@@ -572,7 +572,8 @@ def _printed_text(page_html: str, job_id: str) -> str | None:
     is_vacancy = False
     for node in parse_html(page_html).walk():
         if node.tag == "meta" and node.attrs.get("name") == "description":
-            text = body_text(node.attrs.get("content"))[:25_000] or None
+            # Plain text, already decoded: nothing in it is markup.
+            text = node.attrs.get("content", "").strip()[:25_000] or None
         elif node.tag == "a" and node.attrs.get("href", "").split("?")[0] == apply_path:
             is_vacancy = True
     return text if is_vacancy else None
