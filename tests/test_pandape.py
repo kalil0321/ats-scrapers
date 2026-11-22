@@ -329,6 +329,57 @@ def test_keeps_a_vacancy_whose_page_is_gone(httpx_mock) -> None:
     assert (job.title, job.description) == ("Vendedor", None)
 
 
+def _printed(job_id: int, text: str) -> str:
+    return (
+        "<html><head>"
+        f'<meta name="description" content="{text}" />'
+        "</head><body>"
+        f'<a href="/Apply/{job_id}">Candidate-se</a>'
+        "</body></html>"
+    )
+
+
+def test_reads_the_text_of_a_vacancy_page_without_posting_data(httpx_mock) -> None:
+    httpx_mock.add_response(url=LIST_URL, text=_list([_card(7, "Vendedor")]))
+    httpx_mock.add_response(
+        url="https://acme.pandape.infojobs.com.br/Detail/7",
+        text=_printed(
+            7, "Atender clientes.&#xA;Organizar a loja &amp; o estoque. &lt;rh@acme.com&gt;",
+        ),
+    )
+
+    job = PandapeScraper("acme").fetch()[0]
+
+    assert job.description == (
+        "Atender clientes.\nOrganizar a loja & o estoque. <rh@acme.com>"
+    )
+    assert job.company == "Acme Brasil"
+
+
+def test_a_page_that_is_not_of_the_vacancy_gives_no_text(httpx_mock) -> None:
+    httpx_mock.add_response(url=LIST_URL, text=_list([_card(7, "Vendedor"), _card(8, "Caixa")]))
+    httpx_mock.add_response(
+        url="https://acme.pandape.infojobs.com.br/Detail/7", text=_printed(70, "Outra vaga."),
+    )
+    httpx_mock.add_response(
+        url="https://acme.pandape.infojobs.com.br/Detail/8",
+        text='<html><head><meta name="description" content="Vagas abertas." /></head></html>',
+    )
+
+    seller, cashier = PandapeScraper("acme").fetch()
+
+    assert (seller.description, cashier.description) == (None, None)
+
+
+def test_a_vacancy_page_with_an_empty_description_tag_gives_no_text(httpx_mock) -> None:
+    httpx_mock.add_response(url=LIST_URL, text=_list([_card(7, "Vendedor")]))
+    httpx_mock.add_response(
+        url="https://acme.pandape.infojobs.com.br/Detail/7", text=_printed(7, " "),
+    )
+
+    assert PandapeScraper("acme").fetch()[0].description is None
+
+
 def test_a_company_with_nothing_open_is_no_jobs(httpx_mock) -> None:
     httpx_mock.add_response(url=LIST_URL, text=_list([]))
 
