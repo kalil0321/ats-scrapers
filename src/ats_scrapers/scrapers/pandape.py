@@ -2,7 +2,8 @@
 
 A company's vacancy page prints its first open vacancies and loads the rest
 twenty at a time. A vacancy page carries the posting as schema.org data, description
-included. ``include_descriptions=False`` reads the list alone.
+included; a page that leaves the data out repeats its text in its description tag.
+``include_descriptions=False`` reads the list alone.
 
 A card prints the day and month of a vacancy, not its year. The list runs
 newest first, so the year steps back each time a date would otherwise fall
@@ -305,8 +306,12 @@ class PandapeScraper(BaseScraper):
 
     async def _detail(self, fetch: Fetcher, job: Job) -> None:
         response = await fetch.request("GET", str(job.url), handled=_MISSING)
-        posting = job_posting(response.text) if response.status_code == 200 else {}
+        if response.status_code != 200:
+            return
+        posting = job_posting(response.text)
         if not posting:
+            if job.ats_id:
+                job.description = _printed_text(response.text, job.ats_id)
             return
         job.description = body_text(posting.get("description"))[:25_000] or None
         organization = _organization(posting)
@@ -553,6 +558,24 @@ def _date_in_order(jobs: list[Job], listed: dict[str, tuple[int, int]], today: d
         job.posted_at = datetime(
             found.year, found.month, found.day, tzinfo=_SITE_TIME,
         ).astimezone(UTC)
+
+
+def _printed_text(page_html: str, job_id: str) -> str | None:
+    """The text of a vacancy page that carries no schema.org data.
+
+    Its description tag holds what the data holds on the pages that have it.
+    Only the page of this vacancy counts, which links to its application: a
+    company's own page has a description tag too.
+    """
+    apply_path = f"/Apply/{job_id}"
+    text: str | None = None
+    is_vacancy = False
+    for node in parse_html(page_html).walk():
+        if node.tag == "meta" and node.attrs.get("name") == "description":
+            text = body_text(node.attrs.get("content"))[:25_000] or None
+        elif node.tag == "a" and node.attrs.get("href", "").split("?")[0] == apply_path:
+            is_vacancy = True
+    return text if is_vacancy else None
 
 
 def _site_name(tree: Node) -> str | None:
