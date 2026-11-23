@@ -263,6 +263,11 @@ RESOLVES = [
         "yoursmartsource",
     ),
     (
+        "https://careers.kula.ai/hire/51570-demand-generation-specialist-sea-india",
+        ATSType.KULA,
+        "hire",
+    ),
+    (
         "https://www.wantedly.com/companies/Acme_Japan/projects",
         ATSType.WANTEDLY,
         "Acme_Japan",

@@ -46,6 +46,7 @@ Acme Corp,acme,https://acme.greenhouse.io
 | icims | `https://careers-<slug>.icims.com` |
 | jazzhr | `https://<slug>.applytojob.com` |
 | join_com | `https://join.com/companies/<slug>` |
+| kula | `https://careers.kula.ai/<slug>` |
 | lever | `https://jobs.lever.co/<slug>` |
 | mercor | seed file only — Mercor exposes no per-company endpoint |
 | moka | `https://app.mokahr.com/social-recruitment/<slug>/<site_id>` |

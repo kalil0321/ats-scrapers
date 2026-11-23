@@ -101,6 +101,7 @@ _PATH_HOSTS: dict[str, ATSType] = {
     "jobs.gem.com": ATSType.GEM,
     "ats.rippling.com": ATSType.RIPPLING,
     "apply.clearcompany.com": ATSType.CLEARCOMPANY,
+    "careers.kula.ai": ATSType.KULA,
 }
 
 # Subdomain tenants: https://{slug}.{suffix}/...
