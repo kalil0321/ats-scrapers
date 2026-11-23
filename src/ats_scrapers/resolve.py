@@ -109,6 +109,7 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
     ".pandape.infojobs.com.br": ATSType.PANDAPE,
     ".applicantpro.com": ATSType.APPLICANTPRO,
     ".careerplug.com": ATSType.CAREERPLUG,
+    ".hirehive.com": ATSType.HIREHIVE,
     ".hiringthing.com": ATSType.HIRINGTHING,
     ".isolvedhire.com": ATSType.ISOLVED_HIRE,
     ".recruitee.com": ATSType.RECRUITEE,
@@ -135,6 +136,7 @@ _SUBDOMAIN_SUFFIXES: dict[str, ATSType] = {
 # Hosts under a tenant suffix that belong to the platform, not to a tenant.
 _PLATFORM_HOSTS = frozenset({
     "app.careerplug.com", "www.careerplug.com", "www.hiringthing.com",
+    "api.hirehive.com", "app.hirehive.com", "www.hirehive.com",
     "www.pandape.infojobs.com.br",
     "empregos.pandape.infojobs.com.br",
     "www.onlyfy.jobs",

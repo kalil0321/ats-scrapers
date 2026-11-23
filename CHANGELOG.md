@@ -7,6 +7,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Added
 
+- HireHive career sites (`hirehive`).
 - onlyfy career pages (`onlyfy`).
 - Pandapé career pages (`pandape`).
 - CareerPlug hiring sites (`careerplug`).
