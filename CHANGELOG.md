@@ -7,6 +7,7 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Added
 
+- Kula career sites (`kula`).
 - onlyfy career pages (`onlyfy`).
 - Pandapé career pages (`pandape`).
 - CareerPlug hiring sites (`careerplug`).

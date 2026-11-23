@@ -1,6 +1,6 @@
 # Provider Description Matrix
 
-This table covers the 78 providers listed below.
+This table covers the 79 providers listed below.
 `API/feed` means the data comes from a machine-readable endpoint such as JSON,
 XML, RSS, GraphQL, or a markdown endpoint. `HTML` means the scraper parses a
 page/rendered page rather than a structured job payload.
@@ -45,6 +45,7 @@ page/rendered page rather than a structured job payload.
 | `jobsch` | Yes | When the listing lacks a body | API | Vacancy API, then the original posting HTML or its JSON-LD |
 | `join_com` | Yes | Yes | HTML | HTML |
 | `keka` | Yes | No | HTML bootstrap + API | API |
+| `kula` | Yes | No | HTML with embedded JSON | HTML with embedded JSON |
 | `lever` | Yes | No | API | API |
 | `manatal` | Yes | No | API | API |
 | `manfred` | Yes | Yes | API/feed | API/feed |

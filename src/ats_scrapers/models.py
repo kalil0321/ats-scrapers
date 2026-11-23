@@ -80,6 +80,8 @@ class ATSType(StrEnum):
     JOBVITE = "jobvite"
     JOIN_COM = "join_com"
     KEKA = "keka"
+    # Kula career sites (careers.kula.ai/<company>).
+    KULA = "kula"
     LEVER = "lever"
     MANATAL = "manatal"
     MERCOR = "mercor"
