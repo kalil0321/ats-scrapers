@@ -4,6 +4,8 @@ A company's page lists its open jobs ten at a time. A job page carries the
 posting as schema.org data, description included.
 ``include_descriptions=False`` reads the list alone.
 
+A company whose page asks not to be indexed (``noindex``) lists no jobs.
+
 A list is returned whole or not at all: a refused or failed page fails the
 read. A list that changes while its pages are read, or comes back shorter than
 the count the page announces, is read once more and fails if it is short again.
@@ -164,6 +166,8 @@ class OnlyfyScraper(BaseScraper):
             raise ScraperError(
                 f"onlyfy ({self.company_slug}) returned an unrecognized career page"
             )
+        if _asks_not_to_be_indexed(tree):
+            return locale, _Page(jobs=[], total=0)
         title = tree.find("title")
         self._company = " ".join(title.text().split()) if title is not None else ""
         self._company = self._company or self.company_slug
@@ -305,6 +309,17 @@ async def _together(reads: Iterable[Coroutine[Any, Any, _Page]]) -> list[_Page]:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _asks_not_to_be_indexed(tree: Node) -> bool:
+    """Whether the page carries a robots tag that says ``noindex`` (or ``none``)."""
+    for node in tree.walk():
+        if node.tag != "meta" or node.attrs.get("name", "").strip().lower() != "robots":
+            continue
+        asked = {part.strip().lower() for part in node.attrs.get("content", "").split(",")}
+        if asked & {"noindex", "none"}:
+            return True
+    return False
 
 
 def _marked(tree: Node, name: str) -> Node | None:
