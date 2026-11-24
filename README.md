@@ -15,7 +15,7 @@
   <a href="https://data.stapply.ai">Browse the data</a> ·
   <a href="https://map.stapply.ai">Live map</a> ·
   <a href="https://github.com/kalil0321/ats-scrapers/blob/main/docs/JOB_SCHEMA.md">Job schema</a> ·
-  <a href="#hosted-api-coming-soon">Hosted API (coming soon)</a>
+  <a href="https://www.stapply.ai/api?utm_source=readme">Hosted API waitlist</a>
 </p>
 
 <p align="center">
@@ -223,8 +223,9 @@ enough:
 - **Change feeds:** new and closed jobs since your last call.
 - **Faster refreshes** than the free snapshot.
 
-The library, the snapshot and the company lists stay free. Plans, and what
-you'd want from the API, are discussed in
+The library, the snapshot and the company lists stay free.
+[Join the waitlist](https://www.stapply.ai/api?utm_source=readme) to hear when
+it opens. Plans, and what you'd want from the API, are discussed in
 [#314](https://github.com/kalil0321/ats-scrapers/issues/314).
 
 ## Contributing
