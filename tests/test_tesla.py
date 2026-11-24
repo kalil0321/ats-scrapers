@@ -8,6 +8,7 @@ path is verified live, not mocked.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
 from datetime import UTC, datetime
@@ -15,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from ats_scrapers.cloud_browser import CDPCloudBrowser, CloudBrowser, RenderedPage
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.tesla import (
     TeslaScraper,
@@ -101,6 +103,88 @@ def test_browser_falls_back_to_the_environment_proxy(
     assert launched_proxies == [
         {"server": "http://env.example:1000", "username": "user", "password": "pass"}
     ]
+
+
+# --- cloud browser ---------------------------------------------------------
+
+_STATE = {
+    "listings": [{"id": "98765", "t": "Senior Battery Engineer", "l": "PALO_ALTO"}],
+    "lookup": {"locations": {"PALO_ALTO": "Palo Alto, CA"}, "departments": {}},
+}
+
+
+class _CloudPage:
+    """A page that answers the state request and the detail requests."""
+
+    def __init__(self) -> None:
+        self.visited: list[str] = []
+        self.mouse = SimpleNamespace(wheel=self._noop, move=self._noop)
+
+    async def _noop(self, *_: object, **__: object) -> None:
+        return None
+
+    async def goto(self, url: str, **_: object) -> None:
+        self.visited.append(url)
+
+    async def evaluate(self, _js: str, arg: object) -> object:
+        if isinstance(arg, str):
+            return {"status": 200, "body": json.dumps(_STATE)}
+        return [{"id": i, "status": 200, "data": {"jobDescription": f"About {i}"}} for i in arg["ids"]]
+
+
+class _FakeCloudBrowser(CDPCloudBrowser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.page = _CloudPage()
+
+    async def start_session(self, client):  # pragma: no cover - never reached
+        raise AssertionError
+
+    async def stop_session(self, client, session_id):  # pragma: no cover - never reached
+        raise AssertionError
+
+    async def run_page(self, action):
+        return await action(self.page)
+
+
+@pytest.fixture
+def _no_warm_up_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ats_scrapers.scrapers.tesla as t
+
+    for name in ("_INITIAL_SETTLE_S", "_POST_SCROLL_S", "_POST_MOUSE_S"):
+        monkeypatch.setattr(t, name, 0)
+
+
+@pytest.mark.usefixtures("_no_warm_up_waits")
+def test_a_refused_cloakbrowser_falls_back_to_the_cloud_browser(launched_proxies: list[object]) -> None:
+    cloud = _FakeCloudBrowser()
+
+    [job] = TeslaScraper("tesla", cloud_browser=cloud).fetch()
+
+    assert len(launched_proxies) == 1
+    assert cloud.page.visited == ["https://www.tesla.com/careers/search/"]
+    assert (job.ats_id, job.title, job.location) == ("98765", "Senior Battery Engineer", "Palo Alto, CA")
+    assert job.description == "Description:\nAbout 98765"
+
+
+@pytest.mark.usefixtures("_no_warm_up_waits")
+def test_without_cloakbrowser_the_cloud_browser_reads_tesla(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ats_scrapers.scrapers import _cloakbrowser
+
+    monkeypatch.setattr(_cloakbrowser, "is_enabled", lambda: False)
+
+    [job] = TeslaScraper("tesla", cloud_browser=_FakeCloudBrowser()).fetch()
+
+    assert job.ats_id == "98765"
+
+
+def test_a_cloud_browser_that_only_renders_is_refused() -> None:
+    class RenderOnly(CloudBrowser):
+        async def render(self, url: str) -> RenderedPage:
+            return RenderedPage(html="", url=url)
+
+    with pytest.raises(TypeError, match="CDPCloudBrowser"):
+        TeslaScraper("tesla", cloud_browser=RenderOnly())
 
 
 def test_parses_state_payload() -> None:

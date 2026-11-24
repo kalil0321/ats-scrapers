@@ -15,7 +15,7 @@ import os
 import threading
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from concurrent.futures import Future
 from typing import Any, NamedTuple, Self, TypeVar
 
@@ -103,6 +103,14 @@ class CDPCloudBrowser(CloudBrowser):
 
     async def render(self, url: str) -> RenderedPage:
         return await asyncio.wrap_future(self._submit(self._render(url)))
+
+    async def run_page(self, action: Callable[[Any], Awaitable[T]]) -> T:
+        """Return what ``action`` makes of a new page of the session.
+
+        The page is a Playwright page, closed afterwards. ``action`` runs on
+        the browser's own thread and event loop.
+        """
+        return await asyncio.wrap_future(self._submit(self._run_page(action)))
 
     async def aclose(self) -> None:
         worker = self._take_worker()
@@ -200,6 +208,16 @@ class CDPCloudBrowser(CloudBrowser):
                 with contextlib.suppress(Exception):
                     await page.wait_for_load_state("networkidle", timeout=self.timeout * 1000)
             return RenderedPage(html=await _settled_html(page, self.timeout), url=page.url)
+        finally:
+            with contextlib.suppress(Exception):
+                await page.close()
+
+    async def _run_page(self, action: Callable[[Any], Awaitable[T]]) -> T:
+        browser = await self._connected_browser()
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page = await context.new_page()
+        try:
+            return await action(page)
         finally:
             with contextlib.suppress(Exception):
                 await page.close()

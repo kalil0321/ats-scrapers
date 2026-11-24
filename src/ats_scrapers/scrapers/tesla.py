@@ -15,9 +15,14 @@ argument when one is given, else through the proxy in ``PROXY``. The
 behavioural warm-up (scroll + mouse moves + short waits) primes
 Akamai's risk-score before we touch the API.
 
-Graceful degradation: when ``cloakbrowser`` isn't installed, the
-scraper logs a warning and returns ``[]`` so the rest of the publish
-pipeline keeps moving (per the optional-browser-fallback contract).
+When Akamai refuses cloakbrowser too, the same flow runs in the
+``cloud_browser`` given to the scraper, if any (a hosted Chrome, see
+:mod:`ats_scrapers.cloud_browser`).
+
+Graceful degradation: when ``cloakbrowser`` isn't installed and no
+cloud browser is given, the scraper logs a warning and returns ``[]``
+so the rest of the publish pipeline keeps moving (per the
+optional-browser-fallback contract).
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from ats_scrapers.cloud_browser import CDPCloudBrowser
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers import _cloakbrowser as cb
@@ -71,11 +77,36 @@ class TeslaScraper(BaseScraper):
 
     ats = ATSType.TESLA
 
+    def __init__(
+        self,
+        company_slug: str,
+        *,
+        cloud_browser: CDPCloudBrowser | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(company_slug, **kwargs)
+        if cloud_browser is not None and not isinstance(cloud_browser, CDPCloudBrowser):
+            raise TypeError(
+                "cloud_browser must be a CDPCloudBrowser (Tesla drives the page), "
+                f"not {type(cloud_browser).__name__}"
+            )
+        self.cloud_browser = cloud_browser
+
     async def afetch(self) -> list[Job]:
-        if not cb.is_enabled():
+        if cb.is_enabled():
+            try:
+                return await self._fetch_via_cloakbrowser()
+            except Exception as exc:
+                if self.cloud_browser is None:
+                    raise
+                log.warning(
+                    "Tesla: cloakbrowser failed (%s: %s); reading through the cloud browser",
+                    type(exc).__name__, str(exc)[:200],
+                )
+        elif self.cloud_browser is None:
             cb.warn_disabled("Tesla")
             return []
-        return await self._fetch_via_cloakbrowser()
+        return await self.cloud_browser.run_page(self._scrape_page)
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -118,67 +149,69 @@ class TeslaScraper(BaseScraper):
             headless=True, humanize=True, proxy=proxy,
         )
         try:
-            page = await browser.new_page()
-
-            # Warm up Akamai cookies + risk-score with a real-looking
-            # visit to the careers page.
-            await page.goto(
-                f"{_BASE_URL}{_CAREERS_HOME}",
-                wait_until="domcontentloaded",
-                timeout=60_000,
-            )
-            await asyncio.sleep(_INITIAL_SETTLE_S)
-            await page.mouse.wheel(0, 500)
-            await asyncio.sleep(_POST_SCROLL_S)
-            await page.mouse.wheel(0, -300)
-            await asyncio.sleep(_POST_SCROLL_S)
-            await page.mouse.move(400, 400, steps=20)
-            await page.mouse.move(800, 600, steps=20)
-            await asyncio.sleep(_POST_MOUSE_S)
-
-            # Fetch the state endpoint from inside the page context
-            # so we keep the warm-up cookies. ``fetch`` returns the
-            # raw text — Tesla's endpoint is JSON, not the legacy
-            # ``<pre>``-wrapped form.
-            resp = await page.evaluate(
-                """async (url) => {
-                    const r = await fetch(url, {credentials: 'include'});
-                    return {status: r.status, body: await r.text()};
-                }""",
-                _STATE_ENDPOINT,
-            )
-
-            if resp["status"] != 200:
-                raise ScraperError(
-                    f"Tesla cua-api returned status {resp['status']} "
-                    f"(body preview: {resp['body'][:200]!r})"
-                )
-            try:
-                payload = json.loads(resp["body"])
-            except json.JSONDecodeError as exc:
-                raise ScraperError(
-                    f"Tesla: response did not parse as JSON ({exc})."
-                ) from exc
-
-            jobs = list(self._parse_payload(payload))
-
-            # Per-job descriptions — fetched in-session from inside
-            # the warmed-up page so we keep cookies + risk-score. The
-            # state-endpoint listings are description-less, so without
-            # this step every Tesla row ships with an empty
-            # ``description`` (violates the
-            # always-include-descriptions invariant).
-            if self.include_descriptions:
-                ids = [j.ats_id for j in jobs]
-                details = await self._fetch_details(page, ids)
-                for j in jobs:
-                    d = details.get(j.ats_id)
-                    if d:
-                        j.description = _format_description(d) or None
-                        if not j.department:
-                            j.department = d.get("department") or None
+            return await self._scrape_page(await browser.new_page())
         finally:
             await browser.close()
+
+    async def _scrape_page(self, page: Any) -> list[Job]:
+        """Listings and descriptions read from inside ``page``."""
+        # Warm up Akamai cookies + risk-score with a real-looking
+        # visit to the careers page.
+        await page.goto(
+            f"{_BASE_URL}{_CAREERS_HOME}",
+            wait_until="domcontentloaded",
+            timeout=60_000,
+        )
+        await asyncio.sleep(_INITIAL_SETTLE_S)
+        await page.mouse.wheel(0, 500)
+        await asyncio.sleep(_POST_SCROLL_S)
+        await page.mouse.wheel(0, -300)
+        await asyncio.sleep(_POST_SCROLL_S)
+        await page.mouse.move(400, 400, steps=20)
+        await page.mouse.move(800, 600, steps=20)
+        await asyncio.sleep(_POST_MOUSE_S)
+
+        # Fetch the state endpoint from inside the page context
+        # so we keep the warm-up cookies. ``fetch`` returns the
+        # raw text — Tesla's endpoint is JSON, not the legacy
+        # ``<pre>``-wrapped form.
+        resp = await page.evaluate(
+            """async (url) => {
+                const r = await fetch(url, {credentials: 'include'});
+                return {status: r.status, body: await r.text()};
+            }""",
+            _STATE_ENDPOINT,
+        )
+
+        if resp["status"] != 200:
+            raise ScraperError(
+                f"Tesla cua-api returned status {resp['status']} "
+                f"(body preview: {resp['body'][:200]!r})"
+            )
+        try:
+            payload = json.loads(resp["body"])
+        except json.JSONDecodeError as exc:
+            raise ScraperError(
+                f"Tesla: response did not parse as JSON ({exc})."
+            ) from exc
+
+        jobs = list(self._parse_payload(payload))
+
+        # Per-job descriptions — fetched in-session from inside
+        # the warmed-up page so we keep cookies + risk-score. The
+        # state-endpoint listings are description-less, so without
+        # this step every Tesla row ships with an empty
+        # ``description`` (violates the
+        # always-include-descriptions invariant).
+        if self.include_descriptions:
+            ids = [j.ats_id for j in jobs]
+            details = await self._fetch_details(page, ids)
+            for j in jobs:
+                d = details.get(j.ats_id)
+                if d:
+                    j.description = _format_description(d) or None
+                    if not j.department:
+                        j.department = d.get("department") or None
 
         return jobs
 

@@ -184,6 +184,25 @@ async def test_one_session_serves_every_render_until_closed(
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
+async def test_run_page_hands_a_page_of_the_session_and_closes_it(
+    provider: Provider, httpx_mock, cdp: FakeCDP,
+) -> None:
+    _mock_sessions(httpx_mock, provider)
+
+    async def visit(page: Any) -> str:
+        await page.goto("https://acme.example/jobs")
+        return page.url
+
+    async with provider.cls(api_key="key") as browser:
+        assert await browser.run_page(visit) == "https://acme.example/jobs"
+        await browser.render("https://acme.example/jobs/1")
+
+    [connection] = cdp.connections
+    assert len(connection.pages) == 2
+    assert all(page.closed for page in connection.pages)
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
 async def test_api_key_is_read_from_the_environment(
     provider: Provider, httpx_mock, cdp: FakeCDP, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
