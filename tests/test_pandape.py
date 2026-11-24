@@ -542,6 +542,44 @@ def test_a_refused_vacancy_page_fails_the_read(httpx_mock, status: int, words: s
         PandapeScraper("acme").fetch()
 
 
+@pytest.mark.parametrize(
+    ("announced", "short_by"),
+    [(4, 0), (340, 0), (499, 0), (500, 1), (564, 1), (5_249, 10), (9_999, 19), (40_000, 19)],
+)
+def test_how_short_the_last_reading_of_a_list_may_be(announced: int, short_by: int) -> None:
+    assert pandape._short_by_at_most(announced) == short_by
+
+
+def _busy_list(httpx_mock, monkeypatch, *, listed: int, announced: int) -> None:
+    """A list of one page of twenty and a second page, short of what it announces."""
+    monkeypatch.setattr(pandape, "PAGE_SIZE", 600)
+    cards = [_card(number, f"Vaga {number}") for number in range(1, listed + 1)]
+    httpx_mock.add_response(url=LIST_URL, text=_list(cards[:20], last=False), is_reusable=True)
+    httpx_mock.add_response(
+        method="POST", url=_page(2, 600), is_reusable=True,
+        json=_more(cards[20:], last=True, total=announced),
+    )
+
+
+def test_a_long_list_one_vacancy_short_on_its_second_reading_is_kept(httpx_mock, monkeypatch) -> None:
+    _busy_list(httpx_mock, monkeypatch, listed=563, announced=564)
+
+    jobs = PandapeScraper("acme", include_descriptions=False).fetch()
+
+    assert len(jobs) == 563
+    # Read twice: the first reading has to be whole.
+    assert len(httpx_mock.get_requests()) == 4
+
+
+def test_a_long_list_short_by_more_is_still_an_error(httpx_mock, monkeypatch) -> None:
+    _busy_list(httpx_mock, monkeypatch, listed=562, announced=564)
+
+    with pytest.raises(ScraperError, match="listed 562 of the 564 vacancies it announces"):
+        PandapeScraper("acme", include_descriptions=False).fetch()
+
+    assert len(httpx_mock.get_requests()) == 4
+
+
 @pytest.mark.parametrize("answer", [{"isLast": False, "subtotal": 80}, {"view": "", "isLast": False}])
 def test_a_page_that_lists_nothing_but_announces_more_is_an_error(
     httpx_mock, answer: dict[str, object],

@@ -11,7 +11,9 @@ after the one before it.
 
 A list is returned whole or not at all: a refused or failed page fails the
 read. A list that changes while its pages are read, or comes back shorter than
-the count the site announces, is read once more and fails if it is short again.
+the count the site announces, is read once more. A long list rarely stands
+still that long: the second reading may be a few vacancies short, one in five
+hundred, and fails beyond that.
 """
 
 from __future__ import annotations
@@ -126,7 +128,7 @@ class PandapeScraper(BaseScraper):
     async def afetch(self) -> list[Job]:
         for attempt in range(1, MAX_LIST_ATTEMPTS + 1):
             try:
-                jobs = await self._list()
+                jobs = await self._list(last_reading=attempt == MAX_LIST_ATTEMPTS)
                 break
             except _ListChangedError:
                 if attempt == MAX_LIST_ATTEMPTS:
@@ -136,7 +138,7 @@ class PandapeScraper(BaseScraper):
             await self._describe(jobs)
         return jobs
 
-    async def _list(self) -> list[Job]:
+    async def _list(self, *, last_reading: bool = False) -> list[Job]:
         # The days printed on the cards belong to one reading of the list.
         self._listed = {}
         async with self.make_fetcher() as fetch:
@@ -173,7 +175,7 @@ class PandapeScraper(BaseScraper):
                 listed.setdefault(job.ats_id, job)
         # The count the last page that carries one announces: the list as it stands.
         announced = next((page.total for page in reversed(pages) if page.total), 0)
-        if len(listed) < announced:
+        if announced - len(listed) > (_short_by_at_most(announced) if last_reading else 0):
             # A vacancy that moved between two pages while they were read is on neither.
             raise _ListChangedError(
                 f"Pandapé ({self.company_slug}) listed {len(listed)} of the "
@@ -558,6 +560,15 @@ def _date_in_order(jobs: list[Job], listed: dict[str, tuple[int, int]], today: d
         job.posted_at = datetime(
             found.year, found.month, found.day, tzinfo=_SITE_TIME,
         ).astimezone(UTC)
+
+
+def _short_by_at_most(announced: int) -> int:
+    """How many vacancies the last reading of a list may be short of.
+
+    Each vacancy that closes while the pages are read moves another onto a
+    page already read. One in five hundred, and always less than a page.
+    """
+    return min(PAGE_SIZE - 1, announced // 500)
 
 
 def _printed_text(page_html: str, job_id: str) -> str | None:
