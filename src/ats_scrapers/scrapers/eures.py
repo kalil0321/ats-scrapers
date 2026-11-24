@@ -86,6 +86,21 @@ MAX_CONCURRENCY = 6  # The portal is generous but we stay polite.
 # every request busy, few enough to bound that memory.
 MAX_ACTIVE_SLICES = 2 * MAX_CONCURRENCY
 _REREAD_ROUNDS = 4  # See ``_rereads``.
+# Slices that lost a read are read again when the crawl is done.
+_LOST_ROUNDS = 2
+
+
+class _RejectedError(ScraperError):
+    """The API refused the query (400); asking again changes nothing."""
+
+
+@dataclass(frozen=True)
+class _Lost:
+    """A slice to read again: all of it, or with ``capped`` only the
+    first ``PAGINATION_CAP`` vacancies of a slice read past its cap."""
+
+    base: dict[str, Any]
+    capped: bool = False
 
 
 @dataclass(frozen=True)
@@ -394,10 +409,44 @@ class EuresScraper(BaseScraper):
                 else:
                     all_jobs.extend(new_jobs)
 
+            slices = asyncio.Semaphore(MAX_ACTIVE_SLICES)
+            lost: list[_Lost] = []
             await self._exhaust_query(
-                fetcher, sem, base={}, absorb=absorb,
-                slices=asyncio.Semaphore(MAX_ACTIVE_SLICES),
+                fetcher, sem, base={}, absorb=absorb, slices=slices, lost=lost,
             )
+
+            async def again(entry: _Lost, lost: list[_Lost]) -> None:
+                try:
+                    if entry.capped:
+                        await self._read_capped(
+                            fetcher, sem, base=entry.base, absorb=absorb,
+                            slices=slices, lost=lost, first_page=True,
+                        )
+                    else:
+                        await self._exhaust_query(
+                            fetcher, sem, base=entry.base, absorb=absorb,
+                            slices=slices, lost=lost,
+                        )
+                except _RejectedError:
+                    raise
+                except ScraperError:
+                    lost.append(entry)
+                    raise
+
+            for round_ in range(_LOST_ROUNDS):
+                if not lost:
+                    break
+                if round_:
+                    await asyncio.sleep(fetch_mod.DEFAULT_MAX_RETRY_DELAY)
+                todo, lost = lost, []
+                log.info("EURES reads %d slices again", len(todo))
+                await _gather_tolerant(
+                    (again(entry, lost) for entry in todo), label="lost slice",
+                )
+            for entry in lost:
+                log.warning(
+                    "EURES slice %s was not read whole", _describe(entry.base),
+                )
         return all_jobs
 
     async def _exhaust_query(
@@ -408,18 +457,20 @@ class EuresScraper(BaseScraper):
         base: dict[str, Any],
         absorb: Callable[[list[dict[str, Any]]], Awaitable[None]],
         slices: asyncio.Semaphore | None = None,
+        lost: list[_Lost] | None = None,
     ) -> None:
         """Pull every job matching ``base``, splitting it while it is
         above the pagination cap. ``slices`` bounds how many slices read
-        their pages at once."""
+        their pages at once; ``lost`` collects the slices to read again."""
         if slices is None:
             slices = asyncio.Semaphore(MAX_ACTIVE_SLICES)
+        if lost is None:
+            lost = []
 
         async def read_capped() -> None:
-            async with slices:
-                await self._fan_out_pages(
-                    fetcher, sem, base=base, total=PAGINATION_CAP, absorb=absorb,
-                )
+            await self._read_capped(
+                fetcher, sem, base=base, absorb=absorb, slices=slices, lost=lost,
+            )
 
         async def read_whole() -> dict[str, Any] | None:
             """Read a slice that fit under the cap when planned, starting
@@ -435,10 +486,11 @@ class EuresScraper(BaseScraper):
                     return fresh
                 first_page = _slim(items)
                 del fresh, items
-                await self._fan_out_pages(
+                if await self._fan_out_pages(
                     fetcher, sem, base=base, total=total, absorb=absorb,
                     first_page=first_page,
-                )
+                ):
+                    lost.append(_Lost(base))
                 return None
 
         payload = await self._search(fetcher, sem, base=base, page=1)
@@ -505,10 +557,13 @@ class EuresScraper(BaseScraper):
             try:
                 await self._exhaust_query(
                     fetcher, sem, base=child_base, absorb=absorb, slices=slices,
+                    lost=lost,
                 )
             except ScraperError as exc:
                 # Failures inside the child's own children are logged
                 # there, so this is the child's first request.
+                if not isinstance(exc, _RejectedError):
+                    lost.append(_Lost(child_base))
                 announced = "?" if child.count is None else child.count
                 raise ScraperError(
                     f"{_describe(child_base)} ({announced} announced): {exc}"
@@ -519,6 +574,29 @@ class EuresScraper(BaseScraper):
             tasks.append(read_capped())
         await _gather_tolerant(tasks, label=dimension.name)
 
+    async def _read_capped(
+        self,
+        fetcher: Fetcher,
+        sem: asyncio.Semaphore,
+        *,
+        base: dict[str, Any],
+        absorb: Callable[[list[dict[str, Any]]], Awaitable[None]],
+        slices: asyncio.Semaphore,
+        lost: list[_Lost],
+        first_page: bool = False,
+    ) -> None:
+        """Read the first ``PAGINATION_CAP`` vacancies of a slice whose
+        page 1 the caller absorbed; with ``first_page``, that page too."""
+        async with slices:
+            if first_page:
+                payload = await self._search(fetcher, sem, base=base, page=1)
+                await absorb(payload.get("jvs") or [])
+                del payload
+            if await self._fan_out_pages(
+                fetcher, sem, base=base, total=PAGINATION_CAP, absorb=absorb,
+            ):
+                lost.append(_Lost(base, capped=True))
+
     async def _fan_out_pages(
         self,
         fetcher: Fetcher,
@@ -528,8 +606,9 @@ class EuresScraper(BaseScraper):
         total: int,
         absorb: Callable[[list[dict[str, Any]]], Awaitable[None]],
         first_page: list[dict[str, Any]] | None = None,
-    ) -> None:
+    ) -> int:
         """Read pages 2.. of a slice whose page 1 the caller absorbed.
+        Returns how many of its reads failed and were not made up for.
 
         With ``first_page``, a slice that comes back short is checked for
         vacancies repeated across pages, and the runs of tied vacancies
@@ -539,6 +618,7 @@ class EuresScraper(BaseScraper):
         page_label = f"page of {_describe(base)}"
         pages: dict[int, list[dict[str, Any]]] = {}
         seen: set[str] = set()
+        failed: set[int] = set()
 
         def keep(page: int | None, items: list[dict[str, Any]]) -> None:
             if first_page is None:
@@ -549,7 +629,14 @@ class EuresScraper(BaseScraper):
             seen.update(item["id"] for item in slim)
 
         async def one(page: int) -> None:
-            payload = await self._search(fetcher, sem, base=base, page=page)
+            try:
+                payload = await self._search(fetcher, sem, base=base, page=page)
+            except _RejectedError:
+                raise
+            except ScraperError:
+                failed.add(page)
+                raise
+            failed.discard(page)
             items = payload.get("jvs") or []
             keep(page, items)
             await absorb(items)
@@ -559,16 +646,32 @@ class EuresScraper(BaseScraper):
         await _gather_tolerant(
             (one(p) for p in range(2, page_count + 1)), label=page_label,
         )
+        if failed:
+            # Once more while the slice is at hand; what still fails is
+            # left to the end of the crawl.
+            await _gather_tolerant(
+                [one(p) for p in sorted(failed)], label=page_label,
+            )
         if first_page is None:
-            return
+            return len(failed)
 
         windows_read: set[_Reread] = set()
+        windows_failed: set[_Reread] = set()
         refresh: set[int] = set()
 
         async def window(reread: _Reread) -> None:
-            payload = await self._search(
-                fetcher, sem, base=base, page=reread.page, size=reread.size,
-            )
+            try:
+                payload = await self._search(
+                    fetcher, sem, base=base, page=reread.page, size=reread.size,
+                )
+            except _RejectedError:
+                raise
+            except ScraperError:
+                # Asked again in the next round.
+                windows_read.discard(reread)
+                windows_failed.add(reread)
+                raise
+            windows_failed.discard(reread)
             items = payload.get("jvs") or []
             keep(None, items)
             await absorb(items)
@@ -577,7 +680,7 @@ class EuresScraper(BaseScraper):
 
         for _ in range(_REREAD_ROUNDS):
             if len(seen) >= total:
-                return
+                return 0
             # A window that held its run is not read twice. Pages are,
             # since a run that moved shows up again in the fresh pages.
             todo = [r for r in _rereads(pages) if r not in windows_read]
@@ -599,6 +702,7 @@ class EuresScraper(BaseScraper):
                 "EURES slice %s returned %d of %d vacancies",
                 _describe(base), len(seen), total,
             )
+        return len(failed) + len(windows_failed)
 
     async def _search(
         self,
@@ -637,7 +741,7 @@ class EuresScraper(BaseScraper):
                     "POST", API_URL, json=body, handled={307, 400},
                 )
             if r.status_code == 400:
-                raise ScraperError(
+                raise _RejectedError(
                     f"EURES rejected the query {_describe(base)} page={page}"
                 )
             if r.status_code == 307:

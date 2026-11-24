@@ -313,6 +313,8 @@ class _FakePortal:
     phantoms: int = 0
     # Filter values whose queries fail with 503.
     unavailable: set[str] = field(default_factory=set)
+    # Requests it returns true for fail with 503.
+    failing: Callable[[dict], bool] | None = None
     # Runs once, right after the first page 1 is served.
     after_first_page: Callable[[], None] | None = None
     bodies: list[dict] = field(default_factory=list)
@@ -340,6 +342,8 @@ class _FakePortal:
         if self.failing_unions and len(body.get(self.failing_unions) or []) > 1:
             return httpx.Response(400, json={"error": "bad request"})
         if any(body.get("locationCodes") == [v] for v in self.unavailable):
+            return httpx.Response(503, text="unavailable")
+        if self.failing is not None and self.failing(body):
             return httpx.Response(503, text="unavailable")
         if self.arriving and body["resultsPerPage"] != eures.PAGE_SIZE:
             self.vacancies.extend(self.arriving)
@@ -710,3 +714,230 @@ def test_a_failed_slice_is_named_with_its_announced_count(
         and "locationCodes=de2 (3 announced)" in r.getMessage()
         for r in caplog.records
     )
+
+
+# --- reads that failed ---------------------------------------------------------
+
+
+@pytest.fixture
+def one_attempt(monkeypatch):
+    """A request that fails is not sent again by the fetch layer."""
+    monkeypatch.setattr(eures.fetch_mod, "DEFAULT_RETRIES", 1)
+
+
+def _first(times: int, matches: Callable[[dict], bool]) -> Callable[[dict], bool]:
+    """True for the first ``times`` requests that ``matches`` accepts."""
+    left = [times]
+
+    def failing(body: dict) -> bool:
+        if not matches(body) or not left[0]:
+            return False
+        left[0] -= 1
+        return True
+
+    return failing
+
+
+def _not_read_whole(caplog) -> list[str]:
+    return [
+        r.getMessage() for r in caplog.records
+        if "was not read whole" in r.getMessage()
+    ]
+
+
+def test_a_page_that_failed_is_read_again_within_its_slice(
+    httpx_mock, small_pages, one_attempt, caplog,
+) -> None:
+    vacancies = [_Vacancy(f"m{i}", "mt", "mt001") for i in range(4)]
+    portal = _FakePortal(
+        vacancies, max_results=4, failing=_first(1, lambda b: b["page"] == 2),
+    )
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.WARNING):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {v.id for v in vacancies}
+    assert [b["page"] for b in portal.bodies] == [1, 1, 2, 2]
+    assert not _not_read_whole(caplog)
+
+
+def test_a_slice_whose_page_keeps_failing_is_read_again_after_the_crawl(
+    httpx_mock, small_pages, one_attempt, caplog,
+) -> None:
+    vacancies = [
+        _Vacancy("f0", "fr", "fr10"),
+        *(_Vacancy(f"d{i}", "de", "de1") for i in range(4)),
+    ]
+    portal = _FakePortal(
+        vacancies, max_results=4,
+        failing=_first(2, lambda b: b["locationCodes"] == ["de"] and b["page"] == 2),
+    )
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.WARNING):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {v.id for v in vacancies}
+    # Planned, read, then read once more from its first page.
+    germany = [b["page"] for b in portal.bodies if b["locationCodes"] == ["de"]]
+    assert germany == [1, 1, 2, 2, 1, 1, 2]
+    assert not _not_read_whole(caplog)
+
+
+def test_a_slice_that_failed_at_once_is_read_after_the_crawl(
+    httpx_mock, small_pages, one_attempt, caplog,
+) -> None:
+    vacancies = [
+        *(_Vacancy(f"f{i}", "fr", "fr10") for i in range(3)),
+        *(_Vacancy(f"d{i}", "de", "de1") for i in range(3)),
+    ]
+    portal = _FakePortal(
+        vacancies, max_results=4,
+        failing=_first(1, lambda b: b["locationCodes"] == ["de"]),
+    )
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.WARNING):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {v.id for v in vacancies}
+    assert any(
+        "locationCodes=de (3 announced)" in r.getMessage() for r in caplog.records
+    )
+    assert not _not_read_whole(caplog)
+
+
+def test_a_slice_lost_again_after_the_crawl_gets_one_more_reading(
+    httpx_mock, small_pages, one_attempt, monkeypatch, caplog,
+) -> None:
+    vacancies = [
+        *(_Vacancy(f"f{i}", "fr", "fr10") for i in range(3)),
+        *(_Vacancy(f"d{i}", "de", "de1") for i in range(3)),
+    ]
+    portal = _FakePortal(
+        vacancies, max_results=4,
+        failing=_first(2, lambda b: b["locationCodes"] == ["de"]),
+    )
+    _serve(httpx_mock, portal)
+    waits: list[float] = []
+    sleep = eures.asyncio.sleep
+
+    async def waited(seconds: float) -> None:
+        waits.append(seconds)
+        await sleep(0)
+
+    monkeypatch.setattr(eures.fetch_mod, "DEFAULT_MAX_RETRY_DELAY", 30.0)
+    monkeypatch.setattr(eures.asyncio, "sleep", waited)
+
+    with caplog.at_level(logging.WARNING):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {v.id for v in vacancies}
+    assert waits == [30.0]
+    assert not _not_read_whole(caplog)
+
+
+def test_a_slice_that_never_answers_is_given_up_and_named(
+    httpx_mock, small_pages, one_attempt, caplog,
+) -> None:
+    vacancies = [
+        _Vacancy("f0", "fr", "fr10"),
+        *(_Vacancy(f"d{i}", "de", "de1") for i in range(3)),
+        *(_Vacancy(f"e{i}", "de", "de2") for i in range(3)),
+    ]
+    portal = _FakePortal(vacancies, max_results=4, unavailable={"de2"})
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.WARNING):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {"f0", "d0", "d1", "d2"}
+    # Once in the crawl, twice after it.
+    assert sum(b["locationCodes"] == ["de2"] for b in portal.bodies) == 3
+    assert _not_read_whole(caplog) == [
+        "EURES slice locationCodes=de2 was not read whole",
+    ]
+
+
+def test_a_rejected_slice_is_not_asked_again(
+    httpx_mock, small_pages, one_attempt, caplog,
+) -> None:
+    vacancies = [
+        _Vacancy("f0", "fr", "fr10"),
+        *(_Vacancy(f"d{i}", "de", "de1") for i in range(3)),
+        *(_Vacancy(f"e{i}", "de", "de2") for i in range(3)),
+    ]
+    portal = _FakePortal(vacancies, max_results=4, rejected={"de2"})
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.WARNING):
+        EuresScraper("eures").fetch()
+
+    assert sum(b["locationCodes"] == ["de2"] for b in portal.bodies) == 1
+    assert not _not_read_whole(caplog)
+
+
+def test_a_slice_read_past_its_cap_gets_its_first_pages_again(
+    httpx_mock, small_pages, one_attempt, caplog,
+) -> None:
+    vacancies = [
+        _Vacancy(f"x{i}", "mt", "mt001", occupations=("9112",), modified=9 - i)
+        for i in range(6)
+    ]
+    unit_group = [f"{_ISCO}9112"]
+    portal = _FakePortal(
+        vacancies, max_results=4,
+        failing=_first(
+            2, lambda b: b["occupationUris"] == unit_group and b["page"] == 2,
+        ),
+    )
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.WARNING):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {"x0", "x1", "x2", "x3"}
+    slice_pages = [
+        b["page"] for b in portal.bodies if b["occupationUris"] == unit_group
+    ]
+    # Its two failed readings of page 2, then pages 1 and 2 once more,
+    # without planning the slice again.
+    assert slice_pages == [1, 2, 2, 1, 2]
+    assert sum("cannot be split further" in r.getMessage() for r in caplog.records) == 1
+    assert not _not_read_whole(caplog)
+
+
+
+def test_a_window_that_failed_is_read_in_the_next_round(
+    httpx_mock, six_per_page, one_attempt, caplog,
+) -> None:
+    portal = _FakePortal(
+        _tied_slice(), max_results=18, shuffle_ties=True,
+        failing=_first(1, lambda b: b["resultsPerPage"] == 5),
+    )
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.WARNING):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {v.id for v in _tied_slice()}
+    assert sum(b["resultsPerPage"] == 5 for b in portal.bodies) == 2
+    assert not _not_read_whole(caplog)
+
+
+def test_a_slice_whose_window_keeps_failing_is_read_again_after_the_crawl(
+    httpx_mock, six_per_page, one_attempt, caplog,
+) -> None:
+    portal = _FakePortal(
+        _tied_slice(), max_results=18, shuffle_ties=True,
+        failing=_first(eures._REREAD_ROUNDS, lambda b: b["resultsPerPage"] == 5),
+    )
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.INFO, logger=eures.log.name):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {v.id for v in _tied_slice()}
+    assert any("reads 1 slices again" in r.getMessage() for r in caplog.records)
+    assert not _not_read_whole(caplog)
