@@ -906,3 +906,38 @@ def test_a_slice_read_past_its_cap_gets_its_first_pages_again(
     assert slice_pages == [1, 2, 2, 1, 2]
     assert sum("cannot be split further" in r.getMessage() for r in caplog.records) == 1
     assert not _not_read_whole(caplog)
+
+
+
+def test_a_window_that_failed_is_read_in_the_next_round(
+    httpx_mock, six_per_page, one_attempt, caplog,
+) -> None:
+    portal = _FakePortal(
+        _tied_slice(), max_results=18, shuffle_ties=True,
+        failing=_first(1, lambda b: b["resultsPerPage"] == 5),
+    )
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.WARNING):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {v.id for v in _tied_slice()}
+    assert sum(b["resultsPerPage"] == 5 for b in portal.bodies) == 2
+    assert not _not_read_whole(caplog)
+
+
+def test_a_slice_whose_window_keeps_failing_is_read_again_after_the_crawl(
+    httpx_mock, six_per_page, one_attempt, caplog,
+) -> None:
+    portal = _FakePortal(
+        _tied_slice(), max_results=18, shuffle_ties=True,
+        failing=_first(eures._REREAD_ROUNDS, lambda b: b["resultsPerPage"] == 5),
+    )
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.INFO, logger=eures.log.name):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {v.id for v in _tied_slice()}
+    assert any("reads 1 slices again" in r.getMessage() for r in caplog.records)
+    assert not _not_read_whole(caplog)

@@ -608,7 +608,7 @@ class EuresScraper(BaseScraper):
         first_page: list[dict[str, Any]] | None = None,
     ) -> int:
         """Read pages 2.. of a slice whose page 1 the caller absorbed.
-        Returns how many pages could not be read.
+        Returns how many of its reads failed and were not made up for.
 
         With ``first_page``, a slice that comes back short is checked for
         vacancies repeated across pages, and the runs of tied vacancies
@@ -656,12 +656,22 @@ class EuresScraper(BaseScraper):
             return len(failed)
 
         windows_read: set[_Reread] = set()
+        windows_failed: set[_Reread] = set()
         refresh: set[int] = set()
 
         async def window(reread: _Reread) -> None:
-            payload = await self._search(
-                fetcher, sem, base=base, page=reread.page, size=reread.size,
-            )
+            try:
+                payload = await self._search(
+                    fetcher, sem, base=base, page=reread.page, size=reread.size,
+                )
+            except _RejectedError:
+                raise
+            except ScraperError:
+                # Asked again in the next round.
+                windows_read.discard(reread)
+                windows_failed.add(reread)
+                raise
+            windows_failed.discard(reread)
             items = payload.get("jvs") or []
             keep(None, items)
             await absorb(items)
@@ -692,7 +702,7 @@ class EuresScraper(BaseScraper):
                 "EURES slice %s returned %d of %d vacancies",
                 _describe(base), len(seen), total,
             )
-        return len(failed)
+        return len(failed) + len(windows_failed)
 
     async def _search(
         self,
