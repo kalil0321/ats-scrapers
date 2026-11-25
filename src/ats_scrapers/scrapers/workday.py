@@ -117,7 +117,7 @@ RETRY_BACKOFF = 1.5
 RATE_LIMIT_BACKOFF = 5.0
 # A longer Retry-After ends the board: a sooner retry would be refused again.
 MAX_RETRY_DELAY = 30.0
-# 401 means a CSRF-protected tenant, which needs a handshake this scraper lacks.
+# Another 401 means a CSRF-protected tenant, which needs a handshake this scraper lacks.
 _RETRYABLE_STATUSES = frozenset({403, 429, 502, 503, 504})
 LISTING_HEADERS = {"Content-Type": "application/json", "Accept": "application/json"}
 # httpcloak replaces the User-Agent with its browser's own.
@@ -1020,9 +1020,11 @@ def _tenant_gone(response: Any) -> str | None:
     ``ERR_TENANT_MIGRATED``. A host that serves no such tenant answers 422
     ``HTTP_422``; Workday answers a malformed search with 400 instead. A
     closed site answers 403 ``S22`` "permission denied" from Workday itself,
-    not Cloudflare, and its page shows "Workday is currently unavailable".
+    not Cloudflare, and its page shows "Workday is currently unavailable". A
+    closed tenant answers 401 "Unable to verify credentials for system
+    account", and its page redirects to Workday's outage page.
     """
-    if response.status_code not in (403, 410, 422):
+    if response.status_code not in (401, 403, 410, 422):
         return None
     try:
         payload = response.json()
@@ -1036,6 +1038,15 @@ def _tenant_gone(response: Any) -> str | None:
     if response.status_code == 422 and code == "HTTP_422":
         return "is not served from this host: it moved or left Workday"
     message = payload.get("message")
+    if (
+        response.status_code == 401
+        and code == "HTTP_401"
+        and isinstance(message, str)
+        and message.strip().casefold().startswith(
+            "unable to verify credentials for system account"
+        )
+    ):
+        return "is closed: Workday cannot verify its public account (401)"
     if (
         response.status_code == 403
         and code == "S22"
