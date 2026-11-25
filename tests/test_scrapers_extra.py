@@ -6,6 +6,7 @@ ATS protocol supports it. We mock httpx so no network traffic.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -1237,9 +1238,17 @@ def test_oracle_suspended_subscription_is_not_found(httpx_mock) -> None:
     assert len(httpx_mock.get_requests()) == 1
 
 
-def test_oracle_other_503_is_retried(httpx_mock) -> None:
+def test_oracle_other_503_waits_its_retry_after(httpx_mock, monkeypatch) -> None:
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     base = "https://acme.fa.us2.oraclecloud.com"
-    httpx_mock.add_response(status_code=503, text="<h1>Service Unavailable</h1>")
+    httpx_mock.add_response(
+        status_code=503, headers={"Retry-After": "7"}, text="<h1>Service Unavailable</h1>",
+    )
     httpx_mock.add_response(status_code=503, text="<h1>Service Unavailable</h1>")
     httpx_mock.add_response(json={
         "items": [{
@@ -1249,6 +1258,18 @@ def test_oracle_other_503_is_retried(httpx_mock) -> None:
     })
     [job] = OracleScraper(base, include_descriptions=False).fetch()
     assert job.title == "DBA"
+    assert sleeps[0] == 7.0
+    assert len(httpx_mock.get_requests()) == 3
+
+
+def test_oracle_other_503_keeps_the_attempt_budget(httpx_mock) -> None:
+    base = "https://acme.fa.us2.oraclecloud.com"
+    for _ in range(3):
+        httpx_mock.add_response(status_code=503, text="<h1>Service Unavailable</h1>")
+    with pytest.raises(ScraperError, match="503 after 3 attempts") as exc_info:
+        OracleScraper(base, include_descriptions=False).fetch()
+    assert not isinstance(exc_info.value, CompanyNotFoundError)
+    assert len(httpx_mock.get_requests()) == 3
 
 
 def test_oracle_keeps_short_description_without_enrichment(httpx_mock) -> None:

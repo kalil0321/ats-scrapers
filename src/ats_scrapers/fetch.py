@@ -303,11 +303,14 @@ class Fetcher:
         headers: dict[str, str] | None = None,
         json: Any = None,
         handled: frozenset[int] | set[int] = frozenset(),
+        gone: Callable[[FetchResponse], str | None] | None = None,
     ) -> FetchResponse:
         """Perform one logical request with retries and error mapping.
 
         Status handling, in order:
 
+        - ``gone`` names why an unsuccessful response shows the board is
+          gone → :class:`CompanyNotFoundError` with that reason, unretried;
         - status in ``handled`` → returned to the caller unmapped
           (for provider quirks like "410 means empty board");
         - 200–299 → returned;
@@ -360,6 +363,10 @@ class Fetcher:
                 continue
 
             status = response.status_code
+            if gone is not None and not 200 <= status < 300:
+                reason = gone(response)
+                if reason:
+                    raise CompanyNotFoundError(f"{self.label}: {reason}")
             if status in handled:
                 return response
             if 200 <= status < 300:
@@ -384,6 +391,7 @@ class Fetcher:
                         headers=headers,
                         json=json,
                         handled=handled,
+                        gone=gone,
                     )
                 raise ScraperError(
                     f"{self.label}: {url} returned {status} — the load "
