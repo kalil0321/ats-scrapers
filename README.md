@@ -162,6 +162,19 @@ duckdb -c "SELECT company, title, location, apply_url
   LIMIT 20"
 ```
 
+**From the terminal.** Installing the package adds four commands that print
+JSON, so their output pipes into `jq`:
+
+```bash
+ats-scraper-search --query "machine learning" --location Paris --limit 20
+ats-scraper-find anthropic                    # which ATS is a company on?
+ats-scraper-fetch greenhouse anthropic        # scrape one board live
+ats-scraper-fetch-url https://jobs.lever.co/mistral
+```
+
+The two `fetch` commands need the scraper extra:
+`pip install 'ats-scrapers[scrapers]'`.
+
 **Download it.** The [manifest](https://storage.stapply.ai/jobs/v1/manifest.json)
 lists the full snapshot and every per-source slice as Parquet and CSV, with
 row counts, sizes and checksums.
