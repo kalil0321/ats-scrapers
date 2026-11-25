@@ -744,6 +744,29 @@ def test_redirect_on_a_lapsed_domain_goes_through_sap(httpx_mock, sap_alias) -> 
         text=_rss([_item()]),
     )
     assert len(SuccessFactorsScraper("careers.acme.com").fetch()) == 1
+    # Only the first request tries the domain itself.
+    custom = [r for r in httpx_mock.get_requests() if r.url.host == "careers.acme.com"]
+    assert len(custom) == 3
+
+
+def test_lapsed_certificate_after_a_redirect_to_another_domain(
+    httpx_mock, sap_alias
+) -> None:
+    httpx_mock.add_response(
+        url=FEED_URL,
+        status_code=301,
+        headers={"Location": CUSTOM_FEED_URL},
+    )
+    httpx_mock.add_exception(
+        _certificate_failure(10), url=CUSTOM_FEED_URL, is_reusable=True
+    )
+    httpx_mock.add_response(
+        url=SAP_FEED_URL,
+        match_headers={"Host": "careers.acme.com"},
+        text=_rss([_item()]),
+    )
+    jobs = SuccessFactorsScraper("job.acme.com").fetch()
+    assert [job.ats_id for job in jobs] == ["86101"]
 
 
 def test_lapsed_certificate_on_a_deactivated_site_is_not_found(

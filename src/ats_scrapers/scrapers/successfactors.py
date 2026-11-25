@@ -44,7 +44,7 @@ from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
-    from ats_scrapers.fetch import Fetcher
+    from ats_scrapers.fetch import Fetcher, FetchResponse
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _TEMPLATE_TOKEN_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
@@ -54,6 +54,7 @@ _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _MAX_REDIRECTS = 5
 # A retired site answers 410 at /deactivated-site/.
 _GONE_STATUSES = frozenset({410})
+_FEED_STATUSES = _REDIRECT_STATUSES | _GONE_STATUSES
 # The legacy feed renders every posting in one response; large tenants take
 # close to a minute before the first byte.
 _LEGACY_FEED_TIMEOUT = 120.0
@@ -170,35 +171,19 @@ class SuccessFactorsScraper(BaseScraper):
             follow_redirects=False,
             missing_host_not_found=True,
         ) as fetch:
-            try:
-                xml_text = await self._get_feed(fetch, feed_url)
-            except (RetryExhaustedError, CompanyNotFoundError) as exc:
-                host = urlparse(feed_url).hostname or ""
-                sap_host = await _sap_host_after_certificate_failure(host, exc)
-                if sap_host is None:
-                    raise
-                xml_text = await self._get_feed(
-                    fetch, feed_url, via=(host, sap_host)
-                )
+            xml_text = await self._get_feed(fetch, feed_url)
         return self._parse_feed(xml_text)
 
-    async def _get_feed(
-        self, fetch: Fetcher, url: str, *, via: tuple[str, str] | None = None
-    ) -> str:
+    async def _get_feed(self, fetch: Fetcher, url: str) -> str:
         """Follow redirects that keep pointing at a feed.
 
         A retired site redirects its feed to ``/deactivated-site/``, to the
-        employer's homepage, or to another ATS. ``via`` is a custom domain
-        and SAP's host name to request it from.
+        employer's homepage, or to another ATS.
         """
+        # Custom domains whose certificate failed, and SAP's name for each.
+        sap_hosts: dict[str, str] = {}
         for _ in range(_MAX_REDIRECTS + 1):
-            target, headers = _routed(url, via)
-            response = await fetch.request(
-                "GET",
-                target,
-                headers=headers,
-                handled=_REDIRECT_STATUSES | _GONE_STATUSES,
-            )
+            response = await _request_feed(fetch, url, sap_hosts)
             if response.status_code in _GONE_STATUSES:
                 raise CompanyNotFoundError(
                     f"SuccessFactors site {self.company_slug} is deactivated"
@@ -663,16 +648,24 @@ async def _canonical_name(host: str) -> str | None:
     return names[0].rstrip(".").lower() if names else None
 
 
-def _routed(
-    url: str, via: tuple[str, str] | None
-) -> tuple[str, dict[str, str] | None]:
-    """The address and headers that request ``url``, sent to SAP's host when
-    it is on the custom domain of ``via``."""
-    parsed = urlparse(url)
-    if via is None or parsed.hostname != via[0]:
-        return url, None
-    custom_host, sap_host = via
-    return urlunparse(parsed._replace(netloc=sap_host)), {"Host": custom_host}
+async def _request_feed(
+    fetch: Fetcher, url: str, sap_hosts: dict[str, str]
+) -> FetchResponse:
+    """GET ``url``, from SAP's name for its host once the host's certificate
+    failed; ``sap_hosts`` keeps the names found."""
+    host = urlparse(url).hostname or ""
+    if host not in sap_hosts:
+        try:
+            return await fetch.request("GET", url, handled=_FEED_STATUSES)
+        except (RetryExhaustedError, CompanyNotFoundError) as exc:
+            sap_host = await _sap_host_after_certificate_failure(host, exc)
+            if sap_host is None:
+                raise
+            sap_hosts[host] = sap_host
+    target = urlunparse(urlparse(url)._replace(netloc=sap_hosts[host]))
+    return await fetch.request(
+        "GET", target, headers={"Host": host}, handled=_FEED_STATUSES
+    )
 
 
 def _parse_xml(xml_text: str) -> ET.Element:
