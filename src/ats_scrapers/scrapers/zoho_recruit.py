@@ -67,6 +67,9 @@ DETAIL_CONCURRENCY = 4
 # the others.
 LIST_CAP = 750
 _HTML_TAG_RE = re.compile(r"<[a-zA-Z/][^>]*>")
+# Zoho leaves ``>`` unescaped inside attribute values: a tag ends at the
+# first ``>`` outside quotes.
+_INPUT_TAG_RE = re.compile(r"""<input\b(?:[^>"']|"[^"]*"|'[^']*')*>""")
 _MISSING_PAGE_RE = re.compile(r"<title>\s*Page does not exist\s*</title>", re.IGNORECASE)
 
 
@@ -228,7 +231,7 @@ def _split_slug(company_slug: str) -> tuple[str, str]:
 
 def _hidden_json(page: str, element_id: str) -> Any:
     """The JSON held by ``<input type="hidden" id="{element_id}">``, or ``None``."""
-    for tag in re.findall(r"<input\b[^>]*>", page):
+    for tag in _INPUT_TAG_RE.findall(page):
         if re.search(rf'\bid="{re.escape(element_id)}"', tag):
             value = re.search(r'\bvalue="([^"]*)"', tag)
             if not value:
