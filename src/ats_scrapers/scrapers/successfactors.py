@@ -18,12 +18,19 @@ SuccessFactors exposes two credential-free public job feeds:
 
 Pass either a recruiting-marketing host or a public legacy career URL as
 ``company_slug``.
+
+A recruiting-marketing site on the employer's own domain is that domain
+pointed at SAP's ``*.jobs2web.com`` servers, which serve it by ``Host``. When
+the employer lets its certificate lapse, the feed is read from SAP's name for
+the site, whose certificate is checked instead.
 """
 
 from __future__ import annotations
 
+import asyncio
 import html
 import re
+import socket
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, ClassVar
@@ -31,6 +38,7 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 from xml.etree import ElementTree as ET
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.fetch import RetryExhaustedError, certificate_error
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -51,6 +59,7 @@ _GONE_STATUSES = frozenset({410})
 _LEGACY_FEED_TIMEOUT = 120.0
 # Legacy career pages answer an unknown or disabled company with this box.
 _LEGACY_ERROR_PAGE_RE = re.compile(r'class="[^"]*\bsysmsg error\b')
+_SAP_SITE_ZONE = ".jobs2web.com"
 _WORKDAY_NAMESPACE = "{http://www.workday.com/"
 # Job titles are often `"Title (City, State, Country)"` — extract location
 # from the trailing parens when no other source is available.
@@ -119,6 +128,9 @@ class SuccessFactorsScraper(BaseScraper):
     """
 
     ats = ATSType.SUCCESSFACTORS
+    # Some employers put Cloudflare in front of their site, which challenges
+    # httpx but lets httpcloak through.
+    fetch_escalate = True
 
     default_headers: ClassVar[dict[str, str]] = {
         "User-Agent": "Mozilla/5.0",
@@ -158,18 +170,34 @@ class SuccessFactorsScraper(BaseScraper):
             follow_redirects=False,
             missing_host_not_found=True,
         ) as fetch:
-            xml_text = await self._get_feed(fetch, feed_url)
+            try:
+                xml_text = await self._get_feed(fetch, feed_url)
+            except (RetryExhaustedError, CompanyNotFoundError) as exc:
+                host = urlparse(feed_url).hostname or ""
+                sap_host = await _sap_host_after_certificate_failure(host, exc)
+                if sap_host is None:
+                    raise
+                xml_text = await self._get_feed(
+                    fetch, feed_url, via=(host, sap_host)
+                )
         return self._parse_feed(xml_text)
 
-    async def _get_feed(self, fetch: Fetcher, url: str) -> str:
+    async def _get_feed(
+        self, fetch: Fetcher, url: str, *, via: tuple[str, str] | None = None
+    ) -> str:
         """Follow redirects that keep pointing at a feed.
 
         A retired site redirects its feed to ``/deactivated-site/``, to the
-        employer's homepage, or to another ATS.
+        employer's homepage, or to another ATS. ``via`` is a custom domain
+        and SAP's host name to request it from.
         """
         for _ in range(_MAX_REDIRECTS + 1):
+            target, headers = _routed(url, via)
             response = await fetch.request(
-                "GET", url, handled=_REDIRECT_STATUSES | _GONE_STATUSES
+                "GET",
+                target,
+                headers=headers,
+                handled=_REDIRECT_STATUSES | _GONE_STATUSES,
             )
             if response.status_code in _GONE_STATUSES:
                 raise CompanyNotFoundError(
@@ -611,6 +639,40 @@ def _is_legacy_host(host: str) -> bool:
             ".sapsf.cn",
         )
     )
+
+
+async def _sap_host_after_certificate_failure(
+    host: str, exc: BaseException
+) -> str | None:
+    """SAP's name for ``host`` when ``exc`` is its certificate failing to verify."""
+    if not host or host.endswith(_SAP_SITE_ZONE) or certificate_error(exc) is None:
+        return None
+    canonical = await _canonical_name(host)
+    return canonical if canonical and canonical.endswith(_SAP_SITE_ZONE) else None
+
+
+async def _canonical_name(host: str) -> str | None:
+    """The name ``host``'s DNS aliases end at."""
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            host, 443, type=socket.SOCK_STREAM, flags=socket.AI_CANONNAME
+        )
+    except OSError:
+        return None
+    names = [info[3] for info in infos if info[3]]
+    return names[0].rstrip(".").lower() if names else None
+
+
+def _routed(
+    url: str, via: tuple[str, str] | None
+) -> tuple[str, dict[str, str] | None]:
+    """The address and headers that request ``url``, sent to SAP's host when
+    it is on the custom domain of ``via``."""
+    parsed = urlparse(url)
+    if via is None or parsed.hostname != via[0]:
+        return url, None
+    custom_host, sap_host = via
+    return urlunparse(parsed._replace(netloc=sap_host)), {"Host": custom_host}
 
 
 def _parse_xml(xml_text: str) -> ET.Element:

@@ -681,6 +681,119 @@ def test_unresolvable_host_is_not_found(httpx_mock) -> None:
         SuccessFactorsScraper("job.acme.com").fetch()
 
 
+CUSTOM_FEED_URL = "https://careers.acme.com/sitemal.xml"
+SAP_FEED_URL = "https://rmk12.jobs2web.com/sitemal.xml"
+
+
+def _certificate_failure(verify_code: int):
+    import ssl
+
+    import httpx
+
+    error = ssl.SSLCertVerificationError(1, "certificate verify failed")
+    error.verify_code = verify_code
+    try:
+        raise httpx.ConnectError("certificate verify failed") from error
+    except httpx.ConnectError as exc:
+        return exc
+
+
+@pytest.fixture
+def sap_alias(monkeypatch):
+    """careers.acme.com is a DNS alias of SAP's rmk12.jobs2web.com."""
+    from ats_scrapers.scrapers import successfactors
+
+    names = {"careers.acme.com": "rmk12.jobs2web.com"}
+
+    async def canonical_name(host: str) -> str | None:
+        return names.get(host)
+
+    monkeypatch.setattr(successfactors, "_canonical_name", canonical_name)
+    return names
+
+
+@pytest.mark.parametrize("verify_code", [10, 62])
+def test_lapsed_certificate_reads_the_feed_from_sap(
+    httpx_mock, sap_alias, verify_code
+) -> None:
+    httpx_mock.add_exception(
+        _certificate_failure(verify_code), url=CUSTOM_FEED_URL, is_reusable=True
+    )
+    httpx_mock.add_response(
+        url=SAP_FEED_URL,
+        match_headers={"Host": "careers.acme.com"},
+        text=_rss([_item()]),
+    )
+    jobs = SuccessFactorsScraper("careers.acme.com").fetch()
+    assert [job.ats_id for job in jobs] == ["86101"]
+
+
+def test_redirect_on_a_lapsed_domain_goes_through_sap(httpx_mock, sap_alias) -> None:
+    httpx_mock.add_exception(
+        _certificate_failure(10), url=CUSTOM_FEED_URL, is_reusable=True
+    )
+    httpx_mock.add_response(
+        url=SAP_FEED_URL,
+        match_headers={"Host": "careers.acme.com"},
+        status_code=301,
+        headers={"Location": "/en/sitemal.xml"},
+    )
+    httpx_mock.add_response(
+        url="https://rmk12.jobs2web.com/en/sitemal.xml",
+        match_headers={"Host": "careers.acme.com"},
+        text=_rss([_item()]),
+    )
+    assert len(SuccessFactorsScraper("careers.acme.com").fetch()) == 1
+
+
+def test_lapsed_certificate_on_a_deactivated_site_is_not_found(
+    httpx_mock, sap_alias
+) -> None:
+    httpx_mock.add_exception(
+        _certificate_failure(10), url=CUSTOM_FEED_URL, is_reusable=True
+    )
+    httpx_mock.add_response(
+        url=SAP_FEED_URL,
+        status_code=302,
+        headers={"Location": "https://rmk12.jobs2web.com/deactivated-site/"},
+    )
+    with pytest.raises(CompanyNotFoundError, match="redirects"):
+        SuccessFactorsScraper("careers.acme.com").fetch()
+
+
+def test_lapsed_certificate_off_sap_still_fails(httpx_mock, sap_alias) -> None:
+    from ats_scrapers.fetch import RetryExhaustedError
+
+    sap_alias["careers.acme.com"] = "careers.acme.com"
+    httpx_mock.add_exception(
+        _certificate_failure(10), url=CUSTOM_FEED_URL, is_reusable=True
+    )
+    with pytest.raises(RetryExhaustedError):
+        SuccessFactorsScraper("careers.acme.com").fetch()
+
+
+def test_blocked_feed_is_read_through_httpcloak(httpx_mock, monkeypatch) -> None:
+    import sys
+    import types
+
+    calls: list[dict] = []
+
+    def get(url: str, **kwargs):
+        calls.append({"url": url, **kwargs})
+        return types.SimpleNamespace(
+            status_code=200, text=_rss([_item()]), headers={}, url=url
+        )
+
+    monkeypatch.setitem(
+        sys.modules, "httpcloak", types.SimpleNamespace(get=get)
+    )
+    httpx_mock.add_response(url=FEED_URL, status_code=403)
+    jobs = SuccessFactorsScraper("job.acme.com").fetch()
+    assert len(jobs) == 1
+    assert "User-Agent" not in calls[0]["headers"]
+    assert calls[0]["allow_redirects"] is False
+
+
 def test_host_serving_workday_is_not_found(httpx_mock) -> None:
     httpx_mock.add_response(
         url=FEED_URL,
