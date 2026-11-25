@@ -50,7 +50,7 @@ import socket
 import ssl
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from types import TracebackType
 from typing import Any, Literal, Self
 from urllib.parse import urlparse
@@ -373,6 +373,13 @@ class Fetcher:
                         self.label, url, status,
                     )
                     self.engine = "cloak"
+                    # httpcloak sends the User-Agent of the browser it imitates;
+                    # any other one contradicts its TLS fingerprint.
+                    self.headers = {
+                        name: value
+                        for name, value in self.headers.items()
+                        if name.lower() != "user-agent"
+                    }
                     # Restart the logical request with a fresh attempt
                     # budget: the cloak retry is promised regardless of
                     # how many httpx attempts were already spent (e.g.
@@ -464,6 +471,8 @@ class Fetcher:
         }
         if self.proxy:
             kwargs["proxy"] = self.proxy
+        if not self.follow_redirects:
+            kwargs["allow_redirects"] = False
         if method.upper() == "GET":
             response = httpcloak.get(url, **kwargs)
         elif method.upper() == "POST":
@@ -473,10 +482,15 @@ class Fetcher:
                 f"{self.label}: cloak engine does not support {method}"
             )
         final_url = getattr(response, "url", None)
+        # httpcloak lists every header's values.
+        response_headers = {
+            name: value if isinstance(value, str) else ", ".join(value)
+            for name, value in (getattr(response, "headers", {}) or {}).items()
+        }
         return FetchResponse(
             response.status_code,
             response.text,
-            dict(getattr(response, "headers", {}) or {}),
+            response_headers,
             context=f"{self.label}: {url}",
             url=str(final_url) if final_url else None,
         )
@@ -572,10 +586,7 @@ def _missing_host_reason(exc: BaseException, *, via_proxy: bool) -> str | None:
     Through a proxy, a failed lookup may be the proxy's own name, so only
     the certificate, which the tenant host presents end to end, counts.
     """
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
+    for current in _causes(exc):
         if isinstance(current, socket.gaierror):
             if current.errno in _NO_ADDRESS_ERRNOS and not via_proxy:
                 return _DOES_NOT_RESOLVE
@@ -584,8 +595,25 @@ def _missing_host_reason(exc: BaseException, *, via_proxy: bool) -> str | None:
             if current.verify_code == _X509_V_ERR_HOSTNAME_MISMATCH:
                 return "presents a certificate for another name"
             return None
-        current = current.__cause__ or current.__context__
     return None
+
+
+def certificate_error(exc: BaseException) -> ssl.SSLCertVerificationError | None:
+    """The certificate check that made a request fail, if one did."""
+    for current in _causes(exc):
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return current
+    return None
+
+
+def _causes(exc: BaseException) -> Iterator[BaseException]:
+    """``exc`` and the exceptions it was raised from, outermost first."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
 
 
 def _cdn_origin_missing(response: FetchResponse) -> bool:

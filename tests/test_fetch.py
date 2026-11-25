@@ -17,6 +17,7 @@ from ats_scrapers.fetch import (
     Fetcher,
     FetchResponse,
     RetryExhaustedError,
+    certificate_error,
     proxy_url_from_env,
 )
 
@@ -224,8 +225,14 @@ async def test_expired_certificate_is_not_a_missing_host(httpx_mock) -> None:
     for _ in range(3):
         httpx_mock.add_exception(error)
     async with _fetcher(missing_host_not_found=True) as fetch:
-        with pytest.raises(RetryExhaustedError):
+        with pytest.raises(RetryExhaustedError) as excinfo:
             await fetch.get_text(URL)
+    assert certificate_error(excinfo.value).verify_code == 10
+
+
+def test_certificate_error_is_none_for_other_failures() -> None:
+    error = _connect_error(socket.gaierror(socket.EAI_NONAME, "unknown"))
+    assert certificate_error(error) is None
 
 
 _AKAMAI_DNS_FAILURE = (
@@ -347,6 +354,30 @@ async def test_escalation_gets_fresh_attempt_budget(httpx_mock, monkeypatch) -> 
     async with _fetcher(escalate=True, retries=1) as fetch:
         assert await fetch.get_json(URL) == {"ok": 1}
     assert len(calls) == 1
+
+
+async def test_escalation_leaves_the_user_agent_to_httpcloak(httpx_mock, monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+    _install_fake_httpcloak(monkeypatch, calls, _FakeCloakResponse(text="{}"))
+    httpx_mock.add_response(url=URL, status_code=403)
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    async with _fetcher(escalate=True, headers=headers) as fetch:
+        await fetch.get_json(URL)
+    assert calls[0]["headers"] == {"Accept": "application/json"}
+    assert headers["User-Agent"] == "Mozilla/5.0"
+
+
+async def test_cloak_engine_keeps_redirects_when_asked(monkeypatch) -> None:
+    calls: list[dict[str, Any]] = []
+    _install_fake_httpcloak(
+        monkeypatch,
+        calls,
+        _FakeCloakResponse(status_code=302, text="", headers={"Location": ["/moved"]}),
+    )
+    async with _fetcher(engine="cloak", follow_redirects=False) as fetch:
+        response = await fetch.request("GET", URL, handled={302})
+    assert calls[0]["allow_redirects"] is False
+    assert response.headers == {"Location": "/moved"}
 
 
 async def test_403_without_escalate_raises(httpx_mock) -> None:
