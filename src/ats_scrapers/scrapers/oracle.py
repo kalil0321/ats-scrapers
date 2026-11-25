@@ -39,7 +39,7 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
-    from ats_scrapers.fetch import Fetcher
+    from ats_scrapers.fetch import Fetcher, FetchResponse
 
 PAGE_LIMIT = 200
 # A page past this many rows comes back empty while TotalJobsCount still
@@ -316,7 +316,7 @@ class OracleScraper(BaseScraper):
             # search-context metadata (facets, totalCount), not actual jobs.
             "expand": "requisitionList",
         }
-        return await fetch.get_json(api, params=params)
+        return await fetch.get_json(api, params=params, gone=_subscription_suspended)
 
     def _parse_job(self, item: dict[str, Any], base: str, site: str) -> Job:
         source_id = str(item.get("Id") or item.get("RequisitionNumber") or "")
@@ -417,6 +417,20 @@ class OracleScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _subscription_suspended(response: FetchResponse) -> str | None:
+    """Oracle's 503 on every address of the pod once the customer's
+    subscription has lapsed past its grace period. Termination follows."""
+    if response.status_code != 503:
+        return None
+    marker = next(
+        (v for k, v in response.headers.items() if k.casefold() == "x-oracle-rats-data"),
+        "",
+    )
+    if "suspension" in marker.casefold() or "Subscription Suspension Outage" in response.text:
+        return "its Oracle Cloud subscription is suspended (503 Subscription Suspension Outage)"
+    return None
 
 
 def _oracle_source_id(job: Job) -> str | None:

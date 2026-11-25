@@ -27,10 +27,11 @@ order of cost:
    :mod:`ats_scrapers.cloud_browser`), for the few tenants ``httpcloak``
    still can't pass. Without one, such a tenant raises.
 
-Some tenants (Koch) refuse any ``jobOffset`` of 2,000 or more with 406 and
-state only "999+ results". A board that reaches that offset is read again in
-slices, one per value of a search form filter (``?731[]=6040``), split again
-while a slice still reaches the offset.
+Some tenants refuse any ``jobOffset`` past 2,000 and state only "999+
+results": with 406 (Koch), or with a 500 error page (DHL, NVA, Booz Allen).
+A board that reaches that offset is read again in slices, one per value of a
+search form filter (``?731[]=6040``), split again while a slice still reaches
+the offset.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ import logging
 import os
 import re
 import socket
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -52,6 +54,7 @@ import httpx
 
 from ats_scrapers.cloud_browser import CloudBrowser
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.fetch import HostPacer
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -61,6 +64,9 @@ MAP_PAGE_SIZE = 30  # SearchJobsMaps pages use a different offset scheme.
 MAX_PAGES = 1_000  # Runaway guard; a walk also stops on a page with no new jobs.
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
+# Seconds before each new try of a request refused with 406 once the board
+# has answered.
+RATE_LIMIT_WAITS = (60.0, 240.0)
 # How many JobDetail pages to fetch concurrently per tenant. Avature
 # tenants are mid-sized (most under 200 jobs), so 6 keeps load light
 # without prolonging the per-tenant runtime.
@@ -69,8 +75,12 @@ DETAIL_CONCURRENCY = 6
 BROWSER_DETAIL_CONCURRENCY = 4
 # Listing pages requested at once; slices of a large board are read in parallel.
 LISTING_CONCURRENCY = 4
-# Tenants that cap the listing answer 406 to an offset at or past this.
+# Tenants that cap the listing answer 406 to an offset at or past this, or
+# Avature's own 500 error page on every try.
 OFFSET_CAP = 2_000
+# The image of that error page ("Oops… Something went wrong"). A proxy, a load
+# balancer or a gateway that fails shows a page of its own.
+_ERROR_PAGE_IMAGE = "/jscore/images/http/fatal.png"
 # A filter with more values is not used to split a search: each value costs
 # at least one request.
 MAX_SPLIT_VALUES = 500
@@ -239,6 +249,9 @@ class AvatureScraper(BaseScraper):
     for tenants on custom domains (``"https://careers.ibm.com/en_US"``).
 
     ``cloud_browser`` loads the boards that refuse both httpx and httpcloak.
+    ``pacer`` spaces the requests sent through httpx and httpcloak, shared with
+    any other scraper given the same pacer: Avature refuses an address that
+    sends too many, on every tenant.
     """
 
     ats = ATSType.AVATURE
@@ -251,6 +264,7 @@ class AvatureScraper(BaseScraper):
         include_descriptions: bool = True,
         proxy: str | None = None,
         cloud_browser: CloudBrowser | None = None,
+        pacer: HostPacer | None = None,
     ) -> None:
         super().__init__(
             company_slug,
@@ -264,6 +278,7 @@ class AvatureScraper(BaseScraper):
                 f"not {type(cloud_browser).__name__}"
             )
         self.cloud_browser = cloud_browser
+        self.pacer = pacer
         slug = company_slug.strip()
         if slug.startswith(("http://", "https://")):
             self.company_slug = require_http_url(slug, provider="AvatureScraper")
@@ -396,22 +411,29 @@ class AvatureScraper(BaseScraper):
         """``(html, final URL)`` of one listing page."""
         import httpcloak
 
-        try:
-            response = httpcloak.get(
-                url or _search_url(base),
-                params=None if url else _pagination_params(base, offset),
-                headers=_BROWSER_HEADERS,
-                timeout=self.timeout,
-                **self._httpcloak_proxy(),
-            )
-        except Exception as exc:
-            raise ScraperError(
-                f"Avature ({base}) httpcloak fetch failed at "
-                f"offset={offset}: {exc}"
-            ) from exc
+        for attempt in range(1, MAX_RETRIES + 1):
+            self._pace_sync(url or _search_url(base))
+            try:
+                response = httpcloak.get(
+                    url or _search_url(base),
+                    params=None if url else _pagination_params(base, offset),
+                    headers=_BROWSER_HEADERS,
+                    timeout=self.timeout,
+                    **self._httpcloak_proxy(),
+                )
+            except Exception as exc:
+                raise ScraperError(
+                    f"Avature ({base}) httpcloak fetch failed at "
+                    f"offset={offset}: {exc}"
+                ) from exc
+            if not 500 <= response.status_code < 600 or attempt == MAX_RETRIES:
+                break
+            time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+        if offset >= OFFSET_CAP and (
+            response.status_code == 406 or _is_error_page(response.status_code, response.text)
+        ):
+            raise _OffsetCapError()
         if response.status_code == 406:
-            if offset >= OFFSET_CAP:
-                raise _OffsetCapError()
             raise _BlockedTenantError()
         if response.status_code == 404:
             raise CompanyNotFoundError(f"Avature tenant not found: {base}")
@@ -440,6 +462,7 @@ class AvatureScraper(BaseScraper):
     def _http_get_via_httpcloak_sync(self, url: str):
         import httpcloak
 
+        self._pace_sync(url)
         try:
             return httpcloak.get(
                 url, headers=_BROWSER_HEADERS, timeout=self.timeout,
@@ -451,6 +474,7 @@ class AvatureScraper(BaseScraper):
     def _post_json_via_httpcloak_sync(self, url: str, body: dict[str, Any]):
         import httpcloak
 
+        self._pace_sync(url)
         try:
             return httpcloak.post(
                 url, json=body, headers=_OPTIONS_HEADERS, timeout=self.timeout,
@@ -458,6 +482,14 @@ class AvatureScraper(BaseScraper):
             )
         except Exception:
             return None
+
+    async def _pace(self, url: str) -> None:
+        if self.pacer is not None:
+            await self.pacer.wait(url)
+
+    def _pace_sync(self, url: str) -> None:
+        if self.pacer is not None:
+            self.pacer.wait_sync(url)
 
     def _httpcloak_proxy(self) -> dict[str, str]:
         return {"proxy": self.proxy} if self.proxy else {}
@@ -467,13 +499,18 @@ class AvatureScraper(BaseScraper):
             timeout=self.timeout, follow_redirects=True, proxy=self.proxy,
         ) as client:
             sem = asyncio.Semaphore(LISTING_CONCURRENCY)
+            first = True
 
             async def page(url: str, offset: int) -> tuple[str, str]:
+                nonlocal first
                 async with sem:
-                    return await self._fetch_page(client, base, offset, url)
+                    read = await self._fetch_page(client, base, offset, url, first=first)
+                first = False
+                return read
 
             async def options(endpoint: str, body: dict[str, Any]) -> Any:
                 async with sem:
+                    await self._pace(endpoint)
                     response = await client.post(
                         endpoint, json=body, headers=_OPTIONS_HEADERS,
                     )
@@ -499,6 +536,7 @@ class AvatureScraper(BaseScraper):
         self, client: httpx.AsyncClient, sem: asyncio.Semaphore, job: Job,
     ) -> None:
         async with sem:
+            await self._pace(str(job.url))
             try:
                 response = await client.get(str(job.url), headers=_BROWSER_HEADERS)
             except httpx.HTTPError:
@@ -558,10 +596,14 @@ class AvatureScraper(BaseScraper):
         base: str,
         offset: int,
         url: str | None = None,
+        *,
+        first: bool = True,
     ) -> tuple[str, str]:
-        """``(html, final URL)`` of one listing page."""
+        """``(html, final URL)`` of one listing page. ``first`` is the board's
+        first request; a slice of a capped board starts at offset 0 as well."""
         list_url = url or _paginated_search_url(base, offset)
         for attempt in range(1, MAX_RETRIES + 1):
+            await self._pace(list_url)
             try:
                 response = await client.get(list_url, headers=_BROWSER_HEADERS)
             except httpx.HTTPError as exc:
@@ -571,6 +613,17 @@ class AvatureScraper(BaseScraper):
                     and not _environment_proxy()
                 ):
                     # Avature drops the DNS record of a closed tenant.
+                    raise CompanyNotFoundError(
+                        f"Avature site not found: {base} (host does not resolve)"
+                    ) from exc
+                if (
+                    first
+                    and attempt == 1
+                    and (self.proxy or _environment_proxy())
+                    and await _host_is_gone(list_url)
+                ):
+                    # A proxy reports a host without an address as its own
+                    # failure, such as a 500 to the tunnel request.
                     raise CompanyNotFoundError(
                         f"Avature site not found: {base} (host does not resolve)"
                     ) from exc
@@ -589,20 +642,29 @@ class AvatureScraper(BaseScraper):
             if response.status_code == 406:
                 if offset >= OFFSET_CAP:
                     raise _OffsetCapError()
-                # 406 from Avature is usually transient rate-limit-style
-                # blocking: retry with backoff. Only the first listing page
-                # escalates to the fallback clients once every retry fails.
-                if attempt == MAX_RETRIES and offset == 0:
+                # Only the board's first request escalates to the fallback
+                # clients once every retry fails.
+                if attempt == MAX_RETRIES and first:
                     raise _BlockedTenantError(base)
                 if attempt == MAX_RETRIES:
                     raise ScraperError(
                         f"Avature ({base}) returned 406 at offset={offset} "
                         f"after {MAX_RETRIES} retries"
                     )
-                await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+                if first:
+                    await asyncio.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+                else:
+                    # Once the board has answered, 406 is Avature's rate limit
+                    # for the address, over all tenants. It lets the address
+                    # through once its recent requests fall under the limit.
+                    await asyncio.sleep(RATE_LIMIT_WAITS[min(attempt, len(RATE_LIMIT_WAITS)) - 1])
                 continue
             if response.status_code == 429 or 500 <= response.status_code < 600:
                 if attempt == MAX_RETRIES:
+                    if offset >= OFFSET_CAP and _is_error_page(
+                        response.status_code, response.text,
+                    ):
+                        raise _OffsetCapError()
                     raise ScraperError(
                         f"Avature ({base}) returned {response.status_code} at "
                         f"offset={offset} after {MAX_RETRIES} retries"
@@ -632,6 +694,11 @@ class AvatureScraper(BaseScraper):
         listing = await self._walk(board, url)
         _keep(board.jobs, listing.jobs)
         if listing.capped:
+            logger.info(
+                "Avature (%s): the listing refuses offsets past %d after %d jobs; "
+                "reading it one search filter value at a time",
+                base, OFFSET_CAP, len(listing.jobs),
+            )
             board.filters = await _search_filters(
                 listing.first_html, listing.first_url, options,
             )
@@ -1314,20 +1381,50 @@ def _environment_proxy() -> bool:
     )
 
 
+def _is_error_page(status: int, text: str) -> bool:
+    """Whether a response is the 500 error page of Avature's application."""
+    return status == 500 and _ERROR_PAGE_IMAGE in text
+
+
+_NO_ADDRESS = frozenset({socket.EAI_NONAME, getattr(socket, "EAI_NODATA", socket.EAI_NONAME)})
+
+
 def _host_does_not_resolve(exc: BaseException) -> bool:
     """True when DNS answered that the host has no address.
 
     A transient resolver failure (``EAI_AGAIN``) does not count.
     """
-    no_address = {socket.EAI_NONAME, getattr(socket, "EAI_NODATA", socket.EAI_NONAME)}
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if isinstance(current, socket.gaierror):
-            return current.errno in no_address
+            return current.errno in _NO_ADDRESS
         current = current.__cause__ or current.__context__
     return False
+
+
+async def _host_is_gone(url: str) -> bool:
+    """True when DNS answers that the host of ``url`` has no address while
+    its parent domain has one, so the resolver itself works."""
+    host = urlparse(url).hostname or ""
+    labels = host.split(".")
+    if len(labels) < 3:
+        return False
+
+    async def resolves(name: str) -> bool | None:
+        """Whether ``name`` has an address; None when DNS gave no answer."""
+        try:
+            await asyncio.to_thread(socket.getaddrinfo, name, 443)
+        except socket.gaierror as exc:
+            return False if exc.errno in _NO_ADDRESS else None
+        except OSError:
+            return None
+        return True
+
+    if await resolves(host) is not False:
+        return False
+    return await resolves(".".join(labels[1:])) is True
 
 
 def _company_from_base(base: str) -> str | None:

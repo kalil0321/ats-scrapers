@@ -330,6 +330,69 @@ def test_workday_closed_site_is_not_found(httpx_mock) -> None:
     assert len(httpx_mock.get_requests()) == 1
 
 
+def test_workday_closed_tenant_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=API,
+        status_code=401,
+        json={
+            "errorCode": "HTTP_401",
+            "errorCaseId": "5322FFMWVW0XH1",
+            "httpStatus": 401,
+            "message": "Unable to verify credentials for system account 39$4009",
+            "messageParams": {},
+        },
+    )
+    with pytest.raises(CompanyNotFoundError, match="cannot verify its public account"):
+        WorkdayScraper(URL, include_descriptions=False).fetch()
+    assert len(httpx_mock.get_requests()) == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        None,
+        {"errorCode": "HTTP_401", "httpStatus": 401, "message": ""},
+        {"errorCode": "HTTP_401", "httpStatus": 401, "message": "Invalid CSRF token"},
+        {"errorCode": "S22", "message": "Unable to verify credentials for system account 39$1"},
+    ],
+)
+def test_workday_other_401_stays_an_error(httpx_mock, body) -> None:
+    if body is None:
+        httpx_mock.add_response(method="POST", url=API, status_code=401, text="<html>")
+    else:
+        httpx_mock.add_response(method="POST", url=API, status_code=401, json=body)
+    with pytest.raises(ScraperError, match="returned 401") as exc_info:
+        WorkdayScraper(URL, include_descriptions=False).fetch()
+    assert not isinstance(exc_info.value, CompanyNotFoundError)
+
+
+def test_workday_401_on_a_filtered_search_stays_an_error() -> None:
+    class FakeClient:
+        async def post(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                status_code=401,
+                headers={},
+                json=lambda: {
+                    "errorCode": "HTTP_401",
+                    "message": "Unable to verify credentials for system account 39$1",
+                },
+            )
+
+    async def run() -> None:
+        with pytest.raises(ScraperError, match="returned 401") as exc_info:
+            await WorkdayScraper(URL)._request(
+                FakeClient(),
+                API,
+                asyncio.Semaphore(1),
+                applied_facets={},
+                offset=20,
+            )
+        assert not isinstance(exc_info.value, CompanyNotFoundError)
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     "body",
     [

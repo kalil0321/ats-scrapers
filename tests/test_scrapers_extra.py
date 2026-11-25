@@ -6,6 +6,7 @@ ATS protocol supports it. We mock httpx so no network traffic.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -1216,6 +1217,59 @@ def test_oracle_retired_pod_is_not_found(httpx_mock) -> None:
     )
     with pytest.raises(CompanyNotFoundError, match="DNS failure"):
         OracleScraper(base, include_descriptions=False).fetch()
+
+
+def test_oracle_suspended_subscription_is_not_found(httpx_mock) -> None:
+    base = "https://fa-euxw-saasfaprod1.fa.ocs.oraclecloud.com"
+    httpx_mock.add_response(
+        status_code=503,
+        headers={"x-oracle-rats-data": "suspension-in-progress"},
+        text=(
+            "<html><head><title>Subscription Suspension Outage</title></head>"
+            "<body>The Oracle Cloud Fusion Applications service you are trying "
+            "to access is currently unavailable because the subscription renewal "
+            "does not come in after the expiration grace period.</body></html>"
+        ),
+    )
+    with pytest.raises(CompanyNotFoundError, match="subscription is suspended"):
+        OracleScraper(
+            f"{base}?site_number=CX_1", include_descriptions=False
+        ).fetch()
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_oracle_other_503_waits_its_retry_after(httpx_mock, monkeypatch) -> None:
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    base = "https://acme.fa.us2.oraclecloud.com"
+    httpx_mock.add_response(
+        status_code=503, headers={"Retry-After": "7"}, text="<h1>Service Unavailable</h1>",
+    )
+    httpx_mock.add_response(status_code=503, text="<h1>Service Unavailable</h1>")
+    httpx_mock.add_response(json={
+        "items": [{
+            "TotalJobsCount": 1,
+            "requisitionList": [{"Id": "001", "Title": "DBA"}],
+        }]
+    })
+    [job] = OracleScraper(base, include_descriptions=False).fetch()
+    assert job.title == "DBA"
+    assert sleeps[0] == 7.0
+    assert len(httpx_mock.get_requests()) == 3
+
+
+def test_oracle_other_503_keeps_the_attempt_budget(httpx_mock) -> None:
+    base = "https://acme.fa.us2.oraclecloud.com"
+    for _ in range(3):
+        httpx_mock.add_response(status_code=503, text="<h1>Service Unavailable</h1>")
+    with pytest.raises(ScraperError, match="503 after 3 attempts") as exc_info:
+        OracleScraper(base, include_descriptions=False).fetch()
+    assert not isinstance(exc_info.value, CompanyNotFoundError)
+    assert len(httpx_mock.get_requests()) == 3
 
 
 def test_oracle_keeps_short_description_without_enrichment(httpx_mock) -> None:

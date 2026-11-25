@@ -108,6 +108,43 @@ async def test_429_respects_numeric_retry_after(httpx_mock, monkeypatch) -> None
     assert sleeps == [7.0]
 
 
+def _closed(response: FetchResponse) -> str | None:
+    return "is closed" if "closed" in response.text else None
+
+
+async def test_gone_response_is_not_found_without_retries(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL, status_code=503, text="board closed")
+    async with _fetcher() as fetch:
+        with pytest.raises(CompanyNotFoundError, match="Example board acme: is closed"):
+            await fetch.get_json(URL, gone=_closed)
+    assert len(httpx_mock.get_requests()) == 1
+
+
+async def test_other_response_keeps_retry_after_and_attempts_with_gone(
+    httpx_mock, monkeypatch
+) -> None:
+    sleeps: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    httpx_mock.add_response(url=URL, status_code=503, headers={"Retry-After": "7"})
+    httpx_mock.add_response(url=URL, status_code=503, headers={"Retry-After": "9"})
+    httpx_mock.add_response(url=URL, status_code=503)
+    async with _fetcher() as fetch:
+        with pytest.raises(RetryExhaustedError, match="503 after 3 attempts"):
+            await fetch.get_json(URL, gone=_closed)
+    assert sleeps == [7.0, 9.0]
+    assert len(httpx_mock.get_requests()) == 3
+
+
+async def test_gone_is_not_asked_about_a_success(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL, json={"text": "closed"})
+    async with _fetcher() as fetch:
+        assert await fetch.get_json(URL, gone=_closed) == {"text": "closed"}
+
+
 async def test_retry_after_non_string_falls_back_without_crashing(monkeypatch) -> None:
     responses = iter(
         [
