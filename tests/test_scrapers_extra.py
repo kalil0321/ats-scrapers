@@ -1432,6 +1432,27 @@ def test_smartrecruiters_job_function_requires_an_explicit_label() -> None:
         assert missing.job_category is None and missing.education_requirements is None
 
 
+def test_smartrecruiters_detail_apply_link_is_a_checked_url() -> None:
+    import warnings
+
+    from ats_scrapers.scrapers.smartrecruiters import _apply_detail_to_job
+
+    scraper = SmartRecruitersScraper("acme")
+    posting = {"id": "123", "name": "Nurse"}
+    link = "https://jobs.smartrecruiters.com/acme/123-nurse?oga=true"
+
+    job = scraper._parse_job(posting)
+    _apply_detail_to_job(job, {"applyUrl": f" {link} "})
+    assert str(job.apply_url) == link
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert job.model_dump()["apply_url"] == job.apply_url
+
+    unreadable = scraper._parse_job(posting)
+    _apply_detail_to_job(unreadable, {"applyUrl": "not a link"})
+    assert unreadable.apply_url is None
+
+
 def test_workable_widget_maps_function_and_education_separately_from_department() -> None:
     scraper = WorkableScraper("example")
     posting = {"url": "https://apply.workable.com/j/EXAMPLE123", "shortcode": "EXAMPLE123",
