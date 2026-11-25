@@ -332,6 +332,9 @@ class WorkdayScraper(BaseScraper):
         url = f"{_detail_prefix(match)}{external_path}"
         try:
             client = self._detail_client(url)
+        except ScraperError as exc:  # httpcloak could not start a session
+            raise DetailFetchError(str(exc), status_code=None, url=url) from exc
+        try:
             if self.pacer is not None:
                 self.pacer.wait_sync(url)
             response = client.get(url, headers=DETAIL_HEADERS)

@@ -306,3 +306,17 @@ def test_detail_fetch_error_supports_copy() -> None:
     for clone in (copy.copy(err), copy.deepcopy(err)):
         assert clone.status_code == 429
         assert clone.url == "u"
+
+
+def test_workday_get_details_reports_a_session_that_cannot_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_session(self: WorkdayScraper, url: str) -> object:
+        raise ScraperError("Workday: httpcloak could not start a session: boom")
+
+    monkeypatch.setattr(WorkdayScraper, "_detail_client", no_session)
+
+    with pytest.raises(DetailFetchError) as excinfo:
+        WorkdayScraper(TENANT).get_details(_workday_job())
+
+    assert excinfo.value.status_code is None
+    assert excinfo.value.url == DETAIL_URL
+    assert isinstance(excinfo.value.__cause__, ScraperError)
