@@ -88,10 +88,13 @@ MAX_ACTIVE_SLICES = 2 * MAX_CONCURRENCY
 _REREAD_ROUNDS = 4  # See ``_rereads``.
 # Slices that lost a read are read again when the crawl is done.
 _LOST_ROUNDS = 2
+# A crawl that read fewer of the vacancies the API announces fails, so a
+# partial file never replaces a whole one. Whole crawls read about all.
+MIN_READ_SHARE = 0.95
 
 
 class _RejectedError(ScraperError):
-    """The API refused the query (400); asking again changes nothing."""
+    """The API refused a page past the cap (400); asking again changes nothing."""
 
 
 @dataclass(frozen=True)
@@ -383,6 +386,7 @@ class EuresScraper(BaseScraper):
         seen: set[str] = set()
         all_jobs: list[Job] = []
         lock = asyncio.Lock()
+        self._announced = 0
 
         # ``follow_redirects=False`` matters: the CDN's transient 307
         # "Network Error" responses must surface to ``_search`` so it
@@ -447,6 +451,10 @@ class EuresScraper(BaseScraper):
                 log.warning(
                     "EURES slice %s was not read whole", _describe(entry.base),
                 )
+        if self._announced and len(seen) < MIN_READ_SHARE * self._announced:
+            raise ScraperError(
+                f"EURES read {len(seen):,} of the {self._announced:,} vacancies it announces"
+            )
         return all_jobs
 
     async def _exhaust_query(
@@ -495,6 +503,8 @@ class EuresScraper(BaseScraper):
 
         payload = await self._search(fetcher, sem, base=base, page=1)
         total = int(payload.get("numberRecords") or 0)
+        if not base:
+            self._announced = total
         if total == 0:
             return
         await absorb(payload.get("jvs") or [])
@@ -722,9 +732,10 @@ class EuresScraper(BaseScraper):
         # Network errors and 429/5xx are retried inside the shared
         # Fetcher. Two provider quirks stay here via ``handled``:
         #
-        # - 400 means a page past the cap or a filter value the API does
-        #   not know. Neither is ever requested on purpose, so it raises
-        #   and the caller logs the lost slice.
+        # - 400 past the cap is final. Within it, EURES also answers 400
+        #   to pages it serves later (thousands a night on 2026-11-23 and
+        #   24), so such a read is retried, then read again with its
+        #   slice at the end of the crawl.
         # - 307 with an HTML "Network Error" body is the CDN/load-
         #   balancer in front of EURES timing out; the next attempt
         #   routes through a fresh upstream and almost always succeeds,
@@ -741,15 +752,21 @@ class EuresScraper(BaseScraper):
                     "POST", API_URL, json=body, handled={307, 400},
                 )
             if r.status_code == 400:
-                raise _RejectedError(
-                    f"EURES rejected the query {_describe(base)} page={page}"
-                )
-            if r.status_code == 307:
+                if page * (size or PAGE_SIZE) > PAGINATION_CAP:
+                    raise _RejectedError(
+                        f"EURES rejected the query {_describe(base)} page={page}"
+                    )
                 if attempt == retries:
                     raise ScraperError(
-                        f"EURES returned 307 after "
-                        f"{retries} retries for {base} page={page}"
+                        f"EURES answered 400 {retries} times to "
+                        f"{_describe(base)} page={page}"
                     )
+            if r.status_code == 307 and attempt == retries:
+                raise ScraperError(
+                    f"EURES returned 307 after "
+                    f"{retries} retries for {base} page={page}"
+                )
+            if r.status_code in (307, 400):
                 retry_after = r.headers.get("Retry-After")
                 delay = (
                     float(retry_after)

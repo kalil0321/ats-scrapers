@@ -11,11 +11,19 @@ from dataclasses import dataclass, field
 import httpx
 import pytest
 
+from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.scrapers import eures
 from ats_scrapers.scrapers.eures import EuresScraper, _plan_split, _Reread, _rereads
 
 _API = re.compile(r"^https://europa\.eu/eures/api/jv-searchengine/public/jv-search/search")
 _ISCO = "http://data.europa.eu/esco/isco/C"
+
+
+@pytest.fixture(autouse=True)
+def _partial_crawls_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These crawls leave vacancies out on purpose; the read share check
+    has its own tests."""
+    monkeypatch.setattr(eures, "MIN_READ_SHARE", 0)
 
 
 def _entries(counts: dict[str, int]) -> dict:
@@ -315,6 +323,8 @@ class _FakePortal:
     unavailable: set[str] = field(default_factory=set)
     # Requests it returns true for fail with 503.
     failing: Callable[[dict], bool] | None = None
+    # Requests it returns true for are refused with 400.
+    refusing: Callable[[dict], bool] | None = None
     # Runs once, right after the first page 1 is served.
     after_first_page: Callable[[], None] | None = None
     bodies: list[dict] = field(default_factory=list)
@@ -345,6 +355,8 @@ class _FakePortal:
             return httpx.Response(503, text="unavailable")
         if self.failing is not None and self.failing(body):
             return httpx.Response(503, text="unavailable")
+        if self.refusing is not None and self.refusing(body):
+            return httpx.Response(400, json={"error": "bad request"})
         if self.arriving and body["resultsPerPage"] != eures.PAGE_SIZE:
             self.vacancies.extend(self.arriving)
             self.arriving = []
@@ -634,25 +646,26 @@ def test_warns_when_a_slice_cannot_be_split_below_the_cap(
     )
 
 
-def test_rejected_filter_value_is_reported_instead_of_read_as_empty(
-    httpx_mock, small_pages, caplog,
+def test_a_slice_the_api_keeps_refusing_is_given_up_and_named(
+    httpx_mock, small_pages, one_attempt, caplog,
 ) -> None:
     vacancies = [
         _Vacancy("f0", "fr", "fr10"),
         *(_Vacancy(f"d{i}", "de", "de1") for i in range(3)),
         *(_Vacancy(f"e{i}", "de", "de2") for i in range(3)),
     ]
-    _serve(httpx_mock, _FakePortal(vacancies, max_results=4, rejected={"de2"}))
+    portal = _FakePortal(vacancies, max_results=4, rejected={"de2"})
+    _serve(httpx_mock, portal)
 
     with caplog.at_level(logging.WARNING):
         jobs = EuresScraper("eures").fetch()
 
-    assert _ids(jobs) >= {f"d{i}" for i in range(3)}
-    assert any(
-        "location subtask failed" in r.getMessage()
-        and "rejected the query locationCodes=de2" in r.getMessage()
-        for r in caplog.records
-    )
+    assert _ids(jobs) == {"f0", "d0", "d1", "d2"}
+    # Once in the crawl, twice after it.
+    assert sum(b["locationCodes"] == ["de2"] for b in portal.bodies) == 3
+    assert _not_read_whole(caplog) == [
+        "EURES slice locationCodes=de2 was not read whole",
+    ]
 
 
 def test_vacancies_modified_after_planning_are_read_from_a_fresh_page_one(
@@ -860,22 +873,60 @@ def test_a_slice_that_never_answers_is_given_up_and_named(
     ]
 
 
-def test_a_rejected_slice_is_not_asked_again(
+def test_a_page_refused_within_the_cap_is_read_again(
     httpx_mock, small_pages, one_attempt, caplog,
 ) -> None:
+    vacancies = [_Vacancy(f"m{i}", "mt", "mt001") for i in range(4)]
+    portal = _FakePortal(
+        vacancies, max_results=4, refusing=_first(1, lambda b: b["page"] == 2),
+    )
+    _serve(httpx_mock, portal)
+
+    with caplog.at_level(logging.WARNING):
+        jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {v.id for v in vacancies}
+    assert [b["page"] for b in portal.bodies] == [1, 1, 2, 2]
+    assert not _not_read_whole(caplog)
+
+
+def test_a_refused_page_is_retried_before_it_counts_as_lost(httpx_mock, small_pages) -> None:
+    vacancies = [_Vacancy(f"m{i}", "mt", "mt001") for i in range(4)]
+    portal = _FakePortal(
+        vacancies, max_results=4, refusing=_first(2, lambda b: b["page"] == 2),
+    )
+    _serve(httpx_mock, portal)
+
+    jobs = EuresScraper("eures").fetch()
+
+    assert _ids(jobs) == {v.id for v in vacancies}
+    assert [b["page"] for b in portal.bodies] == [1, 1, 2, 2, 2]
+
+
+def test_a_crawl_that_read_too_few_of_the_announced_vacancies_fails(
+    httpx_mock, small_pages, one_attempt, monkeypatch,
+) -> None:
+    monkeypatch.setattr(eures, "MIN_READ_SHARE", 0.95)
     vacancies = [
         _Vacancy("f0", "fr", "fr10"),
         *(_Vacancy(f"d{i}", "de", "de1") for i in range(3)),
         *(_Vacancy(f"e{i}", "de", "de2") for i in range(3)),
     ]
-    portal = _FakePortal(vacancies, max_results=4, rejected={"de2"})
-    _serve(httpx_mock, portal)
+    _serve(httpx_mock, _FakePortal(vacancies, max_results=4, unavailable={"de2"}))
 
-    with caplog.at_level(logging.WARNING):
+    with pytest.raises(ScraperError, match="read 4 of the 7 vacancies it announces"):
         EuresScraper("eures").fetch()
 
-    assert sum(b["locationCodes"] == ["de2"] for b in portal.bodies) == 1
-    assert not _not_read_whole(caplog)
+
+def test_a_whole_crawl_passes_the_read_share_check(httpx_mock, small_pages, monkeypatch) -> None:
+    monkeypatch.setattr(eures, "MIN_READ_SHARE", 0.95)
+    vacancies = [
+        _Vacancy("f0", "fr", "fr10"),
+        *(_Vacancy(f"d{i}", "de", "de1") for i in range(3)),
+    ]
+    _serve(httpx_mock, _FakePortal(vacancies, max_results=4))
+
+    assert _ids(EuresScraper("eures").fetch()) == {v.id for v in vacancies}
 
 
 def test_a_slice_read_past_its_cap_gets_its_first_pages_again(
