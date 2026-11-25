@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlparse
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._engagement import engagement_from_label
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -39,7 +39,7 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 if TYPE_CHECKING:
     from typing import Any
 
-    from ats_scrapers.fetch import Fetcher
+    from ats_scrapers.fetch import Fetcher, FetchResponse
 
 PAGE_LIMIT = 200
 # A page past this many rows comes back empty while TotalJobsCount still
@@ -316,6 +316,15 @@ class OracleScraper(BaseScraper):
             # search-context metadata (facets, totalCount), not actual jobs.
             "expand": "requisitionList",
         }
+        response = await fetch.request("GET", api, params=params, handled={503})
+        if response.status_code != 503:
+            return response.json()
+        if _subscription_suspended(response):
+            raise CompanyNotFoundError(
+                f"Oracle tenant {urlparse(api).hostname}: its Oracle Cloud "
+                "subscription is suspended (503 Subscription Suspension Outage)"
+            )
+        # Any other 503 goes through the fetcher's retries.
         return await fetch.get_json(api, params=params)
 
     def _parse_job(self, item: dict[str, Any], base: str, site: str) -> Job:
@@ -417,6 +426,18 @@ class OracleScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _subscription_suspended(response: FetchResponse) -> bool:
+    """Oracle's answer, on every address of the pod, once the customer's
+    subscription has lapsed past its grace period. Termination follows."""
+    marker = next(
+        (v for k, v in response.headers.items() if k.casefold() == "x-oracle-rats-data"),
+        "",
+    )
+    return "suspension" in marker.casefold() or (
+        "Subscription Suspension Outage" in response.text
+    )
 
 
 def _oracle_source_id(job: Job) -> str | None:
