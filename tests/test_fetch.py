@@ -404,6 +404,14 @@ async def test_an_empty_proxy_connects_directly_despite_the_environment(
         assert not fetch._uses_proxy()
 
 
+async def test_an_empty_proxy_ignores_the_standard_proxy_variables(monkeypatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://std-proxy.test:3128")
+    async with _fetcher(proxy="") as fetch:
+        assert fetch._httpx_client().trust_env is False
+    async with _fetcher(proxy=None) as fetch:
+        assert fetch._httpx_client().trust_env is True
+
+
 # --- FetchResponse ----------------------------------------------------------
 
 

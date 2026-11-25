@@ -280,6 +280,8 @@ class Fetcher:
                 headers=self.headers or None,
                 # httpx sends through a proxy before a given transport.
                 proxy=None if self.transport else self.proxy or None,
+                # An explicit "" is a direct route: HTTPS_PROXY and friends must not apply.
+                trust_env=self.proxy != "",
                 transport=borrowed_transport(self.transport) if self.transport else None,
             )
         return self._client
