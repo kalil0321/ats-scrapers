@@ -49,7 +49,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, DetailFetchError, ScraperError
 from ats_scrapers.fetch import Engine, HostPacer, _cloak_available, borrowed_transport
 from ats_scrapers.models import ATSType, Job, JobLocation, WorkplaceType
 from ats_scrapers.scrapers._job_places import distinct_places, job_location, workplace_type
@@ -237,12 +237,10 @@ class WorkdayScraper(BaseScraper):
             )
         company = match.group("company")
         display_company = self.company_name or company
-        instance = match.group("instance")
-        site = match.group("site")
-        api = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}/jobs"
         # The detail endpoint shares the cxs prefix but takes a job-relative
         # path: GET /wday/cxs/{co}/{site}{externalPath}.
-        detail_prefix = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}"
+        detail_prefix = _detail_prefix(match)
+        api = f"{detail_prefix}/jobs"
         base = self.company_slug.split("/wday/")[0].rstrip("/")
 
         self._deadline = (
@@ -281,35 +279,101 @@ class WorkdayScraper(BaseScraper):
             return None
         return max(0.0, self._deadline - time.monotonic())
 
+    def get_details(self, job: Job) -> Job:
+        """Fetch the Workday detail payload for ``job`` and return an
+        enriched copy: description, every location, attendance, hiring
+        organization and posting dates.
+
+        Always performs the request, even when ``job`` already has a
+        description, so the locations and dates come back. Raises
+        :class:`DetailFetchError` on any failure; never mutates ``job``.
+        """
+        payload = self._detail_payload(job)
+        enriched = job.model_copy(deep=True)
+        self._apply_detail(enriched, payload)
+        return enriched
+
     def get_description(self, job: Job) -> str | None:
+        """Fill ``job`` from its detail payload and return the description.
+
+        Updates ``job`` in place, as before :meth:`get_details` existed, and
+        returns ``None`` when the detail request fails.
+        """
         if job.description:
             return job.description
-        match = URL_PATTERN.match(self.company_slug.rstrip("/"))
-        if not match:
-            return None
-        company = match.group("company")
-        instance = match.group("instance")
-        site = match.group("site")
-        detail_prefix = f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}"
-        external_path = (job.raw or {}).get("externalPath") or _external_path(job.url)
-        if not external_path:
-            return None
-        url = f"{detail_prefix}{external_path}"
         try:
-            client = self._detail_client(url)
-            if self.pacer is not None:
-                self.pacer.wait_sync(url)
-            response = client.get(url, headers=DETAIL_HEADERS)
-        except httpx.HTTPError:
-            return None
-        if response.status_code != 200:
-            return None
-        try:
-            payload = response.json()
-        except ValueError:
+            payload = self._detail_payload(job)
+        except DetailFetchError:
             return None
         self._apply_detail(job, payload)
         return job.description
+
+    def _detail_payload(self, job: Job) -> dict[str, Any]:
+        """GET one Workday detail payload on the kept connection.
+
+        Raises :class:`DetailFetchError` on transport errors, non-200
+        statuses (a bot challenge included), non-JSON bodies and payloads
+        of an unexpected shape. No retry.
+        """
+        match = URL_PATTERN.match(self.company_slug.rstrip("/"))
+        if not match:
+            raise DetailFetchError(
+                f"Workday company_slug is not a tenant URL: {self.company_slug!r}",
+                status_code=None,
+                url=str(job.url),
+            )
+        external_path = (job.raw or {}).get("externalPath") or _external_path(job.url)
+        if not external_path:
+            raise DetailFetchError(
+                "Workday job has no externalPath",
+                status_code=None,
+                url=str(job.url),
+            )
+        url = f"{_detail_prefix(match)}{external_path}"
+        try:
+            client = self._detail_client(url)
+        except ScraperError as exc:  # httpcloak could not start a session
+            raise DetailFetchError(str(exc), status_code=None, url=url) from exc
+        try:
+            if self.pacer is not None:
+                self.pacer.wait_sync(url)
+            response = client.get(url, headers=DETAIL_HEADERS)
+        except httpx.HTTPError as exc:
+            raise DetailFetchError(
+                f"Workday detail fetch failed: {url}: {exc}",
+                status_code=None,
+                url=url,
+            ) from exc
+        status = response.status_code
+        if status != 200 or _challenged(response):
+            reason = "a bot challenge" if _challenged(response) else str(status)
+            raise DetailFetchError(
+                f"Workday detail returned {reason} for {url}",
+                status_code=status,
+                url=url,
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            content_type = response.headers.get("Content-Type", "unknown")
+            raise DetailFetchError(
+                f"Workday detail returned non-JSON for {url} (content-type {content_type})",
+                status_code=200,
+                url=url,
+            ) from exc
+        if not isinstance(payload, dict):
+            raise DetailFetchError(
+                f"Workday detail returned an unexpected JSON payload for {url}",
+                status_code=200,
+                url=url,
+            )
+        if not isinstance(payload.get("jobPostingInfo"), dict):
+            raise DetailFetchError(
+                f"Workday detail returned no jobPostingInfo object for {url}",
+                status_code=200,
+                url=url,
+            )
+        return payload
 
     def _apply_detail(self, job: Job, payload: object) -> None:
         if not isinstance(payload, dict) or not isinstance(info := payload.get("jobPostingInfo"), dict):
@@ -979,6 +1043,14 @@ def _parse_workday_date(value: str | None) -> datetime | None:
     if not value:
         return None
     return None  # Relative; absolute date requires fetching the per-job detail.
+
+
+def _detail_prefix(match: re.Match[str]) -> str:
+    """The cxs prefix (``.../wday/cxs/{co}/{site}``) of a matched careers URL."""
+    company = match.group("company")
+    instance = match.group("instance")
+    site = match.group("site")
+    return f"https://{company}.{instance}.myworkdayjobs.com/wday/cxs/{company}/{site}"
 
 
 def _external_path(url: object) -> str | None:

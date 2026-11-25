@@ -17,6 +17,7 @@ from ats_scrapers.cloud_browser import CloudBrowser, RenderedPage
 from ats_scrapers.exceptions import (
     ATSScrapersError,
     CompanyNotFoundError,
+    DetailFetchError,
     ManifestError,
     ScraperError,
     StorageError,
@@ -49,6 +50,7 @@ __all__ = [
     "Company",
     "CompanyNotFoundError",
     "CompensationComponent",
+    "DetailFetchError",
     "EducationRequirement",
     "EmploymentType",
     "EngagementType",
