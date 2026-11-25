@@ -89,7 +89,8 @@ class BuiltInScraper(BaseScraper):
     - ``max_pages``: pagination cap of each view (default 1,000, the
       last page the listing serves; 10 to 25 jobs per page).
     - ``proxies``: routes the views are spread over, one reader each;
-      ``None`` is a direct connection. Defaults to ``[proxy]``.
+      ``None`` is a direct connection, even with a proxy in the
+      environment. Defaults to ``[proxy]``.
     - ``max_seconds``: time budget. Past it the views left unread are
       dropped with a warning. ``None`` reads every view.
     """
@@ -122,7 +123,11 @@ class BuiltInScraper(BaseScraper):
         )
         self.max_pages = max_pages
         self.max_seconds = max_seconds
-        self.routes: list[str | None] = list(proxies) if proxies else [proxy]
+        # ``""`` is the fetcher's direct connection: a ``None`` route given
+        # in ``proxies`` must not fall back to the environment's proxy.
+        self.routes: list[str | None] = (
+            [route or "" for route in proxies] if proxies else [proxy]
+        )
         # Flipped to True the first time the direct ``httpx`` path
         # returns 403; subsequent requests in this scraper instance
         # then go through ``httpcloak``. Reset by re-instantiating.

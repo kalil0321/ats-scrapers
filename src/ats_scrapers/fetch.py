@@ -184,7 +184,8 @@ class Fetcher:
         default) reads the module-level ``DEFAULT_*`` at request time.
     proxy:
         Proxy URL for both engines. ``None`` reads
-        ``ATS_SCRAPERS_PROXY`` / legacy ``PROXY`` from the environment.
+        ``ATS_SCRAPERS_PROXY`` / legacy ``PROXY`` from the environment;
+        ``""`` connects directly whatever those say.
     transport:
         An ``httpx.AsyncBaseTransport`` that sends every request instead
         of a direct connection or a proxy, e.g. one that forwards requests
@@ -278,7 +279,7 @@ class Fetcher:
                 follow_redirects=self.follow_redirects,
                 headers=self.headers or None,
                 # httpx sends through a proxy before a given transport.
-                proxy=None if self.transport else self.proxy,
+                proxy=None if self.transport else self.proxy or None,
                 transport=borrowed_transport(self.transport) if self.transport else None,
             )
         return self._client

@@ -318,6 +318,36 @@ def test_reads_a_failed_view_page_again(httpx_mock) -> None:
     assert [j.ats_id for j in jobs] == ["7"]
 
 
+def test_a_direct_route_skips_the_environment_proxy(
+    httpx_mock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ATS_SCRAPERS_PROXY", "http://env-proxy:3128")
+    client_proxies: list[object] = []
+    real_client = httpx.AsyncClient
+
+    def client(*args: object, **kwargs: object) -> httpx.AsyncClient:
+        client_proxies.append(kwargs.get("proxy"))
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    httpx_mock.add_response(
+        url="https://builtin.com/jobs?page=1",
+        text=_first_page([_item(position=1, job_id=1, name="Newest")], remotes=("office",)),
+    )
+    httpx_mock.add_response(url="https://builtin.com/jobs?page=2", text=_empty_page())
+    httpx_mock.add_response(url=_view("office/sales/senior", 1), text=_empty_page())
+
+    BuiltInScraper("any", proxies=[None, "http://route-2:8080"]).fetch()
+
+    # The first page is read on the first route, the direct one.
+    assert client_proxies[0] is None
+    assert set(client_proxies) <= {None, "http://route-2:8080"}
+
+
 def test_time_budget_keeps_what_was_read(httpx_mock, caplog) -> None:
     httpx_mock.add_response(
         url="https://builtin.com/jobs?page=1",
