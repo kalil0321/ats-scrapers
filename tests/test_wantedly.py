@@ -57,7 +57,12 @@ def _listing(
 
 
 def _asked(httpx_mock) -> list[dict[str, str]]:
-    return [dict(request.url.params) for request in httpx_mock.get_requests()]
+    """The parameters of each listing request, the company page left out."""
+    return [
+        dict(request.url.params)
+        for request in httpx_mock.get_requests()
+        if API.match(str(request.url))
+    ]
 
 
 def test_registry_resolves_wantedly() -> None:
@@ -258,6 +263,13 @@ def _serve(
         )
 
     httpx_mock.add_callback(reply, url=API, is_reusable=True)
+    # The company page shows every project.
+    httpx_mock.add_callback(
+        lambda request: httpx.Response(200, json=_company(len(projects))),
+        url=COMPANY,
+        is_reusable=True,
+        is_optional=True,
+    )
 
 
 def _tags(occupation: str, hiring: str = "mid_career", *areas: str) -> dict[str, set[str]]:
@@ -344,6 +356,49 @@ def test_projects_without_an_occupation_are_read_by_hiring_type(httpx_mock) -> N
 
     assert sorted(int(job.ats_id) for job in jobs) == list(range(1, 1051))
     assert ("hiring_types[]=freelance",) in _narrowed(httpx_mock)
+
+
+def _counting_hidden_projects(httpx_mock, listed: int, counted: int) -> None:
+    """Every listing, narrowed or not, counts ``counted`` projects and lists
+    ``listed`` of them, ten a page up to page 100."""
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        shown = range(1, listed + 1)[(page - 1) * 10 : page * 10] if page <= 100 else []
+        return httpx.Response(
+            200, json=_listing([_project(i) for i in shown], total=counted)
+        )
+
+    httpx_mock.add_callback(reply, url=API, is_reusable=True)
+
+
+def test_listing_past_the_cap_that_shows_fewer_projects_is_read_up_to_the_cap(
+    httpx_mock,
+) -> None:
+    """The listing counts 1,001 projects on 101 pages, every slice counts
+    them all too, and the company page shows the 900 the pages list."""
+    _counting_hidden_projects(httpx_mock, listed=900, counted=1001)
+    httpx_mock.add_response(url=COMPANY, json=_company(900))
+
+    jobs = WantedlyScraper(SLUG, collapse_reposts=False).fetch()
+
+    assert sorted(int(job.ats_id) for job in jobs) == list(range(1, 901))
+    assert _narrowed(httpx_mock) == {()}
+    assert [params["page"] for params in _asked(httpx_mock)] == [
+        str(page) for page in range(1, 101)
+    ]
+    assert len(httpx_mock.get_requests(url=COMPANY)) == 1
+
+
+def test_listing_past_the_cap_is_split_when_the_company_page_does_not_tell(
+    httpx_mock,
+) -> None:
+    _counting_hidden_projects(httpx_mock, listed=900, counted=1001)
+    httpx_mock.add_response(url=COMPANY, status_code=404)
+
+    with pytest.raises(ScraperError, match="no filter splits them"):
+        WantedlyScraper(SLUG).fetch()
+    assert len(_narrowed(httpx_mock)) > 1
 
 
 def test_projects_no_filter_reaches_are_refused(httpx_mock) -> None:
