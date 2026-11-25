@@ -26,6 +26,7 @@
   <a href="https://pypi.org/project/ats-scrapers/"><img src="https://img.shields.io/pypi/v/ats-scrapers?color=3b82f6" alt="PyPI version"></a>
   <a href="https://pypi.org/project/ats-scrapers/"><img src="https://img.shields.io/pypi/pyversions/ats-scrapers" alt="Python versions"></a>
   <a href="https://github.com/kalil0321/ats-scrapers/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-3fb950" alt="License: MIT"></a>
+  <a href="https://creativecommons.org/publicdomain/zero/1.0/"><img src="https://img.shields.io/badge/data-CC0%201.0-3fb950" alt="Dataset: CC0 1.0"></a>
 </p>
 
 <p align="center">
@@ -249,6 +250,15 @@ uv run ruff check .
 
 ## License
 
-[MIT](https://github.com/kalil0321/ats-scrapers/blob/main/LICENSE). ats-scrapers
-is built by [Stapply](https://stapply.ai), which also runs
+The code is [MIT](https://github.com/kalil0321/ats-scrapers/blob/main/LICENSE).
+
+The free daily snapshot at [data.stapply.ai](https://data.stapply.ai) is
+dedicated to the public domain under
+[CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/): use it for
+anything, including commercial work. Attribution is appreciated, not required.
+CC0 covers the rights Stapply holds in the dataset; job postings are written by
+the employers that published them. The paid Stapply API is offered under its
+own terms. See [stapply.ai/terms](https://www.stapply.ai/terms).
+
+ats-scrapers is built by [Stapply](https://stapply.ai), which also runs
 [data.stapply.ai](https://data.stapply.ai) and [map.stapply.ai](https://map.stapply.ai).
