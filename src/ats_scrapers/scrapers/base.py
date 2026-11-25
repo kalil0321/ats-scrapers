@@ -142,6 +142,40 @@ class BaseScraper(ABC):
         """
         return job.description
 
+    def get_details(self, job: Job) -> Job:
+        """Return an enriched copy of ``job`` from the provider's per-job detail
+        request (description, and for providers that expose them a resolved
+        top-level ``location`` and posting dates); never mutates the input.
+
+        Contract: providers that override this method raise
+        :class:`~ats_scrapers.exceptions.DetailFetchError` when the detail
+        request fails (``status_code`` set for HTTP failures, ``None`` when
+        no HTTP response was received), so callers can tell a 404 (posting
+        gone) from a 429 (rate-limited). The default implementation adapts
+        :meth:`get_description` and therefore returns ``job`` unchanged when
+        the provider could not fetch, because existing ``get_description``
+        implementations swallow errors.
+
+        Implementers: one helper owns the detail request. A provider with a
+        native ``get_details`` also defines ``get_description`` on top of
+        that same helper, catching ``DetailFetchError`` and returning
+        ``None``; a provider with only ``get_description`` inherits this
+        default. Never let ``get_details`` and ``get_description`` call
+        each other in a cycle.
+        """
+        # Legacy get_description overrides may mutate their argument in place
+        # (HERP fills description, location and dates), so the hook gets a
+        # detached copy and the caller's job is never touched.
+        candidate = job.model_copy(deep=True)
+        description = self.get_description(candidate)
+        if description and description != candidate.description:
+            candidate = candidate.model_copy(update={"description": description[:25_000]})
+        elif candidate.description and len(candidate.description) > 25_000:
+            candidate = candidate.model_copy(
+                update={"description": candidate.description[:25_000]}
+            )
+        return candidate if candidate != job else job
+
     def enrich_descriptions(self, jobs: list[Job]) -> list[Job]:
         """Fill missing descriptions in ``jobs`` when the provider supports it.
 
