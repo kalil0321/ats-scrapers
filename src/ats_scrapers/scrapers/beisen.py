@@ -33,6 +33,12 @@ _BSGLOBAL_RE = re.compile(r"var\s+BSGlobal\s*=\s*(\{)", re.DOTALL)
 # The notice a switched-off portal shows instead of its config:
 # "the company has paused recruiting".
 _RECRUITING_PAUSED = "企业已暂停招聘"
+# A tenant that does not exist, or no longer does, redirects every path to
+# this page. A legacy tenant redirects the current portal's paths to it.
+_ERROR_PAGE_RE = re.compile(r"<div[^>]*\bclass=\"errorpage\"", re.IGNORECASE)
+# The current portal's page sets a field of BSGlobal even when the tenant has
+# no portal config to declare it with.
+_PORTAL_SHELL_RE = re.compile(r"\bBSGlobal\.staticPath\s*=")
 _TENANT_ID_RE = re.compile(
     r"(?:stcms\.beisen\.com/image|portal-oss\.zhiye\.com)/(\d+)"
 )
@@ -151,6 +157,22 @@ class BeisenScraper(BaseScraper):
             headers={"Accept": "text/html,application/xhtml+xml,*/*"},
         )
         match = _BSGLOBAL_RE.search(text)
+        if not match and _ERROR_PAGE_RE.search(text):
+            # A legacy tenant has no such path either; its home page is up.
+            home = await fetch.get_text(
+                f"{self.base_url}/",
+                headers={"Accept": "text/html,application/xhtml+xml,*/*"},
+            )
+            if _ERROR_PAGE_RE.search(home):
+                raise CompanyNotFoundError(
+                    f"Beisen tenant {self.slug!r} does not exist: every page "
+                    "leads to Beisen's error page"
+                )
+        if not match and _PORTAL_SHELL_RE.search(text):
+            raise CompanyNotFoundError(
+                f"Beisen tenant {self.slug!r} serves its portal without a "
+                "configuration: it publishes no career site"
+            )
         if not match:
             raise ScraperError(
                 f"Beisen tenant {self.slug!r} did not return a BSGlobal config; "

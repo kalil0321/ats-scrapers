@@ -212,6 +212,44 @@ def test_missing_bsglobal_raises_clear_error(httpx_mock) -> None:
         BeisenScraper("fixturecorp").fetch()
 
 
+ERROR_PAGE = (
+    '<html><body><div id="main" class="errorpage"><h2>Error!</h2>'
+    "<li>您请求的页面不存在</li></div></body></html>"
+)
+
+
+def test_tenant_whose_every_page_is_the_error_page_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(url=REGISTER_URL, text=ERROR_PAGE)
+    httpx_mock.add_response(url="https://fixturecorp.zhiye.com/", text=ERROR_PAGE)
+    with pytest.raises(CompanyNotFoundError, match="does not exist"):
+        BeisenScraper("fixturecorp").fetch()
+
+
+def test_legacy_tenant_stays_an_error(httpx_mock) -> None:
+    httpx_mock.add_response(url=REGISTER_URL, text=ERROR_PAGE)
+    httpx_mock.add_response(
+        url="https://fixturecorp.zhiye.com/",
+        text='<html><a href="/Social/">社会招聘</a></html>',
+    )
+    with pytest.raises(ScraperError, match="legacy portal") as exc_info:
+        BeisenScraper("fixturecorp").fetch()
+    assert not isinstance(exc_info.value, CompanyNotFoundError)
+
+
+def test_portal_without_a_config_is_not_found(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=REGISTER_URL,
+        text=(
+            '<html><head><title>Acme</title><script>\n    </script></head><body>'
+            '<div class="pages" id="bsMain"></div><script type="text/javascript">'
+            'BSGlobal.staticPath = "//acdn.bstatics.com/ux/release/dist/";'
+            "</script></body></html>"
+        ),
+    )
+    with pytest.raises(CompanyNotFoundError, match="without a configuration"):
+        BeisenScraper("fixturecorp").fetch()
+
+
 def test_missing_portal_id_raises_clear_error(httpx_mock) -> None:
     httpx_mock.add_response(
         url=REGISTER_URL,
