@@ -124,6 +124,125 @@ def test_non_list_feed_fails_closed(httpx_mock, payload: object) -> None:
         DayforceScraper("mayfair/CANDIDATEPORTAL").fetch()
 
 
+SITE = "https://jobs.dayforcehcm.com"
+SEARCH_URL = f"{SITE}/api/geo/mayfair/jobposting/search"
+IP_RESTRICTED = {
+    "processResults": [
+        {
+            "code": "SYS_IP_RESTRICTED",
+            "level": "ERROR",
+            "message": "IP address is not authorized to access the Dayforce Services API.",
+        }
+    ]
+}
+
+
+def _posting(posting_id: int, *locations: dict[str, object]) -> dict[str, object]:
+    return {
+        "clientNamespace": "mayfair",
+        "jobPostingId": posting_id,
+        "jobTitle": f"Technologist {posting_id}",
+        "jobDescription": "Read scans &amp; reports.",
+        "hasVirtualLocation": False,
+        "postingStartTimestampUTC": "2026-11-24T08:00:00+00:00",
+        "postingLocations": list(locations),
+    }
+
+
+CALGARY = {"cityName": "Calgary", "stateCode": "AB", "isoCountryCode": "CA"}
+EDMONTON = {"cityName": "Edmonton", "stateCode": "AB", "isoCountryCode": "CA"}
+
+
+def test_ip_restricted_feed_is_read_from_the_career_site(httpx_mock) -> None:
+    httpx_mock.add_response(url=API_URL, status_code=403, json=IP_RESTRICTED)
+    httpx_mock.add_response(url=f"{SITE}/api/auth/csrf", json={"csrfToken": "tok"})
+    first = [_posting(3612, CALGARY, EDMONTON)] + [
+        _posting(4000 + index, CALGARY) for index in range(24)
+    ]
+    for offset, postings in ((0, first), (25, [_posting(5000)])):
+        httpx_mock.add_response(
+            url=SEARCH_URL,
+            method="POST",
+            match_headers={"X-CSRF-TOKEN": "tok"},
+            match_json={
+                "clientNamespace": "mayfair",
+                "jobBoardCode": "CANDIDATEPORTAL",
+                "cultureCode": "en-US",
+                "paginationStart": offset,
+            },
+            json={"jobPostings": postings, "maxCount": 26, "offset": offset},
+        )
+
+    jobs = DayforceScraper("mayfair/CANDIDATEPORTAL", company_name="Mayfair").fetch()
+
+    assert len(jobs) == 26
+    job = next(job for job in jobs if job.requisition_id == "3612")
+    assert job.ats_id == "mayfair:CANDIDATEPORTAL:3612"
+    assert job.title == "Technologist 3612"
+    assert job.company == "Mayfair"
+    assert str(job.url) == f"{SITE}/en-US/mayfair/CANDIDATEPORTAL/jobs/3612"
+    assert job.location == "Calgary, AB, CA"
+    assert job.country_iso == "CA"
+    assert job.is_remote is False
+    assert job.description == "Read scans & reports."
+    assert job.posted_at is not None and job.posted_at.isoformat() == "2026-11-24T08:00:00+00:00"
+    assert job.raw == {"CultureCode": "en-US", "AllLocations": ["Calgary, AB, CA", "Edmonton, AB, CA"]}
+    assert next(job for job in jobs if job.requisition_id == "5000").location is None
+
+
+def _ip_restricted_site(httpx_mock) -> None:
+    httpx_mock.add_response(url=API_URL, status_code=403, json=IP_RESTRICTED)
+    httpx_mock.add_response(url=f"{SITE}/api/auth/csrf", json={"csrfToken": "tok"})
+
+
+def test_career_site_search_that_stops_short_fails(httpx_mock) -> None:
+    _ip_restricted_site(httpx_mock)
+    first = [_posting(4000 + index, CALGARY) for index in range(25)]
+    for offset, postings in ((0, first), (25, [])):
+        httpx_mock.add_response(
+            url=SEARCH_URL,
+            method="POST",
+            match_json={
+                "clientNamespace": "mayfair",
+                "jobBoardCode": "CANDIDATEPORTAL",
+                "cultureCode": "en-US",
+                "paginationStart": offset,
+            },
+            json={"jobPostings": postings, "maxCount": 50},
+        )
+
+    with pytest.raises(ScraperError, match="stopped at 25 of 50"):
+        DayforceScraper("mayfair/CANDIDATEPORTAL").fetch()
+
+
+@pytest.mark.parametrize("count", [None, "26", 26.0, True, -1])
+def test_career_site_search_without_a_count_fails(httpx_mock, count: object) -> None:
+    _ip_restricted_site(httpx_mock)
+    page: dict[str, object] = {"jobPostings": [_posting(3612, CALGARY)]}
+    if count is not None:
+        page["maxCount"] = count
+    httpx_mock.add_response(url=SEARCH_URL, method="POST", json=page)
+
+    with pytest.raises(ScraperError, match="no posting count"):
+        DayforceScraper("mayfair/CANDIDATEPORTAL").fetch()
+
+
+def test_career_site_search_of_an_empty_board(httpx_mock) -> None:
+    _ip_restricted_site(httpx_mock)
+    httpx_mock.add_response(
+        url=SEARCH_URL, method="POST", json={"jobPostings": [], "maxCount": 0}
+    )
+
+    assert DayforceScraper("mayfair/CANDIDATEPORTAL").fetch() == []
+
+
+def test_other_403_still_reports_the_block(httpx_mock) -> None:
+    httpx_mock.add_response(url=API_URL, status_code=403, text="Forbidden")
+
+    with pytest.raises(ScraperError, match="returned 403"):
+        DayforceScraper("mayfair/CANDIDATEPORTAL").fetch()
+
+
 def test_non_object_row_fails_closed(httpx_mock) -> None:
     httpx_mock.add_response(url=API_URL, json=[FIXTURE, "bad row"])
 

@@ -575,6 +575,11 @@ class EightfoldScraper(BaseScraper):
                 continue
             if response.status_code == 405:
                 raise _EdgeBlocked
+            if response.status_code == 403 and await self._careers_page_missing(client):
+                raise CompanyNotFoundError(
+                    f"Eightfold ({self.company_name}) refuses both job "
+                    f"listings and has no careers page at {self.base_url}/careers"
+                )
             raise ScraperError(
                 f"Eightfold ({self.company_name}) SmartApply returned "
                 f"{response.status_code} at start={start}"
@@ -584,6 +589,17 @@ class EightfoldScraper(BaseScraper):
             f"Eightfold ({self.company_name}) SmartApply exhausted retries at "
             f"start={start}: {last_exc}"
         )
+
+    async def _careers_page_missing(self, client: httpx.AsyncClient) -> bool:
+        """Whether the board's own careers page answers 404, as it does once
+        the employer turned its Eightfold site off."""
+        try:
+            response = await client.get(
+                f"{self.base_url}/careers", headers={"User-Agent": "Mozilla/5.0"}
+            )
+        except httpx.HTTPError:
+            return False
+        return response.status_code == 404
 
     # --- httpcloak path (sync, but parallelized via to_thread) ----------
 

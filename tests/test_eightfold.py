@@ -333,6 +333,31 @@ def test_fetch_falls_back_to_smartapply_when_pcsx_is_disabled(httpx_mock) -> Non
     assert jobs[1].location == "Remote,United States"
 
 
+@pytest.mark.parametrize(
+    ("careers_status", "error"),
+    [(404, CompanyNotFoundError), (200, ScraperError)],
+)
+def test_smartapply_refusal_is_not_found_only_without_a_careers_page(
+    httpx_mock, careers_status, error
+) -> None:
+    httpx_mock.add_response(
+        url=_mock_url(0, base="https://frontier.eightfold.ai/api/pcsx/search", domain="frontier.com"),
+        status_code=403,
+        json={"message": "PCSX is not enabled for this user."},
+    )
+    httpx_mock.add_response(
+        url=_smartapply_url(0), status_code=403, json={"message": "Not authorized for PCSX"}
+    )
+    httpx_mock.add_response(
+        url="https://frontier.eightfold.ai/careers", status_code=careers_status
+    )
+    with pytest.raises(error) as excinfo:
+        EightfoldScraper("frontier", domain="frontier.com").fetch()
+    if error is ScraperError:
+        assert not isinstance(excinfo.value, CompanyNotFoundError)
+        assert "returned 403" in str(excinfo.value)
+
+
 def test_fetch_returns_empty_when_first_page_empty(httpx_mock) -> None:
     httpx_mock.add_response(url=_mock_url(0), json=_page([], count=0))
     assert EightfoldScraper("dolby").fetch() == []

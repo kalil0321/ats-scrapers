@@ -35,6 +35,16 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 - TalentBrew: job links are read on sites whose paths are not in English.
 - CareerPlug, jobs.ch, Y Combinator: when the page of one job fails, the reads
   still under way for the others stop with it.
+- SuccessFactors: a site on the employer's own domain whose certificate has
+  lapsed is read from SAP's name for it (`*.jobs2web.com`), whose certificate
+  is checked. A site that refuses plain httpx (403/406) is read through
+  httpcloak.
+- Dayforce: a board whose services API answers only the employer's own
+  addresses is read from the search of its career site.
+- Eightfold: a board that refuses both job listings and has no careers page
+  any more is reported as not found.
+- `Fetcher`: escalating to httpcloak leaves the `User-Agent` to httpcloak,
+  keeps `follow_redirects=False`, and returns each header as one string.
 
 ## [0.4.0] — 2026-11-19
 

@@ -1,4 +1,9 @@
-"""Dayforce public job-feed scraper."""
+"""Dayforce public job-feed scraper.
+
+A tenant can limit its services API, and so the job feed, to its own
+addresses. Its career site still answers a search that needs no more than the
+site's anti-forgery token, so the board is read from there instead.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +11,7 @@ import contextlib
 import html
 import re
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
 from pydantic import HttpUrl, ValidationError
@@ -16,8 +21,15 @@ from ats_scrapers.models import ATSType, EmploymentType, Job
 from ats_scrapers.scrapers._job_classification import classification_label, education_level
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
+if TYPE_CHECKING:
+    from ats_scrapers.fetch import Fetcher
+
 API_ROOT = "https://www.dayforcehcm.com/api"
 CAREERS_HOST = "jobs.dayforcehcm.com"
+_IP_RESTRICTED = "SYS_IP_RESTRICTED"
+# The career site's search pages 25 postings at a time; the cap stops a search
+# that never runs out.
+_SITE_MAX_PAGES = 400
 _SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _LOCALE_RE = re.compile(r"^[A-Za-z]{2}(?:-[A-Za-z]{2})?$")
 
@@ -117,13 +129,24 @@ class DayforceScraper(BaseScraper):
     async def afetch(self) -> list[Job]:
         api_url = f"{API_ROOT}/{self.tenant}/V1/JobFeeds"
         async with self.make_fetcher() as fetch:
-            payload = await fetch.get_json(
+            response = await fetch.request(
+                "GET",
                 api_url,
                 params={
                     "includeActivePostingOnly": "true",
                     "internalJobBoardCode": self.board,
                 },
+                handled={403},
             )
+            if response.status_code != 403:
+                payload = response.json()
+            elif _IP_RESTRICTED in response.text:
+                payload = await self._career_site_rows(fetch)
+            else:
+                raise ScraperError(
+                    f"Dayforce ({self.tenant}/{self.board}): {api_url} returned "
+                    f"403 — the load balancer is blocking plain HTTP clients"
+                )
         if not isinstance(payload, list):
             raise ScraperError(
                 f"Dayforce ({self.tenant}/{self.board}) returned a non-list feed"
@@ -143,6 +166,60 @@ class DayforceScraper(BaseScraper):
             _select_job_variant(ats_id, variants)
             for ats_id, variants in variants_by_id.items()
         ]
+
+    async def _career_site_rows(self, fetch: Fetcher) -> list[dict[str, Any]]:
+        """The board's postings from its career site's search, as feed rows."""
+        site = f"https://{CAREERS_HOST}"
+        token = (await fetch.get_json(f"{site}/api/auth/csrf")).get("csrfToken")
+        if not isinstance(token, str) or not token:
+            raise ScraperError(
+                f"Dayforce ({self.tenant}/{self.board}) career site gave no "
+                f"anti-forgery token"
+            )
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        for _ in range(_SITE_MAX_PAGES):
+            page = await fetch.post_json(
+                f"{site}/api/geo/{self.tenant}/jobposting/search",
+                json={
+                    "clientNamespace": self.tenant,
+                    "jobBoardCode": self.board,
+                    "cultureCode": "en-US",
+                    "paginationStart": offset,
+                },
+                headers={"X-CSRF-TOKEN": token},
+            )
+            postings = page.get("jobPostings") if isinstance(page, dict) else None
+            if not isinstance(postings, list):
+                raise ScraperError(
+                    f"Dayforce ({self.tenant}/{self.board}) career site "
+                    f"returned no posting list"
+                )
+            total = page.get("maxCount")
+            if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+                raise ScraperError(
+                    f"Dayforce ({self.tenant}/{self.board}) career site "
+                    f"returned no posting count"
+                )
+            for posting in postings:
+                if not isinstance(posting, dict):
+                    raise ScraperError(
+                        f"Dayforce ({self.tenant}/{self.board}) career site "
+                        f"returned a posting that was not an object"
+                    )
+                rows.extend(_feed_rows(posting))
+            offset += len(postings)
+            if offset >= total:
+                return rows
+            if not postings:
+                raise ScraperError(
+                    f"Dayforce ({self.tenant}/{self.board}) career site search "
+                    f"stopped at {offset} of {total} postings"
+                )
+        raise ScraperError(
+            f"Dayforce ({self.tenant}/{self.board}) career site search did not "
+            f"end after {_SITE_MAX_PAGES} pages"
+        )
 
     def _parse_job(self, item: dict[str, Any]) -> Job:
         reference = _required_string(item, "ReferenceNumber")
@@ -223,6 +300,32 @@ class DayforceScraper(BaseScraper):
             commitment=employment_label,
             raw=raw or None,
         )
+
+
+def _feed_rows(posting: dict[str, Any]) -> list[dict[str, Any]]:
+    """A career-site posting as job-feed rows, one per location like the feed."""
+    row = {
+        "ReferenceNumber": posting.get("jobPostingId"),
+        "Title": posting.get("jobTitle"),
+        "Description": posting.get("jobDescription"),
+        "DatePosted": posting.get("postingStartTimestampUTC"),
+        "IsVirtualLocation": posting.get("hasVirtualLocation"),
+        "CultureCode": "en-US",
+    }
+    locations = [
+        location
+        for location in posting.get("postingLocations") or []
+        if isinstance(location, dict)
+    ]
+    return [
+        {
+            **row,
+            "City": location.get("cityName"),
+            "State": location.get("stateCode"),
+            "Country": location.get("isoCountryCode"),
+        }
+        for location in locations
+    ] or [row]
 
 
 def _select_job_variant(
