@@ -10,7 +10,8 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
+from ats_scrapers.fetch import MalformedJSONError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers.base import ScraperRegistry
 from ats_scrapers.scrapers.jibe import (
@@ -309,6 +310,25 @@ def test_rejects_unexpected_payloads(httpx_mock, payload) -> None:
     httpx_mock.add_response(url=API, json=payload)
 
     with pytest.raises(ScraperError):
+        JibeScraper(HOST).fetch()
+
+
+@pytest.mark.parametrize("target", [
+    "https://www.example.com/careers/",
+    "https://careers.example.com/en/sites/CX_1/jobs",
+])
+def test_site_that_left_jibe_is_not_found(httpx_mock, target) -> None:
+    httpx_mock.add_response(url=API, status_code=301, headers={"Location": target})
+    httpx_mock.add_response(url=target, text="<!DOCTYPE html><html>Careers</html>")
+
+    with pytest.raises(CompanyNotFoundError, match="no longer runs on Jibe"):
+        JibeScraper(HOST).fetch()
+
+
+def test_html_served_on_the_api_path_stays_an_error(httpx_mock) -> None:
+    httpx_mock.add_response(url=API, text="<html>Maintenance</html>")
+
+    with pytest.raises(MalformedJSONError):
         JibeScraper(HOST).fetch()
 
 
