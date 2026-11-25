@@ -43,6 +43,7 @@ Acme Corp,acme,https://acme.greenhouse.io
 | gem | `https://jobs.gem.com/<slug>` |
 | greenhouse | `https://job-boards.greenhouse.io/<slug>` |
 | hiringthing | `https://<board host>` (the slug is this address) |
+| hirehive | `https://<slug>.hirehive.com` |
 | icims | `https://careers-<slug>.icims.com` |
 | jazzhr | `https://<slug>.applytojob.com` |
 | join_com | `https://join.com/companies/<slug>` |

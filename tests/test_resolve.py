@@ -263,6 +263,11 @@ RESOLVES = [
         "yoursmartsource",
     ),
     (
+        "https://amcsgroup.hirehive.com/emea-field-marketing-lead-london-BnEK0Y",
+        ATSType.HIREHIVE,
+        "amcsgroup",
+    ),
+    (
         "https://www.wantedly.com/companies/Acme_Japan/projects",
         ATSType.WANTEDLY,
         "Acme_Japan",

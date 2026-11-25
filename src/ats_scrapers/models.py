@@ -68,6 +68,7 @@ class ATSType(StrEnum):
     GREETING = "greeting"
     GUPY = "gupy"
     HERP = "herp"
+    HIREHIVE = "hirehive"
     HIREOLOGY = "hireology"
     # HiringThing boards, under its own name or a partner's domain.
     HIRINGTHING = "hiringthing"
