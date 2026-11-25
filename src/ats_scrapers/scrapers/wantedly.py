@@ -29,6 +29,11 @@ The site's own JSON API lists the projects of one company::
   up to a day late. A project published during a read still shifts the
   pages by one, so a pass that falls short is read again, up to
   ``MAX_PASSES`` times.
+- The total of ``type=recent`` also counts projects no page lists, such as
+  a project shared by link only. A list short of it is measured against the
+  number of projects the company page shows: ``project_count`` in
+  ``GET https://www.wantedly.com/companies/{slug}``, which answers JSON to
+  the same headers.
 
 Without ``company_id`` the same endpoint lists 1,000 projects out of some
 190,000, which is why this scraper works company by company. The company
@@ -168,6 +173,13 @@ class WantedlyScraper(BaseScraper):
                     return await self._page(fetch, page, filters)
 
             total = await self._collect(read, {}, await read(1, {}), found, SPLIT_FILTERS)
+            if len(found) < math.ceil(total * MIN_COVERAGE):
+                # The listing's total also counts projects it never lists,
+                # such as a project shared by link only. The company page
+                # counts the projects it shows.
+                shown = await self._project_count(fetch)
+                if shown is not None:
+                    total = min(total, shown)
 
         company_ids = {_company_id(item) for item in found.values()}
         if len(company_ids) > 1:
@@ -288,6 +300,17 @@ class WantedlyScraper(BaseScraper):
                 f"Wantedly ({self.company_slug}) page {page} was not an object"
             )
         return payload
+
+    async def _project_count(self, fetch: Fetcher) -> int | None:
+        """How many projects the company page shows, None if it does not tell."""
+        try:
+            payload = await fetch.get_json(COMPANY_URL.format(slug=self.company_slug))
+        except ScraperError:
+            return None
+        company = payload.get("company") if isinstance(payload, dict) else None
+        if not isinstance(company, dict) or company.get("company_name") != self.company_slug:
+            return None
+        return _count(company.get("project_count"))
 
     def _parse_opening(
         self, projects: list[dict[str, Any]], fetched_at: datetime
