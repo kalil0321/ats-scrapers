@@ -41,6 +41,7 @@ def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     import ats_scrapers.scrapers.avature as av
     monkeypatch.setattr(av, "MAX_RETRIES", 1)
     monkeypatch.setattr(av, "RETRY_BASE_DELAY", 0.0)
+    monkeypatch.setattr(av, "RATE_LIMIT_WAITS", (0.0, 0.0))
 
 
 # Avature now enriches each job with a per-job ``/careers/JobDetail/...``
@@ -655,10 +656,26 @@ def test_unresolvable_host_raises_company_not_found(
         AvatureScraper("gone").fetch()
 
 
+def _dns(monkeypatch, missing: tuple[str, ...] = (), errno: int = socket.EAI_NONAME) -> list[str]:
+    """Answer lookups without the network: hosts in ``missing`` have no address."""
+    import ats_scrapers.scrapers.avature as av
+    asked: list[str] = []
+
+    def getaddrinfo(host, port, *args, **kwargs):
+        asked.append(host)
+        if host in missing or "*" in missing:
+            raise socket.gaierror(errno, "no address")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", port))]
+
+    monkeypatch.setattr(av.socket, "getaddrinfo", getaddrinfo)
+    return asked
+
+
 def test_failed_lookup_behind_an_environment_proxy_is_not_not_found(
     monkeypatch, httpx_mock,
 ) -> None:
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:8080")
+    _dns(monkeypatch)
     httpx_mock.add_exception(_dns_error(socket.EAI_NONAME), url=_url("acme", 0), is_reusable=True)
     with pytest.raises(ScraperError) as excinfo:
         AvatureScraper("acme").fetch()
@@ -866,10 +883,38 @@ def test_httpcloak_goes_through_the_proxy_argument(monkeypatch) -> None:
     assert [c.get("proxy") for c in calls] == ["http://proxy.example:8080"] * 3
 
 
-def test_failed_lookup_through_a_proxy_is_not_not_found(httpx_mock) -> None:
+def test_failed_lookup_through_a_proxy_is_not_not_found(monkeypatch, httpx_mock) -> None:
+    _dns(monkeypatch)
     httpx_mock.add_exception(_dns_error(socket.EAI_NONAME), url=_url("acme", 0), is_reusable=True)
     with pytest.raises(ScraperError) as excinfo:
         AvatureScraper("acme", proxy="http://proxy.invalid:8080").fetch()
+    assert not isinstance(excinfo.value, CompanyNotFoundError)
+
+
+def test_host_without_an_address_behind_a_proxy_is_not_found(monkeypatch, httpx_mock) -> None:
+    asked = _dns(monkeypatch, missing=("gone.avature.net",))
+    httpx_mock.add_exception(
+        httpx.ProxyError("500 Internal Server Error"), url=_url("gone", 0), is_reusable=True,
+    )
+    with pytest.raises(CompanyNotFoundError, match="does not resolve"):
+        AvatureScraper("gone", proxy="http://proxy.example:8080").fetch()
+    assert asked == ["gone.avature.net", "avature.net"]
+
+
+@pytest.mark.parametrize(
+    ("missing", "errno"),
+    [((), socket.EAI_NONAME), (("*",), socket.EAI_NONAME), (("*",), socket.EAI_AGAIN)],
+    ids=["host-resolves", "resolver-answers-nothing", "resolver-down"],
+)
+def test_proxy_failure_without_proof_the_host_is_gone_is_not_not_found(
+    monkeypatch, httpx_mock, missing, errno,
+) -> None:
+    _dns(monkeypatch, missing=missing, errno=errno)
+    httpx_mock.add_exception(
+        httpx.ProxyError("500 Internal Server Error"), url=_url("acme", 0), is_reusable=True,
+    )
+    with pytest.raises(ScraperError, match="500 Internal Server Error") as excinfo:
+        AvatureScraper("acme", proxy="http://proxy.example:8080").fetch()
     assert not isinstance(excinfo.value, CompanyNotFoundError)
 
 
@@ -897,8 +942,8 @@ def test_5xx_exhausts_retries(monkeypatch, httpx_mock) -> None:
 
 
 class CappedBoard:
-    """A board that answers 406 from offset ``cap`` on and filters by the
-    params its search form names. It ignores the values in ``ignored``."""
+    """A board that answers ``status`` from offset ``cap`` on and filters by
+    the params its search form names. It ignores the values in ``ignored``."""
 
     def __init__(
         self,
@@ -908,7 +953,9 @@ class CappedBoard:
         cap: int,
         typed: tuple[str, ...] = (),
         ignored: tuple[str, ...] = (),
+        status: int = 406,
     ) -> None:
+        self.status = status
         self.jobs = jobs
         self.filters = filters
         # Filters whose values the form loads from the values API.
@@ -936,7 +983,7 @@ class CappedBoard:
         params.pop("jobRecordsPerPage", None)
         self.searches.append((params, offset))
         if offset >= self.cap:
-            return httpx.Response(406, text="<title>Request not processed</title>")
+            return httpx.Response(self.status, text="<title>Request not processed</title>")
         applied = {
             k: v for k, v in params.items()
             if v in self.filters.get(k, ()) and v not in self.ignored
@@ -984,14 +1031,22 @@ def _ids(jobs) -> set[str]:
     return {j.ats_id for j in jobs}
 
 
+@pytest.mark.parametrize("status", [406, 500])
 def test_board_past_the_offset_cap_is_read_one_filter_value_at_a_time(
-    httpx_mock, offset_cap,
+    httpx_mock, offset_cap, status, monkeypatch, caplog,
 ) -> None:
+    import ats_scrapers.scrapers.avature as av
+    monkeypatch.setattr(av, "MAX_RETRIES", 3)
     jobs = [{"id": str(i), "732": "A" if i % 2 else "B"} for i in range(40)]
-    board = CappedBoard(jobs, {"732": ["A", "B"]}, cap=offset_cap)
+    board = CappedBoard(jobs, {"732": ["A", "B"]}, cap=offset_cap, status=status)
     httpx_mock.add_callback(board, is_reusable=True)
 
-    read = AvatureScraper("acme").fetch()
+    with caplog.at_level(logging.INFO):
+        read = AvatureScraper("acme").fetch()
+
+    assert "refuses offsets past 24 after 24 jobs" in caplog.text
+    # The cap is answered at once, not retried.
+    assert board.searches.count(({}, 24)) == 1
 
     assert len(read) == 40
     assert _ids(read) == {str(i) for i in range(40)}
@@ -1088,13 +1143,127 @@ def test_board_under_the_offset_cap_is_read_in_one_pass(httpx_mock, offset_cap) 
     assert board.value_requests == []
 
 
+def _rows(ids: range) -> str:
+    return "".join(f'<a href="/careers/JobDetail/Job/{i}">Job {i}</a>' for i in ids)
+
+
 def test_406_below_the_offset_cap_is_still_a_refusal(httpx_mock) -> None:
-    page = "".join(f'<a href="/careers/JobDetail/Job/{i}">Job {i}</a>' for i in range(12))
-    httpx_mock.add_response(url=_url("acme", 0), text=page)
+    httpx_mock.add_response(url=_url("acme", 0), text=_rows(range(12)))
     httpx_mock.add_response(url=_url("acme", 12), status_code=406)
 
     with pytest.raises(ScraperError, match=r"406 at offset=12"):
         AvatureScraper("acme").fetch()
+
+
+def test_page_refused_partway_is_read_once_the_rate_limit_lets_it_through(
+    httpx_mock, monkeypatch,
+) -> None:
+    import ats_scrapers.scrapers.avature as av
+    monkeypatch.setattr(av, "MAX_RETRIES", 3)
+    monkeypatch.setattr(av, "RATE_LIMIT_WAITS", (60.0, 240.0))
+    waits: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr(av.asyncio, "sleep", sleep)
+    httpx_mock.add_response(url=_url("acme", 0), text=_rows(range(12)))
+    httpx_mock.add_response(url=_url("acme", 12), status_code=406)
+    httpx_mock.add_response(url=_url("acme", 12), status_code=406)
+    httpx_mock.add_response(url=_url("acme", 12), text=_rows(range(12, 20)))
+
+    read = AvatureScraper("acme").fetch()
+
+    assert _ids(read) == {str(i) for i in range(20)}
+    assert waits == [60.0, 240.0]
+
+
+def test_slice_refused_at_its_start_waits_instead_of_changing_client(
+    httpx_mock, offset_cap, monkeypatch,
+) -> None:
+    import ats_scrapers.scrapers.avature as av
+    monkeypatch.setattr(av, "MAX_RETRIES", 3)
+
+    async def no_httpcloak(self, base: str, company: str) -> list:
+        raise AssertionError("the board was read again through httpcloak")
+
+    monkeypatch.setattr(av.AvatureScraper, "_fetch_via_httpcloak", no_httpcloak)
+    jobs = [{"id": str(i), "732": "A" if i % 2 else "B"} for i in range(40)]
+    board = CappedBoard(jobs, {"732": ["A", "B"]}, cap=offset_cap)
+    refused: list[str] = []
+
+    def rate_limited(request: httpx.Request) -> httpx.Response:
+        if "732=A" in str(request.url) and not refused:
+            refused.append(str(request.url))
+            return httpx.Response(406)
+        return board(request)
+
+    httpx_mock.add_callback(rate_limited, is_reusable=True)
+
+    read = AvatureScraper("acme").fetch()
+
+    assert _ids(read) == {str(i) for i in range(40)}
+    assert refused
+
+
+class RecordingPacer:
+    def __init__(self) -> None:
+        self.urls: list[str] = []
+
+    async def wait(self, url: str, *, timeout: float | None = None) -> None:
+        self.urls.append(url)
+
+    def wait_sync(self, url: str, *, timeout: float | None = None) -> None:
+        self.urls.append(url)
+
+
+def test_pacer_spaces_listing_values_and_job_requests(httpx_mock, offset_cap) -> None:
+    import ats_scrapers.scrapers.avature as av
+    jobs = [{"id": str(i), "731[]": "6040" if i % 2 else "6041"} for i in range(30)]
+    board = CappedBoard(jobs, {"731[]": ["6040", "6041"]}, cap=offset_cap, typed=("731[]",))
+    httpx_mock.add_callback(board, is_reusable=True)
+    pacer = RecordingPacer()
+
+    read = AvatureScraper("acme", pacer=pacer).fetch()
+
+    assert len(read) == 30
+    sent = [str(request.url) for request in httpx_mock.get_requests()]
+    assert sorted(pacer.urls) == sorted(sent)
+    assert any(url.endswith(av._OPTIONS_API) for url in pacer.urls)
+    assert sum("/JobDetail/" in url for url in pacer.urls) == 30
+
+
+def test_pacer_spaces_httpcloak_requests(monkeypatch) -> None:
+    def get(url: str, **kwargs):
+        return SimpleNamespace(status_code=200, text=ANCHOR_ONLY_PAGE, url=url)
+
+    monkeypatch.setitem(sys.modules, "httpcloak", SimpleNamespace(get=get, post=get))
+    pacer = RecordingPacer()
+    scraper = AvatureScraper("acme", pacer=pacer)
+
+    scraper._fetch_page_via_httpcloak_sync("https://acme.avature.net", 0)
+    scraper._http_get_via_httpcloak_sync("https://acme.avature.net/careers/JobDetail/A/1")
+    scraper._post_json_via_httpcloak_sync("https://acme.avature.net/careers/_api", {})
+
+    assert pacer.urls == [
+        "https://acme.avature.net/careers/SearchJobs/",
+        "https://acme.avature.net/careers/JobDetail/A/1",
+        "https://acme.avature.net/careers/_api",
+    ]
+
+
+def test_httpcloak_treats_a_5xx_past_the_cap_as_the_cap(monkeypatch) -> None:
+    import ats_scrapers.scrapers.avature as av
+
+    def get(url: str, **kwargs):
+        return SimpleNamespace(status_code=500, text="", url=url)
+
+    monkeypatch.setitem(sys.modules, "httpcloak", SimpleNamespace(get=get, post=get))
+    scraper = AvatureScraper("acme")
+    with pytest.raises(av._OffsetCapError):
+        scraper._fetch_page_via_httpcloak_sync("https://acme.avature.net", av.OFFSET_CAP + 10)
+    with pytest.raises(ScraperError, match="returned 500 at offset=12"):
+        scraper._fetch_page_via_httpcloak_sync("https://acme.avature.net", 12)
 
 
 @pytest.mark.parametrize("raises", [True, False], ids=["raises-on-406", "renders-406"])
