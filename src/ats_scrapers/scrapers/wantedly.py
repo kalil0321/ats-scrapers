@@ -29,6 +29,12 @@ The site's own JSON API lists the projects of one company::
   up to a day late. A project published during a read still shifts the
   pages by one, so a pass that falls short is read again, up to
   ``MAX_PASSES`` times.
+- The total of ``type=recent`` also counts projects no page lists, such as
+  a project shared by link only. A list short of it is measured against the
+  number of projects the company page shows: ``project_count`` in
+  ``GET https://www.wantedly.com/companies/{slug}``, which answers JSON to
+  the same headers. A listing past the page cap whose company page shows
+  no more than 1,000 projects is read up to the cap, not slice by slice.
 
 Without ``company_id`` the same endpoint lists 1,000 projects out of some
 190,000, which is why this scraper works company by company. The company
@@ -63,6 +69,7 @@ if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
 
     _Reader = Callable[[int, dict[str, str]], Awaitable[dict[str, Any]]]
+    _Count = Callable[[], Awaitable[int | None]]
 
 API_URL = "https://www.wantedly.com/api/v1/projects"
 PROJECT_URL = "https://www.wantedly.com/projects/{id}"
@@ -167,7 +174,23 @@ class WantedlyScraper(BaseScraper):
                 async with semaphore:
                     return await self._page(fetch, page, filters)
 
-            total = await self._collect(read, {}, await read(1, {}), found, SPLIT_FILTERS)
+            counted: list[int | None] = []
+
+            async def shown() -> int | None:
+                if not counted:
+                    counted.append(await self._project_count(fetch))
+                return counted[0]
+
+            total = await self._collect(
+                read, {}, await read(1, {}), found, SPLIT_FILTERS, shown,
+            )
+            if len(found) < math.ceil(total * MIN_COVERAGE):
+                # The listing's total also counts projects it never lists,
+                # such as a project shared by link only. The company page
+                # counts the projects it shows.
+                count = await shown()
+                if count is not None:
+                    total = min(total, count)
 
         company_ids = {_company_id(item) for item in found.values()}
         if len(company_ids) > 1:
@@ -195,15 +218,18 @@ class WantedlyScraper(BaseScraper):
         first: dict[str, Any],
         found: dict[str, dict[str, Any]],
         splits: tuple[tuple[str, tuple[str, ...]], ...],
+        shown: _Count,
     ) -> int:
         """Add to ``found`` the projects of the listing narrowed by
         ``filters``, whose first page is ``first``, and return its total.
 
         A listing past the page cap is read as one slice per value of a
-        filter of ``splits``: the first whose slices hold the whole listing."""
+        filter of ``splits``: the first whose slices hold the whole listing.
+        It is read up to the cap instead when the projects the company page
+        shows fit there."""
         total, pages = _listing_size(first, self.company_slug)
-        if pages <= MAX_PAGES:
-            total, grown = await self._read_listing(read, filters, first, found)
+        if pages <= MAX_PAGES or await _fits_the_cap(shown):
+            total, grown = await self._read_listing(read, filters, first, found, shown)
             if grown is None:
                 return total
             total, pages = _listing_size(grown, self.company_slug)
@@ -212,7 +238,9 @@ class WantedlyScraper(BaseScraper):
             held = 0
             for value in values:
                 narrower = {**filters, key: value}
-                held += await self._collect(read, narrower, await read(1, narrower), found, rest)
+                held += await self._collect(
+                    read, narrower, await read(1, narrower), found, rest, shown,
+                )
             # A project closed during the read is missing from the slices and
             # from the listing read again; a project in no slice only from the
             # slices.
@@ -232,11 +260,14 @@ class WantedlyScraper(BaseScraper):
         filters: dict[str, str],
         first: dict[str, Any],
         found: dict[str, dict[str, Any]],
+        shown: _Count,
     ) -> tuple[int, dict[str, Any] | None]:
         """Add to ``found`` the projects of a listing within the page cap.
 
         Returns the total its last pass announced, and the first page of a
-        pass that found the listing grown past the cap, None if none did."""
+        pass that found the listing grown past the cap, None if none did.
+        A listing past the cap whose company page shows projects that fit
+        there is read up to the cap, its total the projects shown."""
         listed: dict[str, dict[str, Any]] = {}
         total = 0
         grown = None
@@ -248,8 +279,11 @@ class WantedlyScraper(BaseScraper):
             head = first if attempt == 0 else await read(1, filters)
             total, pages = _listing_size(head, self.company_slug)
             if pages > MAX_PAGES:
-                grown = head
-                break
+                count = await shown()
+                if count is None or count > MAX_PAGES * PAGE_SIZE:
+                    grown = head
+                    break
+                pages, total = MAX_PAGES, min(total, count)
             payloads = [head]
             if pages > 1:
                 payloads += await asyncio.gather(
@@ -288,6 +322,17 @@ class WantedlyScraper(BaseScraper):
                 f"Wantedly ({self.company_slug}) page {page} was not an object"
             )
         return payload
+
+    async def _project_count(self, fetch: Fetcher) -> int | None:
+        """How many projects the company page shows, None if it does not tell."""
+        try:
+            payload = await fetch.get_json(COMPANY_URL.format(slug=self.company_slug))
+        except ScraperError:
+            return None
+        company = payload.get("company") if isinstance(payload, dict) else None
+        if not isinstance(company, dict) or company.get("company_name") != self.company_slug:
+            return None
+        return _count(company.get("project_count"))
 
     def _parse_opening(
         self, projects: list[dict[str, Any]], fetched_at: datetime
@@ -391,6 +436,12 @@ def _recency(item: dict[str, Any]) -> tuple[datetime, int]:
         published or datetime.min.replace(tzinfo=UTC),
         int(project_id) if project_id is not None else 0,
     )
+
+
+async def _fits_the_cap(shown: _Count) -> bool:
+    """Whether the projects the company page shows fit in one listing."""
+    count = await shown()
+    return count is not None and count <= MAX_PAGES * PAGE_SIZE
 
 
 def _listing_size(payload: dict[str, Any], slug: str) -> tuple[int, int]:

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
 
 _JOB_PATH = re.compile(r"^/(?:[a-z]{2}/)?what:job/jobID:(\d+)/?$")
+_JOBSITE = re.compile(r"\bhttps://([a-z0-9-]+\.varbi\.com)/(?:[a-z]{2}/)?$", re.I)
 _NON_VACANCY_TITLE = re.compile(
     r"\((?:scholarship|stipendium)\)|^(?:intresseanmälan|spontanansökan|"
     r"general application|open application|expression of interest|"
@@ -138,6 +139,12 @@ class VarbiScraper(BaseScraper):
             company = _COMPANY_PREFIX.sub("", heading).strip()
         if not company:
             raise ScraperError("Varbi feed omitted a readable employer name")
+        # A renamed employer keeps its old tenant host as an alias, and Varbi
+        # caches one feed for both hosts: the feed can link the other host,
+        # the one its own description names as the job site. Its adverts are
+        # served on either host and on no other tenant's.
+        jobsite = _JOBSITE.search(_text(channel.findtext("description", "")))
+        hosts = {self.host, jobsite[1].lower()} if jobsite else {self.host}
         jobs: dict[str, Job] = {}
         for item in channel.findall("item"):
             title = _text(item.findtext("title", ""))
@@ -145,10 +152,11 @@ class VarbiScraper(BaseScraper):
             parsed = urlsplit(url)
             match = _JOB_PATH.fullmatch(parsed.path)
             if (
-                parsed.scheme != "https" or parsed.netloc.lower() != self.host
+                parsed.scheme != "https" or parsed.netloc.lower() not in hosts
                 or parsed.query or parsed.fragment or not match
             ):
                 raise ScraperError(f"Varbi feed contains an untrusted job URL: {url}")
+            url = parsed._replace(netloc=self.host).geturl()
             description = _description_text(item.findtext("description", ""))
             if not title or not description:
                 raise ScraperError("Varbi feed omitted a job title or description")

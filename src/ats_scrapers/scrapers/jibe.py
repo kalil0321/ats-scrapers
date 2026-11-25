@@ -49,7 +49,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import quote, urlparse
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -222,7 +222,20 @@ class JibeScraper(BaseScraper):
             "internal": "false",
             **filters,
         }
-        payload = await fetch.get_json(f"{self.base_url}/api/jobs", params=params)
+        url = f"{self.base_url}/api/jobs"
+        response = await fetch.request("GET", url, params=params)
+        # A site that left Jibe sends its API path to the new careers page.
+        answered = urlparse(response.url) if response.url else None
+        if (
+            answered is not None
+            and (answered.hostname, answered.path.rstrip("/")) != (self.host, "/api/jobs")
+            and not response.text.lstrip().startswith(("{", "["))
+        ):
+            raise CompanyNotFoundError(
+                f"Jibe site {self.base_url} sends its job API to {response.url}: "
+                "it no longer runs on Jibe"
+            )
+        payload = response.json()
         if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
             raise ScraperError(
                 f"Jibe ({self.host}) returned an unexpected payload on page {page}"

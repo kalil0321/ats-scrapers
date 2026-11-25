@@ -57,7 +57,12 @@ def _listing(
 
 
 def _asked(httpx_mock) -> list[dict[str, str]]:
-    return [dict(request.url.params) for request in httpx_mock.get_requests()]
+    """The parameters of each listing request, the company page left out."""
+    return [
+        dict(request.url.params)
+        for request in httpx_mock.get_requests()
+        if API.match(str(request.url))
+    ]
 
 
 def test_registry_resolves_wantedly() -> None:
@@ -153,11 +158,64 @@ def test_pages_are_read_again_when_a_pass_skips_a_project(httpx_mock) -> None:
     assert sorted(int(job.ats_id) for job in jobs) == list(range(1, 13))
 
 
+COMPANY = f"https://www.wantedly.com/companies/{SLUG}"
+
+
+def _company(project_count: int, slug: str = SLUG) -> dict[str, object]:
+    return {"company": {"id": 180819, "company_name": slug, "project_count": project_count}}
+
+
 def test_list_far_short_of_the_announced_total_is_refused(httpx_mock) -> None:
     for _ in range(4):
         httpx_mock.add_response(
             url=API, json=_listing([_project(i) for i in range(1, 11)], total=40, pages=1)
         )
+    httpx_mock.add_response(url=COMPANY, json=_company(40))
+
+    with pytest.raises(ScraperError, match="announces 40 projects and listed 10"):
+        WantedlyScraper(SLUG).fetch()
+
+
+def test_projects_the_listing_counts_but_never_lists_are_left_out(httpx_mock) -> None:
+    """The listing counts 15 projects and lists 12 on its two pages; the
+    company page shows 12."""
+    for _ in range(4):
+        httpx_mock.add_response(
+            url=API, json=_listing([_project(i) for i in range(1, 11)], total=15)
+        )
+        httpx_mock.add_response(
+            url=API, json=_listing([_project(11), _project(12)], total=15)
+        )
+    httpx_mock.add_response(url=COMPANY, json=_company(12))
+
+    jobs = WantedlyScraper(SLUG).fetch()
+
+    assert sorted(int(job.ats_id) for job in jobs) == list(range(1, 13))
+
+
+def test_company_page_without_projects_gives_an_empty_list(httpx_mock) -> None:
+    """The listing counts a project shared by link only and lists nothing."""
+    for _ in range(4):
+        httpx_mock.add_response(url=API, json=_listing([], total=1, pages=1))
+    httpx_mock.add_response(url=COMPANY, json=_company(0))
+
+    assert WantedlyScraper(SLUG).fetch() == []
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"json": _company(10, slug="Other_Company")},
+        {"json": {"company": {"company_name": SLUG, "project_count": "10"}}},
+        {"status_code": 404},
+    ],
+)
+def test_company_page_that_does_not_tell_keeps_the_refusal(httpx_mock, response) -> None:
+    for _ in range(4):
+        httpx_mock.add_response(
+            url=API, json=_listing([_project(i) for i in range(1, 11)], total=40, pages=1)
+        )
+    httpx_mock.add_response(url=COMPANY, **response)
 
     with pytest.raises(ScraperError, match="announces 40 projects and listed 10"):
         WantedlyScraper(SLUG).fetch()
@@ -205,6 +263,13 @@ def _serve(
         )
 
     httpx_mock.add_callback(reply, url=API, is_reusable=True)
+    # The company page shows every project.
+    httpx_mock.add_callback(
+        lambda request: httpx.Response(200, json=_company(len(projects))),
+        url=COMPANY,
+        is_reusable=True,
+        is_optional=True,
+    )
 
 
 def _tags(occupation: str, hiring: str = "mid_career", *areas: str) -> dict[str, set[str]]:
@@ -291,6 +356,49 @@ def test_projects_without_an_occupation_are_read_by_hiring_type(httpx_mock) -> N
 
     assert sorted(int(job.ats_id) for job in jobs) == list(range(1, 1051))
     assert ("hiring_types[]=freelance",) in _narrowed(httpx_mock)
+
+
+def _counting_hidden_projects(httpx_mock, listed: int, counted: int) -> None:
+    """Every listing, narrowed or not, counts ``counted`` projects and lists
+    ``listed`` of them, ten a page up to page 100."""
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        shown = range(1, listed + 1)[(page - 1) * 10 : page * 10] if page <= 100 else []
+        return httpx.Response(
+            200, json=_listing([_project(i) for i in shown], total=counted)
+        )
+
+    httpx_mock.add_callback(reply, url=API, is_reusable=True)
+
+
+def test_listing_past_the_cap_that_shows_fewer_projects_is_read_up_to_the_cap(
+    httpx_mock,
+) -> None:
+    """The listing counts 1,001 projects on 101 pages, every slice counts
+    them all too, and the company page shows the 900 the pages list."""
+    _counting_hidden_projects(httpx_mock, listed=900, counted=1001)
+    httpx_mock.add_response(url=COMPANY, json=_company(900))
+
+    jobs = WantedlyScraper(SLUG, collapse_reposts=False).fetch()
+
+    assert sorted(int(job.ats_id) for job in jobs) == list(range(1, 901))
+    assert _narrowed(httpx_mock) == {()}
+    assert [params["page"] for params in _asked(httpx_mock)] == [
+        str(page) for page in range(1, 101)
+    ]
+    assert len(httpx_mock.get_requests(url=COMPANY)) == 1
+
+
+def test_listing_past_the_cap_is_split_when_the_company_page_does_not_tell(
+    httpx_mock,
+) -> None:
+    _counting_hidden_projects(httpx_mock, listed=900, counted=1001)
+    httpx_mock.add_response(url=COMPANY, status_code=404)
+
+    with pytest.raises(ScraperError, match="no filter splits them"):
+        WantedlyScraper(SLUG).fetch()
+    assert len(_narrowed(httpx_mock)) > 1
 
 
 def test_projects_no_filter_reaches_are_refused(httpx_mock) -> None:

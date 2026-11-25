@@ -240,6 +240,18 @@ def test_a_portal_that_does_not_exist_is_not_found(httpx_mock) -> None:
         ZohoRecruitScraper(PORTAL).fetch()
 
 
+def test_a_list_holding_an_unescaped_angle_bracket_is_read(httpx_mock) -> None:
+    jobs = [_job(City="India > Bangalore Urban", Job_Description="Experience >10 months")]
+    page = _portal_page(jobs).replace("&gt;", ">")
+    assert "India > Bangalore" in page
+    httpx_mock.add_response(url=PORTAL, text=page)
+
+    [job] = ZohoRecruitScraper(PORTAL).fetch()
+
+    assert job.location == "India > Bangalore Urban, Lagos, Nigeria"
+    assert job.description == "Experience >10 months"
+
+
 def test_a_page_without_the_list_is_reported(httpx_mock) -> None:
     httpx_mock.add_response(url=PORTAL, text="<html>maintenance</html>")
 
