@@ -24,8 +24,6 @@ import sys
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, NoReturn
 
-from ats_scrapers.models import ATSType
-
 if TYPE_CHECKING:
     import pandas as pd
 
@@ -54,12 +52,6 @@ def _print_jobs(jobs: list[Job]) -> None:
     print(TypeAdapter(list[Job]).dump_json(jobs, indent=2).decode())
 
 
-def _source_names() -> list[str]:
-    # The dataset identifier is the enum *value* (``jobs_cz``), not the
-    # lowered member name (``jobscz``).
-    return sorted(source.value for source in ATSType)
-
-
 def search(argv: Sequence[str] | None = None) -> None:
     """``ats-scraper-search``: filter the hosted dataset."""
     parser = argparse.ArgumentParser(
@@ -69,12 +61,10 @@ def search(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--query", help="substring of the job title")
     parser.add_argument("--location", help="substring of the job location")
     parser.add_argument("--company", help="substring of the company name")
+    # No enum choices: the hosted dataset can publish a source before the
+    # installed package knows it, and the dataset client checks the name.
     parser.add_argument(
-        "--ats-type",
-        dest="ats",
-        choices=_source_names(),
-        metavar="ATS",
-        help="source, e.g. greenhouse",
+        "--ats-type", dest="ats", metavar="ATS", help="source, e.g. greenhouse or jobs_cz"
     )
     # Tri-state: omitted means "no filter", not "non-remote only".
     parser.add_argument(
@@ -90,9 +80,10 @@ def search(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     from ats_scrapers.client import search as search_dataset
+    from ats_scrapers.exceptions import ATSScrapersError
 
-    _print_frame(
-        search_dataset(
+    try:
+        jobs = search_dataset(
             args.query,
             location=args.location,
             company=args.company,
@@ -103,7 +94,9 @@ def search(argv: Sequence[str] | None = None) -> None:
             experience_max=args.experience_max,
             limit=args.limit,
         )
-    )
+    except ATSScrapersError as exc:
+        _fail(str(exc))
+    _print_frame(jobs)
 
 
 def find(argv: Sequence[str] | None = None) -> None:
@@ -148,10 +141,15 @@ def fetch(argv: Sequence[str] | None = None) -> None:
         available = ", ".join(sorted(source.value for source in ScraperRegistry.all()))
         parser.error(f"no scraper for {args.ats!r}. Available: {available}")
 
-    scraper = ScraperRegistry.get(args.ats)(
-        args.company,
-        include_descriptions=args.include_descriptions,
-    )
+    from ats_scrapers.exceptions import ATSScrapersError
+
+    try:
+        scraper = ScraperRegistry.get(args.ats)(
+            args.company,
+            include_descriptions=args.include_descriptions,
+        )
+    except ATSScrapersError as exc:  # e.g. a careers URL where a slug is expected
+        _fail(str(exc))
     _print_jobs(_run(scraper))
 
 

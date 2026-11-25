@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 from ats_scrapers import cli
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import ManifestError, ScraperError
 from ats_scrapers.models import ATSType, Job
 
 
@@ -70,11 +70,24 @@ def test_search_remote_is_tri_state(search_calls: list[dict[str, Any]]) -> None:
     assert [call["remote"] for call in search_calls] == [None, True, False]
 
 
-def test_search_accepts_every_source_value_and_rejects_member_names() -> None:
-    assert "infojobs_es" in cli._source_names()
-    assert "jobs_cz" in cli._source_names()
-    with pytest.raises(SystemExit):
-        cli.search(["--ats-type", "jobscz"])
+def test_search_passes_any_source_name_to_the_dataset(search_calls: list[dict[str, Any]]) -> None:
+    # A source the hosted dataset published after this release.
+    cli.search(["--ats-type", "brand_new_source"])
+
+    assert search_calls[0]["ats"] == "brand_new_source"
+
+
+def test_search_reports_dataset_errors_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def unknown_source(query: str | None = None, **kwargs: Any) -> pd.DataFrame:
+        raise ManifestError("Unknown ATS 'nope'")
+
+    monkeypatch.setattr("ats_scrapers.client.search", unknown_source)
+    with pytest.raises(SystemExit) as exc:
+        cli.search(["--ats-type", "nope"])
+    assert exc.value.code == 1
+    assert "Unknown ATS 'nope'" in capsys.readouterr().err
 
 
 def test_search_options_require_a_value() -> None:
@@ -156,3 +169,18 @@ def test_fetch_for_url_prints_jobs(
     cli.fetch_for_url(["https://boards.greenhouse.io/acme"])
 
     assert len(json.loads(capsys.readouterr().out)) == 2
+
+
+def test_fetch_reports_a_bad_slug_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from ats_scrapers.scrapers import ScraperRegistry
+
+    def refuses(company_slug: str, **kwargs: object) -> object:
+        raise ScraperError(f"expected a tenant slug, got {company_slug!r}")
+
+    monkeypatch.setattr(ScraperRegistry, "get", classmethod(lambda cls, ats: refuses))
+    with pytest.raises(SystemExit) as exc:
+        cli.fetch(["greenhouse", "https://example.com/careers"])
+    assert exc.value.code == 1
+    assert "expected a tenant slug" in capsys.readouterr().err
