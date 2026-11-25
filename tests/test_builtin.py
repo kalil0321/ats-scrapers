@@ -213,6 +213,124 @@ def test_max_pages_caps_pagination(httpx_mock) -> None:
     assert len(jobs) == 5
 
 
+# --- filter views -----------------------------------------------------------
+
+
+def _board_state(
+    *,
+    remotes: tuple[str, ...] = ("remote", "office"),
+    categories: tuple[str, ...] = ("sales",),
+    experiences: tuple[str, ...] = ("senior",),
+    sizes: tuple[str, ...] = ("1-10", "1000"),
+) -> str:
+    import json
+    state = {
+        "criteria": {"country": "USA", "pageSize": 10},
+        "remotePreferenceFilterOptions": [{"id": i, "alias": a} for i, a in enumerate(remotes)],
+        "categoriesFilterOptions": [{"id": i, "alias": a} for i, a in enumerate(categories)],
+        "experiencesFilterOptions": [{"id": i, "alias": a} for i, a in enumerate(experiences)],
+        "companySizesFilterOptions": [{"id": i, "alias": a} for i, a in enumerate(sizes)],
+    }
+    return (
+        '<script type="module">\n        Builtin.jobBoardInit('
+        f"{json.dumps(state)});\n    </script>"
+    )
+
+
+def _first_page(items: list[dict], **state: tuple[str, ...]) -> str:
+    return _listing_html(items).replace("</body>", _board_state(**state) + "</body>")
+
+
+def _view(path: str, page: int) -> str:
+    return f"https://builtin.com/jobs/{path}?country=USA&page={page}"
+
+
+def test_reads_every_filter_view_with_the_country(httpx_mock) -> None:
+    """The unfiltered listing stops at page 1,000, so each remote / category /
+    experience view is read too, with the country the view would otherwise
+    take from the caller's IP."""
+    httpx_mock.add_response(
+        url="https://builtin.com/jobs?page=1",
+        text=_first_page([_item(position=1, job_id=1, name="Newest")]),
+    )
+    httpx_mock.add_response(url="https://builtin.com/jobs?page=2", text=_empty_page())
+    httpx_mock.add_response(
+        url=_view("remote/sales/senior", 1),
+        text=_listing_html([
+            _item(position=1, job_id=1, name="Newest"),
+            _item(position=2, job_id=2, name="Remote seller"),
+        ]),
+    )
+    httpx_mock.add_response(
+        url=_view("remote/sales/senior", 2),
+        text=_listing_html([_item(position=1, job_id=3, name="Older remote seller")]),
+    )
+    httpx_mock.add_response(url=_view("remote/sales/senior", 3), text=_empty_page())
+    httpx_mock.add_response(
+        url=_view("office/sales/senior", 1),
+        text=_listing_html([_item(position=1, job_id=4, name="Office seller")]),
+    )
+    httpx_mock.add_response(url=_view("office/sales/senior", 2), text=_empty_page())
+
+    jobs = BuiltInScraper("any", proxies=[None, "http://route-2:8080"]).fetch()
+
+    assert sorted(j.ats_id for j in jobs) == ["1", "2", "3", "4"]
+
+
+def test_splits_a_view_still_full_at_the_last_page_by_company_size(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://builtin.com/jobs?page=1",
+        text=_first_page([], remotes=("office",)),
+    )
+    httpx_mock.add_response(
+        url=_view("office/sales/senior", 1),
+        text=_listing_html([_item(position=1, job_id=1, name="Capped")]),
+    )
+    httpx_mock.add_response(
+        url=_view("office/sales/senior/1-10", 1),
+        text=_listing_html([_item(position=1, job_id=2, name="Small company")]),
+    )
+    httpx_mock.add_response(
+        url=_view("office/sales/senior/1000", 1),
+        text=_listing_html([_item(position=1, job_id=3, name="Large company")]),
+    )
+
+    jobs = BuiltInScraper("any", max_pages=1).fetch()
+
+    assert sorted(j.ats_id for j in jobs) == ["1", "2", "3"]
+
+
+def test_reads_a_failed_view_page_again(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://builtin.com/jobs?page=1",
+        text=_first_page([], remotes=("office",)),
+    )
+    httpx_mock.add_response(url="https://builtin.com/jobs?page=2", text=_empty_page())
+    httpx_mock.add_response(url=_view("office/sales/senior", 1), status_code=500)
+    httpx_mock.add_response(
+        url=_view("office/sales/senior", 1),
+        text=_listing_html([_item(position=1, job_id=7, name="Second read")]),
+    )
+    httpx_mock.add_response(url=_view("office/sales/senior", 2), text=_empty_page())
+
+    jobs = BuiltInScraper("any").fetch()
+
+    assert [j.ats_id for j in jobs] == ["7"]
+
+
+def test_time_budget_keeps_what_was_read(httpx_mock, caplog) -> None:
+    httpx_mock.add_response(
+        url="https://builtin.com/jobs?page=1",
+        text=_first_page([_item(position=1, job_id=1, name="Newest")]),
+    )
+
+    with caplog.at_level("WARNING", logger="ats_scrapers.scrapers.builtin"):
+        jobs = BuiltInScraper("any", max_seconds=0).fetch()
+
+    assert [j.ats_id for j in jobs] == ["1"]
+    assert "time budget ran out with 3 views unfinished" in caplog.text
+
+
 # --- no paid enrichment -----------------------------------------------------
 
 
