@@ -941,9 +941,20 @@ def test_5xx_exhausts_retries(monkeypatch, httpx_mock) -> None:
 # --- Offset cap ---------------------------------------------------------------
 
 
+# The page an offset past the cap gets with a 500 (NVA, 2026-11-25).
+AVATURE_ERROR_PAGE = (
+    '<html><head><title> </title></head><body>'
+    '<img src="/jscore/images/http/fatal.png" class="errorImage" alt="">'
+    '<div class="title">Oops\u2026 Something went wrong</div>'
+    '<div class="description">There was an error while processing your request. '
+    "Please try again.</div></body></html>"
+)
+
+
 class CappedBoard:
     """A board that answers ``status`` from offset ``cap`` on and filters by
-    the params its search form names. It ignores the values in ``ignored``."""
+    the params its search form names. It ignores the values in ``ignored``.
+    The first ``transient`` searches past the cap get a gateway's 503."""
 
     def __init__(
         self,
@@ -954,8 +965,14 @@ class CappedBoard:
         typed: tuple[str, ...] = (),
         ignored: tuple[str, ...] = (),
         status: int = 406,
+        refusal: str | None = None,
+        transient: int = 0,
     ) -> None:
         self.status = status
+        self.refusal = refusal if refusal is not None else (
+            AVATURE_ERROR_PAGE if status == 500 else "<title>Request not processed</title>"
+        )
+        self.transient = transient
         self.jobs = jobs
         self.filters = filters
         # Filters whose values the form loads from the values API.
@@ -982,8 +999,11 @@ class CappedBoard:
         offset = int(params.pop("jobOffset"))
         params.pop("jobRecordsPerPage", None)
         self.searches.append((params, offset))
-        if offset >= self.cap:
-            return httpx.Response(self.status, text="<title>Request not processed</title>")
+        if offset >= self.cap and self.transient:
+            self.transient -= 1
+            return httpx.Response(503, text="<h1>503 Service Temporarily Unavailable</h1>")
+        if offset >= self.cap and self.status != 200:
+            return httpx.Response(self.status, text=self.refusal)
         applied = {
             k: v for k, v in params.items()
             if v in self.filters.get(k, ()) and v not in self.ignored
@@ -1045,8 +1065,8 @@ def test_board_past_the_offset_cap_is_read_one_filter_value_at_a_time(
         read = AvatureScraper("acme").fetch()
 
     assert "refuses offsets past 24 after 24 jobs" in caplog.text
-    # The cap is answered at once, not retried.
-    assert board.searches.count(({}, 24)) == 1
+    # A 406 is the cap at once; the error page is the cap once retries get it too.
+    assert board.searches.count(({}, 24)) == (1 if status == 406 else 3)
 
     assert len(read) == 40
     assert _ids(read) == {str(i) for i in range(40)}
@@ -1054,6 +1074,49 @@ def test_board_past_the_offset_cap_is_read_one_filter_value_at_a_time(
     assert sorted((p["732"], offset) for p, offset in board.searches if p) == [
         ("A", 0), ("A", 12), ("B", 0), ("B", 12),
     ]
+
+
+def test_temporary_failure_past_the_cap_is_retried_not_taken_for_the_cap(
+    httpx_mock, offset_cap, monkeypatch, caplog,
+) -> None:
+    import ats_scrapers.scrapers.avature as av
+    monkeypatch.setattr(av, "MAX_RETRIES", 3)
+    jobs = [{"id": str(i), "732": "A" if i % 2 else "B"} for i in range(40)]
+    board = CappedBoard(jobs, {"732": ["A", "B"]}, cap=offset_cap, status=200, transient=2)
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    with caplog.at_level(logging.INFO):
+        read = AvatureScraper("acme").fetch()
+
+    assert _ids(read) == {str(i) for i in range(40)}
+    assert "refuses offsets past" not in caplog.text
+    assert not [p for p, _ in board.searches if p]
+
+
+@pytest.mark.parametrize(
+    ("status", "refusal"),
+    [
+        (503, "<h1>503 Service Temporarily Unavailable</h1>"),
+        (502, AVATURE_ERROR_PAGE),
+        (500, "<h1>500 Internal Server Error</h1>"),
+    ],
+    ids=["gateway-503", "502-with-the-error-page", "500-from-elsewhere"],
+)
+def test_lasting_failure_past_the_cap_fails_the_board(
+    httpx_mock, offset_cap, monkeypatch, status, refusal,
+) -> None:
+    import ats_scrapers.scrapers.avature as av
+    monkeypatch.setattr(av, "MAX_RETRIES", 3)
+    jobs = [{"id": str(i), "732": "A" if i % 2 else "B"} for i in range(40)]
+    board = CappedBoard(
+        jobs, {"732": ["A", "B"]}, cap=offset_cap, status=status, refusal=refusal,
+    )
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    with pytest.raises(ScraperError, match=f"returned {status} at offset=24 after 3 retries"):
+        AvatureScraper("acme").fetch()
+    assert board.searches.count(({}, 24)) == 3
+    assert not [p for p, _ in board.searches if p]
 
 
 def test_slice_still_at_the_cap_is_split_by_values_from_the_values_api(
@@ -1252,18 +1315,62 @@ def test_pacer_spaces_httpcloak_requests(monkeypatch) -> None:
     ]
 
 
-def test_httpcloak_treats_a_5xx_past_the_cap_as_the_cap(monkeypatch) -> None:
-    import ats_scrapers.scrapers.avature as av
+def _httpcloak_answers(monkeypatch, *answers: tuple[int, str]) -> list[str]:
+    """Stands in for httpcloak: one answer per request, the last one repeated."""
+    queue = list(answers)
+    sent: list[str] = []
 
     def get(url: str, **kwargs):
-        return SimpleNamespace(status_code=500, text="", url=url)
+        sent.append(url)
+        status, text = queue.pop(0) if len(queue) > 1 else queue[0]
+        return SimpleNamespace(status_code=status, text=text, url=url)
 
     monkeypatch.setitem(sys.modules, "httpcloak", SimpleNamespace(get=get, post=get))
+    return sent
+
+
+def test_httpcloak_takes_the_error_page_past_the_cap_for_the_cap(monkeypatch) -> None:
+    import ats_scrapers.scrapers.avature as av
+    monkeypatch.setattr(av, "MAX_RETRIES", 3)
+    sent = _httpcloak_answers(monkeypatch, (500, AVATURE_ERROR_PAGE))
     scraper = AvatureScraper("acme")
+
     with pytest.raises(av._OffsetCapError):
         scraper._fetch_page_via_httpcloak_sync("https://acme.avature.net", av.OFFSET_CAP + 10)
+    assert len(sent) == 3
     with pytest.raises(ScraperError, match="returned 500 at offset=12"):
         scraper._fetch_page_via_httpcloak_sync("https://acme.avature.net", 12)
+
+
+@pytest.mark.parametrize(
+    ("status", "text"),
+    [(503, "<h1>Service Unavailable</h1>"), (502, AVATURE_ERROR_PAGE), (500, "")],
+)
+def test_httpcloak_lasting_other_failure_past_the_cap_fails(monkeypatch, status, text) -> None:
+    import ats_scrapers.scrapers.avature as av
+    monkeypatch.setattr(av, "MAX_RETRIES", 3)
+    sent = _httpcloak_answers(monkeypatch, (status, text))
+
+    with pytest.raises(ScraperError, match=f"httpcloak returned {status}") as excinfo:
+        AvatureScraper("acme")._fetch_page_via_httpcloak_sync(
+            "https://acme.avature.net", av.OFFSET_CAP + 10,
+        )
+    assert not isinstance(excinfo.value, av._OffsetCapError)
+    assert len(sent) == 3
+
+
+def test_httpcloak_retries_a_temporary_failure_past_the_cap(monkeypatch) -> None:
+    import ats_scrapers.scrapers.avature as av
+    monkeypatch.setattr(av, "MAX_RETRIES", 3)
+    sent = _httpcloak_answers(
+        monkeypatch, (503, "<h1>Service Unavailable</h1>"), (200, "<html>page</html>"),
+    )
+
+    text, _ = AvatureScraper("acme")._fetch_page_via_httpcloak_sync(
+        "https://acme.avature.net", av.OFFSET_CAP + 10,
+    )
+    assert text == "<html>page</html>"
+    assert len(sent) == 2
 
 
 @pytest.mark.parametrize("raises", [True, False], ids=["raises-on-406", "renders-406"])

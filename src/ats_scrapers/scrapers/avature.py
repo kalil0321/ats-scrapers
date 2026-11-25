@@ -43,6 +43,7 @@ import logging
 import os
 import re
 import socket
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -74,8 +75,12 @@ DETAIL_CONCURRENCY = 6
 BROWSER_DETAIL_CONCURRENCY = 4
 # Listing pages requested at once; slices of a large board are read in parallel.
 LISTING_CONCURRENCY = 4
-# Tenants that cap the listing answer 406 to an offset at or past this.
+# Tenants that cap the listing answer 406 to an offset at or past this, or
+# Avature's own 500 error page on every try.
 OFFSET_CAP = 2_000
+# The image of that error page ("Oops… Something went wrong"). A proxy, a load
+# balancer or a gateway that fails shows a page of its own.
+_ERROR_PAGE_IMAGE = "/jscore/images/http/fatal.png"
 # A filter with more values is not used to split a search: each value costs
 # at least one request.
 MAX_SPLIT_VALUES = 500
@@ -406,22 +411,26 @@ class AvatureScraper(BaseScraper):
         """``(html, final URL)`` of one listing page."""
         import httpcloak
 
-        self._pace_sync(url or _search_url(base))
-        try:
-            response = httpcloak.get(
-                url or _search_url(base),
-                params=None if url else _pagination_params(base, offset),
-                headers=_BROWSER_HEADERS,
-                timeout=self.timeout,
-                **self._httpcloak_proxy(),
-            )
-        except Exception as exc:
-            raise ScraperError(
-                f"Avature ({base}) httpcloak fetch failed at "
-                f"offset={offset}: {exc}"
-            ) from exc
+        for attempt in range(1, MAX_RETRIES + 1):
+            self._pace_sync(url or _search_url(base))
+            try:
+                response = httpcloak.get(
+                    url or _search_url(base),
+                    params=None if url else _pagination_params(base, offset),
+                    headers=_BROWSER_HEADERS,
+                    timeout=self.timeout,
+                    **self._httpcloak_proxy(),
+                )
+            except Exception as exc:
+                raise ScraperError(
+                    f"Avature ({base}) httpcloak fetch failed at "
+                    f"offset={offset}: {exc}"
+                ) from exc
+            if not 500 <= response.status_code < 600 or attempt == MAX_RETRIES:
+                break
+            time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
         if offset >= OFFSET_CAP and (
-            response.status_code == 406 or 500 <= response.status_code < 600
+            response.status_code == 406 or _is_error_page(response.status_code, response.text)
         ):
             raise _OffsetCapError()
         if response.status_code == 406:
@@ -650,10 +659,12 @@ class AvatureScraper(BaseScraper):
                     # through once its recent requests fall under the limit.
                     await asyncio.sleep(RATE_LIMIT_WAITS[min(attempt, len(RATE_LIMIT_WAITS)) - 1])
                 continue
-            if 500 <= response.status_code < 600 and offset >= OFFSET_CAP:
-                raise _OffsetCapError()
             if response.status_code == 429 or 500 <= response.status_code < 600:
                 if attempt == MAX_RETRIES:
+                    if offset >= OFFSET_CAP and _is_error_page(
+                        response.status_code, response.text,
+                    ):
+                        raise _OffsetCapError()
                     raise ScraperError(
                         f"Avature ({base}) returned {response.status_code} at "
                         f"offset={offset} after {MAX_RETRIES} retries"
@@ -1368,6 +1379,11 @@ def _environment_proxy() -> bool:
         os.environ.get(name)
         for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
     )
+
+
+def _is_error_page(status: int, text: str) -> bool:
+    """Whether a response is the 500 error page of Avature's application."""
+    return status == 500 and _ERROR_PAGE_IMAGE in text
 
 
 _NO_ADDRESS = frozenset({socket.EAI_NONAME, getattr(socket, "EAI_NODATA", socket.EAI_NONAME)})
