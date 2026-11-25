@@ -98,9 +98,21 @@ BROWSER_PAGE_DELAY = 1.2
 BROWSER_BLOCK_WAITS = (30.0, 60.0, 120.0)
 # How long the first page may take to run the Imperva script and reload.
 BROWSER_CHALLENGE_TIMEOUT = 30.0
-_FETCH_IN_PAGE_JS = """async (url) => {
-    const r = await fetch(url, {credentials: 'include'});
-    return {status: r.status, body: await r.text()};
+# Time ``page.evaluate`` gets past the in-page fetch's own deadline before
+# the read counts as stalled.
+BROWSER_READ_GRACE = 5.0
+# The abort covers the body too: a response that stalls mid-body ends.
+_FETCH_IN_PAGE_JS = """async ([url, ms]) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+        const r = await fetch(url, {credentials: 'include', signal: controller.signal});
+        return {status: r.status, body: await r.text()};
+    } catch (e) {
+        return {status: 0, body: '', error: String(e)};
+    } finally {
+        clearTimeout(timer);
+    }
 }"""
 
 # Spanish-Spain employment-type labels → canonical EmploymentType enum.
@@ -291,16 +303,17 @@ class InfoJobsSpainScraper(BaseScraper):
             url = _page_url(self.listing_url, number)
             waits = iter(BROWSER_BLOCK_WAITS)
             while True:
-                answer = await page.evaluate(_FETCH_IN_PAGE_JS, url)
+                answer = await self._fetch_in_page(page, url)
                 status, body = answer.get("status"), answer.get("body") or ""
                 if status == 200 and _INITIAL_PROPS_MARKER in body:
                     await asyncio.sleep(BROWSER_PAGE_DELAY)
                     return _extract_initial_props(body)
-                server_error = isinstance(status, int) and status >= 500
-                cause = (
-                    f"InfoJobs Spain returned {status} for {url}" if server_error
-                    else f"InfoJobs Spain: captcha-gated page ({status}) for {url}"
-                )
+                if not status:
+                    cause = f"InfoJobs Spain: no answer for {url} ({answer.get('error')})"
+                elif isinstance(status, int) and status >= 500:
+                    cause = f"InfoJobs Spain returned {status} for {url}"
+                else:
+                    cause = f"InfoJobs Spain: captcha-gated page ({status}) for {url}"
                 wait = next(waits, None)
                 if wait is None:
                     raise ScraperError(f"{cause} after {len(BROWSER_BLOCK_WAITS)} waits")
@@ -309,6 +322,17 @@ class InfoJobsSpainScraper(BaseScraper):
 
         await self._paginate(state, read)
 
+    async def _fetch_in_page(self, page: Any, url: str) -> dict[str, Any]:
+        """``{status, body}`` of ``url`` fetched from inside ``page``; status
+        0 when no answer came within ``timeout``."""
+        try:
+            return await asyncio.wait_for(
+                page.evaluate(_FETCH_IN_PAGE_JS, [url, int(self.timeout * 1000)]),
+                timeout=self.timeout + BROWSER_READ_GRACE,
+            )
+        except TimeoutError:
+            return {"status": 0, "body": "", "error": f"stalled past {self.timeout:g} s"}
+
     async def _clear_challenge(self, page: Any, url: str) -> None:
         """Load ``url`` until the listing shows. The Imperva script runs on
         the first answer and reloads the page by itself."""
@@ -316,7 +340,7 @@ class InfoJobsSpainScraper(BaseScraper):
         deadline = time.monotonic() + BROWSER_CHALLENGE_TIMEOUT
         while True:
             try:
-                html = await page.content()
+                html = await asyncio.wait_for(page.content(), timeout=self.timeout)
             except Exception:
                 # The page is reloading after the challenge.
                 html = ""

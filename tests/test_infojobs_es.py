@@ -20,6 +20,7 @@ These tests exercise:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import UTC
@@ -87,6 +88,7 @@ def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ij, "BROWSER_PAGE_DELAY", 0.0)
     monkeypatch.setattr(ij, "BROWSER_BLOCK_WAITS", (0.0,))
     monkeypatch.setattr(ij, "BROWSER_CHALLENGE_TIMEOUT", 0.0)
+    monkeypatch.setattr(ij, "BROWSER_READ_GRACE", 0.0)
 
 
 @pytest.fixture(autouse=True)
@@ -638,12 +640,14 @@ class _FakePage:
     """A Playwright page that answers in-page fetches per page number.
 
     ``answers[n]`` is a list of ``(status, body)``; the last one repeats.
+    ``_STALL`` never answers.
     """
 
-    def __init__(self, answers: dict[int, list[tuple[int, str]]]) -> None:
+    def __init__(self, answers: dict[int, list[tuple[int | None, str]]]) -> None:
         self.answers = answers
         self.visited: list[str] = []
         self.fetched: list[int] = []
+        self.deadlines: list[int] = []
 
     async def goto(self, url: str, **kwargs: object) -> None:
         self.visited.append(url)
@@ -651,15 +655,23 @@ class _FakePage:
     async def content(self) -> str:
         return _hydration_html([])
 
-    async def evaluate(self, script: str, url: str) -> dict[str, object]:
-        number = _page_number(url)
+    async def evaluate(self, script: str, arg: list[object]) -> dict[str, object]:
+        url, deadline_ms = arg
+        number = _page_number(str(url))
         self.fetched.append(number)
+        self.deadlines.append(int(deadline_ms))  # type: ignore[call-overload]
         queue = self.answers.get(number) or [(200, _hydration_html([]))]
         status, body = queue.pop(0) if len(queue) > 1 else queue[0]
+        if status is None:
+            await asyncio.sleep(3600)
+        if status == 0:
+            return {"status": 0, "body": "", "error": "AbortError: signal is aborted"}
         return {"status": status, "body": body}
 
 
 _CAPTCHA = (405, "<html>¿Eres humano o un robot?</html>")
+_STALL = (None, "")
+_ABORTED = (0, "")
 
 
 @pytest.fixture
@@ -733,6 +745,42 @@ def test_a_captcha_that_stays_stops_the_browser_with_an_error(
         InfoJobsSpainScraper("any", max_pages=10).fetch()
 
 
+@pytest.mark.parametrize("lost_read", [_STALL, _ABORTED], ids=["stalled", "aborted"])
+def test_a_browser_read_without_an_answer_is_read_again(
+    fake_httpcloak, cloakbrowser_page, lost_read,
+) -> None:
+    fake_httpcloak.queue_status(403)
+    cloakbrowser_page.answers = {
+        1: [lost_read, (200, _hydration_html([_offer(code="p1")], total_elements=1))],
+    }
+
+    jobs = InfoJobsSpainScraper("any", max_pages=10, timeout=0.05).fetch()
+
+    assert [j.ats_id for j in jobs] == ["p1"]
+    assert cloakbrowser_page.fetched == [1, 1]
+    # The in-page fetch aborts itself at the scraper's timeout.
+    assert cloakbrowser_page.deadlines == [50, 50]
+
+
+def test_browser_reads_that_keep_stalling_fall_back_to_the_cloud_browser(
+    fake_httpcloak, cloakbrowser_page,
+) -> None:
+    fake_httpcloak.queue(html=_hydration_html([_offer(code="p1")], total_elements=2))
+    fake_httpcloak.queue_status(403)
+    cloakbrowser_page.answers = {2: [_STALL]}
+    cloud = _FakeCloudBrowser(_FakePage({
+        2: [(200, _hydration_html([_offer(code="p2")], total_elements=2))],
+    }))
+
+    jobs = InfoJobsSpainScraper(
+        "any", max_pages=10, timeout=0.05, cloud_browser=cloud,
+    ).fetch()
+
+    assert [j.ats_id for j in jobs] == ["p1", "p2"]
+    assert cloakbrowser_page.fetched == [2, 2]
+    assert cloud.page.fetched == [2]
+
+
 class _FakeCloudBrowser(CDPCloudBrowser):
     def __init__(self, page: _FakePage, *, session_pages: int | None = None) -> None:
         super().__init__()
@@ -761,11 +809,11 @@ class _FakeCloudBrowser(CDPCloudBrowser):
             async def content(self) -> str:
                 return await page.content()
 
-            async def evaluate(self, script: str, url: str) -> dict[str, object]:
+            async def evaluate(self, script: str, arg: list[object]) -> dict[str, object]:
                 if EndingPage.reads == limit:
                     raise RuntimeError("Target page, context or browser has been closed")
                 EndingPage.reads += 1
-                return await page.evaluate(script, url)
+                return await page.evaluate(script, arg)
 
         return await action(EndingPage())
 
