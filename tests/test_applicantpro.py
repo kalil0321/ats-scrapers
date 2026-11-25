@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
@@ -19,6 +21,17 @@ LISTING_URL = (
 DETAIL_URL = (
     f"https://{TENANT}.applicantpro.com/core/jobs/{DOMAIN_ID}/4124648/job-details"
 )
+FILTERS_URL = (
+    f"https://{TENANT}.applicantpro.com/core/jobs/{DOMAIN_ID}/search-filters/all"
+    f"?domainId={DOMAIN_ID}&showLocation=1"
+)
+
+
+def _query_url(params: dict[str, object]) -> str:
+    return str(httpx.URL(
+        f"https://{TENANT}.applicantpro.com/core/jobs/{DOMAIN_ID}",
+        params={"getParams": json.dumps(params, separators=(",", ":"))},
+    ))
 
 
 def _portal() -> str:
@@ -386,9 +399,69 @@ def test_empty_active_listing_returns_empty(httpx_mock) -> None:
 def test_count_mismatch_fails_closed(httpx_mock) -> None:
     httpx_mock.add_response(url=CAREERS_URL, text=_portal())
     httpx_mock.add_response(url=LISTING_URL, json=_listing([_job()], count=2))
+    httpx_mock.add_response(url=FILTERS_URL, json={"sort": [{"id": "", "text": "Sort By"}]})
 
     with pytest.raises(ScraperError, match="expected 2 jobs, received 1"):
         ApplicantProScraper(TENANT).fetch()
+
+
+def test_more_jobs_than_the_count_fails_closed(httpx_mock) -> None:
+    httpx_mock.add_response(url=CAREERS_URL, text=_portal())
+    httpx_mock.add_response(url=LISTING_URL, json=_listing([_job(1), _job(2)], count=1))
+
+    with pytest.raises(ScraperError, match="expected 1 jobs, received 2"):
+        ApplicantProScraper(TENANT, include_descriptions=False).fetch()
+
+
+def _facets(states: list[int], cities: list[str]) -> dict[str, object]:
+    blank = {"id": "", "text": ""}
+    return {
+        "city": [blank, *({"id": city, "text": city} for city in cities)],
+        "stateId": [blank, *({"id": state, "text": str(state)} for state in states)],
+        "sort": [blank, {"id": "job_title", "text": "Job Title"}, {"id": "city", "text": "City"}],
+    }
+
+
+def test_board_past_the_list_cap_is_read_by_state(httpx_mock) -> None:
+    httpx_mock.add_response(url=CAREERS_URL, text=_portal())
+    httpx_mock.add_response(url=LISTING_URL, json=_listing([_job(1), _job(2)], count=5))
+    httpx_mock.add_response(url=FILTERS_URL, json=_facets([6, 36], []))
+    httpx_mock.add_response(
+        url=_query_url({"stateId": 6}), json=_listing([_job(1), _job(3)]),
+    )
+    httpx_mock.add_response(
+        url=_query_url({"stateId": 36}), json=_listing([_job(4)]),
+    )
+    # The job filed under no state is listed by a sorted query only.
+    httpx_mock.add_response(
+        url=_query_url({"sort": "job_title"}), json=_listing([_job(1), _job(2)], count=5),
+    )
+    httpx_mock.add_response(
+        url=_query_url({"sort": "city"}), json=_listing([_job(5), _job(1)], count=5),
+    )
+
+    jobs = ApplicantProScraper(TENANT, include_descriptions=False).fetch()
+
+    assert sorted(job.requisition_id for job in jobs) == ["1", "2", "3", "4", "5"]
+
+
+def test_state_past_the_list_cap_is_read_by_city(httpx_mock) -> None:
+    httpx_mock.add_response(url=CAREERS_URL, text=_portal())
+    httpx_mock.add_response(url=LISTING_URL, json=_listing([_job(1)], count=3))
+    httpx_mock.add_response(url=FILTERS_URL, json=_facets([36], ["Akron", "Dayton"]))
+    httpx_mock.add_response(
+        url=_query_url({"stateId": 36}), json=_listing([_job(1)], count=3),
+    )
+    httpx_mock.add_response(
+        url=_query_url({"stateId": 36, "city": "Akron"}), json=_listing([_job(1), _job(2)]),
+    )
+    httpx_mock.add_response(
+        url=_query_url({"stateId": 36, "city": "Dayton"}), json=_listing([_job(3)]),
+    )
+
+    jobs = ApplicantProScraper(TENANT, include_descriptions=False).fetch()
+
+    assert sorted(job.requisition_id for job in jobs) == ["1", "2", "3"]
 
 
 def test_duplicate_job_ids_fail_closed(httpx_mock) -> None:

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 CAREERS_URL = "https://{tenant}.{host}/jobs/"
 LISTING_API_URL = "https://{tenant}.{host}/core/jobs/{domain_id}"
+FILTERS_API_URL = "https://{tenant}.{host}/core/jobs/{domain_id}/search-filters/all"
 DETAIL_API_URL = "https://{tenant}.{host}/core/jobs/{domain_id}/{job_id}/job-details"
 DETAIL_CONCURRENCY = 8
 _DOMAIN_ID_RE = re.compile(r"\bdomainId\s*:\s*([0-9]+)")
@@ -234,16 +235,8 @@ class ApplicantProScraper(BaseScraper):
         async with self.make_fetcher() as fetch:
             page = await fetch.get_text(careers_url)
             domain_id, page_company = _portal_identity(page, self.company_slug)
-            payload = await fetch.get_json(
-                LISTING_API_URL.format(
-                    tenant=self.company_slug,
-                    host=self.host,
-                    domain_id=domain_id,
-                ),
-                params={"getParams": json.dumps({}, separators=(",", ":"))},
-            )
-            jobs = self._parse_listing(
-                payload,
+            jobs = self._parse_items(
+                await self._listing_items(fetch, domain_id),
                 domain_id=domain_id,
                 company=self.company_name or page_company,
             )
@@ -278,13 +271,57 @@ class ApplicantProScraper(BaseScraper):
 
         return self._run_sync(run())
 
-    def _parse_listing(
-        self,
-        payload: Any,
-        *,
-        domain_id: str,
-        company: str,
-    ) -> list[Job]:
+    async def _listing_items(
+        self, fetch: Fetcher, domain_id: str,
+    ) -> list[dict[str, Any]]:
+        total, items = await self._query(fetch, domain_id, {})
+        if len(items) == total:
+            return items
+        # A list stops at 300 jobs whatever its count. A longer board is read
+        # by state, a state past the cap by city. Jobs filed under no state
+        # come from the sorted lists: the city order puts jobs without a
+        # place first.
+        facets = await fetch.get_json(
+            FILTERS_API_URL.format(
+                tenant=self.company_slug, host=self.host, domain_id=domain_id,
+            ),
+            params={"domainId": domain_id, "showLocation": "1"},
+        )
+        rows = {_item_id(item, self.company_slug): item for item in items}
+        cities = _facet_values(facets, "city")
+        for state in _facet_values(facets, "stateId"):
+            count, part = await self._query(fetch, domain_id, {"stateId": state})
+            rows.update((_item_id(item, self.company_slug), item) for item in part)
+            if len(part) < count:
+                for city in cities:
+                    _, part = await self._query(
+                        fetch, domain_id, {"stateId": state, "city": city},
+                    )
+                    rows.update(
+                        (_item_id(item, self.company_slug), item) for item in part
+                    )
+        for order in _facet_values(facets, "sort"):
+            if len(rows) >= total:
+                break
+            _, part = await self._query(fetch, domain_id, {"sort": order})
+            rows.update((_item_id(item, self.company_slug), item) for item in part)
+        if len(rows) < total:
+            raise ScraperError(
+                f"ApplicantPro ({self.company_slug}) expected {total} jobs, "
+                f"received {len(rows)}"
+            )
+        return list(rows.values())
+
+    async def _query(
+        self, fetch: Fetcher, domain_id: str, params: dict[str, Any],
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """The count and the listed jobs of one listing query."""
+        payload = await fetch.get_json(
+            LISTING_API_URL.format(
+                tenant=self.company_slug, host=self.host, domain_id=domain_id,
+            ),
+            params={"getParams": json.dumps(params, separators=(",", ":"))},
+        )
         if not isinstance(payload, dict) or payload.get("success") is not True:
             raise ScraperError(
                 f"ApplicantPro ({self.company_slug}) returned an unsuccessful listing"
@@ -301,19 +338,27 @@ class ApplicantProScraper(BaseScraper):
             )
         expected = data.get("jobCount")
         # ``type(...) is int``: ``True`` is an ``int`` too, and is not a count.
-        if type(expected) is not int or expected != len(items):
+        if type(expected) is not int or expected < len(items):
             raise ScraperError(
                 f"ApplicantPro ({self.company_slug}) expected {expected!r} jobs, "
                 f"received {len(items)}"
             )
+        if not all(isinstance(item, dict) for item in items):
+            raise ScraperError(
+                f"ApplicantPro ({self.company_slug}) returned a malformed job"
+            )
+        return expected, items
 
+    def _parse_items(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        domain_id: str,
+        company: str,
+    ) -> list[Job]:
         jobs: list[Job] = []
         seen: set[str] = set()
         for item in items:
-            if not isinstance(item, dict):
-                raise ScraperError(
-                    f"ApplicantPro ({self.company_slug}) returned a malformed job"
-                )
             job = self._parse_job(item, domain_id=domain_id, company=company)
             if job.ats_id in seen:
                 raise ScraperError(
@@ -463,6 +508,22 @@ def _portal_identity(page: str, tenant: str) -> tuple[str, str]:
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
     company = _TITLE_SUFFIX_RE.sub("", _TITLE_PREFIX_RE.sub("", title)).strip()
     return domain_match.group(1), company or tenant
+
+
+def _item_id(item: dict[str, Any], tenant: str) -> str:
+    return _required_text(item.get("id"), "job id", tenant)
+
+
+def _facet_values(facets: object, name: str) -> list[Any]:
+    """The values of one search filter, without its blank placeholder rows."""
+    options = facets.get(name) if isinstance(facets, dict) else None
+    if not isinstance(options, list):
+        return []
+    return [
+        option["id"]
+        for option in options
+        if isinstance(option, dict) and option.get("id") not in (None, "")
+    ]
 
 
 def _required_text(value: object, field: str, tenant: str) -> str:
