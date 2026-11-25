@@ -220,6 +220,29 @@ def test_untrusted_feed_links_fail_closed(httpx_mock, url) -> None:
     assert len(httpx_mock.get_requests()) == 1
 
 
+def test_feed_cached_under_the_employer_alias_links_back_to_the_tenant(httpx_mock) -> None:
+    alias = "https://acme-old.varbi.com/en/what:job/jobID:123/"
+    feed = _feed(_item(alias)).replace(
+        "</title>",
+        "</title><description>New jobs at Acme University. To visit our jobsite"
+        " go to https://acme-old.varbi.com/en/</description>", 1,
+    )
+    httpx_mock.add_response(url=FEED, text=feed)
+    httpx_mock.add_response(url=DETAIL, text=_detail())
+    [job] = VarbiScraper("acme").fetch()
+    assert str(job.url) == DETAIL
+
+
+def test_alias_must_be_the_job_site_the_feed_names(httpx_mock) -> None:
+    feed = _feed(_item("https://other.varbi.com/en/what:job/jobID:123/")).replace(
+        "</title>",
+        "</title><description>Read more at https://other.varbi.com/en/ today</description>", 1,
+    )
+    httpx_mock.add_response(url=FEED, text=feed)
+    with pytest.raises(ScraperError, match="untrusted job URL"):
+        VarbiScraper("acme").fetch()
+
+
 @pytest.mark.parametrize("target", [FEED, DETAIL])
 def test_redirect_does_not_follow_untrusted_destinations(httpx_mock, target) -> None:
     if target == DETAIL:
