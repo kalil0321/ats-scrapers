@@ -459,6 +459,27 @@ def test_malformed_legacy_proxy_ignored(monkeypatch: pytest.MonkeyPatch) -> None
     assert proxy_url_from_env() is None
 
 
+async def test_an_empty_proxy_connects_directly_despite_the_environment(
+    httpx_mock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ATS_SCRAPERS_PROXY", "http://env-proxy.test:3128")
+    httpx_mock.add_response(url=URL, text="ok")
+
+    async with _fetcher(proxy="") as fetch:
+        assert await fetch.get_text(URL) == "ok"
+        assert not fetch._uses_proxy()
+
+
+async def test_an_empty_proxy_ignores_the_standard_proxy_variables(monkeypatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://std-proxy.test:3128")
+    async with _fetcher(proxy="") as fetch:
+        assert fetch._httpx_client().trust_env is False
+    async with _fetcher(proxy=None) as fetch:
+        assert fetch._httpx_client().trust_env is True
+
+
 # --- FetchResponse ----------------------------------------------------------
 
 

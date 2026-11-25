@@ -20,6 +20,7 @@ These tests exercise:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import UTC
@@ -27,6 +28,7 @@ from typing import Any
 
 import pytest
 
+from ats_scrapers.cloud_browser import CDPCloudBrowser, CloudBrowser, RenderedPage
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType
 from ats_scrapers.scrapers import InfoJobsSpainScraper, ScraperRegistry
@@ -83,6 +85,18 @@ def _fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     import ats_scrapers.scrapers.infojobs_es as ij
     monkeypatch.setattr(ij, "MAX_RETRIES", 1)
     monkeypatch.setattr(ij, "RETRY_BASE_DELAY", 0.0)
+    monkeypatch.setattr(ij, "BROWSER_PAGE_DELAY", 0.0)
+    monkeypatch.setattr(ij, "BROWSER_BLOCK_WAITS", (0.0,))
+    monkeypatch.setattr(ij, "BROWSER_CHALLENGE_TIMEOUT", 0.0)
+    monkeypatch.setattr(ij, "BROWSER_READ_GRACE", 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _no_local_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real cloakbrowser would load the live site."""
+    from ats_scrapers.scrapers import _cloakbrowser
+
+    monkeypatch.setattr(_cloakbrowser, "is_enabled", lambda: False)
 
 
 def _offer(
@@ -595,16 +609,255 @@ def test_page_one_hard_failure_raises(fake_httpcloak) -> None:
         InfoJobsSpainScraper("any", max_pages=2).fetch()
 
 
-def test_later_page_failure_keeps_collected_jobs(fake_httpcloak) -> None:
-    """Deep pagination hits a wall every ~hundreds of pages. Once we
-    have some jobs banked, a mid-fetch failure is logged and the
-    loop terminates with what we already have."""
-    fake_httpcloak.queue(html=_hydration_html([
-        _offer(code="early-1"), _offer(code="early-2"),
-    ]))
+def test_a_read_stopped_mid_catalogue_is_an_error(fake_httpcloak) -> None:
+    fake_httpcloak.queue(html=_hydration_html(
+        [_offer(code="early-1"), _offer(code="early-2")], total_elements=40,
+    ))
     fake_httpcloak.queue_status(500)
+
+    with pytest.raises(ScraperError, match="stopped at page 2 after 2 of 40 jobs"):
+        InfoJobsSpainScraper("any", max_pages=10).fetch()
+
+
+def test_a_captcha_mid_catalogue_is_a_blocked_error(fake_httpcloak) -> None:
+    fake_httpcloak.queue(html=_hydration_html([_offer(code="x1")], total_elements=40))
+    fake_httpcloak.queue(html="<html>No podemos identificar tu navegador</html>")
+
+    with pytest.raises(ScraperError, match="captcha"):
+        InfoJobsSpainScraper("any", max_pages=10).fetch()
+
+
+# --- browser reads ----------------------------------------------------------
+
+
+def _page_number(url: str) -> int:
+    from urllib.parse import parse_qs, urlsplit
+
+    return int(parse_qs(urlsplit(url).query)["page"][0])
+
+
+class _FakePage:
+    """A Playwright page that answers in-page fetches per page number.
+
+    ``answers[n]`` is a list of ``(status, body)``; the last one repeats.
+    ``_STALL`` never answers.
+    """
+
+    def __init__(self, answers: dict[int, list[tuple[int | None, str]]]) -> None:
+        self.answers = answers
+        self.visited: list[str] = []
+        self.fetched: list[int] = []
+        self.deadlines: list[int] = []
+
+    async def goto(self, url: str, **kwargs: object) -> None:
+        self.visited.append(url)
+
+    async def content(self) -> str:
+        return _hydration_html([])
+
+    async def evaluate(self, script: str, arg: list[object]) -> dict[str, object]:
+        url, deadline_ms = arg
+        number = _page_number(str(url))
+        self.fetched.append(number)
+        self.deadlines.append(int(deadline_ms))  # type: ignore[call-overload]
+        queue = self.answers.get(number) or [(200, _hydration_html([]))]
+        status, body = queue.pop(0) if len(queue) > 1 else queue[0]
+        if status is None:
+            await asyncio.sleep(3600)
+        if status == 0:
+            return {"status": 0, "body": "", "error": "AbortError: signal is aborted"}
+        return {"status": status, "body": body}
+
+
+_CAPTCHA = (405, "<html>¿Eres humano o un robot?</html>")
+_STALL = (None, "")
+_ABORTED = (0, "")
+
+
+@pytest.fixture
+def cloakbrowser_page(monkeypatch: pytest.MonkeyPatch):
+    """Stand in for ``cloakbrowser.launch_async``; tests fill ``answers``."""
+    import sys
+    from types import SimpleNamespace
+
+    from ats_scrapers.scrapers import _cloakbrowser
+
+    page = _FakePage({})
+
+    class Browser:
+        closed = False
+
+        async def new_page(self) -> _FakePage:
+            return page
+
+        async def close(self) -> None:
+            Browser.closed = True
+
+    async def launch_async(**kwargs: object) -> Browser:
+        return Browser()
+
+    monkeypatch.setattr(_cloakbrowser, "is_enabled", lambda: True)
+    monkeypatch.setitem(sys.modules, "cloakbrowser", SimpleNamespace(launch_async=launch_async))
+    page.browser = Browser  # type: ignore[attr-defined]
+    return page
+
+
+def test_the_browser_reads_on_where_plain_requests_stopped(
+    fake_httpcloak, cloakbrowser_page,
+) -> None:
+    fake_httpcloak.queue(html=_hydration_html([_offer(code="p1")], total_elements=3))
+    fake_httpcloak.queue(html="<html>No podemos identificar tu navegador</html>")
+    cloakbrowser_page.answers = {
+        2: [(200, _hydration_html([_offer(code="p2")], total_elements=3))],
+        3: [(200, _hydration_html([_offer(code="p3")], total_elements=3))],
+    }
+
     jobs = InfoJobsSpainScraper("any", max_pages=10).fetch()
-    assert sorted(j.ats_id for j in jobs) == ["early-1", "early-2"]
+
+    assert [j.ats_id for j in jobs] == ["p1", "p2", "p3"]
+    assert cloakbrowser_page.visited == ["https://www.infojobs.net/ofertas-trabajo?page=2"]
+    assert cloakbrowser_page.fetched == [2, 3]
+    assert cloakbrowser_page.browser.closed
+
+
+def test_the_browser_reads_a_refused_page_again_after_a_wait(
+    fake_httpcloak, cloakbrowser_page,
+) -> None:
+    fake_httpcloak.queue_status(403)
+    cloakbrowser_page.answers = {
+        1: [_CAPTCHA, (200, _hydration_html([_offer(code="p1")], total_elements=1))],
+    }
+
+    jobs = InfoJobsSpainScraper("any", max_pages=10).fetch()
+
+    assert [j.ats_id for j in jobs] == ["p1"]
+    assert cloakbrowser_page.fetched == [1, 1]
+
+
+def test_a_captcha_that_stays_stops_the_browser_with_an_error(
+    fake_httpcloak, cloakbrowser_page,
+) -> None:
+    fake_httpcloak.queue(html=_hydration_html([_offer(code="p1")], total_elements=3))
+    fake_httpcloak.queue_status(403)
+    cloakbrowser_page.answers = {2: [_CAPTCHA]}
+
+    with pytest.raises(ScraperError, match=r"stopped at page 2 after 1 of 3 jobs: .*captcha"):
+        InfoJobsSpainScraper("any", max_pages=10).fetch()
+
+
+@pytest.mark.parametrize("lost_read", [_STALL, _ABORTED], ids=["stalled", "aborted"])
+def test_a_browser_read_without_an_answer_is_read_again(
+    fake_httpcloak, cloakbrowser_page, lost_read,
+) -> None:
+    fake_httpcloak.queue_status(403)
+    cloakbrowser_page.answers = {
+        1: [lost_read, (200, _hydration_html([_offer(code="p1")], total_elements=1))],
+    }
+
+    jobs = InfoJobsSpainScraper("any", max_pages=10, timeout=0.05).fetch()
+
+    assert [j.ats_id for j in jobs] == ["p1"]
+    assert cloakbrowser_page.fetched == [1, 1]
+    # The in-page fetch aborts itself at the scraper's timeout.
+    assert cloakbrowser_page.deadlines == [50, 50]
+
+
+def test_browser_reads_that_keep_stalling_fall_back_to_the_cloud_browser(
+    fake_httpcloak, cloakbrowser_page,
+) -> None:
+    fake_httpcloak.queue(html=_hydration_html([_offer(code="p1")], total_elements=2))
+    fake_httpcloak.queue_status(403)
+    cloakbrowser_page.answers = {2: [_STALL]}
+    cloud = _FakeCloudBrowser(_FakePage({
+        2: [(200, _hydration_html([_offer(code="p2")], total_elements=2))],
+    }))
+
+    jobs = InfoJobsSpainScraper(
+        "any", max_pages=10, timeout=0.05, cloud_browser=cloud,
+    ).fetch()
+
+    assert [j.ats_id for j in jobs] == ["p1", "p2"]
+    assert cloakbrowser_page.fetched == [2, 2]
+    assert cloud.page.fetched == [2]
+
+
+class _FakeCloudBrowser(CDPCloudBrowser):
+    def __init__(self, page: _FakePage, *, session_pages: int | None = None) -> None:
+        super().__init__()
+        self.page = page
+        self.sessions = 0
+        self.session_pages = session_pages
+
+    async def start_session(self, client):  # pragma: no cover - never reached
+        raise AssertionError
+
+    async def stop_session(self, client, session_id):  # pragma: no cover - never reached
+        raise AssertionError
+
+    async def run_page(self, action):
+        self.sessions += 1
+        if self.session_pages is None:
+            return await action(self.page)
+        page, limit = self.page, self.session_pages
+
+        class EndingPage:
+            reads = 0
+
+            async def goto(self, url: str, **kwargs: object) -> None:
+                await page.goto(url)
+
+            async def content(self) -> str:
+                return await page.content()
+
+            async def evaluate(self, script: str, arg: list[object]) -> dict[str, object]:
+                if EndingPage.reads == limit:
+                    raise RuntimeError("Target page, context or browser has been closed")
+                EndingPage.reads += 1
+                return await page.evaluate(script, arg)
+
+        return await action(EndingPage())
+
+
+def test_a_refused_cloakbrowser_falls_back_to_the_cloud_browser(
+    fake_httpcloak, cloakbrowser_page,
+) -> None:
+    fake_httpcloak.queue(html=_hydration_html([_offer(code="p1")], total_elements=2))
+    fake_httpcloak.queue_status(403)
+    cloakbrowser_page.answers = {2: [_CAPTCHA]}
+    cloud = _FakeCloudBrowser(_FakePage({
+        2: [(200, _hydration_html([_offer(code="p2")], total_elements=2))],
+    }))
+
+    jobs = InfoJobsSpainScraper("any", max_pages=10, cloud_browser=cloud).fetch()
+
+    assert [j.ats_id for j in jobs] == ["p1", "p2"]
+    assert cloud.page.fetched == [2]
+
+
+def test_an_ended_cloud_session_is_replaced_while_it_reads_pages(fake_httpcloak) -> None:
+    fake_httpcloak.queue_status(403)
+    cloud = _FakeCloudBrowser(_FakePage({
+        n: [(200, _hydration_html([_offer(code=f"p{n}")], total_elements=3))]
+        for n in (1, 2, 3)
+    }), session_pages=2)
+
+    jobs = InfoJobsSpainScraper("any", max_pages=10, cloud_browser=cloud).fetch()
+
+    assert [j.ats_id for j in jobs] == ["p1", "p2", "p3"]
+    assert cloud.sessions == 2
+    assert cloud.page.visited == [
+        "https://www.infojobs.net/ofertas-trabajo?page=1",
+        "https://www.infojobs.net/ofertas-trabajo?page=3",
+    ]
+
+
+def test_a_cloud_browser_that_only_renders_is_refused() -> None:
+    class RenderOnly(CloudBrowser):
+        async def render(self, url: str) -> RenderedPage:
+            return RenderedPage(html="", url=url)
+
+    with pytest.raises(TypeError, match="CDPCloudBrowser"):
+        InfoJobsSpainScraper("any", cloud_browser=RenderOnly())
 
 
 def test_skips_gracefully_when_httpcloak_missing(

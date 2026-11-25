@@ -15,10 +15,11 @@ change periodically, so we target two stable surfaces:
   (``<i>place</i><span>Taipei, Taiwan</span>``) for location, team,
   etc. The icon names (``place``, ``corporate_fare``) are stable.
 
-Pagination: increment ``page`` until a page yields no new job IDs (the
-markup doesn't expose a total count). After the listing pass we fan
-out per-job detail fetches concurrently to fill description, location,
-and team.
+Pagination: increment ``page`` until a page yields no new job IDs. The
+first page announces the total ("1,234 jobs matched"): a read that ends
+well short of it raises instead of returning a partial list. After the
+listing pass we fan out per-job detail fetches concurrently to fill
+description, location, and team.
 """
 
 from __future__ import annotations
@@ -46,6 +47,10 @@ APPLICATIONS_BASE = "https://www.google.com/about/careers/applications/"
 
 MAX_PAGES = 500  # Defensive ceiling. Google currently exposes ~180 pages (~3,600 jobs) and we stop on a no-new-ids page; 100 was hard-capping us at exactly 2,000.
 DETAIL_CONCURRENCY = 8  # cap per-tenant concurrent detail fetches
+# Postings open and close during the read, so it may end a little short of
+# the announced total. Further short, a page came back without its jobs.
+MIN_COMPLETE = 0.95
+_TOTAL_RE = re.compile(r"([\d,]+)(?:\s*</span>)?\s*jobs? matched", re.IGNORECASE)
 
 _HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -91,9 +96,12 @@ class GoogleScraper(BaseScraper):
     async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
+        total: int | None = None
         async with self.make_fetcher() as fetch:
             for page_num in range(1, MAX_PAGES + 1):
                 html_text = await self._fetch_page(fetch, page_num)
+                if page_num == 1:
+                    total = _announced_total(html_text)
                 page_jobs = self._parse_page(html_text)
                 new = [j for j in page_jobs if j.ats_id not in seen]
                 if not new:
@@ -102,6 +110,10 @@ class GoogleScraper(BaseScraper):
                 for j in new:
                     seen.add(j.ats_id)
                 all_jobs.extend(new)
+        if total is not None and len(all_jobs) < total * MIN_COMPLETE:
+            raise ScraperError(
+                f"Google careers listed {len(all_jobs)} of {total} jobs"
+            )
 
         # Per-job detail enrichment: pull description, location, team
         # from each job's HTML detail page. Best-effort — errors and
@@ -325,6 +337,14 @@ def _meta_description(html: str) -> str | None:
     if not match:
         return None
     return html_mod.unescape(match.group(1)).strip() or None
+
+
+def _announced_total(html: str) -> int | None:
+    match = _TOTAL_RE.search(html)
+    if not match:
+        return None
+    digits = match.group(1).replace(",", "")
+    return int(digits) if digits.isdigit() else None
 
 
 def _canonicalize(url: str) -> str:

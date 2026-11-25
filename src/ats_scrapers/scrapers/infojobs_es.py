@@ -1,8 +1,9 @@
 """InfoJobs Spain (https://www.infojobs.net) — Spain's #1 job board scraper.
 
 InfoJobs Spain (``infojobs.net``) is the largest direct-posting jobs
-board in Spain — ~66,000 live postings as of 2026-05 with ~22 cards
-per listing page (so ~3,000 paginated pages cover the whole catalogue).
+board in Spain: ~59,000 live postings as of 2026-11 with 20 cards
+per listing page (plus 2 promoted ones on page 1), so ~2,950 pages
+cover the whole catalogue; the page after the last one is empty.
 Companies post directly, not aggregated from LinkedIn / Indeed.
 
 Distinct platform from **InfoJobs Brasil** (``infojobs.com.br``): same
@@ -27,12 +28,22 @@ structured records per page with every field we need:
   - ``publishedAt``  → ``posted_at`` (ISO-8601 with ``Z``)
   - ``salary``       → ``{range:{min,max}, period, currency, type}`` (often absent)
 
-The listing host is gated by Distil + Geetest captcha — bare ``httpx``
-hits a 405/captcha. We go straight through ``httpcloak`` (TLS+h2
-fingerprint impersonator already shipped in the ``scrapers`` extra and
-used by Avature/JazzHR/Eightfold/Built In/Pracuj). Same pattern as
-those: optional dependency, falls back gracefully with an empty list +
-warning when the user installs the bare package.
+The listing host sits behind Imperva bot protection (``reese84`` cookie,
+Geetest captcha). The pages are read in up to three ways, cheapest first:
+
+1. ``httpcloak`` (browser TLS fingerprint). An address without the
+   ``reese84`` cookie gets about five pages, then a "No podemos
+   identificar tu navegador" page until the next day.
+2. ``cloakbrowser`` (local stealth Chromium). Its first page runs the
+   Imperva script and earns the cookie; the remaining pages are fetched
+   from inside that page, about one every 1.7 s. Faster than about one a
+   second, Imperva answers 405 with a captcha, which clears after a pause.
+3. The ``cloud_browser`` given to the scraper, same flow, when
+   cloakbrowser is missing or refused.
+
+Each step starts at the page the previous one stopped at. A read that
+stops before the end of the catalogue raises :class:`ScraperError`: a
+partial catalogue is never returned as a complete one.
 
 Pagination is via ``?page=N`` (1-indexed). The
 ``overview.totalElements`` field on each page lets us stop early once
@@ -47,31 +58,62 @@ import asyncio
 import json
 import logging
 import re
+import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from ats_scrapers.cloud_browser import CDPCloudBrowser
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.fetch import proxy_url_from_env
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers import _cloakbrowser as cb
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from typing import Any
 
     from ats_scrapers.models import EngagementType
 
 API_ROOT = "https://www.infojobs.net"
 LISTING_URL = f"{API_ROOT}/ofertas-trabajo"
-DEFAULT_MAX_PAGES = 3500  # ~66k offers / 22 per page = ~3000 pages
+DEFAULT_MAX_PAGES = 3500  # ~59k offers / 20 per page = ~2,950 pages
 # Retry knobs for the httpcloak transport. This scraper deliberately
 # does NOT use the shared Fetcher's cloak engine: InfoJobs treats 403
 # as *transient* (Distil challenges deep pagination and backs off),
 # which the Fetcher never retries in cloak mode.
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 1.5
+
+# Pause after each page read in a browser. Measured from one address on
+# 25 Nov 2026: one page every 1.5 s read 80 pages without a captcha, one a
+# second drew a captcha about every 30 pages.
+BROWSER_PAGE_DELAY = 1.2
+# Waits before a refused page is read again in the browser. A 30 s pause
+# cleared every captcha seen while measuring.
+BROWSER_BLOCK_WAITS = (30.0, 60.0, 120.0)
+# How long the first page may take to run the Imperva script and reload.
+BROWSER_CHALLENGE_TIMEOUT = 30.0
+# Time ``page.evaluate`` gets past the in-page fetch's own deadline before
+# the read counts as stalled.
+BROWSER_READ_GRACE = 5.0
+# The abort covers the body too: a response that stalls mid-body ends.
+_FETCH_IN_PAGE_JS = """async ([url, ms]) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+        const r = await fetch(url, {credentials: 'include', signal: controller.signal});
+        return {status: r.status, body: await r.text()};
+    } catch (e) {
+        return {status: 0, body: '', error: String(e)};
+    } finally {
+        clearTimeout(timer);
+    }
+}"""
 
 # Spanish-Spain employment-type labels → canonical EmploymentType enum.
 # Keys are the literal strings InfoJobs Spain ships on ``contractType``.
@@ -130,10 +172,12 @@ class InfoJobsSpainScraper(BaseScraper):
     Knobs:
 
     - ``max_pages`` — pagination cap (default 3500 → roughly the full
-      ~66k-offer catalogue with headroom).
+      ~59k-offer catalogue with headroom).
     - ``listing_url`` — override the base URL when restricting to a
       city / category. ``?page=N`` is appended by the scraper; don't
       include it in the override.
+    - ``cloud_browser``: hosted browser for the pages cloakbrowser
+      cannot read.
     """
 
     ats = ATSType.INFOJOBSES
@@ -147,6 +191,7 @@ class InfoJobsSpainScraper(BaseScraper):
         proxy: str | None = None,
         max_pages: int = DEFAULT_MAX_PAGES,
         listing_url: str = LISTING_URL,
+        cloud_browser: CDPCloudBrowser | None = None,
     ) -> None:
         super().__init__(
             company_slug,
@@ -154,69 +199,159 @@ class InfoJobsSpainScraper(BaseScraper):
             include_descriptions=include_descriptions,
             proxy=proxy,
         )
+        if cloud_browser is not None and not isinstance(cloud_browser, CDPCloudBrowser):
+            raise TypeError(
+                "cloud_browser must be a CDPCloudBrowser (InfoJobs Spain drives the page), "
+                f"not {type(cloud_browser).__name__}"
+            )
         self.max_pages = max(1, max_pages)
         self.listing_url = listing_url
+        self.cloud_browser = cloud_browser
 
     async def afetch(self) -> list[Job]:
-        # httpcloak is the only viable transport — bare httpx is gated
-        # by Distil + Geetest. Surface a clear install hint when the
-        # optional extra is missing rather than crashing mid-fetch.
         from importlib.util import find_spec
 
-        if find_spec("httpcloak") is None:
+        has_httpcloak = find_spec("httpcloak") is not None
+        has_browser = cb.is_enabled() or self.cloud_browser is not None
+        if not has_httpcloak and not has_browser:
             log.warning(
-                "InfoJobs Spain: httpcloak is required to bypass Distil "
-                "captcha. Install with `pip install ats-scrapers[scrapers]`. "
-                "Skipping (returning [])."
+                "InfoJobs Spain: httpcloak or cloakbrowser is required to get "
+                "past the bot protection. Install with "
+                "`pip install ats-scrapers[scrapers]`. Skipping (returning [])."
             )
             return []
 
-        seen: set[str] = set()
-        jobs: list[Job] = []
-        total_elements: int | None = None
-        consecutive_empty = 0
-        page = 1
-        while page <= self.max_pages and consecutive_empty < 3:
+        state = _Catalogue(max_pages=self.max_pages)
+        if has_httpcloak:
             try:
-                payload = await self._fetch_page(page)
+                await self._paginate(state, self._fetch_page)
+                return state.jobs
             except ScraperError as exc:
-                # Deep pagination commonly hits a rate-limit wall once
-                # we're past page 200+. Keep what we collected so far
-                # rather than throwing it all away; page 1 stays fatal.
-                if page == 1:
-                    raise
-                log.warning(
-                    "InfoJobs Spain: stopping pagination at page %d (%s); "
-                    "keeping %d jobs collected so far.",
-                    page, exc, len(jobs),
+                if not has_browser:
+                    raise _stopped(state, exc) from exc
+                log.info(
+                    "InfoJobs Spain: plain requests stopped at page %d (%s); "
+                    "reading on in a browser.",
+                    state.page, exc,
                 )
-                break
-            offers = payload.get("offers") or []
-            if total_elements is None:
-                overview = payload.get("overview") or {}
-                te = overview.get("totalElements")
-                if isinstance(te, int) and te >= 0:
-                    total_elements = te
-            new_count = 0
-            for offer in offers:
-                job = self._parse_offer(offer)
-                if job is None or job.ats_id in seen:
-                    continue
-                seen.add(job.ats_id)
-                jobs.append(job)
-                new_count += 1
-            if not offers or new_count == 0:
-                consecutive_empty += 1
-            else:
-                consecutive_empty = 0
-            # Early-exit once we've collected the entire reported
-            # catalogue. ``totalElements`` is a server-side count so a
-            # small mismatch (new postings published mid-scrape) is
-            # fine — the consecutive_empty loop handles the tail.
-            if total_elements is not None and len(jobs) >= total_elements:
-                break
-            page += 1
-        return jobs
+        await self._read_in_browser(state)
+        return state.jobs
+
+    async def _paginate(
+        self,
+        state: _Catalogue,
+        read: Callable[[int], Awaitable[dict[str, Any]]],
+    ) -> None:
+        """Read pages from ``state.page`` on. A failed read raises and
+        leaves ``state.page`` on the page to read next."""
+        while not state.finished:
+            payload = await read(state.page)
+            state.add_page(payload, self._parse_offer)
+
+    async def _read_in_browser(self, state: _Catalogue) -> None:
+        if cb.is_enabled():
+            try:
+                await self._read_in_cloakbrowser(state)
+                return
+            except Exception as exc:
+                if self.cloud_browser is None:
+                    raise _stopped(state, exc) from exc
+                log.warning(
+                    "InfoJobs Spain: cloakbrowser stopped at page %d (%s: %s); "
+                    "reading on in the cloud browser.",
+                    state.page, type(exc).__name__, str(exc)[:200],
+                )
+        if self.cloud_browser is None:
+            raise _stopped(state, ScraperError("no browser to read on with"))
+        cloud_browser = self.cloud_browser
+        while True:
+            start = state.page
+            try:
+                await cloud_browser.run_page(
+                    lambda page: self._paginate_in_page(page, state)
+                )
+                return
+            except Exception as exc:
+                # Hosted sessions end after a set time: a session that read
+                # pages is replaced and the read goes on.
+                if state.page == start:
+                    raise _stopped(state, exc) from exc
+                log.warning(
+                    "InfoJobs Spain: cloud browser stopped at page %d (%s: %s); "
+                    "opening another session.",
+                    state.page, type(exc).__name__, str(exc)[:200],
+                )
+
+    async def _read_in_cloakbrowser(self, state: _Catalogue) -> None:
+        from cloakbrowser import launch_async
+
+        proxy = self.proxy or proxy_url_from_env()
+        browser = await launch_async(
+            headless=True, humanize=True, **({"proxy": proxy} if proxy else {}),
+        )
+        try:
+            await self._paginate_in_page(await browser.new_page(), state)
+        finally:
+            await browser.close()
+
+    async def _paginate_in_page(self, page: Any, state: _Catalogue) -> None:
+        """Open the listing in ``page`` so Imperva hands it a cookie, then
+        fetch the remaining pages from inside it."""
+        await self._clear_challenge(page, _page_url(self.listing_url, state.page))
+
+        async def read(number: int) -> dict[str, Any]:
+            url = _page_url(self.listing_url, number)
+            waits = iter(BROWSER_BLOCK_WAITS)
+            while True:
+                answer = await self._fetch_in_page(page, url)
+                status, body = answer.get("status"), answer.get("body") or ""
+                if status == 200 and _INITIAL_PROPS_MARKER in body:
+                    await asyncio.sleep(BROWSER_PAGE_DELAY)
+                    return _extract_initial_props(body)
+                if not status:
+                    cause = f"InfoJobs Spain: no answer for {url} ({answer.get('error')})"
+                elif isinstance(status, int) and status >= 500:
+                    cause = f"InfoJobs Spain returned {status} for {url}"
+                else:
+                    cause = f"InfoJobs Spain: captcha-gated page ({status}) for {url}"
+                wait = next(waits, None)
+                if wait is None:
+                    raise ScraperError(f"{cause} after {len(BROWSER_BLOCK_WAITS)} waits")
+                log.info("%s; reading it again in %.0f s.", cause, wait)
+                await asyncio.sleep(wait)
+
+        await self._paginate(state, read)
+
+    async def _fetch_in_page(self, page: Any, url: str) -> dict[str, Any]:
+        """``{status, body}`` of ``url`` fetched from inside ``page``; status
+        0 when no answer came within ``timeout``."""
+        try:
+            return await asyncio.wait_for(
+                page.evaluate(_FETCH_IN_PAGE_JS, [url, int(self.timeout * 1000)]),
+                timeout=self.timeout + BROWSER_READ_GRACE,
+            )
+        except TimeoutError:
+            return {"status": 0, "body": "", "error": f"stalled past {self.timeout:g} s"}
+
+    async def _clear_challenge(self, page: Any, url: str) -> None:
+        """Load ``url`` until the listing shows. The Imperva script runs on
+        the first answer and reloads the page by itself."""
+        await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout * 1000)
+        deadline = time.monotonic() + BROWSER_CHALLENGE_TIMEOUT
+        while True:
+            try:
+                html = await asyncio.wait_for(page.content(), timeout=self.timeout)
+            except Exception:
+                # The page is reloading after the challenge.
+                html = ""
+            if _INITIAL_PROPS_MARKER in html:
+                return
+            if time.monotonic() >= deadline:
+                raise ScraperError(
+                    f"InfoJobs Spain: the browser challenge did not clear for {url} "
+                    "(captcha-gated)"
+                )
+            await asyncio.sleep(0.5)
 
     async def _fetch_page(self, page: int) -> dict[str, Any]:
         url = _page_url(self.listing_url, page)
@@ -331,6 +466,57 @@ class InfoJobsSpainScraper(BaseScraper):
 # --- module-level helpers ---------------------------------------------------
 
 
+@dataclass
+class _Catalogue:
+    """What the reads gathered so far. Each way of reading picks up at
+    ``page``."""
+
+    max_pages: int
+    page: int = 1
+    jobs: list[Job] = field(default_factory=list)
+    seen: set[str] = field(default_factory=set)
+    total: int | None = None
+    consecutive_empty: int = 0
+    complete: bool = False
+
+    @property
+    def finished(self) -> bool:
+        return self.complete or self.page > self.max_pages or self.consecutive_empty >= 3
+
+    def add_page(
+        self,
+        payload: dict[str, Any],
+        parse: Callable[[dict[str, Any]], Job | None],
+    ) -> None:
+        offers = payload.get("offers") or []
+        if self.total is None:
+            total = (payload.get("overview") or {}).get("totalElements")
+            if isinstance(total, int) and total >= 0:
+                self.total = total
+        new = 0
+        for offer in offers:
+            job = parse(offer)
+            if job is None or job.ats_id in self.seen:
+                continue
+            self.seen.add(job.ats_id)
+            self.jobs.append(job)
+            new += 1
+        self.consecutive_empty = 0 if new else self.consecutive_empty + 1
+        # ``totalElements`` is counted when the read starts: postings
+        # published during the read leave a gap the empty-page count closes.
+        if self.total is not None and len(self.jobs) >= self.total:
+            self.complete = True
+        self.page += 1
+
+
+def _stopped(state: _Catalogue, cause: BaseException) -> ScraperError:
+    total = f"{state.total:,}" if state.total is not None else "an unknown number of"
+    return ScraperError(
+        f"InfoJobs Spain: stopped at page {state.page} after {len(state.jobs):,} "
+        f"of {total} jobs: {cause}"
+    )
+
+
 def _httpcloak_get_sync(
     url: str, timeout: float, proxy: str | None = None
 ) -> str | int:
@@ -368,8 +554,8 @@ def _extract_initial_props(html_text: str) -> dict[str, Any]:
     idx = html_text.find(_INITIAL_PROPS_MARKER)
     if idx == -1:
         raise ScraperError(
-            "InfoJobs Spain: __INITIAL_PROPS__ not found — likely "
-            "captcha-gated. Verify httpcloak is up to date."
+            "InfoJobs Spain: __INITIAL_PROPS__ not found, the page is "
+            "captcha-gated."
         )
     rest = html_text[idx:]
     start = rest.find(_JSON_PARSE_OPEN)

@@ -153,6 +153,34 @@ def test_paginates_until_no_new_ids(httpx_mock) -> None:
     assert len(jobs) == 50
 
 
+def _counted_page(anchors: list[str], total: int) -> str:
+    return (
+        '<html><body><div><span class="SWhIm">'
+        f"{total:,}</span>  jobs matched</div>{''.join(anchors)}</body></html>"
+    )
+
+
+def test_read_short_of_the_announced_total_raises(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_page_url(1),
+        text=_counted_page([_job_anchor(str(i), f"Job {i}") for i in range(20)], 2_971),
+    )
+    # A page that comes back without its jobs ends the listing early.
+    httpx_mock.add_response(url=_page_url(2), text=_page([]))
+    with pytest.raises(ScraperError, match="20 of 2971"):
+        GoogleScraper("google", include_descriptions=False).fetch()
+
+
+def test_read_close_to_the_announced_total_passes(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_page_url(1),
+        text=_counted_page([_job_anchor(str(i), f"Job {i}") for i in range(20)], 21),
+    )
+    httpx_mock.add_response(url=_page_url(2), text=_page([]))
+    jobs = GoogleScraper("google", include_descriptions=False).fetch()
+    assert len(jobs) == 20
+
+
 def test_terminates_immediately_on_empty_first_page(httpx_mock) -> None:
     httpx_mock.add_response(url=_page_url(1), text=_page([]))
     jobs = GoogleScraper("google").fetch()
