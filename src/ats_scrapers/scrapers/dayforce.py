@@ -195,6 +195,12 @@ class DayforceScraper(BaseScraper):
                     f"Dayforce ({self.tenant}/{self.board}) career site "
                     f"returned no posting list"
                 )
+            total = page.get("maxCount")
+            if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+                raise ScraperError(
+                    f"Dayforce ({self.tenant}/{self.board}) career site "
+                    f"returned no posting count"
+                )
             for posting in postings:
                 if not isinstance(posting, dict):
                     raise ScraperError(
@@ -203,9 +209,13 @@ class DayforceScraper(BaseScraper):
                     )
                 rows.extend(_feed_rows(posting))
             offset += len(postings)
-            total = page.get("maxCount")
-            if not postings or not isinstance(total, int) or offset >= total:
+            if offset >= total:
                 return rows
+            if not postings:
+                raise ScraperError(
+                    f"Dayforce ({self.tenant}/{self.board}) career site search "
+                    f"stopped at {offset} of {total} postings"
+                )
         raise ScraperError(
             f"Dayforce ({self.tenant}/{self.board}) career site search did not "
             f"end after {_SITE_MAX_PAGES} pages"

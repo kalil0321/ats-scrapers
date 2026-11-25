@@ -190,6 +190,52 @@ def test_ip_restricted_feed_is_read_from_the_career_site(httpx_mock) -> None:
     assert next(job for job in jobs if job.requisition_id == "5000").location is None
 
 
+def _ip_restricted_site(httpx_mock) -> None:
+    httpx_mock.add_response(url=API_URL, status_code=403, json=IP_RESTRICTED)
+    httpx_mock.add_response(url=f"{SITE}/api/auth/csrf", json={"csrfToken": "tok"})
+
+
+def test_career_site_search_that_stops_short_fails(httpx_mock) -> None:
+    _ip_restricted_site(httpx_mock)
+    first = [_posting(4000 + index, CALGARY) for index in range(25)]
+    for offset, postings in ((0, first), (25, [])):
+        httpx_mock.add_response(
+            url=SEARCH_URL,
+            method="POST",
+            match_json={
+                "clientNamespace": "mayfair",
+                "jobBoardCode": "CANDIDATEPORTAL",
+                "cultureCode": "en-US",
+                "paginationStart": offset,
+            },
+            json={"jobPostings": postings, "maxCount": 50},
+        )
+
+    with pytest.raises(ScraperError, match="stopped at 25 of 50"):
+        DayforceScraper("mayfair/CANDIDATEPORTAL").fetch()
+
+
+@pytest.mark.parametrize("count", [None, "26", 26.0, True, -1])
+def test_career_site_search_without_a_count_fails(httpx_mock, count: object) -> None:
+    _ip_restricted_site(httpx_mock)
+    page: dict[str, object] = {"jobPostings": [_posting(3612, CALGARY)]}
+    if count is not None:
+        page["maxCount"] = count
+    httpx_mock.add_response(url=SEARCH_URL, method="POST", json=page)
+
+    with pytest.raises(ScraperError, match="no posting count"):
+        DayforceScraper("mayfair/CANDIDATEPORTAL").fetch()
+
+
+def test_career_site_search_of_an_empty_board(httpx_mock) -> None:
+    _ip_restricted_site(httpx_mock)
+    httpx_mock.add_response(
+        url=SEARCH_URL, method="POST", json={"jobPostings": [], "maxCount": 0}
+    )
+
+    assert DayforceScraper("mayfair/CANDIDATEPORTAL").fetch() == []
+
+
 def test_other_403_still_reports_the_block(httpx_mock) -> None:
     httpx_mock.add_response(url=API_URL, status_code=403, text="Forbidden")
 
