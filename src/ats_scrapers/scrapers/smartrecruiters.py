@@ -19,10 +19,13 @@ when the public detail endpoint exposes them.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html as html_mod
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+
+from pydantic import HttpUrl, ValidationError
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
@@ -257,7 +260,8 @@ def _apply_detail_to_job(job: Job, detail: dict[str, Any]) -> None:
     if not job.apply_url:
         apply_url = detail.get("applyUrl")
         if isinstance(apply_url, str) and apply_url.strip():
-            job.apply_url = apply_url.strip()
+            with contextlib.suppress(ValidationError):
+                job.apply_url = HttpUrl(apply_url.strip())
 
 
 def _posting_place(loc: object) -> JobLocation | None:
