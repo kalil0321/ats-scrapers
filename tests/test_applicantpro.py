@@ -464,6 +464,52 @@ def test_state_past_the_list_cap_is_read_by_city(httpx_mock) -> None:
     assert sorted(job.requisition_id for job in jobs) == ["1", "2", "3"]
 
 
+def _listing_queries(httpx_mock) -> list[dict[str, object]]:
+    return [
+        json.loads(request.url.params["getParams"])
+        for request in httpx_mock.get_requests()
+        if "getParams" in request.url.params
+    ]
+
+
+def test_states_are_not_read_once_the_board_is_complete(httpx_mock) -> None:
+    httpx_mock.add_response(url=CAREERS_URL, text=_portal())
+    httpx_mock.add_response(url=LISTING_URL, json=_listing([_job(1), _job(2)], count=3))
+    httpx_mock.add_response(url=FILTERS_URL, json=_facets([6, 36], ["Akron"]))
+    httpx_mock.add_response(url=_query_url({"stateId": 6}), json=_listing([_job(3)]))
+
+    jobs = ApplicantProScraper(TENANT, include_descriptions=False).fetch()
+
+    assert sorted(job.requisition_id for job in jobs) == ["1", "2", "3"]
+    assert _listing_queries(httpx_mock) == [{}, {"stateId": 6}]
+
+
+def test_cities_are_not_read_once_the_state_is_complete(httpx_mock) -> None:
+    httpx_mock.add_response(url=CAREERS_URL, text=_portal())
+    httpx_mock.add_response(url=LISTING_URL, json=_listing([_job(1)], count=5))
+    httpx_mock.add_response(
+        url=FILTERS_URL, json=_facets([36, 6], ["Akron", "Dayton", "Toledo"]),
+    )
+    httpx_mock.add_response(
+        url=_query_url({"stateId": 36}), json=_listing([_job(1)], count=3),
+    )
+    httpx_mock.add_response(
+        url=_query_url({"stateId": 36, "city": "Akron"}), json=_listing([_job(1), _job(2)]),
+    )
+    httpx_mock.add_response(
+        url=_query_url({"stateId": 36, "city": "Dayton"}), json=_listing([_job(3)]),
+    )
+    httpx_mock.add_response(
+        url=_query_url({"stateId": 6}), json=_listing([_job(4), _job(5)]),
+    )
+
+    jobs = ApplicantProScraper(TENANT, include_descriptions=False).fetch()
+
+    assert sorted(job.requisition_id for job in jobs) == ["1", "2", "3", "4", "5"]
+    assert {"stateId": 36, "city": "Toledo"} not in _listing_queries(httpx_mock)
+    assert {"stateId": 6, "city": "Akron"} not in _listing_queries(httpx_mock)
+
+
 def test_duplicate_job_ids_fail_closed(httpx_mock) -> None:
     _mock_listing(httpx_mock, [_job(), _job()])
 

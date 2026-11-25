@@ -288,18 +288,22 @@ class ApplicantProScraper(BaseScraper):
             params={"domainId": domain_id, "showLocation": "1"},
         )
         rows = {_item_id(item, self.company_slug): item for item in items}
+        # The city filter lists every city of the board, whatever the state.
         cities = _facet_values(facets, "city")
         for state in _facet_values(facets, "stateId"):
+            if len(rows) >= total:
+                break
             count, part = await self._query(fetch, domain_id, {"stateId": state})
+            in_state = {_item_id(item, self.company_slug) for item in part}
             rows.update((_item_id(item, self.company_slug), item) for item in part)
-            if len(part) < count:
-                for city in cities:
-                    _, part = await self._query(
-                        fetch, domain_id, {"stateId": state, "city": city},
-                    )
-                    rows.update(
-                        (_item_id(item, self.company_slug), item) for item in part
-                    )
+            for city in cities:
+                if len(in_state) >= count or len(rows) >= total:
+                    break
+                _, part = await self._query(
+                    fetch, domain_id, {"stateId": state, "city": city},
+                )
+                in_state.update(_item_id(item, self.company_slug) for item in part)
+                rows.update((_item_id(item, self.company_slug), item) for item in part)
         for order in _facet_values(facets, "sort"):
             if len(rows) >= total:
                 break
