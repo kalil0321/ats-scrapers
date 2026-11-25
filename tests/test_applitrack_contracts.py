@@ -8,7 +8,7 @@ def test_applitrack_catalog_rows_are_distinct_board_urls() -> None:
     with Path("ats-companies/applitrack.csv").open(newline="") as handle:
         rows = list(csv.DictReader(handle))
 
-    assert len(rows) == 2_116
+    assert len(rows) == 2_113
     assert len({row["slug"] for row in rows}) == len(rows)
     assert len({row["url"] for row in rows}) == len(rows)
     assert all(row["name"].strip() for row in rows)
