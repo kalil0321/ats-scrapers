@@ -158,6 +158,19 @@ def test_missing_token_raises_helpful_error(httpx_mock) -> None:
         CornerstoneScraper("acme").fetch()
 
 
+def test_portal_not_accessible_page_is_not_found(httpx_mock) -> None:
+    page = (
+        "<html><head><title>Cornerstone</title><script>var _strings = "
+        '{"upgrade_title": {"en-US": "Your Cornerstone system is currently not '
+        'accessible."}};</script></head><body><div class="content">'
+        '<h1 id="upgrade_title"></h1><p id="upgrade_msg" class="msg"></p>'
+        "</div></body></html>"
+    )
+    httpx_mock.add_response(url=CAREER_URL, text=page)
+    with pytest.raises(CompanyNotFoundError, match="not accessible"):
+        CornerstoneScraper("acme").fetch()
+
+
 # --- Culture ----------------------------------------------------------------
 
 FORM_DEFAULT_TITLE = "&lt;&lt;ENTER DISPLAY JOB TITLE&gt;&gt;"

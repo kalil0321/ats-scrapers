@@ -37,7 +37,7 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlparse
 
-from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.models import ATSType, Job
 from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
@@ -57,6 +57,10 @@ _TOKEN_RE = re.compile(
 )
 _TOKEN_FALLBACK_RE = re.compile(r'"token"\s*:\s*"([^"]+)"')
 _API_HOST_RE = re.compile(r'(https?://[a-z0-9-]+\.api\.csod\.com)')
+# The static page Cornerstone serves on every path of a closed portal ("Your
+# Cornerstone system is currently not accessible"). It is also its maintenance
+# page, which only lasts a few hours.
+_UNAVAILABLE_PAGE_RE = re.compile(r'id="upgrade_title"')
 
 _DEFAULT_API_HOST = "https://na.api.csod.com"
 # The culture pair as the career site writes it in ``csod.context``.
@@ -224,6 +228,12 @@ class CornerstoneScraper(BaseScraper):
     ) -> tuple[str, str, tuple[int, str]]:
         text = await fetch.get_text(self.career_url)
         match = _TOKEN_RE.search(text) or _TOKEN_FALLBACK_RE.search(text)
+        if not match and _UNAVAILABLE_PAGE_RE.search(text):
+            raise CompanyNotFoundError(
+                f"Cornerstone: {self.career_url} shows \"Your Cornerstone system "
+                "is currently not accessible\": the portal is closed or down "
+                "for maintenance"
+            )
         if not match:
             raise ScraperError(
                 f"Cornerstone: couldn't extract JWT token from {self.career_url}. "
