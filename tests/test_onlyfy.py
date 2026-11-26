@@ -204,26 +204,29 @@ def test_a_company_with_nothing_open_is_no_jobs(httpx_mock) -> None:
     assert OnlyfyScraper("acme").fetch() == []
 
 
-@pytest.mark.parametrize("asked", ["noindex, follow", "NOINDEX,FOLLOW", " follow , noindex ", "none"])
-def test_a_company_that_asks_not_to_be_indexed_lists_no_jobs(httpx_mock, asked: str) -> None:
+def test_a_page_that_asks_search_engines_not_to_index_it_is_read(httpx_mock) -> None:
     page = _page([_card("abc1", "Mechatroniker", "Renningen")]).replace(
-        "<head>", f'<head><meta name="robots" content="{asked}" />'
-    )
-    httpx_mock.add_response(url=f"{SITE}/en", text=page)
-
-    assert OnlyfyScraper("acme").fetch() == []
-
-
-@pytest.mark.parametrize("asked", ["index, follow", "nofollow", ""])
-def test_a_company_that_does_not_ask_is_read(httpx_mock, asked: str) -> None:
-    page = _page([_card("abc1", "Mechatroniker", "Renningen")]).replace(
-        "<head>", f'<head><meta name="robots" content="{asked}" /><meta name="description" content="noindex" />'
+        "<head>", '<head><meta name="robots" content="noindex, follow" />'
     )
     httpx_mock.add_response(url=f"{SITE}/en", text=page)
 
     jobs = OnlyfyScraper("acme", include_descriptions=False).fetch()
 
     assert [job.ats_id for job in jobs] == ["abc1"]
+
+
+def test_a_job_page_without_posting_data_gives_the_text_of_its_description_tag(httpx_mock) -> None:
+    # What a company that asks not to be indexed publishes.
+    httpx_mock.add_response(url=f"{SITE}/en", text=_page([_card("a1", "Mechatroniker", "")]))
+    httpx_mock.add_response(url=f"{SITE}/en/job/a1", text=(
+        '<html><head><meta name="robots" content="noindex, follow"/>'
+        '<meta name="description" content="Mechatroniker  Wir suchen: Wartung &amp; Pflege der Anlagen."/>'
+        '<meta property="og:description" content="Mechatroniker"/></head><body></body></html>'
+    ))
+
+    [job] = OnlyfyScraper("acme").fetch()
+
+    assert job.description == "Mechatroniker Wir suchen: Wartung & Pflege der Anlagen."
 
 
 def test_a_page_without_a_job_list_is_an_error(httpx_mock) -> None:
