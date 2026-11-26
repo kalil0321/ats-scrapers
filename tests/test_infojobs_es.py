@@ -65,7 +65,12 @@ def test_live_e2e_fetches_real_infojobs_page() -> None:
     ij.MAX_RETRIES = 3
     ij.RETRY_BASE_DELAY = 1.5
 
-    jobs = InfoJobsSpainScraper("infojobs_es", max_pages=1, timeout=30).fetch()
+    # One province, one page: a listing on one province is read whole, and
+    # ``max_pages`` ends it there.
+    jobs = InfoJobsSpainScraper(
+        "infojobs_es", max_pages=1, timeout=30,
+        listing_url="https://www.infojobs.net/ofertas-trabajo?provinceIds=44",
+    ).fetch()
 
     assert jobs
     for job in jobs[:5]:
@@ -1075,7 +1080,8 @@ def test_every_route_refusing_a_fresh_session_stops_the_local_browser(
     assert launched == ["http://a:1", "http://b:2"]
 
 
-@pytest.mark.parametrize(("read", "kept"), [(98, True), (90, False)])
+# 98 of 100 read is exactly the 2% allowed; 97 is one too few.
+@pytest.mark.parametrize(("read", "kept"), [(97, True), (96, False)])
 def test_a_stopped_read_is_kept_only_when_it_missed_little(
     fake_httpcloak, caplog: pytest.LogCaptureFixture, read: int, kept: bool,
 ) -> None:
@@ -1092,8 +1098,28 @@ def test_a_stopped_read_is_kept_only_when_it_missed_little(
         return
     with caplog.at_level(logging.WARNING):
         jobs = scraper.fetch()
-    assert len(jobs) == read + 1
-    assert "kept 99 jobs, 1.0% of the catalogue unread" in caplog.text
+    assert len(jobs) == 98
+    assert "kept 98 jobs, 2 of the 100 on page 1 unread" in caplog.text
+
+
+@pytest.mark.parametrize(("read", "kept"), [(97, True), (96, False)])
+def test_provinces_that_add_up_short_of_the_total_are_checked(
+    fake_httpcloak, caplog: pytest.LogCaptureFixture, read: int, kept: bool,
+) -> None:
+    fake_httpcloak.queue(html=_listing_html(
+        [_offer(code="n1")], total=100, provinces=[("33", "Madrid", 98), ("44", "Soria", 2)], pages=5))
+    fake_httpcloak.queue(html=_listing_html(
+        [_offer(code=f"m{i}") for i in range(read)], page=1, pages=1, province="33"))
+    fake_httpcloak.queue(html=_listing_html([], page=1, pages=1, province="44"))
+
+    scraper = InfoJobsSpainScraper("any")
+    if not kept:
+        with pytest.raises(ScraperError, match=f"the provinces add up to {read + 1} of 100 jobs"):
+            scraper.fetch()
+        return
+    with caplog.at_level(logging.WARNING):
+        assert len(scraper.fetch()) == 98
+    assert "2 of the 100 on page 1 unread" in caplog.text
 
 
 def test_running_out_of_pages_with_provinces_left_is_a_stopped_read(fake_httpcloak) -> None:

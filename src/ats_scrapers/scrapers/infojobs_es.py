@@ -55,9 +55,10 @@ provinces is kept once. A page answered as another one (``navigation.self``)
 counts as refused. Without the province counts, the whole listing is read
 and ``overview.totalElements`` ends it.
 
-A read that stops before the end raises :class:`ScraperError`, unless
-it missed at most ``MAX_MISSING_SHARE`` of the catalogue: then what it
-read is returned with a warning.
+A read that stops before the end, or whose provinces add up to less than
+the total of page 1, raises :class:`ScraperError`, unless it missed at
+most ``MAX_MISSING_PERCENT`` of the catalogue: then what it read is
+returned with a warning.
 
 Single-source scraper: ``company_slug`` is informational and ignored.
 """
@@ -114,9 +115,10 @@ BROWSER_BLOCK_WAITS = (30.0, 60.0, 120.0)
 BROWSER_SESSION_PAGES = 800
 # Local browser sessions one read may open.
 MAX_BROWSER_SESSIONS = 12
-# Share of the catalogue a stopped read may miss and still return what it
-# read (with a warning): one small province refused should not drop 59k jobs.
-MAX_MISSING_SHARE = 0.02
+# Percent of the catalogue a read may miss and still return what it read
+# (with a warning): one small province refused should not drop 59k jobs,
+# and postings that expire during a read leave a small gap.
+MAX_MISSING_PERCENT = 2
 # How long the first page may take to run the Imperva script and reload.
 BROWSER_CHALLENGE_TIMEOUT = 30.0
 # Time ``page.evaluate`` gets past the in-page fetch's own deadline before
@@ -635,11 +637,17 @@ class _Catalogue:
         self.page += 1
 
     @property
-    def missing_share(self) -> float:
-        """Share of the catalogue not read, against the total of page 1."""
+    def missing(self) -> int | None:
+        """Jobs of the total of page 1 not read; None without a total."""
         if not self.total:
-            return 1.0
-        return max(0.0, 1 - len(self.jobs) / self.total)
+            return None
+        return max(0, self.total - len(self.jobs))
+
+    @property
+    def missed_too_much(self) -> bool:
+        if self.total is None or (missing := self.missing) is None:
+            return True
+        return missing * 100 > self.total * MAX_MISSING_PERCENT
 
 
 def _province_slices(payload: dict[str, Any]) -> list[_Slice]:
@@ -700,21 +708,27 @@ def _stopped(state: _Catalogue, cause: BaseException) -> ScraperError:
 
 
 def _read_to_the_end(state: _Catalogue) -> list[Job]:
-    """The jobs of a read that ended; one that ran out of ``max_pages``
-    with provinces left is a stopped read."""
-    if state.by_province and state.slice < len(state.slices):
+    """The jobs of a read that ended. One that ran out of ``max_pages``
+    with provinces left is a stopped read; provinces that add up to less
+    than the total are checked the same way."""
+    if not state.by_province:
+        return state.jobs
+    if state.slice < len(state.slices):
         cause = ScraperError(f"the read reached max_pages ({state.max_pages})")
         return _kept_or_raised(state, _stopped(state, cause))
+    if state.missing:
+        cause = ScraperError(f"the provinces add up to {len(state.jobs):,} of {state.total:,} jobs")
+        return _kept_or_raised(state, cause)
     return state.jobs
 
 
 def _kept_or_raised(state: _Catalogue, error: ScraperError) -> list[Job]:
-    """What a stopped read gathered, when it missed little enough."""
-    if state.missing_share > MAX_MISSING_SHARE:
+    """What a read gathered, when it missed little enough."""
+    if state.missed_too_much:
         raise error
     log.warning(
-        "InfoJobs Spain: kept %s jobs, %.1f%% of the catalogue unread: %s",
-        f"{len(state.jobs):,}", state.missing_share * 100, error,
+        "InfoJobs Spain: kept %s jobs, %s of the %s on page 1 unread: %s",
+        f"{len(state.jobs):,}", f"{state.missing:,}", f"{state.total:,}", error,
     )
     return state.jobs
 
