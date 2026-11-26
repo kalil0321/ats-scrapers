@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from datetime import UTC
 from typing import Any
@@ -64,7 +65,12 @@ def test_live_e2e_fetches_real_infojobs_page() -> None:
     ij.MAX_RETRIES = 3
     ij.RETRY_BASE_DELAY = 1.5
 
-    jobs = InfoJobsSpainScraper("infojobs_es", max_pages=1, timeout=30).fetch()
+    # One province, one page: a listing on one province is read whole, and
+    # ``max_pages`` ends it there.
+    jobs = InfoJobsSpainScraper(
+        "infojobs_es", max_pages=1, timeout=30,
+        listing_url="https://www.infojobs.net/ofertas-trabajo?provinceIds=44",
+    ).fetch()
 
     assert jobs
     for job in jobs[:5]:
@@ -178,6 +184,7 @@ def fake_httpcloak(monkeypatch: pytest.MonkeyPatch):
         def __init__(self) -> None:
             self.responses: list[tuple[int, str] | tuple[int, str, int]] = []
             self.calls: list[str] = []
+            self.proxies: list[str | None] = []
 
         def queue(
             self, *, html: str = "", status: int = 200,
@@ -189,9 +196,10 @@ def fake_httpcloak(monkeypatch: pytest.MonkeyPatch):
 
     fake = Fake()
 
-    def fake_get(url: str, timeout: float = 30.0):
+    def fake_get(url: str, timeout: float = 30.0, proxy: str | None = None):
         del timeout  # ignored — the fake response is canned
         fake.calls.append(url)
+        fake.proxies.append(proxy)
         if not fake.responses:
             return _FakeHttpcloakResponse(
                 status_code=200,
@@ -894,3 +902,255 @@ def test_skips_gracefully_when_httpcloak_missing(
 def test_engagement_from_spanish_contract_labels(label, expected):
     job = InfoJobsSpainScraper("any")._parse_offer(_offer(contract_type=label))
     assert job.engagement_type == expected and job.raw["contract_type"] == label
+
+
+# --- province slices and browser sessions -----------------------------------
+
+
+def _listing_html(
+    offers: list[dict[str, Any]],
+    *,
+    total: int | None = None,
+    provinces: list[tuple[str, str, int]] | None = None,
+    page: int | None = None,
+    pages: int | None = None,
+    province: str | None = None,
+) -> str:
+    """A listing page with the parts the province read uses: the province
+    counts of page 1, ``navigation`` and the ``search`` it answered."""
+    payload: dict[str, Any] = {"offers": offers, "search": {"provinceIds": [province] if province else []}}
+    if total is not None:
+        payload["overview"] = {"totalElements": total}
+    if provinces is not None:
+        payload["aggregation"] = {"province": [
+            {"value": value, "label": label, "count": count} for value, label, count in provinces
+        ]}
+    if pages is not None:
+        payload["navigation"] = {"self": page or 1, "totalPages": pages}
+    quoted = json.dumps(json.dumps(payload, ensure_ascii=False), ensure_ascii=False)
+    return f"<html><body><script>window.__INITIAL_PROPS__ = JSON.parse({quoted});</script></body></html>"
+
+
+_PROVINCES = [("9", "Barcelona", 1), ("33", "Madrid", 3)]
+
+
+def test_the_listing_is_read_by_province_largest_first(fake_httpcloak) -> None:
+    fake_httpcloak.queue(html=_listing_html([_offer(code="n1")], total=4, provinces=_PROVINCES, pages=3))
+    fake_httpcloak.queue(html=_listing_html(
+        [_offer(code="m1"), _offer(code="m2")], page=1, pages=2, province="33"))
+    fake_httpcloak.queue(html=_listing_html([_offer(code="m3")], page=2, pages=2, province="33"))
+    # A posting listed in two provinces is kept once.
+    fake_httpcloak.queue(html=_listing_html(
+        [_offer(code="b1"), _offer(code="m1")], page=1, pages=1, province="9"))
+
+    jobs = InfoJobsSpainScraper("any").fetch()
+
+    assert [j.ats_id for j in jobs] == ["n1", "m1", "m2", "m3", "b1"]
+    assert fake_httpcloak.calls == [
+        "https://www.infojobs.net/ofertas-trabajo?page=1",
+        "https://www.infojobs.net/ofertas-trabajo?provinceIds=33&page=1",
+        "https://www.infojobs.net/ofertas-trabajo?provinceIds=33&page=2",
+        "https://www.infojobs.net/ofertas-trabajo?provinceIds=9&page=1",
+    ]
+
+
+def test_a_listing_already_on_one_province_is_not_split(fake_httpcloak) -> None:
+    fake_httpcloak.queue(html=_listing_html(
+        [_offer(code="b1")], total=1, provinces=_PROVINCES, pages=1, province="9"))
+
+    jobs = InfoJobsSpainScraper(
+        "any", listing_url="https://www.infojobs.net/ofertas-trabajo?provinceIds=9",
+    ).fetch()
+
+    assert [j.ats_id for j in jobs] == ["b1"]
+    assert len(fake_httpcloak.calls) == 1
+
+
+def test_a_page_answered_as_another_is_not_taken_for_it(fake_httpcloak) -> None:
+    fake_httpcloak.queue(html=_listing_html([_offer(code="n1")], total=40, provinces=_PROVINCES, pages=2))
+    fake_httpcloak.queue(html=_listing_html([_offer(code="m1")], page=1, pages=2, province="33"))
+    # Page 2 of Madrid comes back as page 1 again.
+    fake_httpcloak.queue(html=_listing_html([_offer(code="m1")], page=1, pages=2, province="33"))
+
+    with pytest.raises(ScraperError, match=r"stopped at Madrid page 2 after 2 of 40 jobs: .*answered as page 1"):
+        InfoJobsSpainScraper("any").fetch()
+
+
+def test_a_page_of_another_province_is_not_taken_for_it(fake_httpcloak) -> None:
+    fake_httpcloak.queue(html=_listing_html([_offer(code="n1")], total=40, provinces=_PROVINCES, pages=2))
+    fake_httpcloak.queue(html=_listing_html([_offer(code="x1")], page=1, pages=2, province="9"))
+
+    with pytest.raises(ScraperError, match=r"answered for provinces \['9'\]"):
+        InfoJobsSpainScraper("any").fetch()
+
+
+def test_the_browser_reads_a_page_answered_as_another_again(
+    fake_httpcloak, cloakbrowser_page,
+) -> None:
+    fake_httpcloak.queue(html=_hydration_html([_offer(code="p1")], total_elements=2))
+    fake_httpcloak.queue_status(403)
+    cloakbrowser_page.answers = {2: [
+        (200, _listing_html([_offer(code="p1")], total=2, page=1, pages=2)),
+        (200, _listing_html([_offer(code="p2")], total=2, page=2, pages=2)),
+    ]}
+
+    jobs = InfoJobsSpainScraper("any").fetch()
+
+    assert [j.ats_id for j in jobs] == ["p1", "p2"]
+    assert cloakbrowser_page.fetched == [2, 2]
+
+
+def _recording_launch(monkeypatch: pytest.MonkeyPatch, page_for) -> list[str | None]:
+    """Replace ``cloakbrowser.launch_async``: each launch gets the page
+    ``page_for(proxy)`` returns; the proxies launched are recorded."""
+    import sys
+    from types import SimpleNamespace
+
+    launched: list[str | None] = []
+
+    class Browser:
+        def __init__(self, proxy: str | None) -> None:
+            self.proxy = proxy
+
+        async def new_page(self) -> _FakePage:
+            return page_for(self.proxy)
+
+        async def close(self) -> None:
+            pass
+
+    async def launch_async(**kwargs: object) -> Browser:
+        proxy = kwargs.get("proxy")
+        launched.append(proxy if isinstance(proxy, str) else None)
+        return Browser(launched[-1])
+
+    monkeypatch.setitem(sys.modules, "cloakbrowser", SimpleNamespace(launch_async=launch_async))
+    return launched
+
+
+def test_browser_sessions_hand_over_before_imperva_refuses_them(
+    fake_httpcloak, cloakbrowser_page, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ats_scrapers.scrapers.infojobs_es as ij
+
+    monkeypatch.setattr(ij, "BROWSER_SESSION_PAGES", 2)
+    fake_httpcloak.queue_status(403)
+    page = _FakePage({
+        n: [(200, _hydration_html([_offer(code=f"p{n}")], total_elements=5))] for n in range(1, 6)
+    })
+    launched = _recording_launch(monkeypatch, lambda proxy: page)
+
+    jobs = InfoJobsSpainScraper("any", proxies=["http://a:1", None]).fetch()
+
+    assert [j.ats_id for j in jobs] == [f"p{n}" for n in range(1, 6)]
+    # Two pages a session, moving over the routes; None is the direct connection.
+    assert launched == ["http://a:1", None, "http://a:1"]
+    assert fake_httpcloak.proxies == ["http://a:1"]
+    assert page.fetched == [1, 2, 3, 4, 5]
+
+
+def test_a_refused_session_hands_over_to_the_next_route(
+    fake_httpcloak, cloakbrowser_page, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_httpcloak.queue_status(403)
+    good = {n: [(200, _hydration_html([_offer(code=f"p{n}")], total_elements=4))] for n in range(1, 5)}
+    refused_from_3 = _FakePage({**good, 3: [_CAPTCHA], 4: [_CAPTCHA]})
+    fresh = _FakePage(dict(good))
+    launched = _recording_launch(
+        monkeypatch, lambda proxy: refused_from_3 if proxy == "http://a:1" else fresh,
+    )
+
+    jobs = InfoJobsSpainScraper("any", proxies=["http://a:1", "http://b:2"]).fetch()
+
+    assert [j.ats_id for j in jobs] == ["p1", "p2", "p3", "p4"]
+    assert launched == ["http://a:1", "http://b:2"]
+    assert fresh.fetched == [3, 4]
+
+
+def test_every_route_refusing_a_fresh_session_stops_the_local_browser(
+    fake_httpcloak, cloakbrowser_page, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_httpcloak.queue(html=_hydration_html([_offer(code="p1")], total_elements=3))
+    fake_httpcloak.queue_status(403)
+    refused = _FakePage({2: [_CAPTCHA]})
+    launched = _recording_launch(monkeypatch, lambda proxy: refused)
+
+    with pytest.raises(ScraperError, match=r"stopped at page 2 after 1 of 3 jobs: .*captcha"):
+        InfoJobsSpainScraper("any", proxies=["http://a:1", "http://b:2"]).fetch()
+
+    assert launched == ["http://a:1", "http://b:2"]
+
+
+# 98 of 100 read is exactly the 2% allowed; 97 is one too few.
+@pytest.mark.parametrize(("read", "kept"), [(97, True), (96, False)])
+def test_a_stopped_read_is_kept_only_when_it_missed_little(
+    fake_httpcloak, caplog: pytest.LogCaptureFixture, read: int, kept: bool,
+) -> None:
+    fake_httpcloak.queue(html=_listing_html(
+        [_offer(code="n1")], total=100, provinces=[("33", "Madrid", 98), ("44", "Soria", 2)], pages=5))
+    fake_httpcloak.queue(html=_listing_html(
+        [_offer(code=f"m{i}") for i in range(read)], page=1, pages=1, province="33"))
+    fake_httpcloak.queue_status(500)
+
+    scraper = InfoJobsSpainScraper("any")
+    if not kept:
+        with pytest.raises(ScraperError, match=f"stopped at Soria page 1 after {read + 1} of 100 jobs"):
+            scraper.fetch()
+        return
+    with caplog.at_level(logging.WARNING):
+        jobs = scraper.fetch()
+    assert len(jobs) == 98
+    assert "kept 98 jobs, 2 of the 100 on page 1 unread" in caplog.text
+
+
+@pytest.mark.parametrize(("read", "kept"), [(97, True), (96, False)])
+def test_provinces_that_add_up_short_of_the_total_are_checked(
+    fake_httpcloak, caplog: pytest.LogCaptureFixture, read: int, kept: bool,
+) -> None:
+    fake_httpcloak.queue(html=_listing_html(
+        [_offer(code="n1")], total=100, provinces=[("33", "Madrid", 98), ("44", "Soria", 2)], pages=5))
+    fake_httpcloak.queue(html=_listing_html(
+        [_offer(code=f"m{i}") for i in range(read)], page=1, pages=1, province="33"))
+    fake_httpcloak.queue(html=_listing_html([], page=1, pages=1, province="44"))
+
+    scraper = InfoJobsSpainScraper("any")
+    if not kept:
+        with pytest.raises(ScraperError, match=f"the provinces add up to {read + 1} of 100 jobs"):
+            scraper.fetch()
+        return
+    with caplog.at_level(logging.WARNING):
+        assert len(scraper.fetch()) == 98
+    assert "2 of the 100 on page 1 unread" in caplog.text
+
+
+def test_running_out_of_pages_with_provinces_left_is_a_stopped_read(fake_httpcloak) -> None:
+    fake_httpcloak.queue(html=_listing_html([_offer(code="n1")], total=4, provinces=_PROVINCES, pages=3))
+    fake_httpcloak.queue(html=_listing_html(
+        [_offer(code="m1"), _offer(code="m2")], page=1, pages=2, province="33"))
+
+    with pytest.raises(ScraperError, match=r"stopped at Madrid page 2 after 3 of 4 jobs: .*max_pages \(2\)"):
+        InfoJobsSpainScraper("any", max_pages=2).fetch()
+
+
+def test_a_session_that_reads_resets_the_count_of_idle_ones(
+    fake_httpcloak, cloakbrowser_page, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ats_scrapers.scrapers.infojobs_es as ij
+
+    monkeypatch.setattr(ij, "BROWSER_SESSION_PAGES", 2)
+    fake_httpcloak.queue_status(403)
+    good = {n: [(200, _hydration_html([_offer(code=f"p{n}")], total_elements=4))] for n in range(1, 5)}
+    sessions: list[str] = []
+
+    def page_for(proxy: str | None) -> _FakePage:
+        # Route a refuses every session; b reads its two pages each time.
+        sessions.append(proxy or "direct")
+        if proxy == "http://a:1":
+            return _FakePage({n: [_CAPTCHA] for n in range(1, 5)})
+        return _FakePage(dict(good))
+
+    _recording_launch(monkeypatch, page_for)
+
+    jobs = InfoJobsSpainScraper("any", proxies=["http://a:1", "http://b:2"]).fetch()
+
+    assert [j.ats_id for j in jobs] == ["p1", "p2", "p3", "p4"]
+    assert sessions == ["http://a:1", "http://b:2", "http://a:1", "http://b:2"]
