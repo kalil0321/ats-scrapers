@@ -41,13 +41,23 @@ Geetest captcha). The pages are read in up to three ways, cheapest first:
 3. The ``cloud_browser`` given to the scraper, same flow, when
    cloakbrowser is missing or refused.
 
-Each step starts at the page the previous one stopped at. A read that
-stops before the end of the catalogue raises :class:`ScraperError`: a
-partial catalogue is never returned as a complete one.
+Each step starts at the page the previous one stopped at. Imperva refuses
+a browser session after about 1,000 pages, so cloakbrowser opens a new
+session every ``BROWSER_SESSION_PAGES`` pages, moving over ``proxies``.
 
-Pagination is via ``?page=N`` (1-indexed). The
-``overview.totalElements`` field on each page lets us stop early once
-we've collected the entire catalogue.
+The listing is sorted by publication date only, so a long read drifts:
+postings come and go while it pages. Page 1 of the whole listing lists
+every province with its count (``aggregation.province``, the 108 of them
+add up to the total); each province is then read on its own
+(``?provinceIds=<id>&page=N``, the largest under 650 pages), up to the
+``navigation.totalPages`` its first page gives. A posting listed in two
+provinces is kept once. A page answered as another one (``navigation.self``)
+counts as refused. Without the province counts, the whole listing is read
+and ``overview.totalElements`` ends it.
+
+A read that stops before the end raises :class:`ScraperError`, unless
+it missed at most ``MAX_MISSING_SHARE`` of the catalogue: then what it
+read is returned with a warning.
 
 Single-source scraper: ``company_slug`` is informational and ignored.
 """
@@ -74,14 +84,16 @@ from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
     from typing import Any
 
     from ats_scrapers.models import EngagementType
 
 API_ROOT = "https://www.infojobs.net"
 LISTING_URL = f"{API_ROOT}/ofertas-trabajo"
-DEFAULT_MAX_PAGES = 3500  # ~59k offers / 20 per page = ~2,950 pages
+# ~59k offers / 20 per page = ~2,975 pages, plus the first page of each
+# of ~108 province slices.
+DEFAULT_MAX_PAGES = 4500
 # Retry knobs for the httpcloak transport. This scraper deliberately
 # does NOT use the shared Fetcher's cloak engine: InfoJobs treats 403
 # as *transient* (Distil challenges deep pagination and backs off),
@@ -96,6 +108,15 @@ BROWSER_PAGE_DELAY = 1.2
 # Waits before a refused page is read again in the browser. A 30 s pause
 # cleared every captcha seen while measuring.
 BROWSER_BLOCK_WAITS = (30.0, 60.0, 120.0)
+# Imperva refused each browser session about 1,000 pages after it started
+# (cloakbrowser and the cloud browser alike, 25 Nov 2026): a session hands
+# over to a new one before that.
+BROWSER_SESSION_PAGES = 800
+# Local browser sessions one read may open.
+MAX_BROWSER_SESSIONS = 12
+# Share of the catalogue a stopped read may miss and still return what it
+# read (with a warning): one small province refused should not drop 59k jobs.
+MAX_MISSING_SHARE = 0.02
 # How long the first page may take to run the Imperva script and reload.
 BROWSER_CHALLENGE_TIMEOUT = 30.0
 # Time ``page.evaluate`` gets past the in-page fetch's own deadline before
@@ -178,6 +199,8 @@ class InfoJobsSpainScraper(BaseScraper):
       include it in the override.
     - ``cloud_browser``: hosted browser for the pages cloakbrowser
       cannot read.
+    - ``proxies``: routes the browser sessions move over, one per session
+      (``None`` is the direct connection).
     """
 
     ats = ATSType.INFOJOBSES
@@ -189,6 +212,7 @@ class InfoJobsSpainScraper(BaseScraper):
         timeout: float = 30.0,
         include_descriptions: bool = True,
         proxy: str | None = None,
+        proxies: Sequence[str | None] | None = None,
         max_pages: int = DEFAULT_MAX_PAGES,
         listing_url: str = LISTING_URL,
         cloud_browser: CDPCloudBrowser | None = None,
@@ -207,6 +231,14 @@ class InfoJobsSpainScraper(BaseScraper):
         self.max_pages = max(1, max_pages)
         self.listing_url = listing_url
         self.cloud_browser = cloud_browser
+        # ``""`` is the direct connection: a ``None`` route given in
+        # ``proxies`` must not fall back to the environment's proxy.
+        self.routes: list[str | None] = (
+            [route or "" for route in proxies] if proxies else [proxy]
+        )
+
+    def _route_proxy(self, route: str | None) -> str | None:
+        return route if route is not None else proxy_url_from_env()
 
     async def afetch(self) -> list[Job]:
         from importlib.util import find_spec
@@ -221,32 +253,42 @@ class InfoJobsSpainScraper(BaseScraper):
             )
             return []
 
-        state = _Catalogue(max_pages=self.max_pages)
+        state = _Catalogue(
+            max_pages=self.max_pages,
+            sliced="provinceIds" not in dict(parse_qsl(urlsplit(self.listing_url).query)),
+        )
         if has_httpcloak:
             try:
                 await self._paginate(state, self._fetch_page)
-                return state.jobs
+                return _read_to_the_end(state)
             except ScraperError as exc:
                 if not has_browser:
-                    raise _stopped(state, exc) from exc
+                    return _kept_or_raised(state, _stopped(state, exc))
                 log.info(
-                    "InfoJobs Spain: plain requests stopped at page %d (%s); "
+                    "InfoJobs Spain: plain requests stopped at %s (%s); "
                     "reading on in a browser.",
-                    state.page, exc,
+                    state.where, exc,
                 )
-        await self._read_in_browser(state)
-        return state.jobs
+        try:
+            await self._read_in_browser(state)
+        except ScraperError as exc:
+            return _kept_or_raised(state, exc)
+        return _read_to_the_end(state)
 
     async def _paginate(
         self,
         state: _Catalogue,
-        read: Callable[[int], Awaitable[dict[str, Any]]],
+        read: Callable[[str], Awaitable[dict[str, Any]]],
+        budget: int | None = None,
     ) -> None:
-        """Read pages from ``state.page`` on. A failed read raises and
-        leaves ``state.page`` on the page to read next."""
-        while not state.finished:
-            payload = await read(state.page)
+        """Read pages from where ``state`` stands, ``budget`` of them at
+        most. A failed read raises and leaves ``state`` on the page to
+        read next."""
+        done = 0
+        while not state.finished and (budget is None or done < budget):
+            payload = await read(state.url(self.listing_url))
             state.add_page(payload, self._parse_offer)
+            done += 1
 
     async def _read_in_browser(self, state: _Catalogue) -> None:
         if cb.is_enabled():
@@ -257,15 +299,15 @@ class InfoJobsSpainScraper(BaseScraper):
                 if self.cloud_browser is None:
                     raise _stopped(state, exc) from exc
                 log.warning(
-                    "InfoJobs Spain: cloakbrowser stopped at page %d (%s: %s); "
+                    "InfoJobs Spain: cloakbrowser stopped at %s (%s: %s); "
                     "reading on in the cloud browser.",
-                    state.page, type(exc).__name__, str(exc)[:200],
+                    state.where, type(exc).__name__, str(exc)[:200],
                 )
         if self.cloud_browser is None:
             raise _stopped(state, ScraperError("no browser to read on with"))
         cloud_browser = self.cloud_browser
         while True:
-            start = state.page
+            start = state.reads
             try:
                 await cloud_browser.run_page(
                     lambda page: self._paginate_in_page(page, state)
@@ -274,41 +316,71 @@ class InfoJobsSpainScraper(BaseScraper):
             except Exception as exc:
                 # Hosted sessions end after a set time: a session that read
                 # pages is replaced and the read goes on.
-                if state.page == start:
+                if state.reads == start:
                     raise _stopped(state, exc) from exc
                 log.warning(
-                    "InfoJobs Spain: cloud browser stopped at page %d (%s: %s); "
+                    "InfoJobs Spain: cloud browser stopped at %s (%s: %s); "
                     "opening another session.",
-                    state.page, type(exc).__name__, str(exc)[:200],
+                    state.where, type(exc).__name__, str(exc)[:200],
                 )
 
     async def _read_in_cloakbrowser(self, state: _Catalogue) -> None:
+        """Read in local browser sessions, each on the next route: a new
+        one every ``BROWSER_SESSION_PAGES`` pages, or when one is refused.
+        Raises once every route opened a session that read nothing."""
         from cloakbrowser import launch_async
 
-        proxy = self.proxy or proxy_url_from_env()
-        browser = await launch_async(
-            headless=True, humanize=True, **({"proxy": proxy} if proxy else {}),
+        idle = 0
+        for session in range(MAX_BROWSER_SESSIONS):
+            proxy = self._route_proxy(self.routes[session % len(self.routes)])
+            browser = await launch_async(
+                headless=True, humanize=True, **({"proxy": proxy} if proxy else {}),
+            )
+            start = state.reads
+            try:
+                await self._paginate_in_page(
+                    await browser.new_page(), state, BROWSER_SESSION_PAGES,
+                )
+            except Exception as exc:
+                idle = 0 if state.reads > start else idle + 1
+                if idle >= len(self.routes):
+                    raise
+                log.warning(
+                    "InfoJobs Spain: browser session %d stopped at %s (%s: %s); "
+                    "opening another.",
+                    session + 1, state.where, type(exc).__name__, str(exc)[:200],
+                )
+            finally:
+                await browser.close()
+            if state.reads > start:
+                idle = 0
+            if state.finished:
+                return
+        raise ScraperError(
+            f"InfoJobs Spain: {MAX_BROWSER_SESSIONS} browser sessions did not finish the listing"
         )
-        try:
-            await self._paginate_in_page(await browser.new_page(), state)
-        finally:
-            await browser.close()
 
-    async def _paginate_in_page(self, page: Any, state: _Catalogue) -> None:
+    async def _paginate_in_page(
+        self, page: Any, state: _Catalogue, budget: int | None = None,
+    ) -> None:
         """Open the listing in ``page`` so Imperva hands it a cookie, then
-        fetch the remaining pages from inside it."""
-        await self._clear_challenge(page, _page_url(self.listing_url, state.page))
+        fetch the remaining pages from inside it, ``budget`` at most."""
+        await self._clear_challenge(page, state.url(self.listing_url))
 
-        async def read(number: int) -> dict[str, Any]:
-            url = _page_url(self.listing_url, number)
+        async def read(url: str) -> dict[str, Any]:
             waits = iter(BROWSER_BLOCK_WAITS)
             while True:
                 answer = await self._fetch_in_page(page, url)
                 status, body = answer.get("status"), answer.get("body") or ""
+                wrong = None
                 if status == 200 and _INITIAL_PROPS_MARKER in body:
-                    await asyncio.sleep(BROWSER_PAGE_DELAY)
-                    return _extract_initial_props(body)
-                if not status:
+                    props = _extract_initial_props(body)
+                    if (wrong := _wrong_page(props, url)) is None:
+                        await asyncio.sleep(BROWSER_PAGE_DELAY)
+                        return props
+                if wrong:
+                    cause = wrong
+                elif not status:
                     cause = f"InfoJobs Spain: no answer for {url} ({answer.get('error')})"
                 elif isinstance(status, int) and status >= 500:
                     cause = f"InfoJobs Spain returned {status} for {url}"
@@ -320,7 +392,7 @@ class InfoJobsSpainScraper(BaseScraper):
                 log.info("%s; reading it again in %.0f s.", cause, wait)
                 await asyncio.sleep(wait)
 
-        await self._paginate(state, read)
+        await self._paginate(state, read, budget)
 
     async def _fetch_in_page(self, page: Any, url: str) -> dict[str, Any]:
         """``{status, body}`` of ``url`` fetched from inside ``page``; status
@@ -353,10 +425,11 @@ class InfoJobsSpainScraper(BaseScraper):
                 )
             await asyncio.sleep(0.5)
 
-    async def _fetch_page(self, page: int) -> dict[str, Any]:
-        url = _page_url(self.listing_url, page)
-        text = await self._request_via_httpcloak(url)
-        return _extract_initial_props(text)
+    async def _fetch_page(self, url: str) -> dict[str, Any]:
+        props = _extract_initial_props(await self._request_via_httpcloak(url))
+        if wrong := _wrong_page(props, url):
+            raise ScraperError(wrong)
+        return props
 
     async def _request_via_httpcloak(self, url: str) -> str:
         """Fetch via httpcloak with retry/backoff. Returns the HTML
@@ -366,8 +439,7 @@ class InfoJobsSpainScraper(BaseScraper):
         even httpcloak gets challenged on deep pagination) is treated
         as transient up to ``MAX_RETRIES``."""
         last_status: int | None = None
-        # Explicit ctor proxy wins over the env-derived one.
-        proxy = self.proxy or proxy_url_from_env()
+        proxy = self._route_proxy(self.routes[0])
         for attempt in range(1, MAX_RETRIES + 1):
             result = await asyncio.to_thread(
                 _httpcloak_get_sync, url, self.timeout, proxy
@@ -467,21 +539,58 @@ class InfoJobsSpainScraper(BaseScraper):
 
 
 @dataclass
+class _Slice:
+    """A part of the listing read on its own: one province, or the whole
+    listing (``province`` None)."""
+
+    province: str | None
+    label: str
+    count: int | None = None
+    # ``navigation.totalPages`` as the slice's first page gives it.
+    pages: int | None = None
+
+
+@dataclass
 class _Catalogue:
     """What the reads gathered so far. Each way of reading picks up at
-    ``page``."""
+    the slice and page it stands on."""
 
     max_pages: int
+    # Split by province once page 1 of the listing gives the counts.
+    sliced: bool = True
     page: int = 1
     jobs: list[Job] = field(default_factory=list)
     seen: set[str] = field(default_factory=set)
     total: int | None = None
     consecutive_empty: int = 0
     complete: bool = False
+    slices: list[_Slice] = field(default_factory=lambda: [_Slice(None, "the listing")])
+    slice: int = 0
+    reads: int = 0
+    planned: bool = False
+
+    @property
+    def by_province(self) -> bool:
+        return self.slices[0].province is not None
 
     @property
     def finished(self) -> bool:
-        return self.complete or self.page > self.max_pages or self.consecutive_empty >= 3
+        if self.reads >= self.max_pages:
+            return True
+        if self.by_province:
+            return self.slice >= len(self.slices)
+        return self.complete or self.consecutive_empty >= 3
+
+    @property
+    def where(self) -> str:
+        if not self.by_province or self.slice >= len(self.slices):
+            return f"page {self.page}"
+        return f"{self.slices[self.slice].label} page {self.page}"
+
+    def url(self, listing_url: str) -> str:
+        if self.by_province and self.slice < len(self.slices):
+            listing_url = _with_province(listing_url, self.slices[self.slice].province)
+        return _page_url(listing_url, self.page)
 
     def add_page(
         self,
@@ -501,6 +610,23 @@ class _Catalogue:
             self.seen.add(job.ats_id)
             self.jobs.append(job)
             new += 1
+        self.reads += 1
+        if not self.planned:
+            self.planned = True
+            if self.sliced and (slices := _province_slices(payload)):
+                self.slices, self.slice, self.page = slices, 0, 1
+                return
+        if self.by_province:
+            current = self.slices[self.slice]
+            if self.page == 1:
+                pages = (payload.get("navigation") or {}).get("totalPages")
+                current.pages = pages if isinstance(pages, int) else None
+            if not offers or (current.pages is not None and self.page >= current.pages):
+                self.slice += 1
+                self.page = 1
+            else:
+                self.page += 1
+            return
         self.consecutive_empty = 0 if new else self.consecutive_empty + 1
         # ``totalElements`` is counted when the read starts: postings
         # published during the read leave a gap the empty-page count closes.
@@ -508,13 +634,89 @@ class _Catalogue:
             self.complete = True
         self.page += 1
 
+    @property
+    def missing_share(self) -> float:
+        """Share of the catalogue not read, against the total of page 1."""
+        if not self.total:
+            return 1.0
+        return max(0.0, 1 - len(self.jobs) / self.total)
+
+
+def _province_slices(payload: dict[str, Any]) -> list[_Slice]:
+    """The provinces page 1 counts postings in, largest first; none when
+    there is nothing to split."""
+    rows = (payload.get("aggregation") or {}).get("province") or []
+    slices = [
+        _Slice(
+            str(row["value"]),
+            str(row.get("label") or row["value"]),
+            row["count"] if isinstance(row.get("count"), int) else None,
+        )
+        for row in rows
+        if isinstance(row, dict) and str(row.get("value") or "").strip()
+    ]
+    slices.sort(key=lambda s: -(s.count or 0))
+    return slices if len(slices) > 1 else []
+
+
+def _with_province(listing_url: str, province: str | None) -> str:
+    parts = urlsplit(listing_url)
+    query = [
+        (k, v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if k != "provinceIds"
+    ]
+    if province:
+        query.append(("provinceIds", province))
+    return urlunsplit((
+        parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment,
+    ))
+
+
+def _wrong_page(props: dict[str, Any], url: str) -> str | None:
+    """Why a parsed page is not the one ``url`` asked for, else None: the
+    page number (``navigation.self``, within ``totalPages``) or the province
+    (``search.provinceIds``) differs."""
+    asked = dict(parse_qsl(urlsplit(url).query))
+    navigation = props.get("navigation")
+    if isinstance(navigation, dict) and str(asked.get("page", "")).isdigit():
+        number, got, pages = int(asked["page"]), navigation.get("self"), navigation.get("totalPages")
+        if isinstance(got, int) and isinstance(pages, int) and number <= pages and got != number:
+            return f"InfoJobs Spain: page {number} answered as page {got} for {url}"
+    search = props.get("search")
+    answered = search.get("provinceIds") if isinstance(search, dict) else None
+    province = asked.get("provinceIds")
+    if province and isinstance(answered, list) and province not in [str(p) for p in answered]:
+        return f"InfoJobs Spain: {url} answered for provinces {answered}"
+    return None
+
 
 def _stopped(state: _Catalogue, cause: BaseException) -> ScraperError:
     total = f"{state.total:,}" if state.total is not None else "an unknown number of"
     return ScraperError(
-        f"InfoJobs Spain: stopped at page {state.page} after {len(state.jobs):,} "
+        f"InfoJobs Spain: stopped at {state.where} after {len(state.jobs):,} "
         f"of {total} jobs: {cause}"
     )
+
+
+def _read_to_the_end(state: _Catalogue) -> list[Job]:
+    """The jobs of a read that ended; one that ran out of ``max_pages``
+    with provinces left is a stopped read."""
+    if state.by_province and state.slice < len(state.slices):
+        cause = ScraperError(f"the read reached max_pages ({state.max_pages})")
+        return _kept_or_raised(state, _stopped(state, cause))
+    return state.jobs
+
+
+def _kept_or_raised(state: _Catalogue, error: ScraperError) -> list[Job]:
+    """What a stopped read gathered, when it missed little enough."""
+    if state.missing_share > MAX_MISSING_SHARE:
+        raise error
+    log.warning(
+        "InfoJobs Spain: kept %s jobs, %.1f%% of the catalogue unread: %s",
+        f"{len(state.jobs):,}", state.missing_share * 100, error,
+    )
+    return state.jobs
 
 
 def _httpcloak_get_sync(
