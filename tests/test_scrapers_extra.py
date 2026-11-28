@@ -553,6 +553,24 @@ def test_workday_listing_sets_an_approximate_posting_date(httpx_mock) -> None:
     assert jobs["Old"].raw["postedOn"] == "Posted 30+ Days Ago"
 
 
+def test_workday_detail_date_replaces_the_listing_date(httpx_mock) -> None:
+    from datetime import UTC, datetime
+
+    base = "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External"
+    httpx_mock.add_response(url=f"{base}/jobs", json={"total": 1, "jobPostings": [
+        {"title": "New", "externalPath": "/job/New_R1", "bulletFields": ["R1"], "postedOn": "Posted 3 Days Ago"},
+    ]})
+    httpx_mock.add_response(url=f"{base}/job/New_R1", json={"jobPostingInfo": {
+        "jobDescription": "Build.", "startDate": "2026-01-05",
+    }})
+
+    (job,) = WorkdayScraper("https://acme.wd1.myworkdayjobs.com/External").fetch()
+
+    assert job.posted_at == datetime(2026, 1, 5, tzinfo=UTC)
+    assert job.raw["postedOn"] == "Posted 3 Days Ago"
+    assert job.raw["startDate"] == "2026-01-05"
+
+
 def test_workday_dedupes_overlapping_pages(httpx_mock) -> None:
     """Concurrent paginated fetches can return the same job twice when the
     underlying listing shifts. Dedup must collapse them to a single Job."""
