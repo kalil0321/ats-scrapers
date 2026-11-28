@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from ats_scrapers.exceptions import ScraperError
+from ats_scrapers.models import Job
 from ats_scrapers.scrapers import BundesagenturScraper
 
 _API_RE = re.compile(
@@ -1167,3 +1168,137 @@ def test_ba_existing_detail_call_enriches_original_job(httpx_mock):
     assert job.engagement_type == "fixed_term"
     assert job.raw["befristungInMonaten"] == 12
     assert len(httpx_mock.get_requests()) == 1
+
+
+# --- Detail reads ------------------------------------------------------------
+
+_DETAIL_RE = re.compile(
+    r"^https://rest\.arbeitsagentur\.de/jobboerse/jobsuche-service/pc/v4/jobdetails/"
+)
+
+
+def _listed(refnr: str) -> Job:
+    job = BundesagenturScraper("any")._parse(
+        {**_job(refnr, "Probe"), "stellenangebotsBeschreibung": None}
+    )
+    assert job is not None and job.description is None
+    return job
+
+
+def test_detail_refused_on_one_route_is_read_through_the_next(httpx_mock) -> None:
+    routes: list[int] = []
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        routes.append(request.extensions["route"])
+        if request.extensions["route"] == 0:
+            return httpx.Response(403)
+        return httpx.Response(200, json={"stellenangebotsBeschreibung": "Build things."})
+
+    httpx_mock.add_callback(serve, url=_DETAIL_RE, is_reusable=True)
+    scraper = BundesagenturScraper("any", proxies=[None, "http://a.example:3128"])
+
+    assert scraper.get_description(_listed("1")) == "Build things."
+    # The refused route rests for the next posting too.
+    assert scraper.get_description(_listed("2")) == "Build things."
+    assert routes == [0, 1, 1]
+
+
+def test_detail_refused_every_time_raises(httpx_mock) -> None:
+    import ats_scrapers.scrapers.bundesagentur as ba
+
+    httpx_mock.add_response(url=_DETAIL_RE, status_code=429, is_reusable=True)
+
+    with pytest.raises(ScraperError, match="refused the detail of 1"):
+        BundesagenturScraper("any").get_description(_listed("1"))
+    assert len(httpx_mock.get_requests()) == ba.DETAIL_ATTEMPTS
+
+
+def test_detail_network_error_is_retried(httpx_mock) -> None:
+    httpx_mock.add_exception(httpx.RemoteProtocolError("closed"), url=_DETAIL_RE)
+    httpx_mock.add_response(url=_DETAIL_RE, json={"stellenangebotsBeschreibung": "Text."})
+
+    assert BundesagenturScraper("any").get_description(_listed("1")) == "Text."
+
+
+def test_gone_posting_has_no_description(httpx_mock) -> None:
+    httpx_mock.add_response(url=_DETAIL_RE, status_code=404)
+
+    assert BundesagenturScraper("any").get_description(_listed("1")) is None
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_detail_fills_what_only_the_detail_carries(httpx_mock) -> None:
+    job = _listed("1")
+    job.is_remote = None
+    httpx_mock.add_response(
+        url=_DETAIL_RE,
+        json={
+            "stellenangebotsBeschreibung": "  Build things.  ",
+            "geforderterBildungsabschluss": "MITTLERE_REIFE_MITTLERER_BILDUNGSABSCHLUSS",
+            "homeofficemoeglich": True,
+            "externeURL": "https://jobs.example.com/1",
+            "allianzpartnerName": "jobs.example.com",
+            "istPrivateArbeitsvermittlung": False,
+            "befristetBis": "2027-06-30",
+        },
+    )
+
+    assert BundesagenturScraper("any").get_description(job) == "Build things."
+    assert [(r.label, r.requirement) for r in job.education_requirements] == [
+        ("Mittlere Reife/Mittlerer Bildungsabschluss", "required")
+    ]
+    assert job.is_remote is True
+    assert str(job.apply_url) == "https://jobs.example.com/1"
+    assert job.raw["allianzpartnerName"] == "jobs.example.com"
+    assert job.raw["istPrivateArbeitsvermittlung"] is False
+    assert job.raw["befristetBis"] == "2027-06-30"
+
+
+@pytest.mark.parametrize("code", ["NICHT_RELEVANT", None])
+def test_detail_without_a_school_qualification(httpx_mock, code) -> None:
+    job = _listed("1")
+    httpx_mock.add_response(
+        url=_DETAIL_RE,
+        json={"stellenangebotsBeschreibung": "Text.", "geforderterBildungsabschluss": code},
+    )
+
+    BundesagenturScraper("any").get_description(job)
+
+    assert job.education_requirements is None
+
+
+def test_details_share_a_kept_connection(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=_DETAIL_RE, json={"stellenangebotsBeschreibung": "Text."}, is_reusable=True
+    )
+    scraper = BundesagenturScraper("any")
+
+    scraper.get_description(_listed("1"))
+    client = scraper._detail_client(0)
+    scraper.get_description(_listed("2"))
+
+    assert scraper._detail_client(0) is client
+    scraper.close()
+    assert client.is_closed
+
+
+def test_detail_with_a_malformed_apply_link_keeps_its_text(httpx_mock) -> None:
+    job = _listed("1")
+    httpx_mock.add_response(
+        url=_DETAIL_RE,
+        json={"stellenangebotsBeschreibung": "Text.", "externeURL": "http://bad host/"},
+    )
+
+    assert BundesagenturScraper("any").get_description(job) == "Text."
+    assert job.apply_url is None
+
+
+def test_direct_detail_route_ignores_the_environment_proxy(monkeypatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://env.example:3128")
+    scraper = BundesagenturScraper("any", proxies=["http://a.example:3128", None])
+    url = httpx.URL("https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobdetails/x")
+
+    direct = scraper._detail_client(1)
+
+    assert direct._transport_for_url(url) is direct._transport
+    scraper.close()

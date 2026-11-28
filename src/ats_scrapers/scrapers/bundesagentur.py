@@ -41,10 +41,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import functools
 import logging
 import random
+import threading
 import time
+import weakref
 from collections import Counter
 from collections.abc import (
     AsyncGenerator,
@@ -60,7 +63,14 @@ import httpx
 from pydantic import HttpUrl
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.models import ATSType, EmploymentType, EngagementType, Job, SalaryPeriod
+from ats_scrapers.models import (
+    ATSType,
+    EducationRequirement,
+    EmploymentType,
+    EngagementType,
+    Job,
+    SalaryPeriod,
+)
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 logger = logging.getLogger(__name__)
@@ -70,6 +80,11 @@ DETAIL_URL_TEMPLATE = (
     "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobdetails/{encoded_ref}"
 )
 API_KEY = "jobboerse-jobsuche"  # Public key shared by the official frontend.
+_HEADERS = {
+    "X-API-Key": API_KEY,
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json",
+}
 PAGE_SIZE = 100
 PAGE_LIMIT = 100  # size × page caps at 10,000 → max page=100 at size=100.
 PAGINATION_CAP = PAGE_SIZE * PAGE_LIMIT
@@ -102,6 +117,11 @@ MAX_TRANSIENT_FAILURES = 5_000
 # With several proxies, a route that met a 403, a 429 or a network error
 # rests this long, and requests go through the next route in the meantime.
 ROUTE_COOL_OFF = 300.0
+# Requests for one posting's detail before ``get_description`` gives up on it.
+DETAIL_ATTEMPTS = 3
+# The API closes a connection after 2 idle seconds: one kept longer may be
+# closed while a request goes out on it.
+DETAIL_KEEPALIVE_SECONDS = 1.5
 
 # Candidate subdivision facets. At each node we only use a facet when its
 # bucket counts sum exactly to that node's total, then pick the candidate
@@ -265,29 +285,45 @@ class _RouteBody(httpx.AsyncByteStream):
         await self._stream.aclose()
 
 
+def _pick_route(resting_until: list[float]) -> int:
+    """The first route, in the given order, that is not resting, else the
+    one whose rest ends first."""
+    now = time.monotonic()
+    for index, until in enumerate(resting_until):
+        if until <= now:
+            return index
+    return min(range(len(resting_until)), key=resting_until.__getitem__)
+
+
+def _rest_route(resting_until: list[float], index: int) -> None:
+    resting_until[index] = time.monotonic() + ROUTE_COOL_OFF
+    logger.debug("Bundesagentur route %d rests", index)
+
+
 class _Routes(httpx.AsyncBaseTransport):
     """Send each request through the first route, in the given order, that
-    is not resting. ``None`` is a direct connection."""
+    is not resting. ``None`` is a direct connection. ``resting_until`` is
+    shared with the other clients of the same scraper."""
 
-    def __init__(self, proxies: Sequence[str | None]) -> None:
+    def __init__(
+        self,
+        proxies: Sequence[str | None],
+        resting_until: list[float] | None = None,
+    ) -> None:
         self._transports = [
             httpx.AsyncHTTPTransport(proxy=proxy) for proxy in proxies
         ]
-        self._resting_until = [0.0] * len(self._transports)
-
-    def _pick(self) -> int:
-        now = time.monotonic()
-        for index, until in enumerate(self._resting_until):
-            if until <= now:
-                return index
-        return min(
-            range(len(self._resting_until)),
-            key=self._resting_until.__getitem__,
+        self._resting_until = (
+            resting_until
+            if resting_until is not None
+            else [0.0] * len(self._transports)
         )
 
+    def _pick(self) -> int:
+        return _pick_route(self._resting_until)
+
     def _rest(self, index: int) -> None:
-        self._resting_until[index] = time.monotonic() + ROUTE_COOL_OFF
-        logger.debug("Bundesagentur route %d rests", index)
+        _rest_route(self._resting_until, index)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         index = self._pick()
@@ -345,30 +381,109 @@ class BundesagenturScraper(BaseScraper):
         self.angebotsart = angebotsart
         # Routes in order of preference. ``None`` is a direct connection.
         self.proxies: list[str | None] = list(proxies) if proxies else [proxy]
+        # When each route may carry requests again, for listing and details.
+        self._resting_until = [0.0] * len(self.proxies)
         # Retried 403 / 429 / 5xx responses by status, and network errors by
         # exception name, for the last run.
         self.transient_failures: Counter[str] = Counter()
+        self._detail_clients: dict[int, httpx.Client] = {}
+        self._detail_finalizers: list[weakref.finalize] = []
+        self._detail_lock = threading.Lock()
 
     def get_description(self, job: Job) -> str | None:
+        """Read the posting's detail: its text, and the fields only the
+        detail carries.
+
+        A route that refuses the request or cannot carry it rests, and the
+        next attempt goes through the next route. Returns ``None`` for a
+        posting that is gone, and raises :class:`ScraperError` once the
+        detail was refused ``DETAIL_ATTEMPTS`` times.
+        """
         if job.description:
             return job.description
+        if not job.ats_id:
+            return None
+        detail = self._read_detail(job.ats_id)
+        if detail is not None:
+            _apply_detail(job, detail)
+        return job.description
 
-        copy = job.model_copy()
-        async def run() -> str | None:
-            async with self._client() as client:
-                sem = asyncio.Semaphore(1)
-                await self._enrich_description(client, sem, copy)
-            job.engagement_type = copy.engagement_type
-            job.raw = copy.raw
-            return copy.description
+    def close(self) -> None:
+        """Release the connections ``get_description`` keeps open."""
+        with self._detail_lock:
+            finalizers, self._detail_finalizers = self._detail_finalizers, []
+            self._detail_clients.clear()
+        for finalizer in finalizers:
+            finalizer()
 
-        return self._run_sync(run())
+    def _read_detail(self, reference: str) -> dict[str, Any] | None:
+        encoded = base64.b64encode(reference.encode()).decode()
+        url = DETAIL_URL_TEMPLATE.format(encoded_ref=encoded)
+        failure = ""
+        retry_after: str | None = None
+        for attempt in range(1, DETAIL_ATTEMPTS + 1):
+            if attempt > 1:
+                time.sleep(_retry_delay(attempt - 1, retry_after))
+            index = _pick_route(self._resting_until)
+            try:
+                response = self._detail_client(index).get(
+                    url, headers=_HEADERS, extensions={"route": index}
+                )
+            except httpx.TransportError as exc:
+                _rest_route(self._resting_until, index)
+                failure, retry_after = type(exc).__name__, None
+                continue
+            if response.status_code == 404:
+                return None
+            if _is_transient(response.status_code):
+                if response.status_code in (403, 429):
+                    _rest_route(self._resting_until, index)
+                failure = str(response.status_code)
+                retry_after = response.headers.get("Retry-After")
+                continue
+            if response.status_code != 200:
+                raise ScraperError(
+                    f"Bundesagentur returned {response.status_code} for the "
+                    f"detail of {reference}"
+                )
+            try:
+                detail = response.json()
+            except ValueError:
+                return None
+            return detail if isinstance(detail, dict) else None
+        raise ScraperError(
+            f"Bundesagentur refused the detail of {reference} "
+            f"{DETAIL_ATTEMPTS} times (last: {failure})"
+        )
+
+    def _detail_client(self, index: int) -> httpx.Client:
+        """The client for one route, kept open between ``get_description``
+        calls so consecutive details share a connection."""
+        with self._detail_lock:
+            client = self._detail_clients.get(index)
+            if client is None:
+                limits = httpx.Limits(keepalive_expiry=DETAIL_KEEPALIVE_SECONDS)
+                if self.proxies == [None]:
+                    client = httpx.Client(timeout=self.timeout, limits=limits)
+                else:
+                    # An explicit transport: a direct route stays direct
+                    # whatever proxy the environment sets.
+                    client = httpx.Client(
+                        timeout=self.timeout,
+                        transport=httpx.HTTPTransport(
+                            proxy=self.proxies[index], limits=limits
+                        ),
+                    )
+                self._detail_finalizers.append(weakref.finalize(self, client.close))
+                self._detail_clients[index] = client
+            return client
 
     def _client(self) -> httpx.AsyncClient:
         if self.proxies == [None]:
             return httpx.AsyncClient(timeout=self.timeout)
         return httpx.AsyncClient(
-            timeout=self.timeout, transport=_Routes(self.proxies)
+            timeout=self.timeout,
+            transport=_Routes(self.proxies, self._resting_until),
         )
 
     async def fetch_stream(self) -> AsyncGenerator[Job, None]:
@@ -498,14 +613,7 @@ class BundesagenturScraper(BaseScraper):
         url = DETAIL_URL_TEMPLATE.format(encoded_ref=encoded)
         async with sem:
             try:
-                response = await client.get(
-                    url,
-                    headers={
-                        "X-API-Key": API_KEY,
-                        "User-Agent": "Mozilla/5.0",
-                        "Accept": "application/json",
-                    },
-                )
+                response = await client.get(url, headers=_HEADERS)
             except httpx.HTTPError:
                 return
         if response.status_code != 200:
@@ -514,15 +622,8 @@ class BundesagenturScraper(BaseScraper):
             detail = response.json()
         except ValueError:
             return
-        if not isinstance(detail, dict):
-            return
-        terms = {k: detail[k] for k in _CONTRACT_FIELDS if detail.get(k) is not None}
-        if terms:
-            job.raw = {**(job.raw or {}), **terms}
-            job.engagement_type = _engagement_type(job.raw)
-        description = detail.get("stellenangebotsBeschreibung")
-        if isinstance(description, str) and description.strip():
-            job.description = description.strip()[:25_000]
+        if isinstance(detail, dict):
+            _apply_detail(job, detail)
 
     async def _exhaust_query(
         self,
@@ -866,15 +967,7 @@ class BundesagenturScraper(BaseScraper):
             network_error: httpx.HTTPError | None = None
             async with sem:
                 try:
-                    r = await client.get(
-                        API_URL,
-                        params=params,
-                        headers={
-                            "X-API-Key": API_KEY,
-                            "User-Agent": "Mozilla/5.0",
-                            "Accept": "application/json",
-                        },
-                    )
+                    r = await client.get(API_URL, params=params, headers=_HEADERS)
                 except httpx.HTTPError as exc:
                     network_error = exc
             if r is not None and r.status_code == 200:
@@ -1171,7 +1264,66 @@ def _item_reference(item: dict[str, Any]) -> str:
 _CONTRACT_FIELDS = (
     "stellenangebotsart", "ausbildungsart", "vertragsdauer", "befristungInMonaten",
     "istArbeitnehmerUeberlassung", "arbeitszeit", "zeitarbeit", "befristung",
+    "befristetBis",
 )
+# Kept in ``raw`` from the detail, which the listing does not carry.
+_DETAIL_RAW_FIELDS = (
+    "allianzpartnerName",
+    "geforderterBildungsabschluss",
+    "homeofficeprozent",
+    "homeofficetyp",
+    "istBetreut",
+    "istPrivateArbeitsvermittlung",
+)
+# ``geforderterBildungsabschluss`` values, measured live. Others are shown
+# from their code.
+_SCHOOL_QUALIFICATIONS = {
+    "HAUPTSCHULABSCHLUSS": "Hauptschulabschluss",
+    "QUALIFIZIERENDER_ERWEITERTER_HAUPTSCHULABSCHLUSS": (
+        "Qualifizierender/erweiterter Hauptschulabschluss"
+    ),
+    "MITTLERE_REIFE_MITTLERER_BILDUNGSABSCHLUSS": (
+        "Mittlere Reife/Mittlerer Bildungsabschluss"
+    ),
+    "FACHHOCHSCHULREIFE": "Fachhochschulreife",
+}
+_NO_QUALIFICATION = {"NICHT_RELEVANT", "KEINE_ANGABE"}
+
+
+def _apply_detail(job: Job, detail: dict[str, Any]) -> None:
+    """Fill ``job`` from its detail: the text and the fields only the detail
+    carries, and those the listing left empty."""
+    terms = {k: detail[k] for k in _CONTRACT_FIELDS if detail.get(k) is not None}
+    extra = {
+        k: detail[k]
+        for k in _DETAIL_RAW_FIELDS
+        if detail.get(k) not in (None, "", [], {})
+    }
+    if terms or extra:
+        job.raw = {**(job.raw or {}), **terms, **extra}
+    if terms:
+        job.engagement_type = _engagement_type(job.raw or {})
+    if job.education_requirements is None:
+        job.education_requirements = _school_qualification(detail)
+    if job.employment_type is None:
+        job.employment_type = _employment_details(detail)[1]
+    remote = detail.get("homeofficemoeglich")
+    if job.is_remote is None and isinstance(remote, bool):
+        job.is_remote = remote
+    external = detail.get("externeURL") or detail.get("externeUrl")
+    if job.apply_url is None and isinstance(external, str) and external.startswith("http"):
+        with contextlib.suppress(ValueError):
+            job.apply_url = HttpUrl(external)
+    if description := _text(detail.get("stellenangebotsBeschreibung")):
+        job.description = description[:25_000]
+
+
+def _school_qualification(detail: dict[str, Any]) -> list[EducationRequirement] | None:
+    code = _text(detail.get("geforderterBildungsabschluss"))
+    if not code or code.upper() in _NO_QUALIFICATION:
+        return None
+    label = _SCHOOL_QUALIFICATIONS.get(code.upper()) or _display_enum(code)
+    return [EducationRequirement(label=label, requirement="required")] if label else None
 
 
 def _engagement_type(item: dict[str, Any]) -> EngagementType | None:
