@@ -484,7 +484,7 @@ def _page_description(page: str) -> str | None:
         return None
     # Text pasted into the block often leaves elements open, so the apply
     # and save buttons that follow it end up inside.
-    for node in block.walk():
+    for node in (block, *block.walk()):
         node.children = [child for child in node.children if not _is_control(child)]
     return block.lines() or None
 

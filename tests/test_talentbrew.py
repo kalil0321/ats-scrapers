@@ -204,6 +204,20 @@ def test_buttons_left_inside_the_description_are_dropped(httpx_mock) -> None:
     )
 
 
+def test_controls_directly_inside_the_description_are_dropped(httpx_mock) -> None:
+    page = (
+        '<html><body><div class="ats-description"><p>Join the team.</p>'
+        '<a class="button job-apply" href="https://apply.example.com/1">Apply</a>'
+        "<button>Save</button></div></body></html>"
+    )
+    httpx_mock.add_response(url=SEARCH, json=_fragment([_row("103")], 1))
+    httpx_mock.add_response(url=DETAIL, text=page)
+
+    job = TalentBrewScraper(HOST).fetch()[0]
+
+    assert job.description == "Join the team."
+
+
 def test_posting_block_without_a_description_reads_the_page(httpx_mock) -> None:
     detail = _detail(description="").replace(
         "<body></body>", '<body><div class="ats-description"><p>Protect the site.</p></div></body>',
