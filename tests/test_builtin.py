@@ -552,6 +552,7 @@ def test_job_page_keeps_every_place_and_the_remote_flag(httpx_mock) -> None:
     )
     job = _job()
     job.location = "Mesa, AZ, USA; London, GBR"
+    job.country_iso = "US"  # what a card naming one US place gives
 
     BuiltInScraper("any").get_description(job)
 
@@ -560,6 +561,47 @@ def test_job_page_keeps_every_place_and_the_remote_flag(httpx_mock) -> None:
     assert job.country_iso is None
     assert job.is_remote is True
     assert job.lat is None
+
+
+def test_a_day_that_does_not_exist_leaves_the_date_empty(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url="https://builtin.com/job/planner-scheduler/11",
+        text=_job_page({**_POSTING, "datePosted": "2026-02-30"}),
+    )
+    job = _job()
+
+    assert BuiltInScraper("any").get_description(job) is not None
+    assert job.posted_at is None
+
+
+def test_job_pages_go_through_the_callers_transport(httpx_mock) -> None:
+    import httpx
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, text=_job_page(_POSTING))
+
+    scraper = BuiltInScraper("any")
+    scraper.transport = httpx.MockTransport(handler)
+
+    assert scraper.get_description(_job()) is not None
+    assert seen == ["https://builtin.com/job/planner-scheduler/11"]
+
+
+def test_an_async_only_transport_fails_the_job_page_not_the_run(httpx_mock) -> None:
+    import httpx
+
+    class AsyncOnly(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200)
+
+    scraper = BuiltInScraper("any")
+    scraper.transport = AsyncOnly()
+
+    with pytest.raises(ScraperError, match="BaseTransport"):
+        scraper.get_description(_job())
 
 
 def test_a_gone_job_page_gives_no_description(httpx_mock) -> None:
@@ -633,8 +675,35 @@ def test_route_pool_lends_each_route_once_per_interval(monkeypatch) -> None:
     with pool.take() as third:
         pass
 
-    assert (first, second, third) == ("a", "b", "a")
+    assert (first.route, second.route, third.route) == ("a", "b", "a")
     assert slept == [6.0]
+
+
+def test_route_pool_spaces_the_next_read_from_the_last_retry(monkeypatch) -> None:
+    import ats_scrapers.scrapers.builtin as bi
+
+    clock = [100.0]
+    slept: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(bi.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(bi.time, "sleep", sleep)
+    monkeypatch.setattr(bi, "MAX_RETRIES", 2)
+    monkeypatch.setattr(bi, "RETRY_BASE_DELAY", 8.0)
+    answers = iter([(429, ""), (200, "page"), (200, "page")])
+    scraper = BuiltInScraper("any", proxies=["http://route-1:8080"])
+    monkeypatch.setattr(scraper, "_get_sync", lambda url, route: next(answers))
+
+    with scraper._detail_routes.take() as lease:
+        assert scraper._job_page("https://builtin.com/job/a/1", lease) == "page"
+    with scraper._detail_routes.take() as lease:
+        assert scraper._job_page("https://builtin.com/job/b/2", lease) == "page"
+
+    # The retry started at 108; the next read waits one interval from there.
+    assert slept == [8.0, pytest.approx(1 / bi.DETAIL_RATE)]
 
 
 # --- no paid enrichment -----------------------------------------------------

@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING, ClassVar
 import httpx
 
 from ats_scrapers.exceptions import ScraperError
-from ats_scrapers.fetch import proxy_url_from_env
+from ats_scrapers.fetch import borrowed_transport, proxy_url_from_env
 from ats_scrapers.models import ATSType, Job, normalize_compensation_period
 from ats_scrapers.scrapers._job_places import (
     COUNTRY_NAMES,
@@ -350,8 +350,8 @@ class BuiltInScraper(BaseScraper):
         deadline, employment type, pay and structured places it gives."""
         if job.description:
             return job.description
-        with self._detail_routes.take() as route:
-            page = self._job_page(str(job.url), route)
+        with self._detail_routes.take() as lease:
+            page = self._job_page(str(job.url), lease)
         if page is None:
             return None
         # The shared reader expects the type attribute unencoded.
@@ -361,11 +361,12 @@ class BuiltInScraper(BaseScraper):
         _apply_posting(job, posting)
         return job.description
 
-    def _job_page(self, url: str, route: str | None) -> str | None:
+    def _job_page(self, url: str, lease: _Lease) -> str | None:
         """The job's page, or ``None`` once Built In no longer serves it."""
         status = 0
         for attempt in range(1, MAX_RETRIES + 1):
-            status, text = self._get_sync(url, route)
+            lease.started = time.monotonic()
+            status, text = self._get_sync(url, lease.route)
             if status == 200:
                 return text
             if status in (404, 410):
@@ -381,6 +382,8 @@ class BuiltInScraper(BaseScraper):
 
     def _get_sync(self, url: str, route: str | None) -> tuple[int, str]:
         """Status and text of one GET; status 0 when no answer came."""
+        if self.transport is not None:
+            return self._get_through_transport(url)
         if not self._use_httpcloak:
             proxy = route if route is not None else proxy_url_from_env()
             try:
@@ -403,6 +406,25 @@ class BuiltInScraper(BaseScraper):
         except Exception:  # httpcloak reports every network failure this way
             return 0, ""
         return (200, result) if isinstance(result, str) else (result, "")
+
+    def _get_through_transport(self, url: str) -> tuple[int, str]:
+        """The caller's transport carries the job pages as it does the listing."""
+        if not isinstance(self.transport, httpx.BaseTransport):
+            raise ScraperError(
+                "Built In reads job pages with synchronous requests: the "
+                "transport must also be an httpx.BaseTransport"
+            )
+        try:
+            with httpx.Client(
+                timeout=self.timeout,
+                headers=self.default_headers,
+                follow_redirects=True,
+                transport=borrowed_transport(self.transport),
+            ) as client:
+                response = client.get(url)
+        except httpx.HTTPError:
+            return 0, ""
+        return response.status_code, response.text
 
     # --- listing pages ------------------------------------------------------
 
@@ -528,9 +550,19 @@ class BuiltInScraper(BaseScraper):
         return content
 
 
+class _Lease:
+    """A route lent for one job page, and when its latest request started."""
+
+    __slots__ = ("route", "started")
+
+    def __init__(self, route: str | None) -> None:
+        self.route = route
+        self.started = time.monotonic()
+
+
 class _RoutePool:
     """Lends each route to one request at a time, started at least
-    ``interval`` seconds after the route's previous one."""
+    ``interval`` seconds after the route's previous one, retries included."""
 
     def __init__(self, routes: Sequence[str | None], interval: float) -> None:
         self._interval = interval
@@ -540,16 +572,16 @@ class _RoutePool:
             self._free.put((0.0, index, route))
 
     @contextlib.contextmanager
-    def take(self) -> Iterator[str | None]:
+    def take(self) -> Iterator[_Lease]:
         ready_at, index, route = self._free.get()
         delay = ready_at - time.monotonic()
         if delay > 0:
             time.sleep(delay)
-        started = time.monotonic()
+        lease = _Lease(route)
         try:
-            yield route
+            yield lease
         finally:
-            self._free.put((started + self._interval, index, route))
+            self._free.put((lease.started + self._interval, index, route))
 
 
 def _listing_url(path: str, page: int) -> str:
@@ -662,8 +694,7 @@ def _set_places(job: Job, places: list[JobLocation | None]) -> None:
         return
     job.locations = kept
     countries = {place.country_iso for place in kept}
-    if len(countries) == 1 and None not in countries:
-        job.country_iso = countries.pop()
+    job.country_iso = countries.pop() if len(countries) == 1 and None not in countries else None
 
 
 def _apply_posting(job: Job, posting: dict[str, Any]) -> None:
@@ -736,7 +767,10 @@ def _apply_salary(job: Job, salary: object) -> None:
 def _posting_time(value: object) -> datetime | None:
     """``datePosted``: a day, or an instant with its offset."""
     if isinstance(value, str) and _DATE_RE.fullmatch(value.strip()):
-        return datetime.fromisoformat(value.strip()).replace(tzinfo=UTC)
+        try:
+            return datetime.fromisoformat(value.strip()).replace(tzinfo=UTC)
+        except ValueError:  # a day that does not exist, e.g. 2026-02-30
+            return None
     return source_timestamp(value)
 
 
