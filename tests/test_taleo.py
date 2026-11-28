@@ -386,3 +386,126 @@ def test_listing_url_normalisation() -> None:
     assert _listing_url(f"{base}?org=ACME&cws=41&rowFrom=") == URL
     assert _listing_url(f"{base}?rowFrom=20") == base
     assert _listing_url(f"{base}?rowFrom=20#top") == base
+
+
+# --- Detail page ------------------------------------------------------------
+
+DETAIL = "https://phe.tbe.taleo.net/phe01/ats/careers/v2/viewRequisition?org=ACME&cws=41&rid=100"
+
+# A tenant with the JSON-LD switched off, as served: the summary box on the
+# left, the posting text on the right, then the button bar.
+_DETAIL_WITHOUT_JSON_LD = """<!DOCTYPE html><html><head><title>Career Center</title></head><body>
+<section name="sectionContainer"><div class="row">
+<div class="col-xs-12 col-sm-12 col-md-4">
+<div class="well oracletaleocwsv2-job-description" tabindex="0">
+<div class="oracletaleocwsv2-accordion-checkbox checkbox">
+<label><input type="checkbox" name="" value=""> <i class="fa"></i></label>
+</div><!--/.checkbox-->
+<strong>1st Class Naval Electrician (3408)</strong>
+<div class="row">
+<div class="col-xs-12 col-sm-4 col-md-12"><span class="small">Location</span><strong>Norfolk, VA</strong></div>
+<div class="col-xs-12 col-sm-4 col-md-12"><span class="small">Job Code</span><strong>3408</strong></div>
+</div>
+</div><!--/.well-->
+<a href="https://phe.tbe.taleo.net/phe01/ats/careers/v2/applyRequisition?org=ACME&cws=41&rid=100"
+class="btn btn-primary btn-block btn-lg">Apply Now</a>
+</div><div class="col-xs-12 col-sm-12 col-md-8"><div name="cwsJobDescription" tabindex="0" class="col-xs-12 row">
+<div style="all: unset;"> <p><span>We are seeking an experienced <strong>Electrician</strong>.</span><br /><br />
+<span><strong><u>Position Overview:</u></strong></span></p>
+<ul><li><span>Test and repair equipment</span></li><li><span>Read blueprints</span></li></ul> </div></div>
+<div class="oracletaleocwsv2-button-navigation oracletaleocwsv2-job-description clearfix">
+<a href="https://phe.tbe.taleo.net/phe01/ats/careers/v2/searchResults?org=ACME&cws=41" class="btn back-button">Back</a>
+</div>
+</div></div></section>
+<footer><div class="container-fluid"></div></footer>
+</body></html>"""
+
+
+def _detail_with_json_ld(posting: str) -> str:
+    return (
+        '<html><head></head><body><script type="application/ld+json">'
+        f"{posting}</script>{_DETAIL_WITHOUT_JSON_LD.split('<body>', 1)[1]}"
+    )
+
+
+def test_page_without_json_ld_gives_description_and_location(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL, text=_page([_job_link("100", "Electrician")]))
+    httpx_mock.add_response(url=DETAIL, text=_DETAIL_WITHOUT_JSON_LD)
+
+    job = TaleoScraper(URL).fetch()[0]
+
+    assert job.description == (
+        "We are seeking an experienced Electrician.\nPosition Overview:\n"
+        "Test and repair equipment\nRead blueprints"
+    )
+    assert job.location == "Norfolk, VA"
+
+
+def test_posting_in_the_tenants_own_sections_is_read(httpx_mock) -> None:
+    # No cwsJobDescription: the tenant fills the column with sections of its
+    # own, and the button bar after them carries a share menu.
+    page = """<html><body><div class="row">
+<div class="col-xs-12 col-sm-12 col-md-4"><div class="well oracletaleocwsv2-job-description">
+<strong>PMO Manager</strong><div class="row">
+<div class="col-xs-12 col-sm-4 col-md-12"><span class="small">Location</span><strong>China | Shanghai</strong></div>
+</div></div></div>
+<div class="col-xs-12 col-sm-12 col-md-8"><div class="alert alert-info" role="alert"><h2 role="heading">Job Brief</h2>
+<p>Full time</p></div>
+<section><div class="container-fluid"><div class="row"><div class="col-xs-12 col-sm-12" tabindex="0">
+<p><strong>Responsibilities:</strong></p><ul><li>Report on the portfolio</li></ul>
+</div></div></div></section>
+<link rel="stylesheet" href="https://example.com/social-plugin.css" type="text/css"/>
+<div class="oracletaleocwsv2-button-navigation oracletaleocwsv2-job-description clearfix">
+<a href="https://phe.tbe.taleo.net/phe01/ats/careers/v2/searchResults?org=ACME&cws=41" class="btn back-button">Back</a>
+<button type="button" class="btn social-share-btn">Share</button>
+<div class="social-share-plugin"><ul class="socials"><li title="Copy job link">Copy</li></ul></div>
+<a href="https://phe.tbe.taleo.net/phe01/ats/careers/v2/applyRequisition?org=ACME&cws=41&rid=100">Apply Now</a>
+</div><script>socialShare.init();</script>
+</div></div></body></html>"""
+    httpx_mock.add_response(url=URL, text=_page([_job_link("100", "PMO Manager")]))
+    httpx_mock.add_response(url=DETAIL, text=page)
+
+    job = TaleoScraper(URL).fetch()[0]
+
+    assert job.description == "Job Brief\nFull time\nResponsibilities:\nReport on the portfolio"
+    assert job.location == "China | Shanghai"
+
+
+def test_summary_box_without_a_location_field_leaves_it_empty(httpx_mock) -> None:
+    page = _DETAIL_WITHOUT_JSON_LD.replace(
+        '<span class="small">Location</span>', '<span class="small">Department</span>',
+    )
+    httpx_mock.add_response(url=URL, text=_page([_job_link("100", "Electrician")]))
+    httpx_mock.add_response(url=DETAIL, text=page)
+
+    job = TaleoScraper(URL).fetch()[0]
+
+    assert job.location is None
+    assert job.description is not None
+
+
+def test_json_ld_wins_and_country_object_gives_its_name(httpx_mock) -> None:
+    posting = (
+        '{"@type": "JobPosting", "description": "<p>From the JSON-LD.</p>",'
+        ' "jobLocation": {"address": {"addressLocality": "Detroit", "addressRegion": "MI",'
+        ' "addressCountry": {"name": "US", "@type": "Country"}}}}'
+    )
+    httpx_mock.add_response(url=URL, text=_page([_job_link("100", "Electrician")]))
+    httpx_mock.add_response(url=DETAIL, text=_detail_with_json_ld(posting))
+
+    job = TaleoScraper(URL).fetch()[0]
+
+    assert job.description == "From the JSON-LD."
+    assert job.location == "Detroit, MI, US"
+
+
+def test_json_ld_with_an_empty_description_reads_the_page(httpx_mock) -> None:
+    posting = '{"@type": "JobPosting", "description": "", "datePosted": "2026-08-18 14:00:41.0"}'
+    httpx_mock.add_response(url=URL, text=_page([_job_link("100", "Electrician")]))
+    httpx_mock.add_response(url=DETAIL, text=_detail_with_json_ld(posting))
+
+    job = TaleoScraper(URL).fetch()[0]
+
+    assert job.description.startswith("We are seeking an experienced Electrician.")
+    assert job.location == "Norfolk, VA"
+    assert job.posted_at is not None

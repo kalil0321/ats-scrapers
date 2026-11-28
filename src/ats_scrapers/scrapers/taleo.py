@@ -46,6 +46,7 @@ from urllib.parse import urlparse
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._htmltree import Node, parse_html
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -76,6 +77,11 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _JSON_LD_RE = re.compile(
     r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>([\s\S]+?)</script>',
     re.IGNORECASE,
+)
+
+# Labels a tenant gives the field that holds the place of work, lower case.
+_LOCATION_LABELS = frozenset(
+    {"location", "job location", "work location", "location search", "localisation", "lieu"}
 )
 
 _EMPLOYMENT_TYPE_PATTERNS = {
@@ -189,6 +195,7 @@ class TaleoScraper(BaseScraper):
             except ScraperError:
                 return
         _apply_jsonld_to_job(job, response.text)
+        _apply_page_to_job(job, response.text)
 
     def _validate_url(self, slug: str) -> str:
         if not slug.startswith(("http://", "https://")):
@@ -328,6 +335,74 @@ def _apply_jsonld_to_job(job: Job, html_text: str) -> None:
             job.company = name.strip()
 
 
+def _apply_page_to_job(job: Job, html_text: str) -> None:
+    """Fill what the JSON-LD left empty from the page itself.
+
+    Tenants that switch the JSON-LD off still show the posting: its fields
+    as label and value pairs in a summary box, and its text in the column
+    beside it.
+    """
+    if job.description and job.location:
+        return
+    root = parse_html(html_text)
+    if not job.description:
+        body = _posting_body(root)
+        if body is not None:
+            job.description = body.lines()[:25_000] or None
+    if not job.location:
+        fields = _summary_fields(root)
+        job.location = next(
+            (
+                value for label, value in fields
+                if label.rstrip(":").strip().lower() in _LOCATION_LABELS
+            ),
+            None,
+        )
+
+
+def _posting_body(root: Node) -> Node | None:
+    """The column beside the summary box, without its button bar.
+
+    Tenants fill it with their own sections, so the text is not always in
+    ``<div name="cwsJobDescription">``.
+    """
+    column = next((node for node in root.walk() if "col-md-8" in node.classes), None)
+    if column is None:
+        return None
+    column.children = [
+        child for child in column.children
+        if not (isinstance(child, Node) and "oracletaleocwsv2-button-navigation" in child.classes)
+    ]
+    return column
+
+
+def _summary_fields(root: Node) -> list[tuple[str, str]]:
+    """The ``(label, value)`` pairs of the summary box: each label is a
+    ``<span class="small">`` and its value the ``<strong>`` after it."""
+    box = next(
+        (
+            node for node in root.walk()
+            if {"well", "oracletaleocwsv2-job-description"} <= set(node.classes)
+        ),
+        None,
+    )
+    if box is None:
+        return []
+    fields: list[tuple[str, str]] = []
+    for node in box.walk():
+        label = None
+        for child in node.children:
+            if not isinstance(child, Node):
+                continue
+            if child.tag == "span" and "small" in child.classes:
+                label = child.text()
+            elif child.tag == "strong" and label:
+                if value := child.text():
+                    fields.append((label, value))
+                label = None
+    return fields
+
+
 def _find_job_posting(html_text: str) -> dict | None:
     for match in _JSON_LD_RE.finditer(html_text):
         body = match.group(1).strip()
@@ -352,11 +427,14 @@ def _location_from_jsonld(value: object) -> str | None:
         addr = c.get("address")
         if not isinstance(addr, dict):
             continue
-        parts = [
-            str(addr.get(k) or "").strip()
-            for k in ("addressLocality", "addressRegion", "addressCountry")
-            if addr.get(k)
-        ]
+        parts = []
+        for key in ("addressLocality", "addressRegion", "addressCountry"):
+            value = addr.get(key)
+            # TBE writes the country as a Country object.
+            if isinstance(value, dict):
+                value = value.get("name")
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
         joined = ", ".join(p for p in parts if p)
         if joined:
             return joined
