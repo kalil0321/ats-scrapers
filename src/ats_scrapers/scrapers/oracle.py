@@ -16,8 +16,10 @@ The unauthenticated REST endpoint:
 The companion detail endpoint
 ``/recruitingCEJobRequisitionDetails?finder=ById;Id={id}`` exposes the
 full job description (``ExternalDescriptionStr``) plus the qualifications
-and responsibilities sections. Detail enrichment is best-effort so
-published rows carry descriptions when Oracle exposes them.
+and responsibilities sections. A posting without any of those shows only
+the employer's sections (``CorporateDescriptionStr``,
+``OrganizationDescriptionStr``), which then stand in. Detail enrichment is
+best-effort so published rows carry descriptions when Oracle exposes them.
 
 Pass the full base URL (and optionally a site number) as the slug.
 """
@@ -279,20 +281,18 @@ class OracleScraper(BaseScraper):
         # Concatenate the three external sections — description /
         # qualifications / responsibilities — into a single plain-text
         # body, capped at 25k chars.
-        parts: list[str] = []
-        for key in (
+        parts = _sections(
+            detail,
             "ExternalDescriptionStr",
             "ExternalResponsibilitiesStr",
             "ExternalQualificationsStr",
-        ):
-            v = detail.get(key)
-            # Kept only when text is left once the markup is gone:
-            # ``<p></p>`` must not replace the listing summary with "".
-            text = _strip_html(v) if isinstance(v, str) else ""
-            if text:
-                parts.append(text)
+        )
+        if not parts and not job.description:
+            # A posting without text of its own still shows the employer's
+            # "about us" and "about the team" sections on its page.
+            parts = _sections(detail, "CorporateDescriptionStr", "OrganizationDescriptionStr")
         if parts:
-            job.description = "\n\n".join(parts)[:25_000]
+            job.description = "\n\n".join(dict.fromkeys(parts))[:25_000]
 
     async def _fetch_page(
         self,
@@ -417,6 +417,13 @@ class OracleScraper(BaseScraper):
             fetched_at=datetime.now(UTC),
             raw=raw or None,
         )
+
+
+def _sections(detail: dict[str, Any], *keys: str) -> list[str]:
+    """The text of each section in ``keys`` that has some once the markup
+    is gone: ``<p></p>`` must not replace the listing summary with ""."""
+    texts = (detail.get(key) for key in keys)
+    return [text for value in texts if isinstance(value, str) and (text := _strip_html(value))]
 
 
 def _subscription_suspended(response: FetchResponse) -> str | None:
