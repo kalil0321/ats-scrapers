@@ -30,7 +30,11 @@ Three quirks to handle:
     request and paces the rest of the run, slower after each new
     block. A block that outlasts every pause fails the fetch: the
     newest windows hold most of the board, so skipping one would
-    publish a fraction of it.
+    publish a fraction of it. Detail requests share the pacing and the
+    pauses of their route, including across threads: a 403 on every
+    route, from one that answered before, waits for the block to lift
+    and asks again. A detail block that outlasts every pause ends the
+    detail requests over that route.
 
   - Deep-pagination cap: ``start>=2000`` always returns 422
     regardless of IP, so one query reads at most 2 000 of the ~38 000
@@ -52,8 +56,10 @@ import asyncio
 import contextlib
 import logging
 import re
+import threading
+import time
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Literal
 from urllib.parse import quote
 
 import httpx
@@ -94,6 +100,10 @@ DEFAULT_MAX_PAGES = 100
 # Errors that say a detail request's route is down, not the posting.
 _ROUTE_DOWN = (httpx.ProxyError, httpx.ConnectError, httpx.ConnectTimeout)
 
+# How a route took a detail request: ``refused`` is a 403, ``down`` no connection,
+# ``closed`` the route closed while the request waited for its turn.
+_Outcome = Literal["answered", "refused", "down", "closed"]
+
 # Lower bound of the publication-date walk; live postings are far younger.
 EARLIEST_PUBLICATION = datetime(2000, 1, 1)
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -116,15 +126,19 @@ class _BlockedError(Exception):
 
 
 class _Throttle:
-    """Paces the search requests of one fetch and holds them all during a block.
+    """Paces the requests sent over one route and holds them all during a block.
 
     Requests already in flight when a pause begins neither lengthen it nor
-    end the block: only the ones sent after it do.
+    end the block: only the ones sent after it do. Event loops in several
+    threads may share one: callers read descriptions from threads.
     """
 
     def __init__(self) -> None:
         self.answered = False
         self.interval = 0.0
+        # A detail block outlasted every pause: no more detail requests.
+        self.closed = False
+        self._lock = threading.Lock()
         self._blocks = 0
         self._refusals = 0
         self._paused_at = float("-inf")
@@ -133,17 +147,25 @@ class _Throttle:
 
     async def wait(self) -> float:
         """Wait for this request's turn and return its start time."""
-        loop = asyncio.get_running_loop()
-        while (delay := max(self._resume_at, self._next_start) - loop.time()) > 0:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                delay = max(self._resume_at, self._next_start) - now
+                if delay <= 0:
+                    self._next_start = now + self.interval
+                    return now
             await asyncio.sleep(delay)
-        now = loop.time()
-        self._next_start = now + self.interval
-        return now
+
+    async def turn(self) -> float | None:
+        """``wait`` for a detail request: ``None`` once the route is closed."""
+        sent_at = await self.wait()
+        return None if self.closed else sent_at
 
     def passed(self, sent_at: float) -> None:
-        self.answered = True
-        if sent_at >= self._paused_at:
-            self._refusals = 0
+        with self._lock:
+            self.answered = True
+            if sent_at >= self._paused_at:
+                self._refusals = 0
 
     def paused_since(self, sent_at: float) -> bool:
         return sent_at < self._paused_at
@@ -154,12 +176,26 @@ class _Throttle:
 
     def pause(self) -> float:
         """Hold every request for the next pause and return its length."""
+        with self._lock:
+            return self._pause()
+
+    def refused(self, sent_at: float) -> float | None:
+        """Take a 403 to a request sent at ``sent_at``: the pause it starts,
+        ``0.0`` when a later pause covers it, ``None`` once none is left."""
+        with self._lock:
+            if self.paused_since(sent_at):
+                return 0.0
+            if self.spent:
+                return None
+            return self._pause()
+
+    def _pause(self) -> float:
         if not self._refusals:
             self._blocks += 1
             self.interval = 1 / PACED_RATES[min(self._blocks, len(PACED_RATES)) - 1]
         seconds = BLOCK_PAUSES[self._refusals]
         self._refusals += 1
-        self._paused_at = asyncio.get_running_loop().time()
+        self._paused_at = time.monotonic()
         self._resume_at = self._paused_at + seconds
         return seconds
 
@@ -167,10 +203,12 @@ class _Throttle:
 class _Search:
     """The client, concurrency and throttle shared by the search requests of one fetch."""
 
-    def __init__(self, fetcher: Fetcher, *, via_proxy: bool) -> None:
+    def __init__(self, fetcher: Fetcher, *, via_proxy: bool, throttle: _Throttle) -> None:
         self.fetcher = fetcher
         self.via_proxy = via_proxy
-        self.throttle = _Throttle()
+        self.throttle = throttle
+        # Whether this fetch's search has been answered: the throttle outlives it.
+        self.answered = False
         self.reopen = False
         self._sem = asyncio.Semaphore(MAX_CONCURRENCY)
         self._reopening = asyncio.Lock()
@@ -254,6 +292,15 @@ class JobsChScraper(BaseScraper):
         # Route of the next detail request: a proxy URL, or this scraper's
         # own ``proxy`` (``None`` reads directly).
         self._detail_route: str | None = self.proxy
+        self._throttles: dict[str | None, _Throttle] = {}
+        self._throttles_lock = threading.Lock()
+
+    def _throttle(self, route: str | None) -> _Throttle:
+        """The throttle every request over ``route`` shares, search and detail."""
+        with self._throttles_lock:
+            if route not in self._throttles:
+                self._throttles[route] = _Throttle()
+            return self._throttles[route]
 
     def get_description(self, job: Job) -> str | None:
         if job.description:
@@ -262,6 +309,10 @@ class JobsChScraper(BaseScraper):
         return job.description
 
     async def afetch(self) -> list[Job]:
+        # A new fetch gives detail routes an earlier block closed another chance.
+        with self._throttles_lock:
+            for throttle in self._throttles.values():
+                throttle.closed = False
         # Probe IP routing on the empty query: if the datacenter IP is
         # 403-blocked, the same probe-then-proxy escalation runs once,
         # and every subsequent seed reuses the resulting proxy_url.
@@ -311,7 +362,9 @@ class JobsChScraper(BaseScraper):
         fetcher.proxy = proxy_url if proxy_url is not None else self.proxy
 
         async with fetcher:
-            search = _Search(fetcher, via_proxy=proxy_url is not None)
+            search = _Search(
+                fetcher, via_proxy=proxy_url is not None, throttle=self._throttle(fetcher.proxy),
+            )
             first = await self._fetch_page(search, start=0)
             total = int(first.get("total_hits") or 0)
             await self._drain(search, {}, first, absorb)
@@ -412,7 +465,11 @@ class JobsChScraper(BaseScraper):
         await _gather([one(PER_PAGE * i) for i in range(1, page_count)])
 
     async def _enrich_descriptions(self, jobs: list[Job]) -> None:
-        """Fill descriptions, reading a job on the other route when one answers 403."""
+        """Fill descriptions, reading a job on the other route when one answers 403.
+
+        Refused on every route, by one that answered before, the job waits for
+        that route's block to lift and is asked again.
+        """
         routes = list(dict.fromkeys([self._detail_route, self.proxy, proxy_url_from_env()]))
         clients: dict[str | None, httpx.AsyncClient] = {}
 
@@ -426,47 +483,83 @@ class JobsChScraper(BaseScraper):
                 return clients[route]
 
             async def enrich(job: Job) -> None:
-                first = self._detail_route
-                for route in [first, *(r for r in routes if r != first)]:
-                    if not await self._enrich_description(client(route), job):
-                        self._detail_route = route
+                while True:
+                    first = self._detail_route
+                    blocked: tuple[_Throttle, float] | None = None
+                    for route in [first, *(r for r in routes if r != first)]:
+                        throttle = self._throttle(route)
+                        if throttle.closed:
+                            continue
+                        outcome, sent_at = await self._enrich_description(
+                            client(route), throttle, job,
+                        )
+                        if outcome == "answered":
+                            throttle.passed(sent_at)
+                            self._detail_route = route
+                            return
+                        if outcome == "refused" and throttle.answered and blocked is None:
+                            blocked = (throttle, sent_at)
+                    if blocked is None:
                         return
+                    throttle, sent_at = blocked
+                    pause = throttle.refused(sent_at)
+                    if pause is None:
+                        throttle.closed = True
+                        log.warning(
+                            "jobs.ch: detail requests still refused after pausing %.0fs; "
+                            "no more detail requests over that route",
+                            sum(BLOCK_PAUSES),
+                        )
+                    elif pause:
+                        log.warning(
+                            "jobs.ch: 403 on a detail request; pausing every request "
+                            "over its route for %.0fs", pause,
+                        )
 
             await fill_missing(jobs, enrich, DETAIL_CONCURRENCY)
 
-    async def _enrich_description(self, client: httpx.AsyncClient, job: Job) -> bool:
-        """Fill ``job.description`` and return whether the route was refused or down."""
+    async def _enrich_description(
+        self, client: httpx.AsyncClient, throttle: _Throttle, job: Job,
+    ) -> tuple[_Outcome, float]:
+        """Fill ``job.description``, each request in its turn on the client's route.
+
+        Returns how the route took the job and when its last request was sent.
+        """
         if job.ats_id:
+            if (sent_at := await throttle.turn()) is None:
+                return "closed", 0.0
             url = f"{API_URL}/job/{quote(job.ats_id, safe='')}"
             try:
                 response = await client.get(url, headers={"Accept": "application/json"})
                 if response.status_code == 403:
-                    return True
+                    return "refused", sent_at
                 if response.status_code in {401, 410, 429}:
-                    return False
+                    return "answered", sent_at
                 if response.status_code == 200:
                     item = response.json()
                     if isinstance(item, dict) and item.get("job_id") == job.ats_id:
                         _apply_employment_fields(job, item)
                         job.description = _api_description(item)
                         if job.description:
-                            return False
+                            return "answered", sent_at
             except _ROUTE_DOWN:
-                return True
+                return "down", sent_at
             except (httpx.HTTPError, ValueError):
                 pass
+        if (sent_at := await throttle.turn()) is None:
+            return "closed", 0.0
         try:
             page = await client.get(str(job.url), headers={"Accept": "text/html"})
         except _ROUTE_DOWN:
-            return True
+            return "down", sent_at
         except httpx.HTTPError:
-            return False
+            return "answered", sent_at
         if page.status_code == 200:
             tree = parse_html(page.text)
             if job.workload_percentages is None:
                 job.workload_percentages = _page_workload(tree)
             job.description = _extract_description(page.text, tree)
-        return page.status_code == 403
+        return ("refused" if page.status_code == 403 else "answered"), sent_at
 
     async def _fetch_page(
         self,
@@ -484,8 +577,9 @@ class JobsChScraper(BaseScraper):
             sent_at, response = await search.send(query)
             if response.status_code != 403:
                 throttle.passed(sent_at)
+                search.answered = True
                 break
-            if not search.via_proxy and not throttle.answered:
+            if not search.via_proxy and not search.answered:
                 # The address is refused outright (datacenter IPs).
                 raise _BlockedError(f"jobs.ch returned 403 at start={start}")
             if throttle.paused_since(sent_at):
