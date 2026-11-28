@@ -968,8 +968,9 @@ class CappedBoard:
     """A board that answers ``status`` from offset ``cap`` on and filters by
     the params its search form names. It ignores the values in ``ignored``.
     The first ``transient`` searches past the cap get a gateway's 503. A
-    ``sortable`` board's form offers to sort it by posting date, the order of
-    ``jobs``; one that ``ignores_order`` lists it the same way whatever the
+    ``sortable`` board's form offers to sort it by posting date: a job's
+    ``day``, else its place in ``jobs``. Jobs of one day keep their order
+    both ways. One that ``ignores_order`` lists it the same way whatever the
     order asked."""
 
     def __init__(
@@ -1030,11 +1031,16 @@ class CappedBoard:
             if v in self.filters.get(k, ()) and v not in self.ignored
         }
         rows = [j for j in self.jobs if all(j.get(k) == v for k, v in applied.items())]
+        def day(row: dict[str, str]) -> int:
+            return int(row.get("day", self.jobs.index(row)))
+
         if not self.sortable or self.ignores_order:
             pass
+        elif order == ("postedDate", "ASC"):
+            rows.sort(key=day)
         elif order == ("postedDate", "DESC"):
-            rows.reverse()
-        elif order != ("postedDate", "ASC"):
+            rows.sort(key=lambda row: -day(row))
+        else:
             # Newest first by default, ties broken another way.
             rows = rows[::2][::-1] + rows[1::2]
         return httpx.Response(200, text=self.page(rows[offset:offset + 12]))
@@ -1244,6 +1250,52 @@ def test_capped_search_past_twice_the_cap_still_warns(httpx_mock, offset_cap, ca
         read = AvatureScraper("acme", include_descriptions=False).fetch()
 
     assert {str(i) for i in range(24)} | {str(i) for i in range(36, 60)} <= _ids(read)
+    assert "no filter splits it" in caplog.text
+
+
+def test_jobs_of_one_day_across_the_cap_are_read_to_the_end(httpx_mock, offset_cap, caplog) -> None:
+    jobs = [{"id": str(i), "day": "0" if i < 12 else "1"} for i in range(32)]
+    board = CappedBoard(jobs, {}, cap=offset_cap, sortable=True)
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    with caplog.at_level(logging.WARNING):
+        read = AvatureScraper("acme", include_descriptions=False).fetch()
+
+    assert _ids(read) == {str(i) for i in range(32)}
+    assert "no filter splits it" not in caplog.text
+
+
+def test_walks_that_meet_inside_one_day_are_not_taken_for_read(
+    httpx_mock, offset_cap, caplog,
+) -> None:
+    jobs = [{"id": str(i), "day": str(min(i // 6, 1) + (i >= 30))} for i in range(36)]
+    board = CappedBoard(jobs, {}, cap=offset_cap, sortable=True)
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    with caplog.at_level(logging.WARNING):
+        AvatureScraper("acme", include_descriptions=False).fetch()
+
+    assert "no filter splits it" in caplog.text
+
+
+def test_oldest_first_walk_cut_short_is_not_taken_for_read(
+    refused_to_httpcloak, offset_cap, caplog,
+) -> None:
+    board = CappedBoard([{"id": str(i)} for i in range(40)], {}, cap=offset_cap, sortable=True)
+
+    class BoardBrowser(CloudBrowser):
+        async def render(self, url: str) -> RenderedPage:
+            query = dict(parse_qsl(url.split("?", 1)[1]))
+            if query.get("jobSortDirection") == "ASC" and query["jobOffset"] != "0":
+                raise ScraperError("browser: the page did not load")
+            response = board(httpx.Request("GET", url))
+            if response.status_code >= 400:
+                raise ScraperError(f"browser: {url} answered {response.status_code}")
+            return RenderedPage(html=response.text, url=url)
+
+    with caplog.at_level(logging.WARNING):
+        AvatureScraper("acme", cloud_browser=BoardBrowser(), include_descriptions=False).fetch()
+
     assert "no filter splits it" in caplog.text
 
 
@@ -1736,3 +1788,44 @@ def test_get_description_reads_the_way_the_board_was_read(monkeypatch, httpx_moc
     assert scraper.get_description(job) == LONG.strip()
     assert read == [url]
     assert httpx_mock.get_requests() == []
+
+
+def test_get_description_tries_the_next_client_when_a_page_gives_no_body(
+    monkeypatch, httpx_mock,
+) -> None:
+    import ats_scrapers.scrapers.avature as av
+    url = "https://acme.avature.net/careers/JobDetail/Engineer/1"
+    widget = "https://acme.avature.net/careers/JobDetailWidget?jobId=1"
+    httpx_mock.add_response(
+        url=url, text=f'<script>var w = {{"jobDetailWidget": {{"url": "{widget}"}}}};</script>',
+    )
+    httpx_mock.add_response(url=widget, status_code=406)
+    monkeypatch.setattr(
+        av.AvatureScraper, "_http_get_via_httpcloak_sync",
+        lambda self, u: SimpleNamespace(status_code=200, text=_block(_field("", f"<p>{LONG}</p>"))),
+    )
+    scraper = AvatureScraper("acme")
+    scraper._reader = "httpx"
+    [job] = scraper._parse_page(
+        f'<a href="{url}">Engineer</a>', "https://acme.avature.net", "acme",
+    )
+
+    assert scraper.get_description(job) == LONG.strip()
+
+
+def test_board_read_over_http_does_not_send_its_job_pages_to_the_browser(
+    monkeypatch, httpx_mock,
+) -> None:
+    import ats_scrapers.scrapers.avature as av
+    url = "https://acme.avature.net/careers/JobDetail/Engineer/1"
+    httpx_mock.add_response(url=url, status_code=404)
+    monkeypatch.setattr(av.AvatureScraper, "_http_get_via_httpcloak_sync", lambda self, u: None)
+    browser = FakeBrowser({url: RenderedPage(html=_detail_page("Build the scraper."), url=url)})
+    scraper = AvatureScraper("acme", cloud_browser=browser)
+    scraper._reader = "httpx"
+    [job] = scraper._parse_page(
+        f'<a href="{url}">Engineer</a>', "https://acme.avature.net", "acme",
+    )
+
+    assert scraper.get_description(job) is None
+    assert browser.requested == []

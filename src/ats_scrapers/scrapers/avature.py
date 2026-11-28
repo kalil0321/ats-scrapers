@@ -245,6 +245,10 @@ class _Listing:
     # The search lists the parent search's jobs at its start and at its last
     # page: the site ignored the filter value, so the slice splits nothing.
     repeats_parent: bool = False
+    # A page after the first could not be loaded.
+    stopped: bool = False
+    # The walk came back past where another walk of the search stopped.
+    met: bool = False
 
 
 @dataclass
@@ -337,19 +341,18 @@ class AvatureScraper(BaseScraper):
         type the page gives.
 
         After :meth:`fetch`, the page is read the way the board was read: a
-        board that refused httpx is not asked through httpx again.
+        board that refused httpx is not asked through httpx again, and only a
+        board read in the browser sends its job pages there.
         """
         if job.description:
             return job.description
         reader = self._reader
-        if reader in (None, "httpx") and self._read_detail_sync(job, self._get_page_sync):
-            return job.description
-        if reader in (None, "httpx", "httpcloak") and self._read_detail_sync(
-            job, self._get_page_via_httpcloak_sync,
-        ):
-            return job.description
+        if reader in (None, "httpx"):
+            self._read_detail_sync(job, self._get_page_sync)
+        if not job.description and reader in (None, "httpx", "httpcloak"):
+            self._read_detail_sync(job, self._get_page_via_httpcloak_sync)
         browser = self.cloud_browser
-        if browser is not None:
+        if not job.description and browser is not None and reader in (None, "browser"):
 
             async def run() -> None:
                 await self._read_detail(job, lambda url: self._get_page_via_browser(browser, url))
@@ -887,15 +890,20 @@ class AvatureScraper(BaseScraper):
         oldest = await self._walk(board, ordered("ASC"))
         _keep(board.jobs, oldest.jobs)
         read = {job.ats_id for job in oldest.jobs}
+        if oldest.stopped:
+            return read, False
         if not oldest.capped:
             return read, True
-        newest = await self._walk(board, ordered("DESC"), meet=read)
+        newest = await self._walk(
+            board, ordered("DESC"),
+            meet={job.ats_id: place for place, job in enumerate(oldest.jobs)},
+        )
         _keep(board.jobs, newest.jobs)
-        if [job.ats_id for job in newest.jobs[:1]] == [job.ats_id for job in oldest.jobs[:1]]:
+        read |= {job.ats_id for job in newest.jobs}
+        if newest.jobs[:1] and newest.jobs[0].ats_id == oldest.jobs[0].ats_id:
             # The search ignores the order.
-            return read | {job.ats_id for job in newest.jobs}, False
-        met = any(job.ats_id in read for job in newest.jobs)
-        return read | {job.ats_id for job in newest.jobs}, met or not newest.capped
+            return read, False
+        return read, newest.met or not (newest.capped or newest.stopped)
 
     async def _read_slice(
         self, board: _Board, url: str, parent: _Listing, applied: frozenset[str],
@@ -914,17 +922,22 @@ class AvatureScraper(BaseScraper):
         url: str,
         *,
         parent: _Listing | None = None,
-        meet: set[str] | None = None,
+        meet: dict[str, int] | None = None,
     ) -> _Listing:
         """Page through the search at ``url`` until its last page or the cap.
 
         A search that lists the first two pages and the last page of
         ``parent`` as ``parent`` does stops there with ``repeats_parent`` set.
-        The walk also stops at a page that lists a job in ``meet``.
+        ``meet`` places each job an oldest-first walk of the search read. A
+        newest-first walk stops, with ``met`` set, once it lists a job placed
+        before the first such job it listed. Jobs posted the same day can
+        come in the same order both ways: a walk entering them at the first
+        read one reaches the unread ones before it comes back past it.
         """
         base = board.base
         listing = _Listing()
         seen: set[str] = set()
+        first_met: int | None = None
         page_size = _page_size(base)
         offset, target = 0, url
         for page_num in range(MAX_PAGES):
@@ -934,6 +947,7 @@ class AvatureScraper(BaseScraper):
                 listing.capped = True
                 return listing
             except _ListingStoppedError:
+                listing.stopped = True
                 return listing
             page_jobs = self._parse_page(html_text, base, board.company)
             if page_num == 0:
@@ -949,8 +963,17 @@ class AvatureScraper(BaseScraper):
                 return listing
             seen.update(j.ats_id for j in new)
             listing.jobs.extend(new)
-            if meet is not None and any(j.ats_id in meet for j in page_jobs):
-                return listing
+            if meet is not None:
+                for job in page_jobs:
+                    place = meet.get(job.ats_id)
+                    if place is None:
+                        continue
+                    if first_met is None:
+                        first_met = place
+                    elif place < first_met:
+                        listing.met = True
+                if listing.met:
+                    return listing
             listing.tail = (offset, [j.ats_id for j in page_jobs])
             if page_num < 2:
                 listing.head = [j.ats_id for j in listing.jobs]
