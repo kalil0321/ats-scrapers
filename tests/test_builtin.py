@@ -225,13 +225,13 @@ def _first_page(items: list[dict], **state: tuple[str, ...]) -> str:
 
 
 def _view(path: str, page: int) -> str:
-    return f"https://builtin.com/jobs/{path}?country=USA&page={page}"
+    return f"https://builtin.com/jobs/{path}?allLocations=true&page={page}"
 
 
-def test_reads_every_filter_view_with_the_country(httpx_mock) -> None:
-    """The unfiltered listing stops at page 1,000, so each remote / category /
-    experience view is read too, with the country the view would otherwise
-    take from the caller's IP."""
+def test_reads_every_filter_view_in_every_country(httpx_mock) -> None:
+    """The unfiltered listing stops at page 1,000 and holds US jobs only, so
+    each remote / category / experience view is read too, for every country
+    rather than the one the view would otherwise take from the caller's IP."""
     httpx_mock.add_response(
         url="https://builtin.com/jobs?page=1",
         text=_first_page([_item(position=1, job_id=1, name="Newest")]),

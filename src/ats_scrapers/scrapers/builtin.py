@@ -1,6 +1,7 @@
-"""Built In (https://builtin.com): US tech jobs scraper.
+"""Built In (https://builtin.com): tech jobs scraper.
 
-Built In is a US-focused tech-jobs board. Each listing page embeds a
+Built In is a tech-jobs board, US first, with postings in many other
+countries. Each listing page embeds a
 schema.org ``ItemList`` with its 10 to 25 jobs (title and URL) and a card
 per job with its company, places, attendance and pay, which we parse
 without any JS rendering. The ``ItemList`` description is a summary Built
@@ -10,13 +11,13 @@ for every job when ``include_descriptions`` is set), along with its
 posting date, structured places and pay.
 
 The listing stops at page 1,000, newest first, so the unfiltered
-``/jobs`` walk only reaches the newest ~12k of a far larger US
+``/jobs`` walk only reaches the newest ~12k US jobs of a far larger
 catalogue. The scraper also walks the board's own filter views, one per
-remote preference, category and experience level; a view still full at
-its last page is split by company size. The filter options come from
-the listing's ``Builtin.jobBoardInit`` state. Deep pages of a large view
-drop jobs that its narrower views list, so the narrow views read more
-than their parent.
+remote preference, category and experience level, across every country;
+a view still full at its last page is split by company size. The filter
+options come from the listing's ``Builtin.jobBoardInit`` state. Deep
+pages of a large view drop jobs that its narrower views list, so the
+narrow views read more than their parent.
 
 Requests go through ``httpx`` first and switch to ``httpcloak`` (TLS+h2
 impersonation, in the ``scrapers`` extra) on the first 403.
@@ -67,8 +68,8 @@ if TYPE_CHECKING:
 API_ROOT = "https://builtin.com"
 LISTING_PATH = "/jobs"
 DEFAULT_MAX_PAGES = 1000  # The listing serves no page past 1,000.
-# A filter view without a country falls back to the country of the caller's IP.
-COUNTRY = "USA"
+# A filter view without a place falls back to the country of the caller's IP.
+EVERY_COUNTRY = "allLocations=true"
 # One address reads about 0.7 pages a second under Cloudflare's limit: the
 # whole catalogue takes most of a day on a single route.
 DEFAULT_MAX_SECONDS = 6 * 3600
@@ -126,7 +127,7 @@ _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 @ScraperRegistry.register(ATSType.BUILTIN)
 class BuiltInScraper(BaseScraper):
-    """Built In (builtin.com): US tech jobs.
+    """Built In (builtin.com): tech jobs, in the US and abroad.
 
     Single-source: ``company_slug`` is ignored.
 
@@ -585,10 +586,10 @@ class _RoutePool:
 
 
 def _listing_url(path: str, page: int) -> str:
-    """``/jobs`` defaults to the US; a filter view needs the country."""
+    """``/jobs`` defaults to the US; a filter view is read for every country."""
     if path == LISTING_PATH:
         return f"{API_ROOT}{path}?page={page}"
-    return f"{API_ROOT}{path}?country={COUNTRY}&page={page}"
+    return f"{API_ROOT}{path}?{EVERY_COUNTRY}&page={page}"
 
 
 def _board_facets(text: str) -> tuple[list[list[str]], list[str]] | None:
