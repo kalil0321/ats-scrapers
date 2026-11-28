@@ -1206,6 +1206,73 @@ def test_oracle_listing_summary_survives_an_unusable_detail(
     assert job.description == "One-line summary."
 
 
+def _oracle_single_job(httpx_mock, listing_item: dict, detail_item: dict) -> None:
+    base = "https://acme.fa.us2.oraclecloud.com/hcmRestApi/resources/latest"
+    httpx_mock.add_response(
+        url=(
+            f"{base}/recruitingCEJobRequisitions?onlyData=true"
+            f"&finder=findReqs%3BsiteNumber%3DCX_1%2Climit%3D200%2Coffset%3D0"
+            f"&expand=requisitionList"
+        ),
+        json={"items": [{"TotalJobsCount": 1, "requisitionList": [listing_item]}]},
+    )
+    httpx_mock.add_response(
+        url=f"{base}/recruitingCEJobRequisitionDetails?finder=ById%3BId%3D001&onlyData=true",
+        json={"items": [detail_item]},
+    )
+
+
+# A detail record as served for a posting whose page shows only the
+# employer's "About us" and "About the team" sections.
+_EMPLOYER_ONLY_DETAIL = {
+    "Id": "001",
+    "Title": "Consultant",
+    "ExternalDescriptionStr": "",
+    "ExternalResponsibilitiesStr": "",
+    "ExternalQualificationsStr": "",
+    "ShortDescriptionStr": "",
+    "CorporateDescriptionStr": "<p>Acme runs 13 hospitals.</p>",
+    "OrganizationDescriptionStr": "<p>The clinical team.</p>",
+}
+
+
+def test_oracle_posting_without_text_of_its_own_gives_the_employer_sections(
+    httpx_mock,
+) -> None:
+    _oracle_single_job(httpx_mock, {"Id": "001", "Title": "Consultant"}, _EMPLOYER_ONLY_DETAIL)
+
+    [job] = OracleScraper("https://acme.fa.us2.oraclecloud.com").fetch()
+
+    assert job.description == "Acme runs 13 hospitals.\n\nThe clinical team."
+
+
+def test_oracle_employer_sections_do_not_replace_the_postings_own_text(httpx_mock) -> None:
+    detail = {**_EMPLOYER_ONLY_DETAIL, "ExternalDescriptionStr": "<p>See patients.</p>"}
+    _oracle_single_job(httpx_mock, {"Id": "001", "Title": "Consultant"}, detail)
+
+    [job] = OracleScraper("https://acme.fa.us2.oraclecloud.com").fetch()
+
+    assert job.description == "See patients."
+
+
+def test_oracle_employer_sections_do_not_replace_the_listing_summary(httpx_mock) -> None:
+    listing = {"Id": "001", "Title": "Consultant", "ShortDescriptionStr": "<p>Clinic role.</p>"}
+    _oracle_single_job(httpx_mock, listing, _EMPLOYER_ONLY_DETAIL)
+
+    [job] = OracleScraper("https://acme.fa.us2.oraclecloud.com").fetch()
+
+    assert job.description == "Clinic role."
+
+
+def test_oracle_same_text_in_both_employer_sections_is_kept_once(httpx_mock) -> None:
+    detail = {**_EMPLOYER_ONLY_DETAIL, "OrganizationDescriptionStr": "<p>Acme runs 13 hospitals.</p>"}
+    _oracle_single_job(httpx_mock, {"Id": "001", "Title": "Consultant"}, detail)
+
+    [job] = OracleScraper("https://acme.fa.us2.oraclecloud.com").fetch()
+
+    assert job.description == "Acme runs 13 hospitals."
+
+
 def test_oracle_retired_pod_is_not_found(httpx_mock) -> None:
     """A retired pod still resolves to Akamai, which can no longer find the
     origin and answers 503 "DNS failure"."""
