@@ -617,11 +617,18 @@ class WorkdayScraper(BaseScraper):
 
         await _run_all(child(v_id, count) for v_id, count in values)
         # The size is a floor: a facet that seems to cover it may still miss jobs.
-        await self._exhaust_remainder(
+        left = await self._exhaust_remainder(
             client, api, sem,
             applied_facets=applied_facets, covered=[(param, [v_id for v_id, _ in values])],
             facets=facets, absorb=absorb, depth=depth, size=size,
         )
+        # The search's own pages hold some of what no facet reaches: read them
+        # when they should give at least a page of those jobs.
+        if left is None or left * QUERY_TOTAL_CAP >= PAGE_LIMIT * size:
+            await self._fan_out_pages(
+                client, api, sem,
+                applied_facets=applied_facets, total=total, absorb=absorb,
+            )
 
     async def _exhaust_remainder(
         self,
@@ -635,10 +642,11 @@ class WorkdayScraper(BaseScraper):
         absorb,
         depth: int,
         size: int,
-    ) -> bool:
+    ) -> int | None:
         """Read the jobs of a capped search that none of the ``covered``
-        facet values holds. False when some seem missed and no other facet
-        tells where they are.
+        facet values holds, and return how many no facet reaches: None when
+        they cannot be counted. A split on more values than one search takes
+        is not checked.
 
         No search excludes a facet, so searches filtered on the covered
         values count the jobs already read, their union by inclusion and
@@ -650,7 +658,7 @@ class WorkdayScraper(BaseScraper):
         job; a larger one is narrowed down the same way.
         """
         if any(len(ids) > _MAX_FILTER_VALUES for _, ids in covered):
-            return False
+            return 0
         reached: list[tuple[int, dict[str, Any]]] = []
         for n in range(1, len(covered) + 1):
             for subset in itertools.combinations(covered, n):
@@ -660,7 +668,7 @@ class WorkdayScraper(BaseScraper):
                     applied_facets={**applied_facets, **dict(subset)}, offset=0,
                 )
                 if payload is None:
-                    return False
+                    return None
                 absorb(payload.get("jobPostings") or [])
                 reached.append((1 if n % 2 else -1, payload))
         skip = {*applied_facets, *(param for param, _ in covered)}
@@ -669,13 +677,12 @@ class WorkdayScraper(BaseScraper):
         )
         if plan is None:
             if len(covered) == 1:
-                missed = self._unreached(applied_facets, covered[0], facets, reached[0][1], size)
-                return missed is not None and missed <= 0
+                return self._unreached(applied_facets, covered[0], facets, reached[0][1], size)
             totals = [(sign, int(payload.get("total", 0))) for sign, payload in reached]
             # Totals below the cap are exact: their union counts the jobs read.
-            return all(total < QUERY_TOTAL_CAP for _, total in totals) and (
-                size <= sum(sign * total for sign, total in totals)
-            )
+            if any(total >= QUERY_TOTAL_CAP for _, total in totals):
+                return None
+            return max(0, size - sum(sign * total for sign, total in totals))
         other, targets = plan
 
         async def recover(value_id: str, count: int, missed: int) -> None:
@@ -693,13 +700,13 @@ class WorkdayScraper(BaseScraper):
             if narrowed is None:
                 return
             absorb(narrowed.get("jobPostings") or [])
-            located = await self._exhaust_remainder(
+            left = await self._exhaust_remainder(
                 client, api, sem,
                 applied_facets=filters, covered=covered,
                 facets=narrowed.get("facets") or [], absorb=absorb,
                 depth=depth + 1, size=count,
             )
-            if not located:
+            if left != 0:
                 # Nothing tells the missed jobs apart: read what the search shows.
                 await self._fan_out_pages(
                     client, api, sem, applied_facets=filters,
@@ -707,14 +714,17 @@ class WorkdayScraper(BaseScraper):
                 )
 
         await _run_all(recover(*target) for target in targets)
-        if len(covered) < _REMAINDER_FACETS:
-            listed = [v_id for v_id, _ in _facet_values(facets).get(other, ())]
-            await self._exhaust_remainder(
-                client, api, sem,
-                applied_facets=applied_facets, covered=[*covered, (other, listed)],
-                facets=facets, absorb=absorb, depth=depth, size=size,
-            )
-        return True
+        if len(covered) >= _REMAINDER_FACETS:
+            return 0
+        listed = [v_id for v_id, _ in _facet_values(facets).get(other, ())]
+        left = await self._exhaust_remainder(
+            client, api, sem,
+            applied_facets=applied_facets, covered=[*covered, (other, listed)],
+            facets=facets, absorb=absorb, depth=depth, size=size,
+        )
+        # Searches of several covered facets at the cap cannot count what is
+        # left; the facets read have found what they could.
+        return 0 if left is None else left
 
     def _unreached(
         self,
@@ -746,7 +756,7 @@ class WorkdayScraper(BaseScraper):
                 self.company_slug, filtered, size, param,
             )
             return None
-        missed = size - reached_jobs
+        missed = max(0, size - reached_jobs)
         if missed > PAGE_LIMIT:
             logger.warning(
                 "Workday (%s): about %d of %d jobs of a search filtered on %s "

@@ -278,6 +278,7 @@ class _Board:
         self.value_cap = value_cap
         self.params = sorted({param for job in jobs.values() for param in job})
         self.searches: list[dict[str, list[str]]] = []
+        self.pages: list[tuple[str, int]] = []
 
     def _matching(self, applied: dict[str, list[str]], *, but: str | None = None) -> list[str]:
         return [
@@ -293,6 +294,7 @@ class _Board:
         applied = body["appliedFacets"]
         if body["offset"] == 0:
             self.searches.append(applied)
+        self.pages.append((json.dumps(applied, sort_keys=True), body["offset"]))
         hits = self._matching(applied)
         facets = []
         for param in self.params:
@@ -529,3 +531,37 @@ def test_a_value_a_later_facet_cannot_narrow_is_read_as_far_as_it_shows(httpx_mo
     scraped = WorkdayScraper(URL, include_descriptions=False).fetch()
 
     assert sorted(job.requisition_id for job in scraped) == sorted(jobs)
+
+
+def test_a_capped_search_shows_jobs_no_facet_reaches(httpx_mock, small_cap) -> None:
+    """60 of 90 jobs have two skills each; its own pages show the others."""
+    jobs = {
+        f"R{i}": {
+            "jobFamilyGroup": ["a"],
+            **({"workerSubType": [f"s{i % 3}", f"s{i % 3 + 3}"]} if i >= 30 else {}),
+        }
+        for i in range(90)
+    }
+    jobs["R99"] = {"jobFamilyGroup": ["b"]}
+    httpx_mock.add_callback(_Board(jobs).reply, url=API, is_reusable=True)
+
+    scraped = {job.requisition_id for job in WorkdayScraper(URL, include_descriptions=False).fetch()}
+
+    assert {f"R{i}" for i in range(30)} <= scraped
+
+
+def test_a_large_search_is_not_paged_for_one_missed_job(httpx_mock, small_cap) -> None:
+    jobs = {
+        f"R{i}": {
+            "jobFamilyGroup": ["a"],
+            **({"timeType": ["ft" if i % 2 else "pt"]} if i else {}),
+        }
+        for i in range(100)
+    }
+    jobs["R999"] = {"jobFamilyGroup": ["b"]}
+    board = _Board(jobs)
+    httpx_mock.add_callback(board.reply, url=API, is_reusable=True)
+
+    WorkdayScraper(URL, include_descriptions=False).fetch()
+
+    assert (json.dumps({"jobFamilyGroup": ["a"]}), 20) not in board.pages
