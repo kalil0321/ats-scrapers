@@ -1291,3 +1291,14 @@ def test_detail_with_a_malformed_apply_link_keeps_its_text(httpx_mock) -> None:
 
     assert BundesagenturScraper("any").get_description(job) == "Text."
     assert job.apply_url is None
+
+
+def test_direct_detail_route_ignores_the_environment_proxy(monkeypatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://env.example:3128")
+    scraper = BundesagenturScraper("any", proxies=["http://a.example:3128", None])
+    url = httpx.URL("https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobdetails/x")
+
+    direct = scraper._detail_client(1)
+
+    assert direct._transport_for_url(url) is direct._transport
+    scraper.close()

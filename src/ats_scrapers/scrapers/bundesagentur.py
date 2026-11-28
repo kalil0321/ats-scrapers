@@ -462,11 +462,18 @@ class BundesagenturScraper(BaseScraper):
         with self._detail_lock:
             client = self._detail_clients.get(index)
             if client is None:
-                client = httpx.Client(
-                    timeout=self.timeout,
-                    proxy=self.proxies[index],
-                    limits=httpx.Limits(keepalive_expiry=DETAIL_KEEPALIVE_SECONDS),
-                )
+                limits = httpx.Limits(keepalive_expiry=DETAIL_KEEPALIVE_SECONDS)
+                if self.proxies == [None]:
+                    client = httpx.Client(timeout=self.timeout, limits=limits)
+                else:
+                    # An explicit transport: a direct route stays direct
+                    # whatever proxy the environment sets.
+                    client = httpx.Client(
+                        timeout=self.timeout,
+                        transport=httpx.HTTPTransport(
+                            proxy=self.proxies[index], limits=limits
+                        ),
+                    )
                 self._detail_finalizers.append(weakref.finalize(self, client.close))
                 self._detail_clients[index] = client
             return client
