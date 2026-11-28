@@ -8,13 +8,20 @@ Public boards use either of these forms::
 The job-list API returns plaintext JSON for some tenants and an AES-CBC
 envelope for others. The encrypted form carries its UTF-8 key in the
 ``necromancer`` field and uses the IV embedded in Moka's public bundle.
+
+A tenant can leave the description and the locations out of the list. The
+job page reads them from ``POST /api/outer/ats-apply/website/job``, one job
+at a time: ``afetch`` does so when ``include_descriptions`` is set, and
+``get_description`` on demand.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import html as html_mod
 import json
+import logging
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -38,6 +45,8 @@ _HOST_ALIASES = {
 }
 
 API_TEMPLATE = "https://{host}/api/outer/ats-apply/website/jobs/v2"
+DETAIL_TEMPLATE = "https://{host}/api/outer/ats-apply/website/job"
+DETAIL_CONCURRENCY = 4
 _DEFAULT_AES_IV = b"de7c21ed8d6f50fe"
 PAGE_SIZE = 50  # the API rejects a larger limit
 MAX_PAGES = 1_000
@@ -59,6 +68,8 @@ _EMPLOYMENT_MAP: dict[str, EmploymentType] = {
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 _ASCII_RE = re.compile(r"^[\x00-\x7f\s\W]+$")
+
+logger = logging.getLogger(__name__)
 
 
 @ScraperRegistry.register(ATSType.MOKA)
@@ -99,8 +110,7 @@ class MokaScraper(BaseScraper):
         self.host = _normalize_host(host or slug_host or DEFAULT_HOST)
 
     async def afetch(self) -> list[Job]:
-        headers = {**self.default_headers, "Referer": self._tenant_url()}
-        async with self.make_fetcher(headers=headers) as fetch:
+        async with self.make_fetcher(headers=self._headers()) as fetch:
             jobs: list[Job] = []
             seen: set[str] = set()
             offset = 0
@@ -134,7 +144,55 @@ class MokaScraper(BaseScraper):
                     f"{len(jobs)} jobs (page guard {MAX_PAGES}); refusing to "
                     "return a partial list"
                 )
+            if self.include_descriptions:
+                semaphore = asyncio.Semaphore(DETAIL_CONCURRENCY)
+
+                async def fill(job: Job) -> None:
+                    async with semaphore:
+                        try:
+                            await self._read_posting(fetch, job)
+                        except ScraperError as exc:
+                            logger.warning("Moka job %s could not be read: %s", job.url, exc)
+
+                await asyncio.gather(*(fill(job) for job in jobs if not job.description))
             return jobs
+
+    def get_description(self, job: Job) -> str | None:
+        """The job's description, and its locations if the list had none."""
+        if job.description:
+            return job.description
+
+        async def run() -> None:
+            async with self.make_fetcher(headers=self._headers()) as fetch:
+                await self._read_posting(fetch, job)
+
+        try:
+            self._run_sync(run())
+        except ScraperError as exc:
+            # Closed since the list was read: the job keeps what the list gave.
+            logger.warning("Moka job %s could not be read: %s", job.url, exc)
+        return job.description
+
+    async def _read_posting(self, fetch: Fetcher, job: Job) -> None:
+        envelope = await fetch.post_json(
+            DETAIL_TEMPLATE.format(host=self.host),
+            json={"orgId": self.slug, "jobId": job.ats_id, "siteId": self.site_id},
+        )
+        posting = _unwrap(envelope, slug=self.company_slug)
+        if str(posting.get("id") or "") != job.ats_id:
+            return
+        job.description = _strip_html(posting.get("jobDescription")) or job.description
+        if not job.location:
+            location, country_iso = _location(posting.get("locations") or [])
+            if location:
+                job.location = location
+                job.country_iso = job.country_iso or country_iso
+                job.region = job.region or _region(job.country_iso)
+        job.department = job.department or _department_name(posting.get("department"))
+        commitment = posting.get("commitment")
+        if not job.commitment and isinstance(commitment, str) and commitment.strip():
+            job.commitment = commitment
+            job.employment_type = job.employment_type or _employment_type(commitment)
 
     async def _fetch_page(
         self,
@@ -173,7 +231,7 @@ class MokaScraper(BaseScraper):
             ats_id=ats_id,
             location=location,
             country_iso=country_iso,
-            region="Asia" if country_iso in {"CN", "HK", "TW", "SG"} else None,
+            region=_region(country_iso),
             language=_language(item.get("multiLocale"), title),
             employment_type=_employment_type(commitment),
             department=_department_name(item.get("department")),
@@ -196,6 +254,9 @@ class MokaScraper(BaseScraper):
         # ``{tenant}#/job/{id}`` opens the posting, ``{tenant}/job/{id}``
         # answers 404 ("您访问的页面不存在").
         return f"{self._tenant_url()}#/job/{job_id}"
+
+    def _headers(self) -> dict[str, str]:
+        return {**self.default_headers, "Referer": self._tenant_url()}
 
     def _tenant_url(self) -> str:
         board = (
@@ -339,6 +400,10 @@ def _location(locations: Any) -> tuple[str | None, str | None]:
         if isinstance(country, str):
             country_iso = country_iso or country_map.get(country)
     return "; ".join(pieces) or None, country_iso
+
+
+def _region(country_iso: str | None) -> str | None:
+    return "Asia" if country_iso in {"CN", "HK", "TW", "SG"} else None
 
 
 def _strip_html(value: Any) -> str | None:
