@@ -166,7 +166,11 @@ class MokaScraper(BaseScraper):
             async with self.make_fetcher(headers=self._headers()) as fetch:
                 await self._read_posting(fetch, job)
 
-        self._run_sync(run())
+        try:
+            self._run_sync(run())
+        except ScraperError as exc:
+            # Closed since the list was read: the job keeps what the list gave.
+            logger.warning("Moka job %s could not be read: %s", job.url, exc)
         return job.description
 
     async def _read_posting(self, fetch: Fetcher, job: Job) -> None:

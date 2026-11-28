@@ -341,3 +341,28 @@ def test_a_listed_place_is_kept_over_the_postings(httpx_mock) -> None:
 
     assert result.location == "上海市, 上海, 中国"
     assert result.description == TESLA_TEXT
+
+
+def test_get_description_moves_past_a_closed_posting(httpx_mock) -> None:
+    other_id = "6a8dfcf9-5bef-4665-810e-15918bf6c4fd"
+    rows = [TESLA_ROW, {**TESLA_ROW, "id": other_id}]
+    httpx_mock.add_response(url=URL_HIRE_R1, json=envelope(rows))
+    scraper = MokaScraper("hire-r1/tesla/100004142", include_descriptions=False)
+    closed, open_ = scraper.fetch()
+    httpx_mock.add_response(
+        url=URL_HIRE_R1_DETAIL,
+        match_json={"orgId": "tesla", "jobId": TESLA_JOB_ID, "siteId": 100004142},
+        json={"code": 703015, "codeType": 0, "success": False,
+              "msg": "您访问的职位已不存在，请浏览其他职位"},
+    )
+    posting = {**TESLA_POSTING, "data": {**TESLA_POSTING["data"], "id": other_id}}
+    httpx_mock.add_response(
+        url=URL_HIRE_R1_DETAIL,
+        match_json={"orgId": "tesla", "jobId": other_id, "siteId": 100004142},
+        json=posting,
+    )
+
+    scraper.enrich_descriptions([closed, open_])
+
+    assert closed.description is None
+    assert open_.description == TESLA_TEXT
