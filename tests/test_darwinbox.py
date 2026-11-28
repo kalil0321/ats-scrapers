@@ -37,7 +37,14 @@ def fake_httpcloak(monkeypatch):
             raise AssertionError("unexpected httpcloak POST")
         return responses.pop(0)
 
+    def get(url: str, **kwargs: Any) -> FakeResponse:
+        calls.append({"url": url, "method": "GET", **kwargs})
+        if not responses:
+            raise AssertionError("unexpected httpcloak GET")
+        return responses.pop(0)
+
     module.post = post  # type: ignore[attr-defined]
+    module.get = get  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "httpcloak", module)
     return responses, calls
 
@@ -294,3 +301,104 @@ def test_fixed_term_in_employee_type():
     job = DarwinboxScraper("acme")._parse_listing({**listing(), "emp_type_name": "Fixed term"},
                                                   "acme", "in", "https://acme.darwinbox.in")
     assert job.engagement_type == "fixed_term" and job.commitment == "Fixed term"
+
+
+# --- descriptions from the job page --------------------------------------------
+
+PWC_JOB_ID = "a6b09afc84f9c5"
+PWC_DETAIL = f"https://pwc.darwinbox.com/ms/candidateapi/job/{PWC_JOB_ID}"
+
+# A listing row and its job page data as pwc.darwinbox.com serves them
+# (trimmed): the listing carries no ``jd``, only an empty ``jd_summary``.
+PWC_ROW = {
+    "_id": "6b09afc823682afe840d12c4",
+    "id": PWC_JOB_ID,
+    "designation_display_name": "IN_Associate_Project Managemnt_IGT Social_Advisory_Gurgaon",
+    "internal_job_code": "Job8450",
+    "experience_from": "5",
+    "experience": "5 - 6 Years",
+    "officelocation_show_arr_list": ["Gurugram 10 C, Gurugram, Haryana, India"],
+    "country": "India",
+    "created_on": "2026-11-27T16:28:56.000Z",
+    "is_remote": 0,
+    "department_name": "One Consulting",
+    "emp_type_name": "Fixed Term",
+    "jd_summary": "",
+    "posted_on": 1795804200,
+    "tool_tip_locations": ["Gurugram 10 C, Gurugram, Haryana, India"],
+}
+PWC_POSTING = {
+    "status": "success",
+    "message": {
+        "job": [{
+            "id": PWC_JOB_ID,
+            "designation_display_name": PWC_ROW["designation_display_name"],
+            "jd": (
+                "&lt;p class=&quot;MsoNormal&quot;&gt;&lt;b&gt;&lt;span style=&quot;"
+                "font-size:10pt;line-height:115%;&quot;&gt;Job\nProfile:&lt;/span&gt;"
+                "&lt;/b&gt;&lt;span style=&quot;font-size:10pt;line-height:115%;&quot;"
+                "&gt; At PwC, our\npeople in sustainability focus on integrating "
+                "environmental, social, economic,\nand governance considerations into "
+                "business strategies and operations.&lt;/span&gt;&lt;/p&gt;"
+            ),
+            "experience": "5 - 6 Years",
+            "timezone": "Asia/Kolkata",
+        }],
+        "isSaved": False,
+    },
+}
+PWC_TEXT = (
+    "Job Profile: At PwC, our people in sustainability focus on integrating "
+    "environmental, social, economic, and governance considerations into business "
+    "strategies and operations."
+)
+
+
+def test_a_listing_without_text_takes_its_job_page(fake_httpcloak) -> None:
+    responses, calls = fake_httpcloak
+    responses.append(FakeResponse(payload([PWC_ROW])))
+    responses.append(FakeResponse(PWC_POSTING))
+
+    [result] = DarwinboxScraper("pwc.com").fetch()
+
+    assert result.description == PWC_TEXT
+    assert calls[1]["method"] == "GET"
+    assert calls[1]["url"] == PWC_DETAIL
+
+
+def test_get_description_reads_the_job_page(fake_httpcloak) -> None:
+    responses, calls = fake_httpcloak
+    responses.append(FakeResponse(payload([PWC_ROW])))
+    scraper = DarwinboxScraper("pwc.com", include_descriptions=False)
+    [result] = scraper.fetch()
+    assert result.description is None
+
+    responses.append(FakeResponse(PWC_POSTING))
+
+    assert scraper.get_description(result) == PWC_TEXT
+    assert calls[-1]["url"] == PWC_DETAIL
+
+
+def test_a_job_page_that_cannot_be_read_leaves_the_listing(fake_httpcloak) -> None:
+    responses, _calls = fake_httpcloak
+    responses.append(FakeResponse(payload([PWC_ROW])))
+    responses.append(FakeResponse({"status": "failure", "message": "Job not found"}, 422))
+
+    [result] = DarwinboxScraper("pwc.com").fetch()
+
+    assert result.description is None
+    assert result.title == PWC_ROW["designation_display_name"]
+
+
+def test_the_template_placeholder_is_no_description(fake_httpcloak) -> None:
+    responses, _calls = fake_httpcloak
+    row = {**listing(), "jd": "Please enter job description"}
+    responses.append(FakeResponse(payload([row])))
+    responses.append(FakeResponse({
+        "status": "success",
+        "message": {"job": [{"id": row["id"], "jd": "Please enter job description"}]},
+    }))
+
+    [result] = DarwinboxScraper("airtel").fetch()
+
+    assert result.description is None
