@@ -49,7 +49,7 @@ import threading
 import time
 import urllib.request
 import weakref
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlsplit
 
@@ -132,6 +132,13 @@ DETAIL_HEADERS = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
 # enough of them for a caller that reads several jobs at once.
 DETAIL_KEEPALIVE_CONNECTIONS = 8
 DETAIL_KEEPALIVE_SECONDS = 60.0
+
+# A listing's ``postedOn`` counts the days since the posting date, the detail
+# page's ``startDate``. "Posted 30+ Days Ago" gives no day.
+_POSTED_DAYS_AGO_RE = re.compile(
+    r"^\s*posted\s+(?:(today)|(yesterday)|(\d{1,2})\s+days?\s+ago)\s*$",
+    re.IGNORECASE,
+)
 
 # When a Workday job spans multiple offices, the search endpoint returns a
 # rollup string in ``locationsText`` like "2 Locations" / "5 Locations"
@@ -960,7 +967,9 @@ class WorkdayScraper(BaseScraper):
         raw: dict[str, Any] = {}
         if item.get("bulletFields"):
             raw["bullet_fields"] = item["bulletFields"]
-        for k in ("locations", "timeType", "jobFamilyGroup", "remoteType"):
+        # ``postedOn`` marks a posting date counted from the listing's label;
+        # the detail page adds the exact ``startDate``.
+        for k in ("locations", "timeType", "jobFamilyGroup", "remoteType", "postedOn"):
             v = item.get(k)
             if v:
                 raw[k] = v
@@ -969,6 +978,7 @@ class WorkdayScraper(BaseScraper):
         if external_path:
             raw["externalPath"] = external_path
 
+        fetched_at = datetime.now(UTC)
         return Job(
             url=f"{base_url}{external_path}" if external_path else base_url,
             title=item.get("title") or "Untitled",
@@ -983,8 +993,8 @@ class WorkdayScraper(BaseScraper):
             commitment=commitment,
             department=department,
             requisition_id=requisition_id,
-            posted_at=_parse_workday_date(item.get("postedOn")),
-            fetched_at=datetime.now(UTC),
+            posted_at=_listing_posted_day(item.get("postedOn"), fetched_at),
+            fetched_at=fetched_at,
             raw=raw or None,
         )
 
@@ -1146,11 +1156,18 @@ class _AsyncCloakClient:
         return await asyncio.to_thread(self._client.post, url, json=json, headers=headers)
 
 
-def _parse_workday_date(value: str | None) -> datetime | None:
-    """Workday's `postedOn` is a relative string like 'Posted 30+ Days Ago'."""
-    if not value:
+def _listing_posted_day(label: object, now: datetime) -> datetime | None:
+    """The posting day a listing's ``postedOn`` label counts back to from the
+    UTC day of ``now``, at midnight UTC like the detail page's ``startDate``."""
+    if not isinstance(label, str):
         return None
-    return None  # Relative; absolute date requires fetching the per-job detail.
+    match = _POSTED_DAYS_AGO_RE.match(label)
+    if not match:
+        return None
+    today, yesterday, days = match.groups()
+    back = 0 if today else 1 if yesterday else int(days)
+    day = now.astimezone(UTC).date() - timedelta(days=back)
+    return datetime(day.year, day.month, day.day, tzinfo=UTC)
 
 
 def _external_path(url: object) -> str | None:
