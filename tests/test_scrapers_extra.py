@@ -506,6 +506,53 @@ def test_workday_parses_url_and_paginates(httpx_mock) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("label", "day"),
+    [
+        ("Posted Today", "2026-11-28"),
+        ("Posted Yesterday", "2026-11-27"),
+        ("Posted 1 Day Ago", "2026-11-27"),
+        ("Posted 12 Days Ago", "2026-11-16"),
+        ("Posted 30+ Days Ago", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_workday_listing_date_counts_back_from_the_utc_day(label, day) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from ats_scrapers.scrapers.workday import _listing_posted_day
+
+    # 00:30 in Zurich is still the 28th in UTC.
+    now = datetime(2026, 11, 29, 0, 30, tzinfo=timezone(timedelta(hours=1)))
+    posted = _listing_posted_day(label, now)
+    assert (posted.isoformat() if posted else None) == (f"{day}T00:00:00+00:00" if day else None)
+
+
+def test_workday_listing_sets_an_approximate_posting_date(httpx_mock) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    api = "https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs"
+    postings = [
+        {"title": "New", "externalPath": "/job/New_R1", "bulletFields": ["R1"], "postedOn": "Posted 3 Days Ago"},
+        {"title": "Old", "externalPath": "/job/Old_R2", "bulletFields": ["R2"], "postedOn": "Posted 30+ Days Ago"},
+    ]
+    httpx_mock.add_response(url=api, json={"jobPostings": postings, "total": 2})
+
+    jobs = {
+        job.title: job
+        for job in WorkdayScraper(
+            "https://acme.wd1.myworkdayjobs.com/External", include_descriptions=False,
+        ).fetch()
+    }
+
+    day = jobs["New"].fetched_at.date() - timedelta(days=3)
+    assert jobs["New"].posted_at == datetime(day.year, day.month, day.day, tzinfo=UTC)
+    assert jobs["New"].raw["postedOn"] == "Posted 3 Days Ago"
+    assert jobs["Old"].posted_at is None
+    assert jobs["Old"].raw["postedOn"] == "Posted 30+ Days Ago"
+
+
 def test_workday_dedupes_overlapping_pages(httpx_mock) -> None:
     """Concurrent paginated fetches can return the same job twice when the
     underlying listing shifts. Dedup must collapse them to a single Job."""
