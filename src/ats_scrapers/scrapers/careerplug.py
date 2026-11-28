@@ -3,7 +3,8 @@
 An account lists its open jobs on paginated HTML pages. The first page of a
 single employer's site also embeds its postings as schema.org data,
 description included. Later pages and the sites that gather the jobs of many
-locations do not, so those descriptions come from the posting pages.
+locations do not, so those descriptions come from the posting pages. A
+posting page without that data still shows the posting's text.
 ``include_descriptions=False`` skips the posting pages and keeps what the
 list embeds.
 """
@@ -167,6 +168,7 @@ class CareerPlugScraper(BaseScraper):
         embedded = _embedded_postings(tree)
         site = _site_name(tree) or self.company_slug
         jobs: list[Job] = []
+        rows = _rows(table)
         for link in table.walk():
             match = _JOB_PATH.match(link.attrs.get("href", "")) if link.tag == "a" else None
             if not match:
@@ -176,7 +178,10 @@ class CareerPlugScraper(BaseScraper):
             if not title:
                 continue
             posting = embedded.get(job_id, {})
-            place = _listed_place(_cell(link, "job-location"))
+            # The link wraps the whole row on most sites; on others it holds
+            # only the title and the cells sit beside it.
+            row = link if _by_class(link, "job-location") else rows.get(id(link), link)
+            place = _listed_place(_cell(row, "job-location"))
             address = _address(posting)
             region = address.get("region") or place.get("region")
             city = address.get("city") or place.get("city")
@@ -194,7 +199,7 @@ class CareerPlugScraper(BaseScraper):
                 description=body_text(posting.get("description"))[:25_000] or None,
                 posted_at=(
                     _iso_datetime(posting.get("datePosted"))
-                    or _listed_date(_cell(link, "job-post-date"))
+                    or _listed_date(_cell(row, "job-post-date"))
                 ),
                 fetched_at=datetime.now(UTC),
                 raw=_raw(posting, address.get("postal") or place.get("postal")),
@@ -222,8 +227,13 @@ class CareerPlugScraper(BaseScraper):
 
     async def _detail(self, fetch: Fetcher, job: Job) -> None:
         response = await fetch.request("GET", str(job.url), handled=frozenset({404}))
-        posting = job_posting(response.text) if response.status_code == 200 else {}
+        if response.status_code != 200:
+            return
+        posting = job_posting(response.text)
         if _posting_id(posting) != job.ats_id:
+            # Some postings carry no schema.org data; the page still shows
+            # their text.
+            job.description = _page_description(response.text, job.ats_id)
             return
         job.description = body_text(posting.get("description"))[:25_000] or None
         job.company = _organization(posting) or job.company
@@ -259,13 +269,56 @@ def _text(node: Node | None) -> str:
     return node.text() if node is not None else ""
 
 
-def _cell(link: Node, name: str) -> str:
+def _rows(table: Node) -> dict[int, Node]:
+    """The innermost list row around each job link, keyed by ``id`` of the
+    link."""
+    rows: dict[int, Node] = {}
+    for row in table.walk():
+        if "row" not in row.classes:
+            continue
+        for node in row.walk():
+            if node.tag == "a" and _JOB_PATH.match(node.attrs.get("href", "")):
+                rows[id(node)] = row
+    return rows
+
+
+def _cell(row: Node, name: str) -> str:
     """A list cell's value, without the label shown beside it on small screens."""
-    cell = _by_class(link, name)
+    cell = _by_class(row, name)
     if cell is None:
         return ""
     label = _text(_by_class(cell, "job-row-title"))
     return cell.text().removeprefix(label).strip()
+
+
+def _page_description(page: str, job_id: str) -> str | None:
+    tree = parse_html(page)
+    # The application form, and on some sites the canonical link, name the
+    # posting the page belongs to.
+    own = f"/jobs/{job_id}/apps"
+    if not any(
+        (node.tag == "form" and node.attrs.get("action", "") == own)
+        or (node.tag == "link" and node.attrs.get("href", "").endswith(f"{own}/new"))
+        for node in tree.walk()
+    ):
+        return None
+    # The older page layout names the container by id.
+    container = next(
+        (
+            node for node in tree.walk()
+            if "job-description-container" in node.classes
+            or node.attrs.get("id") == "job-description-wrapper"
+        ),
+        None,
+    )
+    # The container also holds the account's blurb and disclaimer, shared
+    # by every posting.
+    body = _by_class(container, "trix-content") if container is not None else None
+    return _text_lines(body)[:25_000] or None
+
+
+def _text_lines(node: Node | None) -> str:
+    return node.lines() if node is not None else ""
 
 
 def _embedded_postings(tree: Node) -> dict[str, dict[str, Any]]:

@@ -18,7 +18,7 @@ page/rendered page rather than a structured job payload.
 | `brightermonday` | Yes | No | HTML with embedded JSON | HTML with embedded JSON |
 | `builtin` | Yes | No | HTML | HTML |
 | `bundesagentur` | Yes | Yes | API | API |
-| `careerplug` | Yes | When missing from the listing | HTML with embedded JSON | HTML with embedded JSON |
+| `careerplug` | Yes | When missing from the listing | HTML with embedded JSON | HTML with embedded JSON, else the page |
 | `catsone` | Yes | Yes | HTML (embedded data) | HTML (embedded data) |
 | `clearcompany` | Yes | No | API/feed + HTML bootstrap | API/feed |
 | `cornerstone` | Yes | No | API/feed + HTML bootstrap | API/feed |
