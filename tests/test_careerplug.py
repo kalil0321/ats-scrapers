@@ -276,6 +276,110 @@ def test_keeps_a_job_whose_posting_page_shows_something_else(httpx_mock) -> None
     assert (job.ats_id, job.company, job.description) == ("8", "Acme", None)
 
 
+# A posting page without schema.org data, as served: the posting's own text,
+# then the account's blurb and disclaimer, then the application form.
+_PAGE_WITHOUT_POSTING_DATA = """<html><head><title>Cashier | Acme Overland Park</title>
+<link rel="canonical" href="https://acme-overland-park.careerplug.com/jobs/{canonical}/apps/new">
+</head><body><div class="apply-page-main-content">
+<div class="job-description-container">
+  <div class="benefits"><h3>Benefits:</h3><ul><li>Free meals</li></ul></div>
+  <div class="trix-content"><div>REPORTS TO: General Manager<br><br></div>
+  <div><strong>Job Requirements:</strong></div><ul><li>Able to work fast.</li></ul></div>
+  <div class="job-compensation">Compensation: $12.00 per hour</div>
+  <br><br><br><div class="account_description"><p>About Acme.</p></div>
+  <br><div class="disclaimer-v2"><p>Franchise disclaimer.</p></div>
+</div>
+<div class="app-form"><form class="single_submit formtastic app" id="new_app" action="{action}"
+ accept-charset="UTF-8" method="post"></form></div>
+</div></body></html>"""
+
+
+def _posting_page(*, action: str = "/jobs/8/apps", canonical: str = "8") -> str:
+    return _PAGE_WITHOUT_POSTING_DATA.format(action=action, canonical=canonical)
+
+
+@pytest.mark.parametrize(
+    ("action", "canonical"),
+    [("/jobs/8/apps", "8"), ("/jobs/8/apps", "9"), ("/jobs/9/apps", "8")],
+)
+def test_reads_the_text_of_a_posting_page_without_posting_data(
+    httpx_mock, action: str, canonical: str,
+) -> None:
+    httpx_mock.add_response(
+        url=LIST_URL, text=_page([_row(8, "Cashier", "KS-Overland Park-66210")], title="Acme Careers"),
+    )
+    httpx_mock.add_response(
+        url="https://acme.careerplug.com/jobs/8",
+        text=_posting_page(action=action, canonical=canonical),
+    )
+
+    job = CareerPlugScraper("acme").fetch()[0]
+
+    assert job.description == "REPORTS TO: General Manager\nJob Requirements:\nAble to work fast."
+    assert job.location == "Overland Park, KS"
+
+
+def test_reads_the_text_of_an_older_posting_page(httpx_mock) -> None:
+    page = """<html><body class="microsite apps microsite-v1"><div id="main-apply-page-wrapper">
+    <div class="col-md-7 col-md-height"><div id="job-description-wrapper" class="section">
+    <div class="trix-content"><p>Admin assistant.<br><br>REQUIREMENTS:<br>Good math skills</p></div>
+    <div class="disclaimer"><p>Independently owned.</p></div>
+    <div class="company_info"><div class="account_description"><p>About Acme.</p></div></div>
+    </div></div>
+    <div class="col-md-4"><form class="single_submit formtastic app" action="/jobs/8/apps">
+    <div class="trix-content"><p>Question for applicants.</p></div></form></div>
+    </div></body></html>"""
+    httpx_mock.add_response(
+        url=LIST_URL, text=_page([_row(8, "Assistant", "TX-Prosper-75078")], title="Acme Careers"),
+    )
+    httpx_mock.add_response(url="https://acme.careerplug.com/jobs/8", text=page)
+
+    job = CareerPlugScraper("acme").fetch()[0]
+
+    assert job.description == "Admin assistant.\nREQUIREMENTS:\nGood math skills"
+
+
+def test_a_page_without_posting_data_for_another_posting_gives_nothing(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=LIST_URL, text=_page([_row(8, "Cashier", "KS-Overland Park-66210")], title="Acme Careers"),
+    )
+    httpx_mock.add_response(
+        url="https://acme.careerplug.com/jobs/8",
+        text=_posting_page(action="/jobs/9/apps", canonical="9"),
+    )
+
+    job = CareerPlugScraper("acme").fetch()[0]
+
+    assert job.description is None
+
+
+def test_reads_place_and_date_beside_a_link_that_holds_only_the_title(httpx_mock) -> None:
+    rows = (
+        '<div><div class="row"><div class="job-title col-md-7">'
+        '<a aria-label="Shift Leader in Mansfield, TX" href="/jobs/3701474">'
+        '<span class="name">Shift Leader</span></a></div>'
+        '<div class="job-location col-md-3">TX-Mansfield-76063</div>'
+        '<div class="job-post-date col-md-2">11-20-26</div></div></div>'
+    )
+    httpx_mock.add_response(url=LIST_URL, text=_page([rows], title="Acme Careers"))
+
+    job = CareerPlugScraper("acme", include_descriptions=False).fetch()[0]
+
+    assert (job.ats_id, job.title) == ("3701474", "Shift Leader")
+    assert (job.location, job.country_iso) == ("Mansfield, TX", "US")
+    assert job.raw == {"postal_code": "76063"}
+    assert job.posted_at == datetime(2026, 11, 20, tzinfo=UTC)
+
+
+def test_rows_inside_an_outer_row_keep_their_own_place(httpx_mock) -> None:
+    rows = [_row(1, "Cook", "TX-Austin-78701"), _row(2, "Host", "OR-Eugene-97401")]
+    httpx_mock.add_response(url=LIST_URL, text=_page([f'<div class="row">{"".join(rows)}</div>']))
+
+    jobs = CareerPlugScraper("acme", include_descriptions=False).fetch()
+
+    assert [job.location for job in jobs] == ["Austin, TX", "Eugene, OR"]
+
+
 def test_a_site_with_nothing_open_is_no_jobs(httpx_mock) -> None:
     httpx_mock.add_response(url=LIST_URL, text=_page([]))
 
