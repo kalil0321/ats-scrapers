@@ -17,7 +17,9 @@ the same two public resources:
 
 2. A detail page per posting with a schema.org ``JobPosting`` JSON-LD
    block: description, posting date, employer, structured address,
-   employment type and the ATS requisition id.
+   employment type and the ATS requisition id. Some sites leave the
+   block out; their pages still show the description in an
+   ``ats-description`` element.
 
 A search stops returning rows after 10,000 postings in whatever order
 it is sorted, so a site above that size is read twice, newest postings
@@ -52,6 +54,7 @@ from urllib.parse import urlparse
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._htmltree import Node, parse_html
 from ats_scrapers.scrapers._slug import require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -112,6 +115,7 @@ _BLOCK_TAG_RE = re.compile(
 )
 _LI_OPEN_RE = re.compile(r"<\s*li[^>]*>", re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
+_CONTROL_TAGS = frozenset({"button", "form", "input", "select", "svg", "textarea"})
 _INLINE_WS_RE = re.compile(r"[ \t\r\f\v\xa0]+")
 _BLANK_LINES_RE = re.compile(r"\n\s*\n\s*\n+")
 
@@ -337,10 +341,11 @@ class TalentBrewScraper(BaseScraper):
             except ScraperError:
                 return
         posting = _job_posting(page)
+        description = _html_to_text(posting.get("description")) if posting else None
+        if description := description or _page_description(page):
+            job.description = description[:MAX_DESCRIPTION_LEN]
         if posting is None:
             return
-        if description := _html_to_text(posting.get("description")):
-            job.description = description[:MAX_DESCRIPTION_LEN]
         if posted := _parse_date(posting.get("datePosted")):
             job.posted_at = posted
         if not self.company_name:
@@ -466,6 +471,28 @@ def _job_posting(page: str) -> dict[str, Any] | None:
             if _is_job_posting(entry):
                 return entry
     return None
+
+
+def _page_description(page: str) -> str | None:
+    """The text the page shows in its ``ats-description`` block.
+
+    Some sites publish no JobPosting block, or one without a description.
+    """
+    root = parse_html(page)
+    block = next((node for node in root.walk() if "ats-description" in node.classes), None)
+    if block is None:
+        return None
+    # Text pasted into the block often leaves elements open, so the apply
+    # and save buttons that follow it end up inside.
+    for node in (block, *block.walk()):
+        node.children = [child for child in node.children if not _is_control(child)]
+    return block.lines() or None
+
+
+def _is_control(child: Node | str) -> bool:
+    return isinstance(child, Node) and (
+        child.tag in _CONTROL_TAGS or "job-apply" in child.classes
+    )
 
 
 def _posting_location(posting: dict[str, Any]) -> tuple[str | None, str | None]:

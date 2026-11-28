@@ -140,6 +140,98 @@ def test_unreadable_detail_keeps_the_listing_row(httpx_mock) -> None:
     assert all(job.description is None for job in jobs)
 
 
+# A site without a JobPosting block, as served: the facts on the left, the
+# text the ATS sent on the right.
+_PAGE_WITHOUT_JSON_LD = """<html><head><title>Production Lead</title></head><body>
+<section class="job-description" data-selector-name="jobdetails" data-job-id="103">
+  <div class="job-description-left">
+    <h2>Production Associate Lead - 1st Shift</h2>
+    <span class="job-info job-location">Milford, Delaware, United States</span>
+    <div class="top-jd-buttons">
+      <a class="button job-apply top" href="https://apply.example.com/82311">Apply</a>
+      <button type="button" class="btn-outline js-save-job-btn">Save</button>
+    </div>
+    <span class="job-id job-info"><b>Job ID</b> 82311</span>
+  </div>
+  <div class="job-description-right">
+    <div class="ats-description"><p>We make food.</p><p></p><br>
+      <p><strong>Summary</strong></p><ul><li>Lead the line</li><li>Train the crew</li></ul>
+    </div>
+  </div>
+</section>
+<footer>Privacy policy</footer>
+</body></html>"""
+
+# Rich text that leaves its own elements open, so the buttons after the
+# block are inside it.
+_PAGE_WITH_OPEN_ELEMENTS = """<html><body>
+<section class="job-description" data-job-id="103">
+  <h2 class="job-sub-hl">Opportunity</h2>
+  <div class="ats-description">
+    <br><div class="ck-content"><div class="ck-content"><span><span>
+    <div class="job-description"><p>Join the salon team.</p>
+    <ul><li>Hourly wage plus tips</li></ul></div></span></span>
+    <span class="job-id job-info"><strong>Job Ref #:</strong> 2025-41475</span>
+  </div>
+  <span class="jd-btn-wrap">
+    <a class="button job-apply bottom" href="https://apply.example.com/41475">Apply</a>
+    <button type="button" class="js-save-job-btn"><svg><path d="M0 0"/></svg>Saved</button>
+  </span>
+</section>
+<footer>Privacy policy</footer>
+</body></html>"""
+
+
+def test_page_without_a_posting_block_gives_its_description(httpx_mock) -> None:
+    httpx_mock.add_response(url=SEARCH, json=_fragment([_row("103")], 1))
+    httpx_mock.add_response(url=DETAIL, text=_PAGE_WITHOUT_JSON_LD)
+
+    job = TalentBrewScraper(HOST, company_name="Example").fetch()[0]
+
+    assert job.description == "We make food.\nSummary\nLead the line\nTrain the crew"
+    assert job.location == "Archbald, PA"
+    assert job.company == "Example"
+
+
+def test_buttons_left_inside_the_description_are_dropped(httpx_mock) -> None:
+    httpx_mock.add_response(url=SEARCH, json=_fragment([_row("103")], 1))
+    httpx_mock.add_response(url=DETAIL, text=_PAGE_WITH_OPEN_ELEMENTS)
+
+    job = TalentBrewScraper(HOST).fetch()[0]
+
+    assert job.description == (
+        "Join the salon team.\nHourly wage plus tips\nJob Ref #: 2025-41475"
+    )
+
+
+def test_controls_directly_inside_the_description_are_dropped(httpx_mock) -> None:
+    page = (
+        '<html><body><div class="ats-description"><p>Join the team.</p>'
+        '<a class="button job-apply" href="https://apply.example.com/1">Apply</a>'
+        "<button>Save</button></div></body></html>"
+    )
+    httpx_mock.add_response(url=SEARCH, json=_fragment([_row("103")], 1))
+    httpx_mock.add_response(url=DETAIL, text=page)
+
+    job = TalentBrewScraper(HOST).fetch()[0]
+
+    assert job.description == "Join the team."
+
+
+def test_posting_block_without_a_description_reads_the_page(httpx_mock) -> None:
+    detail = _detail(description="").replace(
+        "<body></body>", '<body><div class="ats-description"><p>Protect the site.</p></div></body>',
+    )
+    httpx_mock.add_response(url=SEARCH, json=_fragment([_row("103")], 1))
+    httpx_mock.add_response(url=DETAIL, text=detail)
+
+    job = TalentBrewScraper(HOST).fetch()[0]
+
+    assert job.description == "Protect the site."
+    assert job.posted_at == datetime(2026, 11, 12, tzinfo=UTC)
+    assert job.requisition_id == "2026-1747835"
+
+
 def test_get_description_fetches_one_page(httpx_mock) -> None:
     httpx_mock.add_response(url=SEARCH, json=_fragment([_row("103")], 1))
     scraper = TalentBrewScraper(HOST, include_descriptions=False)

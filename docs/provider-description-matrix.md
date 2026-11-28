@@ -67,7 +67,7 @@ page/rendered page rather than a structured job payload.
 | `smartrecruiters` | Yes | Yes | API/feed | API/feed |
 | `softgarden` | Yes | No | API/feed | API/feed |
 | `successfactors` | Yes | No | API/feed (RSS/XML) | API/feed (RSS/XML) |
-| `talentbrew` | Yes | Yes | API (HTML fragment) | HTML (JSON-LD) |
+| `talentbrew` | Yes | Yes | API (HTML fragment) | HTML (JSON-LD, else the page) |
 | `talentio` | Yes | Yes | HTML bootstrap | HTML (JSON-LD) |
 | `talentsoft` | Yes | Yes | HTML | HTML |
 | `taleo` | Yes | Yes | HTML | HTML |
