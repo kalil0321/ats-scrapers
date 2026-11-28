@@ -285,13 +285,9 @@ def test_workday_catalogue_lists_each_career_site_once() -> None:
         match = URL_PATTERN.match(row["url"])
         assert match is not None, row["url"]
         assert row["name"].strip(), row["url"]
-        sites.append(
-            (
-                match["company"].casefold(),
-                match["instance"],
-                match["site"].casefold(),
-            )
-        )
+        # A tenant is served from one data center: a site listed on two is
+        # stale on one of them.
+        sites.append((match["company"].casefold(), match["site"].casefold()))
     assert len(set(sites)) == len(sites)
 
 
