@@ -100,8 +100,9 @@ DEFAULT_MAX_PAGES = 100
 # Errors that say a detail request's route is down, not the posting.
 _ROUTE_DOWN = (httpx.ProxyError, httpx.ConnectError, httpx.ConnectTimeout)
 
-# How a route took a detail request: ``refused`` is a 403, ``down`` no connection.
-_Outcome = Literal["answered", "refused", "down"]
+# How a route took a detail request: ``refused`` is a 403, ``down`` no connection,
+# ``closed`` the route closed while the request waited for its turn.
+_Outcome = Literal["answered", "refused", "down", "closed"]
 
 # Lower bound of the publication-date walk; live postings are far younger.
 EARLIEST_PUBLICATION = datetime(2000, 1, 1)
@@ -154,6 +155,11 @@ class _Throttle:
                     self._next_start = now + self.interval
                     return now
             await asyncio.sleep(delay)
+
+    async def turn(self) -> float | None:
+        """``wait`` for a detail request: ``None`` once the route is closed."""
+        sent_at = await self.wait()
+        return None if self.closed else sent_at
 
     def passed(self, sent_at: float) -> None:
         with self._lock:
@@ -301,6 +307,10 @@ class JobsChScraper(BaseScraper):
         return job.description
 
     async def afetch(self) -> list[Job]:
+        # A new fetch gives detail routes an earlier block closed another chance.
+        with self._throttles_lock:
+            for throttle in self._throttles.values():
+                throttle.closed = False
         # Probe IP routing on the empty query: if the datacenter IP is
         # 403-blocked, the same probe-then-proxy escalation runs once,
         # and every subsequent seed reuses the resulting proxy_url.
@@ -478,8 +488,9 @@ class JobsChScraper(BaseScraper):
                         throttle = self._throttle(route)
                         if throttle.closed:
                             continue
-                        sent_at = await throttle.wait()
-                        outcome = await self._enrich_description(client(route), job)
+                        outcome, sent_at = await self._enrich_description(
+                            client(route), throttle, job,
+                        )
                         if outcome == "answered":
                             throttle.passed(sent_at)
                             self._detail_route = route
@@ -497,8 +508,7 @@ class JobsChScraper(BaseScraper):
                             "no more detail requests over that route",
                             sum(BLOCK_PAUSES),
                         )
-                        return
-                    if pause:
+                    elif pause:
                         log.warning(
                             "jobs.ch: 403 on a detail request; pausing every request "
                             "over its route for %.0fs", pause,
@@ -506,39 +516,48 @@ class JobsChScraper(BaseScraper):
 
             await fill_missing(jobs, enrich, DETAIL_CONCURRENCY)
 
-    async def _enrich_description(self, client: httpx.AsyncClient, job: Job) -> _Outcome:
-        """Fill ``job.description`` and say how the client's route took the request."""
+    async def _enrich_description(
+        self, client: httpx.AsyncClient, throttle: _Throttle, job: Job,
+    ) -> tuple[_Outcome, float]:
+        """Fill ``job.description``, each request in its turn on the client's route.
+
+        Returns how the route took the job and when its last request was sent.
+        """
         if job.ats_id:
+            if (sent_at := await throttle.turn()) is None:
+                return "closed", 0.0
             url = f"{API_URL}/job/{quote(job.ats_id, safe='')}"
             try:
                 response = await client.get(url, headers={"Accept": "application/json"})
                 if response.status_code == 403:
-                    return "refused"
+                    return "refused", sent_at
                 if response.status_code in {401, 410, 429}:
-                    return "answered"
+                    return "answered", sent_at
                 if response.status_code == 200:
                     item = response.json()
                     if isinstance(item, dict) and item.get("job_id") == job.ats_id:
                         _apply_employment_fields(job, item)
                         job.description = _api_description(item)
                         if job.description:
-                            return "answered"
+                            return "answered", sent_at
             except _ROUTE_DOWN:
-                return "down"
+                return "down", sent_at
             except (httpx.HTTPError, ValueError):
                 pass
+        if (sent_at := await throttle.turn()) is None:
+            return "closed", 0.0
         try:
             page = await client.get(str(job.url), headers={"Accept": "text/html"})
         except _ROUTE_DOWN:
-            return "down"
+            return "down", sent_at
         except httpx.HTTPError:
-            return "answered"
+            return "answered", sent_at
         if page.status_code == 200:
             tree = parse_html(page.text)
             if job.workload_percentages is None:
                 job.workload_percentages = _page_workload(tree)
             job.description = _extract_description(page.text, tree)
-        return "refused" if page.status_code == 403 else "answered"
+        return ("refused" if page.status_code == 403 else "answered"), sent_at
 
     async def _fetch_page(
         self,

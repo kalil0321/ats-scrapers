@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -783,3 +784,97 @@ def test_detail_block_that_outlasts_every_pause_ends_detail_requests(httpx_mock)
     assert scraper.get_description(one) is None
     assert scraper.get_description(two) is None
     assert len(httpx_mock.get_requests(url=_BLOCK_DETAIL)) == len(jobsch.BLOCK_PAUSES) + 1
+
+
+def test_a_new_fetch_reopens_a_route_a_detail_block_closed(httpx_mock) -> None:
+    _block_board(httpx_mock, 1)
+    _block_board(httpx_mock, 1)
+    refusing = True
+
+    def detail(request: httpx.Request) -> httpx.Response:
+        if refusing:
+            return httpx.Response(403, text="<html>blocked</html>")
+        return httpx.Response(200, json={"job_id": "block-0", "template_text": "<p>Full posting.</p>"})
+
+    httpx_mock.add_callback(detail, url=_BLOCK_DETAIL, is_reusable=True)
+    scraper = JobsChScraper("any", include_descriptions=False)
+    job, = scraper.fetch()
+    assert scraper.get_description(job) is None
+
+    refusing = False
+    job, = scraper.fetch()
+
+    assert scraper.get_description(job) == "Full posting."
+
+
+def test_no_detail_request_goes_over_a_route_once_it_closes(httpx_mock, monkeypatch) -> None:
+    """Callers waiting for their paced turn when a block closes the route send nothing."""
+    from ats_scrapers.scrapers import jobsch
+
+    monkeypatch.setattr(jobsch, "PACED_RATES", (10.0,))
+    _block_board(httpx_mock, 9)
+    scraper = JobsChScraper("any", include_descriptions=False)
+    jobs = scraper.fetch()
+    closed_when_asked: list[bool] = []
+
+    def detail(request: httpx.Request) -> httpx.Response:
+        closed_when_asked.append(scraper._throttle(None).closed)
+        return httpx.Response(403, text="<html>blocked</html>")
+
+    httpx_mock.add_callback(detail, url=_BLOCK_DETAIL, is_reusable=True)
+
+    with ThreadPoolExecutor(3) as pool:
+        texts = list(pool.map(scraper.get_description, jobs))
+
+    assert texts == [None] * 9
+    assert closed_when_asked and not any(closed_when_asked)
+
+
+def test_posting_goes_on_over_the_other_route_once_a_blocked_one_closes(
+    httpx_mock, _proxy_env, _routes,
+) -> None:
+    from ats_scrapers.fetch import proxy_url_from_env
+    from ats_scrapers.scrapers import jobsch
+
+    scraper = JobsChScraper("any")
+    for route in (None, proxy_url_from_env()):
+        scraper._throttle(route).answered = True
+    job = scraper._parse(_doc(job_id="detail-test", title="One"))
+    httpx_mock.add_response(
+        url=_DETAIL, match_headers={"X-Route": "direct"}, status_code=403, is_reusable=True,
+    )
+    asked = 0
+
+    def proxy(request: httpx.Request) -> httpx.Response:
+        nonlocal asked
+        asked += 1
+        # Refused until the direct route has spent its pauses and closed.
+        if asked <= len(jobsch.BLOCK_PAUSES) + 1:
+            return httpx.Response(403, text="<html>blocked</html>")
+        return httpx.Response(200, json=_DETAIL_BODY)
+
+    httpx_mock.add_callback(proxy, url=_DETAIL, match_headers={"X-Route": "proxy"}, is_reusable=True)
+
+    assert scraper.get_description(job) == "Read it."
+
+
+def test_job_page_waits_its_turn_after_the_api_request(httpx_mock) -> None:
+    scraper = JobsChScraper("any")
+    job = scraper._parse(_doc(job_id="detail-test", title="One"))
+    scraper._throttle(None).interval = 0.3
+    sent: list[float] = []
+
+    def api(request: httpx.Request) -> httpx.Response:
+        sent.append(time.monotonic())
+        return httpx.Response(200, json={"job_id": "detail-test"})
+
+    def page(request: httpx.Request) -> httpx.Response:
+        sent.append(time.monotonic())
+        return httpx.Response(200, text="""
+          <section data-cy="vacancy-description"><div>Original text.</div></section>""")
+
+    httpx_mock.add_callback(api, url=_DETAIL)
+    httpx_mock.add_callback(page, url=str(job.url))
+
+    assert scraper.get_description(job) == "Original text."
+    assert sent[1] - sent[0] >= 0.25
