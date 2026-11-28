@@ -5,13 +5,20 @@ Darwinbox's current candidate portal lists jobs through::
     POST https://{tenant}.darwinbox.{in,com}/ms/candidateapi/job/alljobs
 
 The endpoint is Cloudflare-protected and requires the shared ``httpcloak``
-transport. It returns ten jobs per page and includes full descriptions in the
-listing payload, so no detail-page fan-out is required.
+transport. It returns ten jobs per page without their descriptions. The job
+page reads each one from::
+
+    GET https://{tenant}.darwinbox.{in,com}/ms/candidateapi/job/{id}
+
+``afetch`` does so when ``include_descriptions`` is set, and
+``get_description`` on demand.
 """
 
 from __future__ import annotations
 
+import asyncio
 import html
+import logging
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -28,6 +35,7 @@ if TYPE_CHECKING:
     from ats_scrapers.fetch import Fetcher
 
 PAGE_SIZE = 10
+DETAIL_CONCURRENCY = 4
 # Darwinbox answers 500 with this message for a tenant it does not host.
 _INVALID_SUBDOMAIN = "Invalid subdomain"
 MAX_PAGES = 500
@@ -35,6 +43,10 @@ _DEFAULT_TLD = "in"
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 _TENANT_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+# The text a posting carries when the employer never wrote one.
+_PLACEHOLDER_DESCRIPTIONS = frozenset({"please enter job description"})
+
+logger = logging.getLogger(__name__)
 
 _TYPE_MAP: dict[str, EmploymentType] = {
     "permanent": "FULL_TIME",
@@ -192,7 +204,56 @@ class DarwinboxScraper(BaseScraper):
                     "Darwinbox pagination reached the safety cap "
                     f"({MAX_PAGES} pages, {len(jobs)} of {total or 'unknown'} jobs)"
                 )
+            if self.include_descriptions:
+                semaphore = asyncio.Semaphore(DETAIL_CONCURRENCY)
+
+                async def fill(job: Job) -> None:
+                    async with semaphore:
+                        try:
+                            job.description = await self._posting_description(
+                                fetch, base_url, job.ats_id
+                            )
+                        except (ScraperError, ValueError) as exc:
+                            logger.warning(
+                                "Darwinbox job %s could not be read: %s", job.url, exc
+                            )
+
+                await asyncio.gather(*(fill(job) for job in jobs if not job.description))
         return jobs
+
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+        tenant, tld = self._resolve_tenant()
+        base_url = f"https://{tenant}.darwinbox.{tld}"
+
+        async def run() -> str | None:
+            async with self.make_fetcher() as fetch:
+                return await self._posting_description(fetch, base_url, job.ats_id)
+
+        return self._run_sync(run())
+
+    async def _posting_description(
+        self,
+        fetch: Fetcher,
+        base_url: str,
+        job_id: str,
+    ) -> str | None:
+        response = await fetch.request(
+            "GET",
+            f"{base_url}/ms/candidateapi/job/{job_id}",
+            headers={
+                "Origin": base_url,
+                "Referer": f"{base_url}/ms/candidatev2/main/careers/jobDetails/{job_id}",
+            },
+        )
+        payload = response.json()
+        message = payload.get("message") if isinstance(payload, dict) else None
+        postings = message.get("job") if isinstance(message, dict) else None
+        for posting in postings if isinstance(postings, list) else []:
+            if isinstance(posting, dict) and str(posting.get("id") or "") == job_id:
+                return _description(posting.get("jd"))
+        return None
 
     async def _fetch_page(
         self,
@@ -325,7 +386,7 @@ class DarwinboxScraper(BaseScraper):
             experience=_coerce_int(
                 _first_present(item.get("experience_from"), item.get("experience_from_num"))
             ),
-            description=_html_to_text(item.get("jd")),
+            description=_description(item.get("jd")),
             posted_at=_parse_posted_at(item.get("posted_on"))
             or _parse_iso(item.get("created_on")),
             fetched_at=datetime.now(UTC),
@@ -405,6 +466,13 @@ def _parse_iso(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+
+
+def _description(value: Any) -> str | None:
+    text = _html_to_text(value)
+    if text is None or text.casefold() in _PLACEHOLDER_DESCRIPTIONS:
+        return None
+    return text
 
 
 def _html_to_text(value: Any) -> str | None:
