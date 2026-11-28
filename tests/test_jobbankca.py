@@ -585,6 +585,37 @@ def test_block_page_with_no_result_marker_raises(httpx_mock) -> None:
         JobBankCAScraper("any").fetch()
 
 
+# The notice Job Bank serves, with HTTP 200, on every page while it is down for
+# maintenance.
+_OUTAGE_PAGE = """<!DOCTYPE html><html lang="en"><head><title>Outage / Interruption des
+services</title></head><body><main><h1>Outage / Interruption des services</h1>
+<p>Job Bank’s website will be unavailable due to system maintenance from 12:00 a.m.
+to 7:00 a.m., Eastern Time (ET).</p><p>We apologize for any inconvenience this may
+cause.</p><p>**********************************************************************</p>
+<p>Le site Web du Guichet-Emplois ne sera pas disponible en raison de la maintenance du
+système de 12h à 7h du matin, heure de l’Est (HE).</p><p>Nous sommes
+désolés pour tout inconvénient que cette situation pourrait causer.</p>
+</main></body></html>"""
+
+
+def test_the_maintenance_notice_is_named(httpx_mock) -> None:
+    httpx_mock.add_response(url=_SEARCH_RE, html=_OUTAGE_PAGE)
+    with pytest.raises(ScraperError, match="down for maintenance: page=1"):
+        JobBankCAScraper("any").fetch()
+
+
+def test_postings_are_not_read_while_the_site_is_down(httpx_mock) -> None:
+    scraper = JobBankCAScraper("jobbankca")
+    first, second = (scraper._parse_job(_article(job_id=i)) for i in "12")
+    assert first is not None and second is not None
+    httpx_mock.add_response(url=str(first.url), text=_OUTAGE_PAGE)
+
+    scraper.enrich_descriptions([first, second])
+
+    assert (first.description, second.description) == (None, None)
+    assert [str(r.url) for r in httpx_mock.get_requests()] == [str(first.url)]
+
+
 # --- module-level helpers ---------------------------------------------------
 
 

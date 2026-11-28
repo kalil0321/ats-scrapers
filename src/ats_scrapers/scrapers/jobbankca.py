@@ -122,6 +122,11 @@ _JOB_NUMBER_RE = re.compile(
 )
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
+# Some nights Job Bank is down for maintenance (12:00 a.m. to 7:00 a.m. ET) and
+# answers every page, with HTTP 200, with this bilingual notice.
+_OUTAGE_RE = re.compile(
+    r"Interruption des services|unavailable due to system maintenance", re.IGNORECASE
+)
 
 # Canadian province / territory abbreviations seen in location strings
 # like ``Calgary, AB`` or ``Burlington (ON)``. Used to set ``country_iso``
@@ -179,6 +184,9 @@ class JobBankCAScraper(BaseScraper):
         self.max_pages = min(max_pages or MAX_PAGES, MAX_PAGES)
         # ``en`` (default) → english site. ``fr`` → ``?lang=fra`` variant.
         self.language = language
+        # Set once a posting page answers with the maintenance notice: the
+        # pages after it would too.
+        self._down = False
 
     async def afetch(self) -> list[Job]:
         return await self._fetch_async()
@@ -190,7 +198,7 @@ class JobBankCAScraper(BaseScraper):
         if job.description:
             return job.description
         posting_id = job.ats_id or ""
-        if not re.fullmatch(r"[0-9]+", posting_id):
+        if self._down or not re.fullmatch(r"[0-9]+", posting_id):
             return None
         # Preserve Job Bank's TFW route and use its official French counterpart
         # for French scrapes. Both domains serve the detail markup over HTTP.
@@ -212,6 +220,7 @@ class JobBankCAScraper(BaseScraper):
         posting = next((node for node in parse_html(response.text).walk()
                         if "job-posting-details-body" in node.classes), None)
         if posting is None:
+            self._down = bool(_OUTAGE_RE.search(response.text))
             return None
         _apply_classification(job, posting)
         job.description = _detail_description(posting)
@@ -317,6 +326,11 @@ class JobBankCAScraper(BaseScraper):
                 f"articles but parsed {len(page_jobs)}"
             )
         if 'id="results-count"' not in html_text:
+            if _OUTAGE_RE.search(html_text):
+                raise ScraperError(
+                    f"Job Bank is down for maintenance: page={page} answered "
+                    "its outage notice"
+                )
             raise ScraperError(f"Job Bank page={page} lacked result markup")
         return _announced_total(html_text), page_jobs
 
