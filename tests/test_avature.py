@@ -23,6 +23,7 @@ import json
 import logging
 import socket
 import sys
+from datetime import datetime
 from types import SimpleNamespace
 from urllib.parse import parse_qsl
 
@@ -873,7 +874,19 @@ def test_httpcloak_goes_through_the_proxy_argument(monkeypatch) -> None:
         calls.append(kwargs)
         return SimpleNamespace(status_code=200, text=ANCHOR_ONLY_PAGE, url=url)
 
-    monkeypatch.setitem(sys.modules, "httpcloak", SimpleNamespace(get=get, post=get))
+    class Session:
+        def __init__(self, **kwargs) -> None:
+            calls.append(kwargs)
+
+        def get(self, url: str, **kwargs):
+            return SimpleNamespace(status_code=200, text=ANCHOR_ONLY_PAGE, url=url)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setitem(
+        sys.modules, "httpcloak", SimpleNamespace(get=get, post=get, Session=Session),
+    )
     scraper = AvatureScraper("acme", proxy="http://proxy.example:8080")
 
     scraper._fetch_page_via_httpcloak_sync("https://acme.avature.net", 0)
@@ -954,7 +967,10 @@ AVATURE_ERROR_PAGE = (
 class CappedBoard:
     """A board that answers ``status`` from offset ``cap`` on and filters by
     the params its search form names. It ignores the values in ``ignored``.
-    The first ``transient`` searches past the cap get a gateway's 503."""
+    The first ``transient`` searches past the cap get a gateway's 503. A
+    ``sortable`` board's form offers to sort it by posting date, the order of
+    ``jobs``; one that ``ignores_order`` lists it the same way whatever the
+    order asked."""
 
     def __init__(
         self,
@@ -967,7 +983,11 @@ class CappedBoard:
         status: int = 406,
         refusal: str | None = None,
         transient: int = 0,
+        sortable: bool = False,
+        ignores_order: bool = False,
     ) -> None:
+        self.sortable = sortable
+        self.ignores_order = ignores_order
         self.status = status
         self.refusal = refusal if refusal is not None else (
             AVATURE_ERROR_PAGE if status == 500 else "<title>Request not processed</title>"
@@ -998,6 +1018,7 @@ class CappedBoard:
         params = dict(parse_qsl(request.url.query.decode()))
         offset = int(params.pop("jobOffset"))
         params.pop("jobRecordsPerPage", None)
+        order = (params.pop("jobSort", None), params.pop("jobSortDirection", None))
         self.searches.append((params, offset))
         if offset >= self.cap and self.transient:
             self.transient -= 1
@@ -1009,6 +1030,13 @@ class CappedBoard:
             if v in self.filters.get(k, ()) and v not in self.ignored
         }
         rows = [j for j in self.jobs if all(j.get(k) == v for k, v in applied.items())]
+        if not self.sortable or self.ignores_order:
+            pass
+        elif order == ("postedDate", "DESC"):
+            rows.reverse()
+        elif order != ("postedDate", "ASC"):
+            # Newest first by default, ties broken another way.
+            rows = rows[::2][::-1] + rows[1::2]
         return httpx.Response(200, text=self.page(rows[offset:offset + 12]))
 
     def page(self, rows: list[dict[str, str]]) -> str:
@@ -1035,7 +1063,8 @@ class CappedBoard:
             '<html><head><meta name="avature.wizard.registrars" '
             f'content="{html.escape(json.dumps(registrars))}"></head><body>'
             '<form action="https://acme.avature.net/careers/SearchJobs" role="search">'
-            f"{selects}</form>{anchors}</body></html>"
+            + ('<input type="hidden" name="jobSort" value="">' if self.sortable else "")
+            + f"{selects}</form>{anchors}</body></html>"
         )
 
 
@@ -1189,6 +1218,45 @@ def test_capped_board_without_filters_keeps_what_it_read_and_warns(
 
     with caplog.at_level(logging.WARNING):
         read = AvatureScraper("acme").fetch()
+
+    assert len(read) == 24
+    assert "no filter splits it" in caplog.text
+
+
+def test_capped_search_no_filter_splits_is_read_oldest_and_newest_first(
+    httpx_mock, offset_cap, caplog,
+) -> None:
+    board = CappedBoard([{"id": str(i)} for i in range(40)], {}, cap=offset_cap, sortable=True)
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    with caplog.at_level(logging.WARNING):
+        read = AvatureScraper("acme", include_descriptions=False).fetch()
+
+    assert _ids(read) == {str(i) for i in range(40)}
+    assert "no filter splits it" not in caplog.text
+
+
+def test_capped_search_past_twice_the_cap_still_warns(httpx_mock, offset_cap, caplog) -> None:
+    board = CappedBoard([{"id": str(i)} for i in range(60)], {}, cap=offset_cap, sortable=True)
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    with caplog.at_level(logging.WARNING):
+        read = AvatureScraper("acme", include_descriptions=False).fetch()
+
+    assert {str(i) for i in range(24)} | {str(i) for i in range(36, 60)} <= _ids(read)
+    assert "no filter splits it" in caplog.text
+
+
+def test_search_that_ignores_the_order_is_not_taken_for_read(
+    httpx_mock, offset_cap, caplog,
+) -> None:
+    board = CappedBoard(
+        [{"id": str(i)} for i in range(40)], {}, cap=offset_cap, sortable=True, ignores_order=True,
+    )
+    httpx_mock.add_callback(board, is_reusable=True)
+
+    with caplog.at_level(logging.WARNING):
+        read = AvatureScraper("acme", include_descriptions=False).fetch()
 
     assert len(read) == 24
     assert "no filter splits it" in caplog.text
@@ -1419,3 +1487,252 @@ def test_filter_set_by_the_board_url_is_kept(httpx_mock, offset_cap) -> None:
 
     assert _ids(read) == {str(i) for i in range(40)}
     assert all(params.get("732") == "A" for params, _ in board.searches)
+
+
+# --- Job pages ----------------------------------------------------------------
+
+
+def _field(label: str, value: str, classes: str = "") -> str:
+    head = f'<div class="article__content__view__field__label">{label}</div>' if label else ""
+    return (
+        f'<div class="article__content__view__field {classes}">{head}'
+        f'<div class="article__content__view__field__value">{value}</div></div>'
+    )
+
+
+def _block(*fields: str) -> str:
+    return (
+        '<article class="article article--details"><div class="article__content">'
+        f'<div class="article__content__view">{"".join(fields)}</div></div></article>'
+    )
+
+
+FACTS = _block(
+    _field("Job Name", "Receptionist"),
+    _field("Ref #", "374"),
+    _field("Date posted", "25-Nov-2026"),
+    _field("Location", "Taipa Showroom"),
+)
+LONG = "Answer phone calls, receive visitors and handle the front desk. " * 3
+
+
+def _read(page: str, url: str = "https://acme.avature.net/careers/JobDetail/A/1"):
+    from ats_scrapers.scrapers.avature import _apply_detail_to_job, _parse_detail
+
+    [job] = AvatureScraper("acme")._parse_page(
+        f'<a href="{url}">Receptionist</a>', "https://acme.avature.net", "acme",
+    )
+    _apply_detail_to_job(job, _parse_detail(page, url))
+    return job
+
+
+def test_job_body_in_labelled_fields_is_read() -> None:
+    job = _read(FACTS + _block(
+        _field("Job Description", LONG),
+        _field("Job Requirements", "Form 6<br>Two years of experience"),
+        _field("Qualification", "Secondary school"),
+    ))
+
+    assert job.description == (
+        f"Job Description\n{LONG.strip()}\n\n"
+        "Job Requirements\nForm 6\nTwo years of experience\n\n"
+        "Qualification\nSecondary school"
+    )
+    assert job.posted_at == datetime(2026, 11, 25)
+    assert job.location == "Taipa Showroom"
+
+
+def test_job_body_in_one_labelled_field_is_read() -> None:
+    job = _read(FACTS + _block(_field("Position Description", f"<p>{LONG}</p>")))
+
+    assert job.description == f"Position Description\n{LONG.strip()}"
+
+
+def test_field_label_the_page_hides_is_left_out() -> None:
+    job = _read(_block(_field("Description", f"<p>{LONG}</p>", "regular-field-label--hidden")))
+
+    assert job.description == LONG.strip()
+
+
+def test_facts_and_hidden_fields_stay_out_of_the_body() -> None:
+    job = _read(
+        _block(
+            _field("Location", "Aurora Health Center"),
+            _field("", "4448 W Loomis Rd"),
+            _field("Compensation", "$300,000"),
+        )
+        + _block(
+            _field("CareerArc Code", "CA-SB", "visibility--hidden"),
+            _field("", "Hybrid: #LI-Hybrid", "visibility--hidden"),
+            _field("", f"<div>{LONG}</div>"),
+            _field("Min salary", "2,130,750", "visibility--hidden"),
+            _field("Max salary", "3,551,250", "visibility--hidden"),
+        )
+    )
+
+    assert job.description == LONG.strip()
+
+
+def test_rows_pasted_inside_a_field_are_read_once() -> None:
+    pasted = _field("Duties", "<ul><li>Design services</li></ul>")
+    job = _read(FACTS + _block(_field("Responsibilities", f"<div>{pasted}</div>")))
+
+    assert job.description == "Responsibilities\nDuties\nDesign services"
+
+
+def test_blocks_wrapped_in_one_more_block_are_read_once() -> None:
+    facts = _block(_field("Job Number:", "R0250531"), _field("Location:", "Schriever AFB,CO,US"))
+    body = _block(_field("", f"<p>{LONG}</p>"))
+    job = _read(f'<article class="article article--details">{facts}{body}</article>')
+
+    assert job.description == LONG.strip()
+    assert job.location == "Schriever AFB,CO,US"
+
+
+def test_facts_above_the_body_in_its_block_stay_out_of_it() -> None:
+    job = _read(_block(
+        _field("Remote Work:", "No"),
+        _field("Job Number:", "R0250531"),
+        _field("", f"<p>{LONG}</p>"),
+        _field("Clearance", "Secret"),
+    ))
+
+    assert job.description == f"{LONG.strip()}\n\nClearance\nSecret"
+
+
+@pytest.mark.parametrize("section", ["jobDescription", "detailDescription"])
+def test_other_description_sections_are_read(section: str) -> None:
+    page = f'<h2>Salesforce Developer</h2><div class="{section}"><p>Build flows.</p></div>'
+
+    assert _read(page).description == "Salesforce Developer\nBuild flows."
+
+
+def test_older_career_site_template_is_read() -> None:
+    page = """
+    <div class="fieldSet"><p class="fieldSetLabel">Location:</p>
+      <div class="fieldSetValue" itemprop="jobLocation"><div>Boulder, Colorado</div></div></div>
+    <div class="fieldSet"><p class="fieldSetLabel">Date Posted:</p>
+      <div class="fieldSetValue"> 24-Nov-2026 </div></div>
+    <div class="fieldSet"><p class="fieldSetLabel">Posting Close Date:</p>
+      <div class="fieldSetValue"> 05-Jan-2027 </div></div>
+    <div class="js-accordion__panel"><h3>Job Summary</h3>
+      <div itemprop="description" class="jobDetailDescription"><p>Build sets.</p></div></div>
+    <div class="js-accordion__panel"><h3>Special Instructions</h3>
+      <div itemprop="description" class="jobDetailDescription"><p>Send a resume.</p></div></div>
+    """
+    job = _read(page)
+
+    assert job.description == "Job Summary\nBuild sets.\n\nSpecial Instructions\nSend a resume."
+    assert job.location == "Boulder, Colorado"
+    assert job.posted_at == datetime(2026, 11, 24)
+    assert job.application_deadline == datetime(2027, 1, 5)
+
+
+def test_info_sections_are_read() -> None:
+    page = """
+    <div class="moreDetails"><div class="infoSection">
+      <div class="infoTitle">Key Tasks</div><div class="infoDes"><ul><li>Meet customers</li></ul></div>
+    </div></div>
+    """
+
+    assert _read(page).description == "Key Tasks\nMeet customers"
+
+
+def test_job_posting_data_fills_what_the_page_leaves_out() -> None:
+    posting = {
+        "@context": "https://schema.org/", "@type": "JobPosting",
+        "description": "<p>Support the leadership team.</p>",
+        "datePosted": "2026-11-20", "employmentType": "FULL_TIME",
+        "jobLocation": {"@type": "Place", "address": {
+            "addressLocality": "Helena", "addressRegion": "MT", "addressCountry": "USA",
+        }},
+    }
+    page = f'<script type="application/ld+json">{json.dumps(posting)}</script>'
+    job = _read(page)
+
+    assert job.description == "Support the leadership team."
+    assert job.posted_at == datetime(2026, 11, 20)
+    assert job.location == "Helena, MT, USA"
+    assert job.employment_type == "FULL_TIME"
+
+
+def test_place_given_in_parts_is_joined() -> None:
+    job = _read(_block(_field("City:", "San Diego"), _field("State:", "California")))
+
+    assert job.location == "San Diego, California"
+
+
+def test_job_body_loaded_from_the_detail_widget_is_read(httpx_mock) -> None:
+    detail = "https://acme.avature.net/careers/JobDetail/Engineer/1"
+    widget = "https://acme.avature.net/careers/JobDetailWidget?jobId=1"
+    httpx_mock.add_response(
+        url=_url("acme", 0), text='<a href="/careers/JobDetail/Engineer/1">Engineer</a>',
+    )
+    httpx_mock.add_response(
+        url=detail,
+        text='<div id="jobDetailWidget"></div><script>var widgets = {"jobDetailWidget": '
+        '{"jobDetailWidgetEnable": 1, "url": "https://acme.avature.net/careers/'
+        'JobDetailWidget?jobId=1", "selector": "#jobDetailWidget"}};</script>',
+    )
+    httpx_mock.add_response(url=widget, text=FACTS + _block(_field("", f"<p>{LONG}</p>")))
+
+    [job] = AvatureScraper("acme").fetch()
+
+    assert job.description == LONG.strip()
+    assert job.location == "Taipa Showroom"
+
+
+def test_board_listed_on_an_all_jobs_page_is_read(httpx_mock) -> None:
+    base = "https://careers.example.org/careersmarketplace/AllJobs"
+    httpx_mock.add_response(
+        url=f"{base}/?jobOffset=0&jobRecordsPerPage=12",
+        text='<a href="https://careers.example.org/careersmarketplace/PipelineDetail/Nurse/7">Nurse</a>',
+    )
+
+    [job] = AvatureScraper(base, include_descriptions=False).fetch()
+
+    assert job.ats_id == "7"
+
+
+def test_board_read_without_descriptions_requests_no_job_page(httpx_mock) -> None:
+    httpx_mock.add_response(url=_url("acme", 0), text=ANCHOR_ONLY_PAGE)
+
+    jobs = AvatureScraper("acme", include_descriptions=False).fetch()
+
+    assert len(jobs) == 2
+    assert [str(r.url) for r in httpx_mock.get_requests()] == [_url("acme", 0)]
+
+
+def test_get_description_fills_the_job_from_its_page(httpx_mock) -> None:
+    url = "https://acme.avature.net/careers/JobDetail/Engineer/1"
+    httpx_mock.add_response(url=url, text=FACTS + _block(_field("", f"<p>{LONG}</p>")))
+    scraper = AvatureScraper("acme")
+    [job] = scraper._parse_page(
+        f'<a href="{url}">Engineer</a>', "https://acme.avature.net", "acme",
+    )
+
+    assert scraper.get_description(job) == LONG.strip()
+    assert job.description == LONG.strip()
+    assert job.posted_at == datetime(2026, 11, 25)
+    assert job.location == "Taipa Showroom"
+
+
+def test_get_description_reads_the_way_the_board_was_read(monkeypatch, httpx_mock) -> None:
+    import ats_scrapers.scrapers.avature as av
+    url = "https://acme.avature.net/careers/JobDetail/Engineer/1"
+    read: list[str] = []
+
+    def cloak(self, u: str):
+        read.append(u)
+        return SimpleNamespace(status_code=200, text=_block(_field("", f"<p>{LONG}</p>")))
+
+    monkeypatch.setattr(av.AvatureScraper, "_http_get_via_httpcloak_sync", cloak)
+    scraper = AvatureScraper("acme")
+    scraper._reader = "httpcloak"
+    [job] = scraper._parse_page(
+        f'<a href="{url}">Engineer</a>', "https://acme.avature.net", "acme",
+    )
+
+    assert scraper.get_description(job) == LONG.strip()
+    assert read == [url]
+    assert httpx_mock.get_requests() == []

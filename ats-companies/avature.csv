@@ -1,5 +1,4 @@
 name,slug,url
-Adecco Recruiting,adeccorecruiting,https://adeccorecruiting.avature.net/careers/SearchJobs
 AESC,aesc,https://aesc.avature.net
 Advocate Health,advocateaurorahealth,https://advocateaurorahealth.avature.net/careers/SearchJobs
 AMS PSR,amspsr,https://amspsr.avature.net/careers/SearchJobs
@@ -48,7 +47,7 @@ Genpact,genpact,https://genpact.avature.net/careers/SearchJobs
 giffgaff,virginmediao2,https://virginmediao2.avature.net/en_US/giffgaffcareers/SearchJobs
 GPS Hospitality,gpshospitality,https://gpshospitality.avature.net/careers/SearchJobs
 HARMAN,harmanglobal,https://harmanglobal.avature.net/careers/SearchJobs
-Healthfirst,healthfirst,https://healthfirst.avature.net/careers/SearchJobs
+Healthfirst,https://careers.healthfirst.org/careersmarketplace/AllJobs,https://careers.healthfirst.org/careersmarketplace/AllJobs
 In-N-Out Burger,ino,https://ino.avature.net
 infor,infor,https://infor.avature.net/careers/SearchJobs
 Insperity,insperity,https://insperity.avature.net/careers/SearchJobs
@@ -90,7 +89,6 @@ Primero,primero,https://primero.avature.net/careers/SearchJobs
 Radiology Partners,radpartners,https://radpartners.avature.net/careers/SearchJobs
 Regis,regis,https://regis.avature.net/careers/SearchJobs
 ResourceBank,resourcebank,https://resourcebank.avature.net/careers/SearchJobs
-Rohde & Schwarz,rohdeschwarz,https://rohdeschwarz.avature.net
 Rohde & Schwarz,https://jobs.rohde-schwarz.com,https://jobs.rohde-schwarz.com
 Rosewood Hotel Group,rhg,https://rhg.avature.net/careers/SearchJobs
 Santos,santos,https://santos.avature.net
@@ -107,7 +105,6 @@ The a2 Milk Company,a2milkkf,https://a2milkkf.avature.net/careers/SearchJobs
 TMF,tmf,https://tmf.avature.net/careersmarketplace/SearchJobs
 Total Quality Logistics,tql,https://tql.avature.net/en_US/TQLexternalcareers/SearchJobs
 Trader Joe's,traderjoes,https://traderjoes.avature.net/careers/SearchJobs
-Transcom,transcom,https://transcom.avature.net/careers/SearchJobs
 Transcom,https://apply.careers.transcom.com,https://apply.careers.transcom.com
 Travis Perkins,travisperkins,https://travisperkins.avature.net
 UCLA Health,uclahealth,https://uclahealth.avature.net/careers/SearchJobs
@@ -117,7 +114,6 @@ UOP,uop,https://uop.avature.net/careers/SearchJobs
 Uskpmgats,uskpmgats,https://uskpmgats.avature.net/careers/SearchJobs
 Van Oord,vanoord,https://vanoord.avature.net/en_US/careersmarketplace/SearchJobs
 Virgin Media O2,https://jobs.virginmediao2.co.uk/en_US/careersmarketplace/SearchJobs,https://jobs.virginmediao2.co.uk/en_US/careersmarketplace/SearchJobs
-Voutiqueintegrations,voutiqueintegrations,https://voutiqueintegrations.avature.net/careers/SearchJobs
 Walmartsourcingeu,walmartsourcingeu,https://walmartsourcingeu.avature.net/careers/SearchJobs
 Wickes,wickes,https://wickes.avature.net/careers/SearchJobs
 William Hill,amswh,https://amswh.avature.net/careers/SearchJobs
@@ -128,6 +124,5 @@ Zung Fu,zungfu,https://zungfu.avature.net/en_US/careers/SearchJobs
 European Central Bank,ecb,https://ecb.avature.net
 Encompass Health,encompasshealth,https://encompasshealth.avature.net
 PAYBACK GROUP,paybackgroup,https://paybackgroup.avature.net
-Voutique,portaldesign,https://portaldesign.avature.net
 RGP,rgp,https://rgp.avature.net
 Steelcase Inc.,steelcase,https://steelcase.avature.net
