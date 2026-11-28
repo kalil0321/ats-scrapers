@@ -27,10 +27,13 @@ Two important quirks of the listing pages:
     page rather than 404. To cover the full ~30k+ database we run a fan-out
     across the major Czech cities and dedupe by ``data-jobad-id``.
 
-Listing pages do not surface ``employment_type`` or ``posted_at`` —
-those live on the detail page only, which is heavily JS-driven and
-worth skipping for the listing scrape. Salary parses from the Czech
-"X 000 – Y 000 Kč" / "X 000 Kč" Tag text.
+Listing pages carry no description and no publication date. Each
+posting's page does: in the redesign (bucket A of the ``beta_bucket``
+cookie) as a JobPosting JSON-LD with the text, ``datePosted`` and
+``validThrough``; in the classic layout as ``jd-body-richtext`` with no
+date. Postings an employer runs on its own career site (``<name>.jobs.cz``)
+render their text in the browser and get none. Salary parses from the
+Czech "X 000 – Y 000 Kč" / "X 000 Kč" Tag text.
 
 Single-source scraper: ``company_slug`` is informational and ignored.
 """
@@ -45,6 +48,8 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ats_scrapers.exceptions import ScraperError
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._htmltree import parse_html
+from ats_scrapers.scrapers._posting_detail import body_text, fill_missing, job_posting
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
 if TYPE_CHECKING:
@@ -58,6 +63,11 @@ BASE_URL = "https://www.jobs.cz"
 LISTING_TEMPLATE = "https://www.jobs.cz/prace/{seed}/"
 PER_PAGE = 30  # cards rendered per listing page (server-side constant)
 MAX_CONCURRENCY = 4
+DETAIL_CONCURRENCY = 4
+# Sends a posting page to the redesign, whose page holds the JobPosting JSON-LD.
+_REDESIGN_COOKIE = "beta_bucket=5%3AA"
+# ``validThrough`` reads like "2027-01-25T23:59:59.999+01:00T23:59".
+_ISO_TIME = re.compile(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?")
 # The listing pager silently clamps deep page numbers to the last
 # available page. ~45 is the observed cap for any single locality seed
 # (2026-05-12), but use a slightly higher cap so smaller seeds with
@@ -160,6 +170,11 @@ class JobsCzScraper(BaseScraper):
             _LOCATION_SEEDS if location_seeds is None else tuple(location_seeds)
         )
 
+    def get_description(self, job: Job) -> str | None:
+        if not job.description:
+            self._run_sync(self._enrich_descriptions([job]))
+        return job.description
+
     async def afetch(self) -> list[Job]:
         seen: set[str] = set()
         all_jobs: list[Job] = []
@@ -187,7 +202,23 @@ class JobsCzScraper(BaseScraper):
                     seed, len(slice_jobs), new_count, len(all_jobs),
                 )
 
+        if self.include_descriptions and all_jobs:
+            await self._enrich_descriptions(all_jobs)
         return all_jobs
+
+    async def _enrich_descriptions(self, jobs: list[Job]) -> None:
+        headers = {**type(self).default_headers, "Cookie": _REDESIGN_COOKIE}
+        async with self.make_fetcher(headers=headers) as fetcher:
+            async def enrich(job: Job) -> None:
+                try:
+                    response = await fetcher.request("GET", str(job.url), handled={403, 404, 410})
+                except ScraperError as exc:
+                    log.debug("jobs.cz: no detail page for %s: %s", job.url, exc)
+                    return
+                if response.status_code == 200:
+                    _apply_detail(job, response.text)
+
+            await fill_missing(jobs, enrich, DETAIL_CONCURRENCY)
 
     async def _run_seed(
         self,
@@ -343,6 +374,31 @@ def _parse_card(card: Any, *, fetched_at: datetime) -> Job | None:
         fetched_at=fetched_at,
         raw=raw or None,
     )
+
+
+def _apply_detail(job: Job, page: str) -> None:
+    """Fill the text and dates a posting's page holds."""
+    posting = job_posting(page)
+    if posting:
+        job.description = body_text(posting.get("description"))[:25_000] or None
+        job.posted_at = _detail_time(posting.get("datePosted")) or job.posted_at
+        job.application_deadline = (
+            _detail_time(posting.get("validThrough")) or job.application_deadline
+        )
+        return
+    for node in parse_html(page).walk():
+        if node.attrs.get("data-test") == "jd-body-richtext":
+            job.description = node.lines()[:25_000] or None
+            return
+
+
+def _detail_time(value: object) -> datetime | None:
+    if not isinstance(value, str) or not (match := _ISO_TIME.match(value.strip())):
+        return None
+    try:
+        return datetime.fromisoformat(match[0])
+    except ValueError:
+        return None
 
 
 def _absolutize(href: str) -> str:

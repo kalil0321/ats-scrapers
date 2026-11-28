@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import UTC, datetime
 
 import pytest
 
@@ -27,6 +28,17 @@ from ats_scrapers.scrapers import JobsCzScraper, ScraperRegistry, get_scraper
 # Retry pacing is zeroed suite-wide by the `_no_retry_delays` fixture
 # in conftest.py — the shared fetch layer replaced the per-scraper
 # retry constants.
+
+
+@pytest.fixture(autouse=True)
+def _posting_page_stub(httpx_mock) -> None:
+    """Posting pages without a text, except those of ``detail-`` ids."""
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.jobs\.cz/rpd/(?!detail-)[^/]+/$"),
+        text="<html><body></body></html>",
+        is_reusable=True,
+        is_optional=True,
+    )
 
 
 def _card(
@@ -287,7 +299,9 @@ def test_asks_for_the_classic_listing(httpx_mock) -> None:
 
     JobsCzScraper("any", location_seeds=("praha",)).fetch()
 
-    for request in httpx_mock.get_requests():
+    listing = [r for r in httpx_mock.get_requests() if r.url.path.startswith("/prace/")]
+    assert len(listing) == 2
+    for request in listing:
         assert "beta_bucket=5%3AB" in request.headers["Cookie"]
 
 
@@ -466,6 +480,70 @@ def test_salary_unparseable_keeps_summary_only(httpx_mock) -> None:
     # Summary still surfaced so downstream enrichment can use it.
     assert j.salary_summary == "Konkurenční plat"
     assert j.salary_currency == "CZK"
+
+
+# --- posting pages ----------------------------------------------------------
+
+_POSTING = """<html><head><script type="application/ld+json">{
+  "@context": "https://schema.org/", "@type": "JobPosting", "title": "Svářeč",
+  "description": "<p>Hledáme <strong>svářeče</strong>.</p><ul><li>Plný úvazek</li></ul>",
+  "datePosted": "2026-11-26T13:45:48.850038+01:00",
+  "validThrough": "2027-01-25T23:59:59.999+01:00T23:59"
+}</script></head><body></body></html>"""
+
+
+def _listing_of(httpx_mock, *job_ids: str) -> None:
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.jobs\.cz/prace/praha/$"),
+        text=_page([_card(job_id=i, title=f"Job {i}") for i in job_ids]),
+    )
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.jobs\.cz/prace/praha/\?page=2$"), text=_page([]),
+    )
+
+
+def test_reads_text_and_dates_from_the_posting_page(httpx_mock) -> None:
+    _listing_of(httpx_mock, "detail-1")
+    httpx_mock.add_response(url="https://www.jobs.cz/rpd/detail-1/", text=_POSTING)
+
+    job, = JobsCzScraper("any", location_seeds=("praha",)).fetch()
+
+    assert job.description == "Hledáme svářeče.\nPlný úvazek"
+    assert job.posted_at == datetime(2026, 11, 26, 12, 45, 48, 850038, tzinfo=UTC)
+    assert job.application_deadline == datetime(2027, 1, 25, 22, 59, 59, 999000, tzinfo=UTC)
+    # The redesign's page carries the JSON-LD.
+    detail, = (r for r in httpx_mock.get_requests() if r.url.path.startswith("/rpd/"))
+    assert "beta_bucket=5%3AA" in detail.headers["Cookie"]
+
+
+def test_classic_posting_page_gives_the_text(httpx_mock) -> None:
+    scraper = JobsCzScraper("any", location_seeds=("praha",), include_descriptions=False)
+    _listing_of(httpx_mock, "detail-2")
+    job, = scraper.fetch()
+    httpx_mock.add_response(url="https://www.jobs.cz/rpd/detail-2/", text="""
+      <div data-test="jd-header-text">Úvod</div>
+      <div data-test="jd-body-richtext"><p>Náplň práce</p><p>Požadujeme</p></div>""")
+
+    assert scraper.get_description(job) == "Náplň práce\nPožadujeme"
+    assert job.posted_at is None
+
+
+def test_posting_without_a_readable_page_keeps_no_text(httpx_mock) -> None:
+    """A career-site page renders its text in the browser; a failing page is skipped."""
+    _listing_of(httpx_mock, "detail-3", "detail-4")
+    httpx_mock.add_response(
+        url="https://www.jobs.cz/rpd/detail-3/", status_code=302,
+        headers={"Location": "https://acme.jobs.cz/detail-pozice?r=detail&id=3"},
+    )
+    httpx_mock.add_response(
+        url="https://acme.jobs.cz/detail-pozice?r=detail&id=3",
+        text='<html><head><meta name="description" content="Teaser"></head></html>',
+    )
+    httpx_mock.add_response(url="https://www.jobs.cz/rpd/detail-4/", status_code=500, is_reusable=True)
+
+    jobs = JobsCzScraper("any", location_seeds=("praha",)).fetch()
+
+    assert [(job.ats_id, job.description) for job in jobs] == [("detail-3", None), ("detail-4", None)]
 
 
 # --- live e2e ---------------------------------------------------------------
