@@ -132,21 +132,24 @@ def test_remainder_plan_finds_the_values_holding_the_missed_jobs() -> None:
         {"facetParameter": "workerSubType", "values": _values({"regular": 2000, "seasonal": 100})},
     ]
 
-    assert _remainder_plan(node, reached, skip={"timeType"}) == (
+    assert _remainder_plan(node, [(1, reached)], skip={"timeType"}) == (
         "workerSubType", [("regular", 3000, 1000), ("seasonal", 300, 200)],
     )
-    assert _remainder_plan(node, reached, skip={"timeType", "workerSubType"}) == (
+    assert _remainder_plan(node, [(1, reached)], skip={"timeType", "workerSubType"}) == (
         "locationCountry", [("us", 2000, 1), ("ca", 900, 600)],
     )
-    assert _remainder_plan(node, node, skip=set()) is None
+    assert _remainder_plan(node, [(1, node)], skip=set()) is None
 
 
-def test_remainder_plan_skips_values_a_full_listing_leaves_out() -> None:
+def test_remainder_plan_bounds_values_a_full_listing_leaves_out() -> None:
+    """The reached listing stops at 55 cities; the smallest it shows holds 46."""
     cities = {f"c{i}": 100 - i for i in range(FACET_VALUE_CAP)}
-    node = [{"facetParameter": "locations", "values": _values({**cities, "rare": 40})}]
+    node = [{"facetParameter": "locations", "values": _values({**cities, "rare": 40, "big": 60})}]
     reached = [{"facetParameter": "locations", "values": _values({**cities, "c0": 90})}]
 
-    assert _remainder_plan(node, reached, skip=set()) == ("locations", [("c0", 100, 10)])
+    assert _remainder_plan(node, [(1, reached)], skip=set()) == (
+        "locations", [("c0", 100, 10), ("big", 60, 14)],
+    )
 
 
 def test_board_root_size_is_the_largest_single_value_facet() -> None:
@@ -417,6 +420,91 @@ def test_a_value_no_facet_narrows_is_read_whole(httpx_mock, monkeypatch) -> None
     }
     board = _Board(jobs)
     httpx_mock.add_callback(board.reply, url=API, is_reusable=True)
+
+    scraped = WorkdayScraper(URL, include_descriptions=False).fetch()
+
+    assert sorted(job.requisition_id for job in scraped) == sorted(jobs)
+
+
+def test_jobs_the_first_recovery_facet_misses_are_read_through_a_second(httpx_mock, small_cap) -> None:
+    """Of the jobs with no time type, 15 have only a country and 10 only a worker type."""
+    jobs: dict[str, dict[str, list[str]]] = {
+        f"R{i}": {"timeType": ["ft" if i % 2 else "pt"]} for i in range(60)
+    }
+    jobs |= {f"C{i}": {"locationCountry": [f"c{i % 2}"]} for i in range(15)}
+    jobs |= {f"W{i}": {"workerSubType": [f"w{i % 2}"]} for i in range(10)}
+    httpx_mock.add_callback(_Board(jobs).reply, url=API, is_reusable=True)
+
+    scraped = WorkdayScraper(URL, include_descriptions=False).fetch()
+
+    assert sorted(job.requisition_id for job in scraped) == sorted(jobs)
+
+
+def test_a_capped_value_no_facet_narrows_is_read_as_far_as_it_shows(httpx_mock, small_cap) -> None:
+    """One of 120 jobs in a country has no time type; the country's search shows it."""
+    jobs = {
+        f"R{i}": {
+            "locationCountry": ["c0" if i < 120 else "c1"],
+            **({"timeType": ["ft" if i % 2 else "pt"]} if i != 30 else {}),
+        }
+        for i in range(150)
+    }
+    httpx_mock.add_callback(_Board(jobs).reply, url=API, is_reusable=True)
+
+    scraped = WorkdayScraper(URL, include_descriptions=False).fetch()
+
+    assert "R30" in {job.requisition_id for job in scraped}
+
+
+def test_jobs_without_a_skill_that_cannot_be_counted_are_logged(httpx_mock, small_cap, caplog) -> None:
+    """60 of 90 jobs have two skills each; the search for them stops at the cap."""
+    jobs = {
+        f"R{i}": {
+            "jobFamilyGroup": ["a"],
+            **({"workerSubType": [f"s{i % 3}", f"s{i % 3 + 3}"]} if i < 60 else {}),
+        }
+        for i in range(90)
+    }
+    jobs["R99"] = {"jobFamilyGroup": ["b"]}
+    httpx_mock.add_callback(_Board(jobs).reply, url=API, is_reusable=True)
+
+    with caplog.at_level("WARNING", logger="ats_scrapers.scrapers.workday"):
+        WorkdayScraper(URL, include_descriptions=False).fetch()
+
+    assert "workerSubType gives some several values, so the jobs with none cannot be counted" in caplog.text
+
+
+
+def test_jobs_only_a_later_facet_reaches_are_read(httpx_mock, small_cap) -> None:
+    """70 jobs have every facet; of the rest, 20 have only a city, 10 only a
+    country and 6 only a worker type."""
+    jobs: dict[str, dict[str, list[str]]] = {
+        f"R{i}": {
+            "timeType": ["ft" if i % 2 else "pt"],
+            "locationCountry": [f"c{i % 3}"],
+            "locations": [f"city{i % 4}"],
+            "workerSubType": [f"w{i % 3}"],
+        }
+        for i in range(70)
+    }
+    jobs |= {f"T{i}": {"locations": [f"city{i % 4}"]} for i in range(20)}
+    jobs |= {f"C{i}": {"locationCountry": [f"c{i % 3}"]} for i in range(10)}
+    jobs |= {f"W{i}": {"workerSubType": [f"w{i % 3}"]} for i in range(6)}
+    httpx_mock.add_callback(_Board(jobs).reply, url=API, is_reusable=True)
+
+    scraped = WorkdayScraper(URL, include_descriptions=False).fetch()
+
+    assert sorted(job.requisition_id for job in scraped) == sorted(jobs)
+
+
+def test_a_value_a_full_listing_leaves_out_is_read(httpx_mock, small_cap) -> None:
+    """Typed jobs fill the 55 countries a listing shows; the untyped ones are in another."""
+    jobs: dict[str, dict[str, list[str]]] = {
+        f"R{i}": {"timeType": ["ft" if i % 2 else "pt"], "locationCountry": [f"c{i % 55}"]}
+        for i in range(110)
+    }
+    jobs |= {f"U{i}": {"locationCountry": ["other"]} for i in range(5)}
+    httpx_mock.add_callback(_Board(jobs).reply, url=API, is_reusable=True)
 
     scraped = WorkdayScraper(URL, include_descriptions=False).fetch()
 
