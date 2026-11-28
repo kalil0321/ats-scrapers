@@ -205,3 +205,139 @@ def test_request_body_matches_public_api(httpx_mock) -> None:
         "needStat": True,
         "site": "social",
     }
+
+
+# --- postings the list leaves without text ------------------------------------
+
+URL_HIRE_R1_DETAIL = "https://hire-r1.mokahr.com/api/outer/ats-apply/website/job"
+URL_APP_DETAIL = "https://app.mokahr.com/api/outer/ats-apply/website/job"
+TESLA_JOB_ID = "c584e57b-e74a-4f37-9ed1-1e01c1af31cb"
+
+# A list row and its posting as hire-r1.mokahr.com serves them for
+# tesla/100004142 (trimmed): the row has neither text nor locations.
+TESLA_ROW = {
+    "attributeId": 100000121,
+    "campusSites": [],
+    "commitment": "全职",
+    "createdAt": "2026-10-30T15:20:04",
+    "department": {"id": 100007398, "name": "Engineering and R&D"},
+    "deptId": 100007398,
+    "hireMode": 1,
+    "id": TESLA_JOB_ID,
+    "multiLocale": '{"mainLocale":"en-US","secondLocale":""}',
+    "openedAt": "2026-10-30T00:00",
+    "orgId": "tesla",
+    "prior": 1,
+    "showIsCampus": False,
+    "status": "open",
+    "title": "(Senior/Staff) C++ Software Engineer, Infotainment (Shanghai/Beijing Based)",
+    "updatedAt": "2026-11-20T10:01:53",
+    "zhineng": {"id": 100002525, "name": "Vehicle Software"},
+}
+TESLA_POSTING = {
+    "code": 0,
+    "codeType": 0,
+    "msg": "",
+    "success": True,
+    "data": {
+        **TESLA_ROW,
+        "jobDescription": (
+            "<p><strong>Position Description</strong></p><p>Tesla is expanding its UI "
+            "software engineering team.</p><p><br></p><p><strong>Responsibilities"
+            "</strong></p><p>Rapid prototyping of in-car customer experiences </p>"
+        ),
+        "locations": [
+            {"cityId": 310115, "cityName": "Pudong", "country": "China",
+             "countryDescription": "China", "id": 100015453, "provinceName": "Shanghai"},
+            {"cityId": 110105, "cityName": "Chaoyang", "country": "China",
+             "countryDescription": "China", "id": 100015454, "provinceName": "Beijing"},
+        ],
+        "locDepCampusList": [
+            {"departmentIds": [100007398], "locationIds": [100015454, 100015453],
+             "storeIds": []},
+        ],
+    },
+}
+TESLA_TEXT = (
+    "Position Description Tesla is expanding its UI software engineering team. "
+    "Responsibilities Rapid prototyping of in-car customer experiences"
+)
+
+
+def _encrypted(payload: dict) -> dict:
+    """Wrap ``payload`` the way Moka encrypts responses for some tenants."""
+    from Crypto.Cipher import AES
+
+    plain = json.dumps(payload).encode()
+    pad = 16 - len(plain) % 16
+    cipher = AES.new(KEY.encode(), AES.MODE_CBC, b"de7c21ed8d6f50fe")
+    data = base64.b64encode(cipher.encrypt(plain + bytes([pad]) * pad)).decode()
+    return {"data": data, "necromancer": KEY}
+
+
+def test_a_row_without_text_takes_its_posting(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL_HIRE_R1, json=envelope([TESLA_ROW]))
+    httpx_mock.add_response(url=URL_HIRE_R1_DETAIL, json=TESLA_POSTING)
+
+    [result] = MokaScraper("hire-r1/tesla/100004142").fetch()
+
+    assert result.description == TESLA_TEXT
+    assert result.location == "Pudong, Shanghai, China; Chaoyang, Beijing, China"
+    assert result.country_iso == "CN"
+    assert result.region == "Asia"
+    assert result.department == "Engineering and R&D"
+    detail = httpx_mock.get_requests(url=URL_HIRE_R1_DETAIL)[0]
+    assert json.loads(detail.content) == {
+        "orgId": "tesla", "jobId": TESLA_JOB_ID, "siteId": 100004142,
+    }
+    assert detail.headers["referer"] == (
+        "https://hire-r1.mokahr.com/social-recruitment/tesla/100004142"
+    )
+
+
+def test_an_encrypted_posting_is_read(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL_APP, json=envelope([TESLA_ROW]))
+    httpx_mock.add_response(url=URL_APP_DETAIL, json=_encrypted(TESLA_POSTING))
+
+    [result] = MokaScraper("tesla/100004142").fetch()
+
+    assert result.description == TESLA_TEXT
+
+
+def test_a_closed_posting_leaves_the_row_as_listed(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL_APP, json=envelope([TESLA_ROW]))
+    httpx_mock.add_response(
+        url=URL_APP_DETAIL,
+        json=_encrypted({
+            "code": 703015, "codeType": 0, "success": False,
+            "msg": "您访问的职位已不存在，请浏览其他职位",
+        }),
+    )
+
+    [result] = MokaScraper("tesla/100004142").fetch()
+
+    assert result.description is None
+    assert result.location is None
+
+
+def test_get_description_reads_the_posting_and_its_places(httpx_mock) -> None:
+    httpx_mock.add_response(url=URL_HIRE_R1, json=envelope([TESLA_ROW]))
+    scraper = MokaScraper("hire-r1/tesla/100004142", include_descriptions=False)
+    [result] = scraper.fetch()
+    assert result.description is None
+
+    httpx_mock.add_response(url=URL_HIRE_R1_DETAIL, json=TESLA_POSTING)
+
+    assert scraper.get_description(result) == TESLA_TEXT
+    assert result.location == "Pudong, Shanghai, China; Chaoyang, Beijing, China"
+
+
+def test_a_listed_place_is_kept_over_the_postings(httpx_mock) -> None:
+    row = {**TESLA_ROW, "locations": [{"cityName": "上海市", "provinceName": "上海", "country": "中国"}]}
+    httpx_mock.add_response(url=URL_HIRE_R1, json=envelope([row]))
+    httpx_mock.add_response(url=URL_HIRE_R1_DETAIL, json=TESLA_POSTING)
+
+    [result] = MokaScraper("hire-r1/tesla/100004142").fetch()
+
+    assert result.location == "上海市, 上海, 中国"
+    assert result.description == TESLA_TEXT
