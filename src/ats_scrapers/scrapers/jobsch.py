@@ -207,6 +207,8 @@ class _Search:
         self.fetcher = fetcher
         self.via_proxy = via_proxy
         self.throttle = throttle
+        # Whether this fetch's search has been answered: the throttle outlives it.
+        self.answered = False
         self.reopen = False
         self._sem = asyncio.Semaphore(MAX_CONCURRENCY)
         self._reopening = asyncio.Lock()
@@ -575,8 +577,9 @@ class JobsChScraper(BaseScraper):
             sent_at, response = await search.send(query)
             if response.status_code != 403:
                 throttle.passed(sent_at)
+                search.answered = True
                 break
-            if not search.via_proxy and not throttle.answered:
+            if not search.via_proxy and not search.answered:
                 # The address is refused outright (datacenter IPs).
                 raise _BlockedError(f"jobs.ch returned 403 at start={start}")
             if throttle.paused_since(sent_at):

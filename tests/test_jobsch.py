@@ -878,3 +878,29 @@ def test_job_page_waits_its_turn_after_the_api_request(httpx_mock) -> None:
 
     assert scraper.get_description(job) == "Original text."
     assert sent[1] - sent[0] >= 0.25
+
+
+def test_a_later_fetch_refused_directly_falls_back_to_the_proxy_at_once(
+    httpx_mock, _proxy_env, monkeypatch,
+) -> None:
+    """The direct route answered an earlier fetch; refused at the next one's first
+    request, it is refused outright, not blocked."""
+    make_fetcher = JobsChScraper.make_fetcher
+
+    def tagged(self, **overrides: Any):
+        route = "proxy" if overrides.get("proxy") else "direct"
+        return make_fetcher(self, headers={**JobsChScraper.default_headers, "X-Route": route}, **overrides)
+
+    monkeypatch.setattr(JobsChScraper, "make_fetcher", tagged)
+    board = _page([_doc(job_id="j1", title="One")], 1)
+    httpx_mock.add_response(url=_API_RE, match_headers={"X-Route": "direct"}, json=board)
+    scraper = JobsChScraper("any", include_descriptions=False)
+    scraper.fetch()
+    httpx_mock.add_response(
+        url=_API_RE, match_headers={"X-Route": "direct"}, status_code=403, is_reusable=True,
+    )
+    httpx_mock.add_response(url=_API_RE, match_headers={"X-Route": "proxy"}, json=board)
+
+    assert len(scraper.fetch()) == 1
+    routes = [r.headers["X-Route"] for r in httpx_mock.get_requests(url=_API_RE)]
+    assert routes == ["direct", "direct", "proxy"]
