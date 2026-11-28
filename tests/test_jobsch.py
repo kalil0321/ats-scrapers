@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -37,7 +39,7 @@ def _detail_page_stub(httpx_mock) -> None:
         })
 
     httpx_mock.add_callback(default_detail, url=re.compile(
-        r"^https://www\.jobs\.ch/api/v1/public/search/job/(?!meta-1$|detail-test$|gone$)"
+        r"^https://www\.jobs\.ch/api/v1/public/search/job/(?!meta-1$|detail-test$|gone$|block-)"
     ), is_reusable=True, is_optional=True)
 
 
@@ -725,3 +727,59 @@ def test_detail_refused_without_a_proxy_is_asked_once(httpx_mock, _routes) -> No
 
     assert scraper.get_description(job) is None
     assert _detail_routes(httpx_mock) == ["direct"]
+
+
+# --- detail blocks ----------------------------------------------------------
+
+_BLOCK_DETAIL = re.compile(r"^https://www\.jobs\.ch/api/v1/public/search/job/block-\d+$")
+
+
+def _block_board(httpx_mock, count: int) -> list:
+    """Jobs whose search answered, read without descriptions."""
+    docs = [_doc(job_id=f"block-{i}", title=f"Job {i}") for i in range(count)]
+    httpx_mock.add_response(url=_API_RE, json=_page(docs, count))
+    return docs
+
+
+def test_detail_block_is_waited_out_by_every_reading_thread(httpx_mock, monkeypatch) -> None:
+    """A caller reads descriptions one job at a time from three threads. A block
+    partway through holds them all, and every job is read once it lifts."""
+    from ats_scrapers.scrapers import jobsch
+
+    monkeypatch.setattr(jobsch, "BLOCK_PAUSES", (0.05,) * 5)
+    _block_board(httpx_mock, 12)
+    asked = 0
+    lock = threading.Lock()
+
+    def detail(request: httpx.Request) -> httpx.Response:
+        nonlocal asked
+        with lock:
+            asked += 1
+            refuse = 4 <= asked < 8
+        if refuse:
+            return httpx.Response(403, text="<html>blocked</html>")
+        return httpx.Response(200, json={
+            "job_id": request.url.path.split("/")[-1], "template_text": "<p>Full posting.</p>",
+        })
+
+    httpx_mock.add_callback(detail, url=_BLOCK_DETAIL, is_reusable=True)
+    scraper = JobsChScraper("any", include_descriptions=False)
+    jobs = scraper.fetch()
+
+    with ThreadPoolExecutor(3) as pool:
+        texts = list(pool.map(scraper.get_description, jobs))
+
+    assert texts == ["Full posting."] * 12
+
+
+def test_detail_block_that_outlasts_every_pause_ends_detail_requests(httpx_mock) -> None:
+    from ats_scrapers.scrapers import jobsch
+
+    _block_board(httpx_mock, 2)
+    httpx_mock.add_response(url=_BLOCK_DETAIL, status_code=403, is_reusable=True)
+    scraper = JobsChScraper("any", include_descriptions=False)
+    one, two = scraper.fetch()
+
+    assert scraper.get_description(one) is None
+    assert scraper.get_description(two) is None
+    assert len(httpx_mock.get_requests(url=_BLOCK_DETAIL)) == len(jobsch.BLOCK_PAUSES) + 1
