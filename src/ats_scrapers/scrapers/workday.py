@@ -735,7 +735,11 @@ class WorkdayScraper(BaseScraper):
         size: int,
     ) -> int | None:
         """How many jobs of a capped search the split facet misses and no
-        other facet reaches, logged; None when that cannot be counted."""
+        other facet reaches, logged; None when that cannot be counted.
+
+        A facet giving postings several values, like :func:`_covers`, is taken
+        to reach them all unless its listing stops at :data:`FACET_VALUE_CAP`.
+        """
         param, value_ids = covered
         filtered = sorted(applied_facets) or "nothing"
         total = int(reached.get("total", 0))
@@ -749,11 +753,14 @@ class WorkdayScraper(BaseScraper):
                 listed,
                 _job_count(total, reached.get("facets") or [], {*applied_facets, param}),
             )
+        elif len(value_ids) < FACET_VALUE_CAP:
+            return 0
         else:
             logger.warning(
                 "Workday (%s): a search filtered on %s holds %d jobs; %s gives some "
-                "several values, so the jobs with none cannot be counted",
-                self.company_slug, filtered, size, param,
+                "several values and lists only %d, so the jobs with none of them "
+                "cannot be counted",
+                self.company_slug, filtered, size, param, FACET_VALUE_CAP,
             )
             return None
         missed = max(0, size - reached_jobs)

@@ -459,11 +459,12 @@ def test_a_capped_value_no_facet_narrows_is_read_as_far_as_it_shows(httpx_mock, 
 
 
 def test_jobs_without_a_skill_that_cannot_be_counted_are_logged(httpx_mock, small_cap, caplog) -> None:
-    """60 of 90 jobs have two skills each; the search for them stops at the cap."""
+    """60 of 90 jobs have two of 60 skills, listed 55 at most; the search
+    for them stops at the cap."""
     jobs = {
         f"R{i}": {
             "jobFamilyGroup": ["a"],
-            **({"workerSubType": [f"s{i % 3}", f"s{i % 3 + 3}"]} if i < 60 else {}),
+            **({"workerSubType": [f"s{i}", f"s{(i + 1) % 60}"]} if i < 60 else {}),
         }
         for i in range(90)
     }
@@ -473,8 +474,22 @@ def test_jobs_without_a_skill_that_cannot_be_counted_are_logged(httpx_mock, smal
     with caplog.at_level("WARNING", logger="ats_scrapers.scrapers.workday"):
         WorkdayScraper(URL, include_descriptions=False).fetch()
 
-    assert "workerSubType gives some several values, so the jobs with none cannot be counted" in caplog.text
+    assert "workerSubType gives some several values and lists only 55" in caplog.text
 
+
+def test_a_full_listing_with_several_values_per_job_is_not_paged(httpx_mock, small_cap) -> None:
+    """Each job names two of six cities: the cities are taken to reach them all."""
+    jobs = {
+        f"R{i}": {"jobFamilyGroup": ["a"], "locations": [f"c{i % 3}", f"c{i % 3 + 3}"]}
+        for i in range(90)
+    }
+    jobs["R99"] = {"jobFamilyGroup": ["b"]}
+    board = _Board(jobs)
+    httpx_mock.add_callback(board.reply, url=API, is_reusable=True)
+
+    WorkdayScraper(URL, include_descriptions=False).fetch()
+
+    assert (json.dumps({"jobFamilyGroup": ["a"]}), 20) not in board.pages
 
 
 def test_jobs_only_a_later_facet_reaches_are_read(httpx_mock, small_cap) -> None:
@@ -534,11 +549,12 @@ def test_a_value_a_later_facet_cannot_narrow_is_read_as_far_as_it_shows(httpx_mo
 
 
 def test_a_capped_search_shows_jobs_no_facet_reaches(httpx_mock, small_cap) -> None:
-    """60 of 90 jobs have two skills each; its own pages show the others."""
+    """60 of 90 jobs have two of 60 skills, listed 55 at most; the search's
+    own pages show the others."""
     jobs = {
         f"R{i}": {
             "jobFamilyGroup": ["a"],
-            **({"workerSubType": [f"s{i % 3}", f"s{i % 3 + 3}"]} if i >= 30 else {}),
+            **({"workerSubType": [f"s{i}", f"s{(i + 1) % 90}"]} if i >= 30 else {}),
         }
         for i in range(90)
     }
