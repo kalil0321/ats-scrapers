@@ -326,10 +326,12 @@ def _apply_jsonld_to_job(job: Job, html_text: str, *, replace_company: bool = Fa
         if employer:
             job.company = employer
 
-    if not job.description:
-        desc_html = posting.get("description")
-        if isinstance(desc_html, str) and desc_html.strip():
-            job.description = _strip(desc_html)[:25_000] or None
+    desc_html = posting.get("description")
+    if isinstance(desc_html, str):
+        full = _strip(desc_html)[:25_000]
+        # The search card shows only the posting's first paragraph or two.
+        if len(full) > len(job.description or ""):
+            job.description = full
 
     emp_raw = posting.get("employmentType")
     if isinstance(emp_raw, str):

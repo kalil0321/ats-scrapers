@@ -374,6 +374,73 @@ def test_extracts_description(httpx_mock) -> None:
     assert jobs[0].description == "Build space rockets."
 
 
+# A search card and the JSON-LD of its posting, as careers-hhsys.icims.com
+# serves them (trimmed): the card holds the overview's first sentence only.
+_HHSYS_JOB_URL = (
+    "https://careers-hhsys.icims.com/jobs/77260/cln-precertification-rep/job?in_iframe=1"
+)
+_HHSYS_CARD = f"""<li class="iCIMS_JobCardItem">
+<div class="row">
+<div class="col-xs-6 header left">
+<span class="sr-only field-label">Job Locations</span>
+<span >
+US-AL-Huntsville</span>
+</div>
+<div class="col-xs-12 title">
+<a href="{_HHSYS_JOB_URL}" class="iCIMS_Anchor" title="77260 - CLN Precertification Rep">
+<span class="sr-only field-label">Requisition Title</span>
+<h3 >
+CLN Precertification Rep</h3>
+</a>
+</div>
+<div class="col-xs-12 description">
+Responsible for reviewing requests for services that require pre-certification and or referrals.</div>
+</div>
+</li>"""
+_HHSYS_DETAIL = (
+    '<script type="application/ld+json">{"hiringOrganization":{"@type":"Organization",'
+    '"name":"Huntsville Hospital Health System"},"employmentType":"OTHER",'
+    '"@type":"JobPosting","description":"<h2>Overview<\\/h2>\\n<p>Responsible for '
+    "reviewing requests for services that require pre-certification and or referrals."
+    '<strong>&nbsp;<\\/strong><\\/p>\\n<h2>Qualifications<\\/h2>\\n<p><strong>Education:'
+    "&nbsp; <\\/strong>High School graduate of GED required.<\\/p>\\n<p><strong>Experience:"
+    "&nbsp; <\\/strong>Three years of insurance and/or billing experience including one "
+    'year of experience in a health care organization preferred.<\\/p>",'
+    '"title":"CLN Precertification Rep"}</script>'
+)
+
+
+def test_the_posting_replaces_the_search_card_summary(httpx_mock) -> None:
+    httpx_mock.add_response(url=_page_url("hhsys", 0), text=_page([_HHSYS_CARD]))
+    httpx_mock.add_response(url=_page_url("hhsys", 1), text=_page([]))
+    httpx_mock.add_response(url=_HHSYS_JOB_URL, text=_HHSYS_DETAIL)
+
+    [job] = iCIMSScraper("hhsys", company_name="Huntsville Hospital").fetch()
+
+    assert job.description == (
+        "Overview Responsible for reviewing requests for services that require "
+        "pre-certification and or referrals. Qualifications Education: High School "
+        "graduate of GED required. Experience: Three years of insurance and/or billing "
+        "experience including one year of experience in a health care organization "
+        "preferred."
+    )
+
+
+def test_a_card_summary_longer_than_the_posting_is_kept(httpx_mock) -> None:
+    card = _job_card("100", "Engineer", description="Build space rockets for a living.")
+    httpx_mock.add_response(url=_page_url("acme", 0), text=_page([card]))
+    httpx_mock.add_response(url=_page_url("acme", 1), text=_page([]))
+    httpx_mock.add_response(
+        url="https://careers-acme.icims.com/jobs/100/engineer/job?in_iframe=1",
+        text='<script type="application/ld+json">'
+        '{"@type": "JobPosting", "description": "<p>Rockets.</p>"}</script>',
+    )
+
+    [job] = iCIMSScraper("acme").fetch()
+
+    assert job.description == "Build space rockets for a living."
+
+
 def test_extracts_requisition_id(httpx_mock) -> None:
     card = _job_card("100", "Engineer", requisition_id="2026-100")
     httpx_mock.add_response(url=_page_url("acme", 0), text=_page([card]))
