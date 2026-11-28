@@ -62,7 +62,7 @@ def _job(
         "country": country,
         "department": department,
         "dateCreated": posted,
-        "descriptionTeaser": description,
+        "description": description,
     }
 
 
@@ -281,7 +281,7 @@ def test_location_falls_back_to_city_state_country_field(httpx_mock) -> None:
             "cityStateCountry": "Tokyo, Japan",
         }], 1),
     )
-    jobs = PhenomScraper(BASE).fetch()
+    jobs = PhenomScraper(BASE, include_descriptions=False).fetch()
     assert jobs[0].location == "Tokyo, Japan"
 
 
@@ -298,6 +298,139 @@ def test_description_strips_html_and_truncates(httpx_mock) -> None:
     assert len(jobs[0].description) <= 25_000
 
 
+# A search row and its job page widget as www.jobs-ups.com serves them
+# (trimmed): the search carries only the teaser.
+_UPS_TEASER = (
+    "This position provides direct support to the Americas Region Marketing team by "
+    "conducting research to address specific business needs, performing data analyses, "
+    "and creating recommendations based on f..."
+)
+_UPS_ROW = {
+    "jobId": "R26030511",
+    "title": "Americas Region Marketing Strategy Summer 2027 Intern (Evergreen)",
+    "city": "ATLANTA",
+    "state": "Georgia",
+    "country": "United States of America",
+    "category": "Marketing",
+    "descriptionTeaser": _UPS_TEASER,
+    "postedDate": "2026-09-01T00:00:00.000+0000",
+    "jobSeqNo": "UPBUPSGLOBALR26030511EXTERNALENUS",
+}
+_UPS_POSTING = {"jobDetail": {"status": 200, "hits": 1, "totalHits": 1, "data": {"job": {
+    "jobId": "R26030511",
+    "title": "Americas Region Marketing Strategy Summer 2027 Intern (Evergreen)",
+    "descriptionTeaser": _UPS_TEASER,
+    "description": (
+        '<p style="text-align:left"><span>Explore your next opportunity at a Fortune '
+        "Global 500 organization. We know what it takes to lead UPS into "
+        "tomorrow—people with a unique combination of skill &#43; passion.</span></p>"
+        '<p style="text-align:left"><b>Job Description:</b></p><div><div><p><span><span>'
+        "This position provides direct support to the Americas Region Marketing team by "
+        "conducting research to address specific business needs, performing data "
+        "analyses, and creating recommendations based on findings.</span></span></p></div>"
+        "<div><p><b><span>Responsibilities:</span></b><span> </span></p></div><div><ul><li>"
+        "<p><span>Develops actionable research objectives to address key business issues"
+        "</span></p></li></ul></div></div>"
+    ),
+}}}}
+_UPS_TEXT = (
+    "Explore your next opportunity at a Fortune Global 500 organization. We know what it "
+    "takes to lead UPS into tomorrow—people with a unique combination of skill + "
+    "passion. Job Description: This position provides direct support to the Americas "
+    "Region Marketing team by conducting research to address specific business needs, "
+    "performing data analyses, and creating recommendations based on findings. "
+    "Responsibilities: Develops actionable research objectives to address key business "
+    "issues"
+)
+_UPS_DETAIL_REQUEST = {
+    "lang": "en_us",
+    "deviceType": "desktop",
+    "country": "us",
+    "pageName": "job",
+    "ddoKey": "jobDetail",
+    "jobId": "R26030511",
+}
+
+
+def test_a_teaser_row_takes_the_text_of_its_posting(httpx_mock) -> None:
+    _seed_csrf(httpx_mock)
+    httpx_mock.add_response(url=WIDGETS_URL, json=_search_response([_UPS_ROW], 1))
+    httpx_mock.add_response(
+        url=WIDGETS_URL, match_json=_UPS_DETAIL_REQUEST, json=_UPS_POSTING
+    )
+
+    [job] = PhenomScraper(BASE).fetch()
+
+    assert job.description == _UPS_TEXT
+    detail = httpx_mock.get_requests(url=WIDGETS_URL)[-1]
+    assert detail.headers["x-csrf-token"] == "tok-abc-123"
+    assert detail.headers["referer"] == f"{BASE}/us/en/job/R26030511"
+
+
+_REFUSED = pytest.mark.parametrize("refusal", [
+    {"status_code": 403, "text": "Forbidden"},
+    {"text": '<html><script src="/_Incapsula_Resource?SWJIYLWA=5074a744"></script></html>'},
+    {"json": {"jobDetail": {"status": 200, "data": {"job": {"jobId": "R1"}}}}},
+    {"json": {"jobDetail": {"status": 404, "hits": 0, "data": {}}}},
+])
+
+
+@_REFUSED
+def test_a_posting_that_cannot_be_read_leaves_the_teaser(httpx_mock, refusal) -> None:
+    _seed_csrf(httpx_mock)
+    httpx_mock.add_response(url=WIDGETS_URL, json=_search_response([_UPS_ROW], 1))
+    httpx_mock.add_response(
+        url=WIDGETS_URL, match_json=_UPS_DETAIL_REQUEST, is_reusable=True, **refusal
+    )
+
+    [job] = PhenomScraper(BASE).fetch()
+
+    assert job.description == _UPS_TEASER
+
+
+def test_without_descriptions_a_teaser_row_waits_for_get_description(httpx_mock) -> None:
+    _seed_csrf(httpx_mock)
+    httpx_mock.add_response(url=WIDGETS_URL, json=_search_response([_UPS_ROW], 1))
+    scraper = PhenomScraper(BASE, include_descriptions=False)
+
+    [job] = scraper.fetch()
+    assert job.description is None
+
+    httpx_mock.add_response(
+        url=WIDGETS_URL, match_json=_UPS_DETAIL_REQUEST, json=_UPS_POSTING
+    )
+    assert scraper.get_description(job) == _UPS_TEXT
+
+
+@_REFUSED
+def test_get_description_falls_back_to_the_teaser(httpx_mock, refusal) -> None:
+    _seed_csrf(httpx_mock)
+    httpx_mock.add_response(url=WIDGETS_URL, json=_search_response([_UPS_ROW], 1))
+    scraper = PhenomScraper(BASE, include_descriptions=False)
+    [job] = scraper.fetch()
+    httpx_mock.add_response(
+        url=WIDGETS_URL, match_json=_UPS_DETAIL_REQUEST, is_reusable=True, **refusal
+    )
+
+    assert scraper.get_description(job) == _UPS_TEASER
+
+
+def test_a_site_that_keeps_refusing_postings_is_asked_no_more(httpx_mock) -> None:
+    rows = [{**_UPS_ROW, "jobId": f"R{i}"} for i in range(phenom.MAX_POSTING_REFUSALS + 3)]
+    _seed_csrf(httpx_mock)
+    httpx_mock.add_response(url=WIDGETS_URL, json=_search_response(rows, len(rows)))
+    scraper = PhenomScraper(BASE, include_descriptions=False)
+    jobs = scraper.fetch()
+    httpx_mock.add_response(url=WIDGETS_URL, status_code=403, is_reusable=True)
+
+    assert [scraper.get_description(job) for job in jobs] == [_UPS_TEASER] * len(rows)
+    asked = {
+        json.loads(request.content).get("jobId")
+        for request in httpx_mock.get_requests(url=WIDGETS_URL)
+    }
+    assert asked - {None} == {f"R{i}" for i in range(phenom.MAX_POSTING_REFUSALS)}
+
+
 def test_url_is_full_when_relative(httpx_mock) -> None:
     _seed_csrf(httpx_mock)
     httpx_mock.add_response(
@@ -306,7 +439,7 @@ def test_url_is_full_when_relative(httpx_mock) -> None:
             "jobId": "X", "title": "Eng", "jobUrl": "/job/X",
         }], 1),
     )
-    jobs = PhenomScraper(BASE).fetch()
+    jobs = PhenomScraper(BASE, include_descriptions=False).fetch()
     assert str(jobs[0].url) == f"{BASE}/job/X"
 
 
@@ -316,7 +449,7 @@ def test_url_is_synthesized_when_missing(httpx_mock) -> None:
         url=WIDGETS_URL,
         json=_search_response([{"jobId": "X", "title": "Eng"}], 1),
     )
-    jobs = PhenomScraper(BASE).fetch()
+    jobs = PhenomScraper(BASE, include_descriptions=False).fetch()
     assert str(jobs[0].url) == f"{BASE}/us/en/job/X"
 
 
@@ -327,7 +460,9 @@ def test_synthesized_url_uses_configured_country_and_language(httpx_mock) -> Non
         url=f"{bell}/widgets",
         json=_search_response([{"jobId": "X", "title": "Eng"}], 1),
     )
-    jobs = PhenomScraper(bell, locale="fr_ca", country="ca").fetch()
+    jobs = PhenomScraper(
+        bell, locale="fr_ca", country="ca", include_descriptions=False
+    ).fetch()
     assert str(jobs[0].url) == f"{bell}/ca/fr/job/X"
 
 
@@ -341,7 +476,7 @@ def test_synthesized_url_follows_the_path_the_site_reports(httpx_mock) -> None:
         url=WIDGETS_URL,
         json=_search_response([{"jobId": "X", "title": "Eng"}], 1),
     )
-    jobs = PhenomScraper(BASE).fetch()
+    jobs = PhenomScraper(BASE, include_descriptions=False).fetch()
     assert str(jobs[0].url) == f"{BASE}/global/en/job/X"
 
 
@@ -355,7 +490,7 @@ def test_synthesized_url_ignores_a_reported_path_on_another_host(httpx_mock) -> 
         url=WIDGETS_URL,
         json=_search_response([{"jobId": "X", "title": "Eng"}], 1),
     )
-    jobs = PhenomScraper(BASE).fetch()
+    jobs = PhenomScraper(BASE, include_descriptions=False).fetch()
     assert str(jobs[0].url) == f"{BASE}/us/en/job/X"
 
 
@@ -549,7 +684,7 @@ def test_search_past_the_result_window_is_split_by_facet(httpx_mock, monkeypatch
     ]
     seen = _phenom_index(httpx_mock, monkeypatch, jobs, window=4)
 
-    found = PhenomScraper(BASE).fetch()
+    found = PhenomScraper(BASE, include_descriptions=False).fetch()
 
     assert sorted(int(j.ats_id) for j in found) == list(range(11))
     # "Stores" (9 jobs) is still too large, so it is split again by state.
@@ -564,7 +699,7 @@ def test_facet_that_leaves_jobs_out_is_not_used_to_split(httpx_mock, monkeypatch
     ]
     seen = _phenom_index(httpx_mock, monkeypatch, jobs, window=4)
 
-    found = PhenomScraper(BASE).fetch()
+    found = PhenomScraper(BASE, include_descriptions=False).fetch()
 
     assert len(found) == 9
     assert all("category" not in b["selected_fields"] for b in seen)
@@ -577,7 +712,7 @@ def test_window_is_read_and_shortfall_logged_when_no_facet_splits(
     _phenom_index(httpx_mock, monkeypatch, jobs, window=4)
 
     with caplog.at_level("WARNING", logger="ats_scrapers.scrapers.phenom"):
-        found = PhenomScraper(BASE).fetch()
+        found = PhenomScraper(BASE, include_descriptions=False).fetch()
 
     assert len(found) == 4
     assert "announced 7 jobs, collected 4" in caplog.text

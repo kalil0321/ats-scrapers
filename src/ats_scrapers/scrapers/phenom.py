@@ -20,11 +20,20 @@ Pagination: the first response includes ``totalHits``; we fan out the
 remaining offsets concurrently. The search serves only the first
 ``RESULT_WINDOW`` rows of a query, so a larger search is split by facet
 (category, then state, ...) until every part fits.
+
+Most sites list only ``descriptionTeaser``, the posting's first 200 to 300
+characters. The full text comes from the same endpoint, one job at a time::
+
+    POST {base_url}/widgets  {"ddoKey": "jobDetail", "jobId": ..., ...}
+
+``afetch`` reads it for every such job when ``include_descriptions`` is set;
+otherwise ``get_description`` reads it on demand.
 """
 
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import re
 from datetime import UTC, datetime
@@ -46,6 +55,9 @@ MAX_CONCURRENCY = 8
 # Pages past this many rows come back empty while ``totalHits`` still counts
 # every job.
 RESULT_WINDOW = 9_900
+# A site that refuses the posting widget this many times in a row refuses it
+# for every job: the rest keep their teasers without a request each.
+MAX_POSTING_REFUSALS = 5
 # Facets that split a search larger than the window, in order of preference.
 # ``city`` is last: its aggregation lists at most 1,000 values.
 PARTITION_FIELDS = ("category", "state", "country", "city")
@@ -140,6 +152,10 @@ class PhenomScraper(BaseScraper):
         self.country = country
         host = urlparse(self.base_url).hostname or company_slug
         self.company_name = host
+        # Listing teasers of the jobs listed without their full text, by job
+        # id: what a job keeps when its posting cannot be read.
+        self._teasers: dict[str, str] = {}
+        self._refusals = 0
 
     async def afetch(self) -> list[Job]:
         async with self.make_fetcher(missing_host_not_found=True) as fetch:
@@ -152,7 +168,87 @@ class PhenomScraper(BaseScraper):
                     "Phenom (%s) announced %d jobs, collected %d",
                     self.base_url, total, len(jobs),
                 )
+            if self.include_descriptions:
+                await asyncio.gather(*(
+                    self._fill_description(fetch, csrf, sem, job)
+                    for job in jobs.values()
+                    if not job.description
+                ))
             return list(jobs.values())
+
+    def get_description(self, job: Job) -> str | None:
+        if job.description:
+            return job.description
+
+        async def run() -> str | None:
+            async with self.make_fetcher() as fetch:
+                return await self._description(fetch, None, job)
+
+        return self._run_sync(run())
+
+    async def _fill_description(
+        self,
+        fetch: Fetcher,
+        csrf: str | None,
+        sem: asyncio.Semaphore,
+        job: Job,
+    ) -> None:
+        async with sem:
+            job.description = await self._description(fetch, csrf, job)
+
+    async def _description(
+        self,
+        fetch: Fetcher,
+        csrf: str | None,
+        job: Job,
+    ) -> str | None:
+        """The posting's full text, or its listing teaser when it cannot be read."""
+        if self._refusals < MAX_POSTING_REFUSALS:
+            try:
+                description = await self._posting_description(fetch, csrf, job.ats_id)
+            except (ScraperError, ValueError) as exc:
+                self._refusals += 1
+                logger.warning("Phenom posting %s could not be read: %s", job.url, exc)
+            else:
+                self._refusals = 0
+                if description:
+                    return description
+        return self._teasers.get(job.ats_id)
+
+    async def _posting_description(
+        self,
+        fetch: Fetcher,
+        csrf: str | None,
+        job_id: str,
+    ) -> str | None:
+        """The full text of one posting, from the job page's own widget."""
+        payload = {
+            "lang": self.locale,
+            "deviceType": "desktop",
+            "country": self.country,
+            "pageName": "job",
+            "ddoKey": "jobDetail",
+            "jobId": job_id,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+            "Origin": self.base_url,
+            "Referer": self._job_url(job_id),
+            "User-Agent": _USER_AGENT,
+        }
+        if csrf:
+            headers["x-csrf-token"] = csrf
+        response = await fetch.request(
+            "POST", f"{self.base_url}/widgets", json=payload, headers=headers
+        )
+        body = response.json()
+        detail = body.get("jobDetail") if isinstance(body, dict) else None
+        data = detail.get("data") if isinstance(detail, dict) else None
+        posting = data.get("job") if isinstance(data, dict) else None
+        if not isinstance(posting, dict) or str(posting.get("jobId") or "") != job_id:
+            return None
+        return _clean_description(posting.get("description"))
 
     async def _collect(
         self,
@@ -392,6 +488,12 @@ class PhenomScraper(BaseScraper):
                     employment_type = mapped
                     break
 
+        description = _clean_description(item.get("description"))
+        if description is None:
+            teaser = _clean_description(item.get("descriptionTeaser"))
+            if teaser:
+                self._teasers[ats_id] = teaser
+
         return Job(
             url=url,
             title=title,
@@ -405,10 +507,7 @@ class PhenomScraper(BaseScraper):
             engagement_type=engagement_from_label(commitment),
             commitment=commitment,
             requisition_id=str(item.get("jobSeqNo")) if item.get("jobSeqNo") else None,
-            # Prefer the full ``description`` field. ``descriptionTeaser`` is
-            # a short marketing summary (typically 1-2 sentences) and was
-            # silently truncating each posting to a fraction of its real body.
-            description=_clean_description(item.get("description") or item.get("descriptionTeaser")),
+            description=description,
             posted_at=_parse_iso(item.get("postedDate") or item.get("dateCreated") or item.get("createdAt")),
             fetched_at=datetime.now(UTC),
             raw=raw or None,
@@ -460,7 +559,7 @@ def _format_location(item: dict[str, Any]) -> str | None:
 def _clean_description(value: object) -> str | None:
     if not isinstance(value, str):
         return None
-    cleaned = re.sub(r"<[^>]+>", " ", value)
+    cleaned = html.unescape(re.sub(r"<[^>]+>", " ", value))
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if not cleaned:
         return None
