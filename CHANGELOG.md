@@ -7,6 +7,8 @@ All notable changes to **ats-scrapers** are documented here. The project follows
 
 ### Added
 
+- Command-line tools: `ats-scraper-search`, `ats-scraper-find`,
+  `ats-scraper-fetch` and `ats-scraper-fetch-url`. Each prints JSON.
 - onlyfy career pages (`onlyfy`).
 - Pandapé career pages (`pandape`).
 - CareerPlug hiring sites (`careerplug`).
