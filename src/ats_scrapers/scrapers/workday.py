@@ -21,8 +21,13 @@ For tenants with >2K jobs (e.g. Accenture), we subdivide by the
 the cap by further facets (time type, country, city, skills). Each
 filtered query has its own ≤2K cap, and the union covers the full set.
 
-The ``facets`` field in every response carries each value's true ``count``
-— so we can plan the subdivision optimally without extra probes.
+The ``facets`` field in every response carries each value's true ``count``,
+so the subdivision is planned without extra probes. Three traps: a facet
+the search filters on counts as if that filter were not applied, a facet
+lists at most 55 values, and jobs with no value for a facet are in none of
+its filtered searches. When the split facet misses jobs, one more search
+filtered on all its values shows, by the counts of another facet, where
+the missing jobs are, and those values are read too.
 
 Workday's Cloudflare front answers many plain Python clients with an HTTP 429
 bot challenge, depending on the TLS fingerprint and the address. Requests go
@@ -156,7 +161,16 @@ _SUBDIVISION_FACETS = (
 _IGNORED_FACETS = frozenset({"distance"})
 # Facets that give each posting at most one value: their counts add up to
 # at most the search's real size, while the reported total stops at 2,000.
-_SINGLE_VALUE_FACETS = ("jobFamilyGroup", "timeType", "workerSubType")
+# Some tenants use ``workerSubType`` for skills, several per posting.
+_SINGLE_VALUE_FACETS = ("jobFamilyGroup", "timeType")
+# A facet lists at most this many values: one listing this many may leave
+# some out.
+FACET_VALUE_CAP = 55
+# A facet whose counts add up to within this share of a search's size covers
+# it: counts drift by a few jobs between two searches.
+_COVERAGE_TOLERANCE = 0.01
+# Workday answers HTTP 500 to a search filtered on 500 values of one facet.
+_MAX_FILTER_VALUES = 100
 
 
 @ScraperRegistry.register(ATSType.WORKDAY)
@@ -564,12 +578,11 @@ class WorkdayScraper(BaseScraper):
 
         # total is capped at 2000. Try to subdivide further. The capped total
         # is a floor for the size when the parent gave none (the board root).
+        facets = first.get("facets") or []
+        applied = set(applied_facets)
+        size = _job_count(max(size or 0, total), facets, applied)
         facet = (
-            _pick_subdivision_facet(
-                first.get("facets") or [],
-                already_applied=set(applied_facets.keys()),
-                size=max(size or 0, total),
-            )
+            _pick_subdivision_facet(facets, already_applied=applied, size=size)
             if depth < MAX_SUBDIVISION_DEPTH
             else None
         )
@@ -599,6 +612,105 @@ class WorkdayScraper(BaseScraper):
             )
 
         await _run_all(child(v_id, count) for v_id, count in values)
+        # The size is a floor: a facet that seems to cover it may still miss jobs.
+        await self._exhaust_remainder(
+            client, api, sem,
+            applied_facets=applied_facets, param=param,
+            value_ids=[v_id for v_id, _ in values],
+            facets=facets, absorb=absorb, depth=depth, size=size,
+        )
+
+    async def _exhaust_remainder(
+        self,
+        client: httpx.AsyncClient | _AsyncCloakClient,
+        api: str,
+        sem: asyncio.Semaphore,
+        *,
+        applied_facets: dict[str, list[str]],
+        param: str,
+        value_ids: list[str],
+        facets: list[dict[str, Any]],
+        absorb,
+        depth: int,
+        size: int,
+    ) -> bool:
+        """Read the jobs of a capped search that none of ``value_ids`` of
+        ``param`` holds. False when no other facet tells where they are.
+
+        No search excludes a facet, so one search filtered on all of them
+        counts the jobs the split reached. For another facet, each value's
+        count in the search (``facets``) less its count there is how many
+        missed jobs it holds. The facet whose values hold the most is used.
+        A value is read whole when that costs at most a page for each missed
+        job; a larger one is narrowed down the same way.
+        """
+        if len(value_ids) > _MAX_FILTER_VALUES:
+            return False
+        self._check_deadline()
+        reached = await self._request(
+            client, api, sem,
+            applied_facets={**applied_facets, param: value_ids}, offset=0,
+        )
+        if reached is None:
+            return False
+        absorb(reached.get("jobPostings") or [])
+        plan = _remainder_plan(
+            facets, reached.get("facets") or [], skip={*applied_facets, param},
+        )
+        if plan is None:
+            reached_total = int(reached.get("total", 0))
+            # Below the cap the total is exact; above it, with one value per
+            # posting, the split values' counts add up to the jobs reached.
+            listed = dict(_facet_values(facets).get(param, ()))
+            missing = size - (
+                reached_total
+                if reached_total < QUERY_TOTAL_CAP
+                else max(
+                    _job_count(
+                        reached_total, reached.get("facets") or [], {*applied_facets, param},
+                    ),
+                    min(size, sum(listed.get(v_id, 0) for v_id in value_ids)),
+                )
+            )
+            if missing > PAGE_LIMIT:
+                logger.warning(
+                    "Workday (%s): about %d of %d jobs of a search filtered on %s "
+                    "have no %s, and no other facet reaches them",
+                    self.company_slug, missing, size,
+                    sorted(applied_facets) or "nothing", param,
+                )
+            return False
+        other, targets = plan
+
+        async def recover(value_id: str, count: int, missed: int) -> None:
+            self._check_deadline()
+            filters = {**applied_facets, other: [value_id]}
+            if count <= PAGE_LIMIT * max(missed, 5) or depth + 1 >= MAX_SUBDIVISION_DEPTH:
+                await self._exhaust_query(
+                    client, api, sem,
+                    applied_facets=filters, absorb=absorb, depth=depth + 1, size=count,
+                )
+                return
+            narrowed = await self._request(
+                client, api, sem, applied_facets=filters, offset=0,
+            )
+            if narrowed is None:
+                return
+            absorb(narrowed.get("jobPostings") or [])
+            located = await self._exhaust_remainder(
+                client, api, sem,
+                applied_facets=filters, param=param, value_ids=value_ids,
+                facets=narrowed.get("facets") or [], absorb=absorb,
+                depth=depth + 1, size=count,
+            )
+            total = int(narrowed.get("total", 0))
+            if not located and total < QUERY_TOTAL_CAP:
+                await self._fan_out_pages(
+                    client, api, sem, applied_facets=filters, total=total, absorb=absorb,
+                )
+
+        await _run_all(recover(*target) for target in targets)
+        return True
 
     async def _fan_out_pages(
         self,
@@ -1168,14 +1280,42 @@ def _extract_description(job_posting_info: dict[str, Any]) -> str | None:
     return None
 
 
-def _job_count(total: int, facets: list[dict[str, Any]]) -> int:
+def _job_count(
+    total: int,
+    facets: list[dict[str, Any]],
+    applied: Iterable[str] = (),
+) -> int:
     """A search's job count: its total, or more when the total is capped and
-    the counts of a single-value facet add up to more."""
+    the counts of a single-value facet add up to more. A facet the search
+    filters on counts the jobs of the search without that filter, so it is
+    left out."""
     values = _facet_values(facets)
+    skip = set(applied)
     return max(
         [total]
-        + [sum(count for _, count in values[p]) for p in _SINGLE_VALUE_FACETS if p in values]
+        + [
+            _facet_sum(values[p])
+            for p in _SINGLE_VALUE_FACETS
+            if p in values and p not in skip
+        ]
     )
+
+
+def _facet_sum(items: list[tuple[str, int]]) -> int:
+    return sum(count for _, count in items)
+
+
+def _covers(items: list[tuple[str, int]], size: int) -> bool:
+    """Whether a facet's values hold every job of a search of ``size`` jobs.
+
+    Counts that add up to more than the size come from postings with several
+    values; a facet listing :data:`FACET_VALUE_CAP` of them may then have
+    left out the values of the jobs it misses.
+    """
+    total = _facet_sum(items)
+    if total < size * (1 - _COVERAGE_TOLERANCE):
+        return False
+    return len(items) < FACET_VALUE_CAP or total <= size * (1 + _COVERAGE_TOLERANCE)
 
 
 def _pick_subdivision_facet(
@@ -1189,12 +1329,11 @@ def _pick_subdivision_facet(
 
     Skips facets that are already in ``already_applied`` (reusing the same
     facet would just hit the cap again) and facets with fewer than two
-    non-empty values. A facet whose counts add up to less than the search's
-    job count leaves the jobs without a value out of every split, so it is
-    used only when no other facet covers them all. The count is ``size``
-    or the largest sum of a single-value facet, whichever is higher. Tries
-    the priority list first, then falls back to the highest-cardinality
-    remaining facet.
+    non-empty values. The search's job count is ``size`` or the largest sum
+    of a single-value facet, whichever is higher. A facet that covers it is
+    preferred, one value per posting first, as the priority list orders
+    them, then the one with the most values. When none covers it, the facet
+    that reaches the most jobs is used.
     """
     values = _facet_values(facets)
     by_param = {
@@ -1202,28 +1341,70 @@ def _pick_subdivision_facet(
         for param, items in values.items()
         if param not in already_applied and len(items) >= 2
     }
-    size = _job_count(size or 0, facets)
-    if size:
-        # Counts drift by a few jobs between two searches.
-        complete = {
+    if not by_param:
+        return None
+    size = _job_count(size or 0, facets, already_applied)
+    rank = {param: i for i, param in enumerate(_SUBDIVISION_FACETS)}
+    complete = {param: items for param, items in by_param.items() if _covers(items, size)}
+    if complete:
+        exact = {
             param: items
-            for param, items in by_param.items()
-            if sum(count for _, count in items) >= size * 0.99
+            for param, items in complete.items()
+            if _facet_sum(items) <= size * (1 + _COVERAGE_TOLERANCE)
         }
-        if by_param and not complete:
-            logger.warning(
-                "Workday: no facet covers all %d jobs of a capped search; "
-                "the split leaves out the jobs without a value",
-                size,
-            )
-        by_param = complete or by_param
-    for preferred in _SUBDIVISION_FACETS:
-        if preferred in by_param:
-            return preferred, by_param[preferred]
-    if by_param:
-        param, values = max(by_param.items(), key=lambda kv: len(kv[1]))
-        return param, values
-    return None
+        pool = exact or complete
+        param = min(pool, key=lambda p: (rank.get(p, len(rank)), -len(pool[p])))
+        return param, pool[param]
+
+    def reach(param: str) -> tuple[bool, int, int, int]:
+        items = by_param[param]
+        # Several values per posting: the sum says little of the reach.
+        stacked = len(items) >= FACET_VALUE_CAP and _facet_sum(items) > size
+        return (
+            not stacked,
+            min(_facet_sum(items), size),
+            -rank.get(param, len(rank)),
+            len(items),
+        )
+
+    param = max(by_param, key=reach)
+    return param, by_param[param]
+
+
+def _remainder_plan(
+    facets: list[dict[str, Any]],
+    reached_facets: list[dict[str, Any]],
+    *,
+    skip: set[str],
+) -> tuple[str, list[tuple[str, int, int]]] | None:
+    """Where the jobs a split missed are: ``(param, [(value_id, count, missed)])``.
+
+    ``facets`` are the capped search's, ``reached_facets`` those of the same
+    search filtered on the values the split read. A value's count in the
+    first less its count in the second is how many missed jobs it holds. The
+    facet whose values hold the most is picked.
+    """
+    node = _facet_values(facets)
+    reached = _facet_values(reached_facets)
+    best: tuple[str, list[tuple[str, int, int]]] | None = None
+    best_key: tuple[int, int] | None = None
+    for param, items in node.items():
+        if param in skip:
+            continue
+        counts = dict(reached.get(param, ()))
+        # A value left out of a full listing may still hold reached jobs.
+        listed_all = len(counts) < FACET_VALUE_CAP
+        targets = [
+            (value_id, count, count - counts.get(value_id, 0))
+            for value_id, count in items
+            if (listed_all or value_id in counts) and count > counts.get(value_id, 0)
+        ]
+        if not targets:
+            continue
+        key = (sum(missed for *_, missed in targets), -len(targets))
+        if best_key is None or key > best_key:
+            best, best_key = (param, targets), key
+    return best
 
 
 def _facet_values(facets: object) -> dict[str, list[tuple[str, int]]]:
