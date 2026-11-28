@@ -55,8 +55,8 @@ MAX_CONCURRENCY = 8
 # Pages past this many rows come back empty while ``totalHits`` still counts
 # every job.
 RESULT_WINDOW = 9_900
-# A site that refuses the posting widget this many times in a row refuses it
-# for every job: the rest keep their teasers without a request each.
+# A site whose posting widget gives no text this many times in a row gives none
+# for any job: the rest keep their teasers without a request each.
 MAX_POSTING_REFUSALS = 5
 # Facets that split a search larger than the window, in order of preference.
 # ``city`` is last: its aggregation lists at most 1,000 values.
@@ -156,10 +156,14 @@ class PhenomScraper(BaseScraper):
         # id: what a job keeps when its posting cannot be read.
         self._teasers: dict[str, str] = {}
         self._refusals = 0
+        # The CSRF token and cookies the last search page gave, which the
+        # posting widget is asked with.
+        self._session: tuple[str | None, dict[str, str]] | None = None
 
     async def afetch(self) -> list[Job]:
         async with self.make_fetcher(missing_host_not_found=True) as fetch:
             csrf = await self._init_session(fetch)
+            self._refusals = 0
             jobs: dict[str, Job] = {}
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             total = await self._collect(fetch, csrf, {}, sem, jobs)
@@ -179,12 +183,25 @@ class PhenomScraper(BaseScraper):
     def get_description(self, job: Job) -> str | None:
         if job.description:
             return job.description
+        if self._refusals >= MAX_POSTING_REFUSALS:
+            return self._teasers.get(job.ats_id)
 
         async def run() -> str | None:
             async with self.make_fetcher() as fetch:
-                return await self._description(fetch, None, job)
+                if self._session is None:
+                    csrf = await self._init_session(fetch)
+                else:
+                    csrf, cookies = self._session
+                    fetch.cookies.update(cookies)
+                return await self._description(fetch, csrf, job)
 
-        return self._run_sync(run())
+        try:
+            return self._run_sync(run())
+        except ScraperError as exc:
+            # The search page that opens a session could not be read.
+            self._refusals += 1
+            logger.warning("Phenom (%s) session could not be opened: %s", self.base_url, exc)
+            return self._teasers.get(job.ats_id)
 
     async def _fill_description(
         self,
@@ -207,12 +224,12 @@ class PhenomScraper(BaseScraper):
             try:
                 description = await self._posting_description(fetch, csrf, job.ats_id)
             except (ScraperError, ValueError) as exc:
-                self._refusals += 1
+                description = None
                 logger.warning("Phenom posting %s could not be read: %s", job.url, exc)
-            else:
+            if description:
                 self._refusals = 0
-                if description:
-                    return description
+                return description
+            self._refusals += 1
         return self._teasers.get(job.ats_id)
 
     async def _posting_description(
@@ -316,11 +333,15 @@ class PhenomScraper(BaseScraper):
         self._resolved_site_path = _site_path_of(response.text, self.base_url)
         # Cookie-based csrf is the canonical path; some tenants only embed
         # the token in the page HTML.
-        for cookie in fetch.cookies.jar:
-            if "csrf" in cookie.name.lower():
-                return cookie.value
-        match = _CSRF_RE.search(response.text)
-        return match.group(1) if match else None
+        token = next(
+            (cookie.value for cookie in fetch.cookies.jar if "csrf" in cookie.name.lower()),
+            None,
+        )
+        if token is None:
+            match = _CSRF_RE.search(response.text)
+            token = match.group(1) if match else None
+        self._session = (token, {cookie.name: cookie.value for cookie in fetch.cookies.jar})
+        return token
 
     def _search_results_url(self) -> str:
         # `lang.split("_")[0]` → "en" from "en_ca" — Phenom URLs use the

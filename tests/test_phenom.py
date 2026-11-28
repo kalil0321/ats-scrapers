@@ -415,20 +415,79 @@ def test_get_description_falls_back_to_the_teaser(httpx_mock, refusal) -> None:
     assert scraper.get_description(job) == _UPS_TEASER
 
 
-def test_a_site_that_keeps_refusing_postings_is_asked_no_more(httpx_mock) -> None:
+@pytest.mark.parametrize("refusal", [
+    {"status_code": 403},
+    {"json": {"jobDetail": {"status": 404, "hits": 0, "data": {}}}},
+])
+def test_a_site_that_keeps_refusing_postings_is_asked_no_more(httpx_mock, refusal) -> None:
     rows = [{**_UPS_ROW, "jobId": f"R{i}"} for i in range(phenom.MAX_POSTING_REFUSALS + 3)]
     _seed_csrf(httpx_mock)
     httpx_mock.add_response(url=WIDGETS_URL, json=_search_response(rows, len(rows)))
     scraper = PhenomScraper(BASE, include_descriptions=False)
     jobs = scraper.fetch()
-    httpx_mock.add_response(url=WIDGETS_URL, status_code=403, is_reusable=True)
+    httpx_mock.add_response(url=WIDGETS_URL, is_reusable=True, **refusal)
 
     assert [scraper.get_description(job) for job in jobs] == [_UPS_TEASER] * len(rows)
-    asked = {
-        json.loads(request.content).get("jobId")
+    assert _detail_ids(httpx_mock) == [f"R{i}" for i in range(phenom.MAX_POSTING_REFUSALS)]
+
+
+def test_a_new_listing_asks_a_refusing_site_again(httpx_mock) -> None:
+    rows = [{**_UPS_ROW, "jobId": f"R{i}"} for i in range(phenom.MAX_POSTING_REFUSALS)]
+    _seed_csrf(httpx_mock)
+    httpx_mock.add_response(url=WIDGETS_URL, json=_search_response(rows, len(rows)))
+    scraper = PhenomScraper(BASE, include_descriptions=False)
+    for job in scraper.fetch():
+        httpx_mock.add_response(url=WIDGETS_URL, status_code=403)
+        scraper.get_description(job)
+
+    _seed_csrf(httpx_mock)
+    httpx_mock.add_response(url=WIDGETS_URL, json=_search_response([_UPS_ROW], 1))
+    [job] = scraper.fetch()
+    httpx_mock.add_response(url=WIDGETS_URL, match_json=_UPS_DETAIL_REQUEST, json=_UPS_POSTING)
+
+    assert scraper.get_description(job) == _UPS_TEXT
+
+
+def test_a_deferred_read_opens_a_session_first(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=SEARCH_URL, text=_csrf_page(), headers={"Set-Cookie": "PLAY_SESSION=s1; Path=/"}
+    )
+    httpx_mock.add_response(
+        url=WIDGETS_URL,
+        match_json=_UPS_DETAIL_REQUEST,
+        match_headers={"x-csrf-token": "tok-abc-123", "Cookie": "PLAY_SESSION=s1"},
+        json=_UPS_POSTING,
+    )
+    job = PhenomScraper(BASE)._parse_job(_UPS_ROW)
+    assert job is not None
+
+    assert PhenomScraper(BASE).get_description(job) == _UPS_TEXT
+
+
+def test_deferred_reads_reuse_the_listing_session(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=SEARCH_URL, text=_csrf_page(), headers={"Set-Cookie": "PLAY_SESSION=s1; Path=/"}
+    )
+    httpx_mock.add_response(url=WIDGETS_URL, json=_search_response([_UPS_ROW], 1))
+    scraper = PhenomScraper(BASE, include_descriptions=False)
+    [job] = scraper.fetch()
+    httpx_mock.add_response(
+        url=WIDGETS_URL,
+        match_json=_UPS_DETAIL_REQUEST,
+        match_headers={"x-csrf-token": "tok-abc-123", "Cookie": "PLAY_SESSION=s1"},
+        json=_UPS_POSTING,
+    )
+
+    assert scraper.get_description(job) == _UPS_TEXT
+    assert len(httpx_mock.get_requests(url=SEARCH_URL)) == 1
+
+
+def _detail_ids(httpx_mock) -> list[str]:
+    return [
+        body["jobId"]
         for request in httpx_mock.get_requests(url=WIDGETS_URL)
-    }
-    assert asked - {None} == {f"R{i}" for i in range(phenom.MAX_POSTING_REFUSALS)}
+        if (body := json.loads(request.content)).get("ddoKey") == "jobDetail"
+    ]
 
 
 def test_url_is_full_when_relative(httpx_mock) -> None:
