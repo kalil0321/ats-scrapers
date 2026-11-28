@@ -371,13 +371,33 @@ def test_reads_place_and_date_beside_a_link_that_holds_only_the_title(httpx_mock
     assert job.posted_at == datetime(2026, 11, 20, tzinfo=UTC)
 
 
-def test_rows_inside_an_outer_row_keep_their_own_place(httpx_mock) -> None:
-    rows = [_row(1, "Cook", "TX-Austin-78701"), _row(2, "Host", "OR-Eugene-97401")]
+def _title_only_row(job_id: int, title: str, place: str, posted: str) -> str:
+    return (
+        f'<div class="row"><div class="job-title col-md-7">'
+        f'<a href="/jobs/{job_id}"><span class="name">{title}</span></a></div>'
+        f'<div class="job-location col-md-3">{place}</div>'
+        f'<div class="job-post-date col-md-2">{posted}</div></div>'
+    )
+
+
+@pytest.mark.parametrize("title_only", [False, True])
+def test_rows_inside_an_outer_row_keep_their_own_place(httpx_mock, title_only: bool) -> None:
+    if title_only:
+        rows = [
+            _title_only_row(1, "Cook", "TX-Austin-78701", "11-20-26"),
+            _title_only_row(2, "Host", "OR-Eugene-97401", "11-18-26"),
+        ]
+    else:
+        rows = [
+            _row(1, "Cook", "TX-Austin-78701", "11-20-26"),
+            _row(2, "Host", "OR-Eugene-97401", "11-18-26"),
+        ]
     httpx_mock.add_response(url=LIST_URL, text=_page([f'<div class="row">{"".join(rows)}</div>']))
 
     jobs = CareerPlugScraper("acme", include_descriptions=False).fetch()
 
     assert [job.location for job in jobs] == ["Austin, TX", "Eugene, OR"]
+    assert [job.posted_at.day for job in jobs] == [20, 18]
 
 
 def test_a_site_with_nothing_open_is_no_jobs(httpx_mock) -> None:
