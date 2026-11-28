@@ -616,6 +616,22 @@ def test_postings_are_not_read_while_the_site_is_down(httpx_mock) -> None:
     assert [str(r.url) for r in httpx_mock.get_requests()] == [str(first.url)]
 
 
+def test_a_new_scrape_reads_postings_again(httpx_mock) -> None:
+    scraper = JobBankCAScraper("any", max_pages=1)
+    job = scraper._parse_job(_article(job_id="1"))
+    assert job is not None
+    httpx_mock.add_response(url=str(job.url), text=_OUTAGE_PAGE)
+    scraper.enrich_descriptions([job])
+    httpx_mock.add_response(url=_SEARCH_RE, html=_page([_article(job_id="2")]))
+    [listed] = scraper.fetch()
+    httpx_mock.add_response(url=str(listed.url), text=(
+        '<div class="job-posting-details-body">'
+        '<span property="description">Weld frames.</span></div>'
+    ))
+
+    assert scraper.get_description(listed) == "Weld frames."
+
+
 # --- module-level helpers ---------------------------------------------------
 
 

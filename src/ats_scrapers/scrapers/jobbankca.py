@@ -185,10 +185,11 @@ class JobBankCAScraper(BaseScraper):
         # ``en`` (default) → english site. ``fr`` → ``?lang=fra`` variant.
         self.language = language
         # Set once a posting page answers with the maintenance notice: the
-        # pages after it would too.
+        # pages after it in the same scrape would too.
         self._down = False
 
     async def afetch(self) -> list[Job]:
+        self._down = False
         return await self._fetch_async()
 
     def fetch(self) -> list[Job]:
