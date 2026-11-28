@@ -31,7 +31,9 @@ Some tenants refuse any ``jobOffset`` past 2,000 and state only "999+
 results": with 406 (Koch), or with a 500 error page (DHL, NVA, Booz Allen).
 A board that reaches that offset is read again in slices, one per value of a
 search form filter (``?731[]=6040``), split again while a slice still reaches
-the offset.
+the offset. A slice no filter splits is read sorted by posting date, oldest
+first and then newest first, which reaches every job of a slice under twice
+the cap.
 """
 
 from __future__ import annotations
@@ -40,10 +42,13 @@ import asyncio
 import html
 import json
 import logging
+import math
 import os
 import re
 import socket
+import threading
 import time
+import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -56,6 +61,7 @@ from ats_scrapers.cloud_browser import CloudBrowser
 from ats_scrapers.exceptions import CompanyNotFoundError, ScraperError
 from ats_scrapers.fetch import HostPacer
 from ats_scrapers.models import ATSType, Job
+from ats_scrapers.scrapers._posting_detail import body_text, job_posting
 from ats_scrapers.scrapers._slug import require_host_label, require_http_url
 from ats_scrapers.scrapers.base import BaseScraper, ScraperRegistry
 
@@ -87,6 +93,10 @@ MAX_SPLIT_VALUES = 500
 # Share of a capped walk's jobs that may be in no slice of a filter that
 # still counts as splitting the search.
 COVERAGE_SLACK = 0.01
+# A search no filter splits is read in this order both ways. The listing form
+# names the order's parameter ``jobSort`` or ``pipelineSort``.
+_SORT_KEY = "postedDate"
+_SORT_PARAM_RE = re.compile(r'\bname="((?:job|pipeline|project|folder)Sort)"')
 # Serves the values of a search filter that the form loads as you type.
 _OPTIONS_API = "_wizardPortalDatasetSingleColumnOptionsSearchApi"
 
@@ -106,13 +116,40 @@ _EMPLOYMENT_TYPE_LABELS = {
 }
 _LOCATION_LABELS = {
     "location", "work location(s)", "work location", "office",
-    "primary location", "city", "country",
+    "primary location", "job location", "site / location",
 }
+# Parts of a place given in fields of their own, joined in this order.
+_PLACE_PART_LABELS = (
+    {"city", "city / region", "suburb", "town"},
+    {"state", "state/province", "province", "county"},
+    {"country"},
+)
 _REMOTE_LABELS = {"remote?", "remote", "work mode", "workplace type"}
 _REQ_ID_LABELS = {"ref #", "ref. #", "ref no.", "reference number",
-                  "requisition id", "req id", "job id", "job ref"}
+                  "requisition id", "req id", "job id", "job ref", "requisition number"}
 _POSTED_LABELS = {"date published", "posted date", "publication date",
-                  "post date", "date posted"}
+                  "post date", "date posted", "posting date", "opening date", "posted"}
+_DEADLINE_LABELS = {"posting close date", "closing date", "close date", "application deadline"}
+_POSTED_FORMATS = (
+    "%A, %B %d, %Y",   # Monday, May 4, 2026
+    "%B %d, %Y",       # May 4, 2026
+    "%d %B %Y",        # 4 May 2026
+    "%d-%b-%Y",        # 04-May-2026
+    "%Y-%m-%d",
+    "%m-%d-%y",        # 05-05-26 (Ally)
+    "%d/%m/%Y",
+)
+
+# A field whose value has this markup, or at least BODY_VALUE_CHARS
+# characters, is a passage of the job body rather than a label/value fact.
+_BODY_MARKUP = (
+    "p", "ul", "ol", "li", "br", "table", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6",
+)
+BODY_VALUE_CHARS = 150
+_BLOCK = "article--details"
+_FIELD = "article__content__view__field"
+# Some portals load the job body into the page from this address.
+_DETAIL_WIDGET_RE = re.compile(r'"jobDetailWidget"\s*:\s*\{[^{}]*?"url"\s*:\s*"([^"]+)"')
 
 _EMPLOYMENT_TYPE_NORMALIZED = {
     "permanent": "FULL_TIME",
@@ -152,6 +189,10 @@ _RESULT_COUNT_RES = (
     re.compile(r'jobPaginationLegend[^>]*>[^<]*?(\d[\d.,]*)\s*[^\d<]*<'),
 )
 _ARIA_COUNT_RE = re.compile(r'\baria-label="\s*(\d[\d.,]*)')
+
+# Listing pages a board URL may end with. A portal can list every job on a
+# page of its own, such as ``AllJobs``.
+_LISTING_PAGES = ("/searchjobs", "/searchjobsmaps", "/alljobs")
 
 # Names of the job page in detail links. Portals can rename it: Maximus calls
 # it ``Job-Description``.
@@ -204,6 +245,10 @@ class _Listing:
     # The search lists the parent search's jobs at its start and at its last
     # page: the site ignored the filter value, so the slice splits nothing.
     repeats_parent: bool = False
+    # A page after the first could not be loaded.
+    stopped: bool = False
+    # The walk came back past where another walk of the search stopped.
+    met: bool = False
 
 
 @dataclass
@@ -279,6 +324,12 @@ class AvatureScraper(BaseScraper):
             )
         self.cloud_browser = cloud_browser
         self.pacer = pacer
+        # The client that read the board: "httpx", "httpcloak" or "browser".
+        self._reader: str | None = None
+        self._detail_lock = threading.Lock()
+        self._detail_http: httpx.Client | None = None
+        self._detail_cloak: Any = None
+        self._detail_finalizers: list[weakref.finalize] = []
         slug = company_slug.strip()
         if slug.startswith(("http://", "https://")):
             self.company_slug = require_http_url(slug, provider="AvatureScraper")
@@ -286,25 +337,36 @@ class AvatureScraper(BaseScraper):
             self.company_slug = require_host_label(slug, provider="AvatureScraper")
 
     def get_description(self, job: Job) -> str | None:
+        """Read ``job``'s page into it: the body, and the dates, place and
+        type the page gives.
+
+        After :meth:`fetch`, the page is read the way the board was read: a
+        board that refused httpx is not asked through httpx again, and only a
+        board read in the browser sends its job pages there.
+        """
         if job.description:
             return job.description
-        copy = job.model_copy()
+        reader = self._reader
+        if reader in (None, "httpx"):
+            self._read_detail_sync(job, self._get_page_sync)
+        if not job.description and reader in (None, "httpx", "httpcloak"):
+            self._read_detail_sync(job, self._get_page_via_httpcloak_sync)
+        browser = self.cloud_browser
+        if not job.description and browser is not None and reader in (None, "browser"):
 
-        async def run() -> str | None:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=True, proxy=self.proxy,
-            ) as client:
-                sem = asyncio.Semaphore(1)
-                await self._enrich_with_detail(client, sem, copy)
-            if not copy.description:
-                sem = asyncio.Semaphore(1)
-                await self._enrich_with_detail_via_httpcloak(sem, copy)
-            if not copy.description and self.cloud_browser is not None:
-                sem = asyncio.Semaphore(1)
-                await self._enrich_with_detail_via_browser(self.cloud_browser, sem, copy)
-            return copy.description
+            async def run() -> None:
+                await self._read_detail(job, lambda url: self._get_page_via_browser(browser, url))
 
-        return self._run_sync(run())
+            self._run_sync(run())
+        return job.description
+
+    def close(self) -> None:
+        """Release the connections ``get_description`` keeps open."""
+        with self._detail_lock:
+            finalizers, self._detail_finalizers = self._detail_finalizers, []
+            self._detail_http = self._detail_cloak = None
+        for finalizer in finalizers:
+            finalizer()
 
     async def afetch(self) -> list[Job]:
         base = self._resolve_base_url()
@@ -393,6 +455,7 @@ class AvatureScraper(BaseScraper):
             return json.loads(response.text)
 
         all_jobs = await self._read_board(page, options, base, company)
+        self._reader = "httpcloak"
 
         # Same TLS fingerprint for detail enrichment so we don't lose
         # the descriptions we just unlocked. Best-effort — a single
@@ -447,29 +510,59 @@ class AvatureScraper(BaseScraper):
     async def _enrich_with_detail_via_httpcloak(
         self, sem: asyncio.Semaphore, job: Job,
     ) -> None:
-        async with sem:
-            try:
-                response = await asyncio.to_thread(
-                    self._http_get_via_httpcloak_sync, str(job.url)
-                )
-            except Exception:
-                return
-        if response is None or response.status_code != 200:
-            return
-        fields, description = _parse_detail(response.text)
-        _apply_detail_to_job(job, fields, description)
+        async def get(url: str) -> str | None:
+            async with sem:
+                return await asyncio.to_thread(self._get_page_via_httpcloak_sync, url)
 
-    def _http_get_via_httpcloak_sync(self, url: str):
-        import httpcloak
+        await self._read_detail(job, get)
 
-        self._pace_sync(url)
+    def _get_page_via_httpcloak_sync(self, url: str) -> str | None:
         try:
-            return httpcloak.get(
-                url, headers=_BROWSER_HEADERS, timeout=self.timeout,
-                **self._httpcloak_proxy(),
-            )
+            response = self._http_get_via_httpcloak_sync(url)
         except Exception:
             return None
+        if response is None or response.status_code != 200:
+            return None
+        return response.text
+
+    def _http_get_via_httpcloak_sync(self, url: str):
+        """One job page through the kept httpcloak session."""
+        self._pace_sync(url)
+        try:
+            return self._detail_session().get(url, headers=_BROWSER_HEADERS)
+        except Exception:
+            return None
+
+    def _detail_session(self) -> Any:
+        """The httpcloak session job pages are read with, opened on first use:
+        each request through a proxy would otherwise open a connection."""
+        import httpcloak
+
+        with self._detail_lock:
+            if self._detail_cloak is None:
+                session = httpcloak.Session(
+                    timeout=max(1, math.ceil(self.timeout)), **self._httpcloak_proxy(),
+                )
+                self._detail_finalizers.append(weakref.finalize(self, session.close))
+                self._detail_cloak = session
+            return self._detail_cloak
+
+    def _get_page_sync(self, url: str) -> str | None:
+        """One job page through the kept httpx client; None unless it answers 200."""
+        with self._detail_lock:
+            if self._detail_http is None:
+                client = httpx.Client(
+                    timeout=self.timeout, follow_redirects=True, proxy=self.proxy,
+                )
+                self._detail_finalizers.append(weakref.finalize(self, client.close))
+                self._detail_http = client
+            client = self._detail_http
+        self._pace_sync(url)
+        try:
+            response = client.get(url, headers=_BROWSER_HEADERS)
+        except httpx.HTTPError:
+            return None
+        return response.text if response.status_code == 200 else None
 
     def _post_json_via_httpcloak_sync(self, url: str, body: dict[str, Any]):
         import httpcloak
@@ -519,32 +612,34 @@ class AvatureScraper(BaseScraper):
                 return response.json()
 
             all_jobs = await self._read_board(page, options, base, company)
+            self._reader = "httpx"
 
             # Per-job detail fetch — Avature's search-results page has
             # only title/location/department; everything else (description,
             # employment type, requisition id, posted date, full location)
             # lives on /JobDetail/. We fetch concurrently with a small
             # semaphore so a slow tenant doesn't stall the pipeline.
-            sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
-            await asyncio.gather(*(
-                self._enrich_with_detail(client, sem, job)
-                for job in all_jobs
-            ))
+            if self.include_descriptions:
+                sem = asyncio.Semaphore(DETAIL_CONCURRENCY)
+                await asyncio.gather(*(
+                    self._enrich_with_detail(client, sem, job)
+                    for job in all_jobs
+                ))
         return all_jobs
 
     async def _enrich_with_detail(
         self, client: httpx.AsyncClient, sem: asyncio.Semaphore, job: Job,
     ) -> None:
-        async with sem:
-            await self._pace(str(job.url))
-            try:
-                response = await client.get(str(job.url), headers=_BROWSER_HEADERS)
-            except httpx.HTTPError:
-                return  # Detail enrichment is best-effort; keep the search row.
-            if response.status_code != 200:
-                return
-        fields, description = _parse_detail(response.text)
-        _apply_detail_to_job(job, fields, description)
+        async def get(url: str) -> str | None:
+            async with sem:
+                await self._pace(url)
+                try:
+                    response = await client.get(url, headers=_BROWSER_HEADERS)
+                except httpx.HTTPError:
+                    return None  # Detail enrichment is best-effort; keep the search row.
+            return response.text if response.status_code == 200 else None
+
+        await self._read_detail(job, get)
 
     async def _fetch_via_browser(
         self, browser: CloudBrowser, base: str, company: str,
@@ -570,6 +665,7 @@ class AvatureScraper(BaseScraper):
             return rendered.html, rendered.url or url
 
         all_jobs = await self._read_board(page, None, base, company)
+        self._reader = "browser"
 
         if self.include_descriptions:
             sem = asyncio.Semaphore(BROWSER_DETAIL_CONCURRENCY)
@@ -582,13 +678,43 @@ class AvatureScraper(BaseScraper):
     async def _enrich_with_detail_via_browser(
         self, browser: CloudBrowser, sem: asyncio.Semaphore, job: Job,
     ) -> None:
-        async with sem:
-            try:
-                page = await browser.render(str(job.url))
-            except Exception:
-                return  # Detail enrichment is best-effort; keep the search row.
-        fields, description = _parse_detail(page.html)
-        _apply_detail_to_job(job, fields, description)
+        async def get(url: str) -> str | None:
+            async with sem:
+                return await self._get_page_via_browser(browser, url)
+
+        await self._read_detail(job, get)
+
+    async def _get_page_via_browser(self, browser: CloudBrowser, url: str) -> str | None:
+        try:
+            return (await browser.render(url)).html
+        except Exception:
+            return None  # Detail enrichment is best-effort; keep the search row.
+
+    async def _read_detail(
+        self, job: Job, get: Callable[[str], Awaitable[str | None]],
+    ) -> bool:
+        """Fill ``job`` from its page; False when ``get`` could not load it."""
+        url = str(job.url)
+        page = await get(url)
+        if page is None:
+            return False
+        detail = _parse_detail(page, url)
+        if detail.widget is not None:
+            detail = _with_widget(detail, await get(detail.widget))
+        _apply_detail_to_job(job, detail)
+        return True
+
+    def _read_detail_sync(self, job: Job, get: Callable[[str], str | None]) -> bool:
+        """:meth:`_read_detail` with a blocking ``get``."""
+        url = str(job.url)
+        page = get(url)
+        if page is None:
+            return False
+        detail = _parse_detail(page, url)
+        if detail.widget is not None:
+            detail = _with_widget(detail, get(detail.widget))
+        _apply_detail_to_job(job, detail)
+        return True
 
     async def _fetch_page(
         self,
@@ -714,7 +840,8 @@ class AvatureScraper(BaseScraper):
 
         A filter is enough once the jobs the capped walk read turned up in its
         slices. Otherwise the next filter is read as well, since a job without
-        a value for the filter is in none of its slices.
+        a value for the filter is in none of its slices. A search no filter
+        splits is read sorted by posting date both ways.
         """
         found = {j.ats_id for j in listing.jobs}
         missing = set(found)
@@ -733,6 +860,10 @@ class AvatureScraper(BaseScraper):
                 missing -= ids
             if len(missing) <= slack:
                 return found
+        ids, complete = await self._read_both_ways(board, url, listing)
+        if complete:
+            return found | ids
+        found |= ids
         logger.warning(
             "Avature (%s): a search filtered on %s stops at offset %d and no "
             "filter splits it; %d of its first %d jobs are in no slice, so "
@@ -741,6 +872,38 @@ class AvatureScraper(BaseScraper):
             len(listing.jobs),
         )
         return found
+
+    async def _read_both_ways(
+        self, board: _Board, url: str, listing: _Listing,
+    ) -> tuple[set[str], bool]:
+        """Read the capped search at ``url`` oldest first, then newest first
+        until it meets what the first walk read; return the ids read and
+        whether they are all the search's jobs."""
+        match = _SORT_PARAM_RE.search(listing.first_html)
+        if match is None:
+            return set(), False
+        param = match.group(1)
+
+        def ordered(way: str) -> str:
+            return _with_query(url, [(param, _SORT_KEY), (f"{param}Direction", way)])
+
+        oldest = await self._walk(board, ordered("ASC"))
+        _keep(board.jobs, oldest.jobs)
+        read = {job.ats_id for job in oldest.jobs}
+        if oldest.stopped:
+            return read, False
+        if not oldest.capped:
+            return read, True
+        newest = await self._walk(
+            board, ordered("DESC"),
+            meet={job.ats_id: place for place, job in enumerate(oldest.jobs)},
+        )
+        _keep(board.jobs, newest.jobs)
+        read |= {job.ats_id for job in newest.jobs}
+        if newest.jobs[:1] and newest.jobs[0].ats_id == oldest.jobs[0].ats_id:
+            # The search ignores the order.
+            return read, False
+        return read, newest.met or not (newest.capped or newest.stopped)
 
     async def _read_slice(
         self, board: _Board, url: str, parent: _Listing, applied: frozenset[str],
@@ -754,16 +917,27 @@ class AvatureScraper(BaseScraper):
         return {j.ats_id for j in listing.jobs}
 
     async def _walk(
-        self, board: _Board, url: str, *, parent: _Listing | None = None,
+        self,
+        board: _Board,
+        url: str,
+        *,
+        parent: _Listing | None = None,
+        meet: dict[str, int] | None = None,
     ) -> _Listing:
         """Page through the search at ``url`` until its last page or the cap.
 
         A search that lists the first two pages and the last page of
         ``parent`` as ``parent`` does stops there with ``repeats_parent`` set.
+        ``meet`` places each job an oldest-first walk of the search read. A
+        newest-first walk stops, with ``met`` set, once it lists a job placed
+        before the first such job it listed. Jobs posted the same day can
+        come in the same order both ways: a walk entering them at the first
+        read one reaches the unread ones before it comes back past it.
         """
         base = board.base
         listing = _Listing()
         seen: set[str] = set()
+        first_met: int | None = None
         page_size = _page_size(base)
         offset, target = 0, url
         for page_num in range(MAX_PAGES):
@@ -773,6 +947,7 @@ class AvatureScraper(BaseScraper):
                 listing.capped = True
                 return listing
             except _ListingStoppedError:
+                listing.stopped = True
                 return listing
             page_jobs = self._parse_page(html_text, base, board.company)
             if page_num == 0:
@@ -788,6 +963,17 @@ class AvatureScraper(BaseScraper):
                 return listing
             seen.update(j.ats_id for j in new)
             listing.jobs.extend(new)
+            if meet is not None:
+                for job in page_jobs:
+                    place = meet.get(job.ats_id)
+                    if place is None:
+                        continue
+                    if first_met is None:
+                        first_met = place
+                    elif place < first_met:
+                        listing.met = True
+                if listing.met:
+                    return listing
             listing.tail = (offset, [j.ats_id for j in page_jobs])
             if page_num < 2:
                 listing.head = [j.ats_id for j in listing.jobs]
@@ -960,7 +1146,7 @@ def _search_url(base: str) -> str:
     parsed = urlparse(base)
     path = parsed.path.rstrip("/")
     lowered = path.lower()
-    if lowered.endswith("/searchjobs") or lowered.endswith("/searchjobsmaps"):
+    if lowered.endswith(_LISTING_PAGES):
         search_path = f"{path}/"
     elif not path or path.lstrip("/") in _LOCALE_PREFIXES:
         search_path = f"{path}/careers/SearchJobs/"
@@ -1027,7 +1213,7 @@ async def _search_filters(
     found: list[tuple[str, list[str]]] = []
     for form in soup.find_all("form"):
         action = urlparse(str(form.get("action") or "")).path.rstrip("/").lower()
-        if form.get("role") != "search" and not action.endswith(("/searchjobs", "/searchjobsmaps")):
+        if form.get("role") != "search" and not action.endswith(_LISTING_PAGES):
             continue
         for select in form.find_all("select"):
             name = str(select.get("name") or "")
@@ -1077,7 +1263,7 @@ async def _datasource_values(
     parsed = urlparse(page_url)
     portal = str(settings.get("portalUrlPath") or "")
     if not portal.startswith("/"):
-        portal = re.split(r"/searchjobs", parsed.path, maxsplit=1, flags=re.IGNORECASE)[0]
+        portal = re.split(r"/(?:searchjobs|alljobs)", parsed.path, maxsplit=1, flags=re.IGNORECASE)[0]
     endpoint = f"{parsed.scheme}://{parsed.netloc}{portal.rstrip('/')}/{_OPTIONS_API}"
     body = {
         "fieldId": name.removesuffix("[]"),
@@ -1207,24 +1393,50 @@ def _link_base(base: str) -> str:
     parsed = urlparse(base.rstrip("/"))
     path = parsed.path.rstrip("/")
     lowered = path.lower()
-    if lowered.endswith("/searchjobs") or lowered.endswith("/searchjobsmaps"):
+    if lowered.endswith(_LISTING_PAGES):
         path = path.rsplit("/", 1)[0]
     return urlunparse((parsed.scheme, parsed.netloc, path, "", "", parsed.fragment))
 
 
-def _parse_detail(html: str) -> tuple[dict[str, str], str | None]:
-    """Pull label/value fields and description from a JobDetail HTML page.
+@dataclass
+class _Detail:
+    """What a job page gives."""
 
-    Avature's detail page wraps content in repeated ``article--details``
-    blocks. The first one is "General Information" with labelled
-    ``article__content__view__field`` rows (e.g. *Career area* → *Risk*).
-    Subsequent blocks contain the free-form job body (one or more
-    unlabelled field rows).
+    # Label/value facts, keyed by the label as shown.
+    fields: dict[str, str] = field(default_factory=dict)
+    description: str | None = None
+    # The page's schema.org JobPosting, or ``{}``.
+    posting: dict[str, Any] = field(default_factory=dict)
+    # Where the page loads the job body from, when the body is not in it.
+    widget: str | None = None
 
-    The label vocabulary varies per tenant — Bloomberg uses *Function*,
-    Astellas uses *Function/Business Area*, IBM uses *Career area*. The
-    raw label/value dict is returned so the caller can map across that
-    vocab in one place.
+
+@dataclass
+class _Field:
+    """One ``article__content__view__field`` row of a job page."""
+
+    label: str
+    # The value, one line per block.
+    text: str
+    # The value on one line.
+    flat: str
+    body: bool
+    hidden: bool
+    label_hidden: bool
+
+    @property
+    def passage(self) -> str:
+        if self.label and not self.label_hidden:
+            return f"{self.label}\n{self.text}"
+        return self.text
+
+
+def _parse_detail(page: str, url: str = "") -> _Detail:
+    """Read a job page: its label/value fields and its body.
+
+    The body is read from the first template the page uses: the portal's
+    ``article--details`` blocks, the description sections of older career
+    sites, ``infoSection`` blocks, then the page's JobPosting data.
     """
     try:
         from bs4 import BeautifulSoup
@@ -1233,68 +1445,150 @@ def _parse_detail(html: str) -> tuple[dict[str, str], str | None]:
             "Avature scraper requires beautifulsoup4."
         ) from exc
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(page, "html.parser")
     fields: dict[str, str] = {}
-    description_parts: list[str] = []
-
-    # ``article--details`` is a class — sometimes on <article>, sometimes
-    # on <div>. ``find_all(class_=...)`` handles both element kinds.
-    for blk in soup.find_all(class_="article--details"):
-        field_rows = [
-            d for d in blk.find_all("div")
-            if "article__content__view__field" in (d.get("class") or [])
-        ]
-        labeled_count = 0
-        for fr in field_rows:
-            lbl_el = fr.find(
-                "div", class_="article__content__view__field__label"
-            )
-            val_el = fr.find(
-                "div", class_="article__content__view__field__value"
-            )
-            label_text = lbl_el.get_text(strip=True) if lbl_el else ""
-            if label_text:
-                labeled_count += 1
-                if val_el is not None:
-                    value_text = re.sub(
-                        r"\s+", " ", val_el.get_text(" ", strip=True)
-                    )
-                    if value_text:
-                        fields[label_text] = value_text
-
-        # An "info" block has ≥2 labelled rows; everything else is body.
-        if labeled_count >= 2:
-            continue
-
-        # Unlabelled field rows = description chunks.
-        body_added = False
-        for fr in field_rows:
-            lbl_el = fr.find(
-                "div", class_="article__content__view__field__label"
-            )
-            if lbl_el and lbl_el.get_text(strip=True):
-                continue
-            val_el = fr.find(
-                "div", class_="article__content__view__field__value"
-            ) or fr
-            text = val_el.get_text(separator="\n", strip=True)
-            if text:
-                description_parts.append(text)
-                body_added = True
-        if not field_rows and not body_added:
-            content = blk.find("div", class_="article__content") or blk
-            text = content.get_text(separator="\n", strip=True)
-            if text and len(text) > 100:
-                description_parts.append(text)
-
-    description = "\n\n".join(description_parts).strip()
+    parts = _portal_body(soup, fields) or _classic_body(soup) or _section_body(soup)
+    for row in soup.find_all(class_="fieldSet"):
+        label = row.find(class_="fieldSetLabel")
+        value = row.find(class_="fieldSetValue")
+        if label is not None and value is not None:
+            name = label.get_text(" ", strip=True)
+            text = re.sub(r"\s+", " ", value.get_text(" ", strip=True))
+            if name and text:
+                fields.setdefault(name, text)
+    description = "\n\n".join(parts).strip()
     description = re.sub(r"\n{3,}", "\n\n", description)
-    return fields, description or None
+    posting = job_posting(page)
+    description = description or body_text(posting.get("description"))
+    widget = None
+    if not description and (match := _DETAIL_WIDGET_RE.search(page)):
+        widget = urljoin(url, html.unescape(match.group(1)))
+    return _Detail(fields, description or None, posting, widget)
 
 
-def _apply_detail_to_job(
-    job: Job, fields: dict[str, str], description: str | None,
-) -> None:
+def _portal_body(soup: Any, fields: dict[str, str]) -> list[str]:
+    """Passages of the body in ``article--details`` blocks; the facts go to
+    ``fields``.
+
+    A block whose passages hold at least half its text is body: its labelled
+    fields are sections ("Job Description", "Requirements"), except the
+    facts above its first passage. Otherwise it is a block of facts, unless
+    it has fewer than two labelled fields: then its unlabelled ones are body.
+    Some pages wrap their blocks in one more block; a row is read in the
+    block nearest to it.
+    """
+    parts: list[str] = []
+    for block in soup.find_all(class_=_BLOCK):
+        if block.find_parent("div", class_=_FIELD) is not None:
+            continue  # Pasted into a field from another job page.
+        # Rich text pasted from another job page can hold rows of its own.
+        rows = [
+            _read_field(row) for row in _outermost(block.find_all("div", class_=_FIELD))
+            if row.find_parent(class_=_BLOCK) is block
+        ]
+        if not rows:
+            if block.find(class_=_BLOCK) is None:
+                content = block.find("div", class_="article__content") or block
+                text = content.get_text(separator="\n", strip=True)
+                if len(text) > 100:
+                    parts.append(text)
+            continue
+        fields.update({row.label: row.flat for row in rows if row.label and row.flat})
+        shown = [row for row in rows if row.text and not row.hidden]
+        body = sum(len(row.flat) for row in shown if row.body)
+        if body and body * 2 >= sum(len(row.flat) for row in shown):
+            first = next(i for i, row in enumerate(shown) if row.body)
+            parts.extend(
+                row.passage for i, row in enumerate(shown)
+                if i >= first or not row.label
+            )
+        elif sum(bool(row.label) for row in rows) < 2:
+            parts.extend(row.text for row in shown if not row.label)
+    return parts
+
+
+def _read_field(row: Any) -> _Field:
+    classes = row.get("class") or []
+    label_el = row.find("div", class_=f"{_FIELD}__label", recursive=False)
+    value_el = row.find("div", class_=f"{_FIELD}__value", recursive=False)
+    label = label_el.get_text(strip=True) if label_el is not None else ""
+    if value_el is None:
+        # An unlabelled row may hold its text without a value element.
+        value_el = None if label else row
+    text = value_el.get_text(separator="\n", strip=True) if value_el is not None else ""
+    flat = re.sub(r"\s+", " ", value_el.get_text(" ", strip=True)) if value_el is not None else ""
+    return _Field(
+        label=label,
+        text=text,
+        flat=flat,
+        body=bool(text) and (
+            len(flat) >= BODY_VALUE_CHARS or value_el.find(_BODY_MARKUP) is not None
+        ),
+        hidden="visibility--hidden" in classes,
+        label_hidden="regular-field-label--hidden" in classes,
+    )
+
+
+def _classic_body(soup: Any) -> list[str]:
+    """The description sections of the older career-site templates, each
+    under its heading when it has one."""
+    parts: list[str] = []
+    for section in _outermost(soup.find_all(_is_classic_body)):
+        text = section.get_text(separator="\n", strip=True)
+        if not text:
+            continue
+        heading = section.find_previous_sibling(["h2", "h3", "h4"])
+        title = heading.get_text(" ", strip=True) if heading is not None else ""
+        parts.append(f"{title}\n{text}" if title else text)
+    return parts
+
+
+def _is_classic_body(tag: Any) -> bool:
+    return tag.name == "div" and (
+        tag.get("itemprop") == "description"
+        or not _CLASSIC_BODY_CLASSES.isdisjoint(tag.get("class") or [])
+    )
+
+
+_CLASSIC_BODY_CLASSES = frozenset({"jobDetailDescription", "jobDescription", "detailDescription"})
+
+
+def _section_body(soup: Any) -> list[str]:
+    """``infoSection`` blocks: a title and its text."""
+    parts: list[str] = []
+    for section in soup.find_all("div", class_="infoSection"):
+        content = section.find("div", class_="infoDes")
+        text = content.get_text(separator="\n", strip=True) if content is not None else ""
+        if not text:
+            continue
+        heading = section.find("div", class_="infoTitle")
+        title = heading.get_text(" ", strip=True) if heading is not None else ""
+        parts.append(f"{title}\n{text}" if title else text)
+    return parts
+
+
+def _with_widget(detail: _Detail, page: str | None) -> _Detail:
+    """``detail`` with the body its page loads from ``detail.widget``."""
+    if page is None:
+        return detail
+    loaded = _parse_detail(page, detail.widget or "")
+    return _Detail(
+        fields={**detail.fields, **loaded.fields},
+        description=loaded.description,
+        posting=detail.posting or loaded.posting,
+    )
+
+
+def _outermost(elements: list[Any]) -> list[Any]:
+    """``elements`` without those inside another of them."""
+    ids = {id(element) for element in elements}
+    return [
+        element for element in elements
+        if not any(id(parent) in ids for parent in element.parents)
+    ]
+
+
+def _apply_detail_to_job(job: Job, detail: _Detail) -> None:
     """Mutate ``job`` in place with values pulled from the detail page.
 
     Pydantic models with ``frozen=False`` (the default) allow attribute
@@ -1302,7 +1596,8 @@ def _apply_detail_to_job(
     datetimes where the schema expects them.
     """
     # Lower-cased field map for vocabulary lookup.
-    flat = {k.strip().lower().rstrip(":"): v for k, v in fields.items() if v}
+    flat = {k.strip().lower().rstrip(":").strip(): v for k, v in detail.fields.items() if v}
+    posting = detail.posting
 
     def first(label_set: set[str]) -> str | None:
         for label, value in flat.items():
@@ -1319,9 +1614,13 @@ def _apply_detail_to_job(
 
     # Location: detail page often has the canonical version (city +
     # state + country) compared to the listing page snippet.
-    detail_loc = first(_LOCATION_LABELS)
+    detail_loc = first(_LOCATION_LABELS) or ", ".join(
+        dict.fromkeys(part for part in map(first, _PLACE_PART_LABELS) if part)
+    )
     if detail_loc and (not job.location or len(detail_loc) > len(job.location)):
         job.location = detail_loc
+    if not job.location:
+        job.location = _posting_place(posting.get("jobLocation"))
 
     # Employment type — coerce to our enum.
     emp_raw = first(_EMPLOYMENT_TYPE_LABELS)
@@ -1331,29 +1630,26 @@ def _apply_detail_to_job(
             if key in norm:
                 job.employment_type = mapped  # type: ignore[assignment]
                 break
+    if not job.employment_type:
+        kinds = posting.get("employmentType")
+        for kind in kinds if isinstance(kinds, list) else [kinds]:
+            if kind in _POSTING_EMPLOYMENT_TYPES:
+                job.employment_type = kind
+                break
 
     # Requisition id (employer's own ref).
     req = first(_REQ_ID_LABELS)
     if req and not job.requisition_id:
         job.requisition_id = req
 
-    # Posted date — Avature serves human-formatted dates; try a couple of
-    # common forms and fall through silently if none match.
-    posted_raw = first(_POSTED_LABELS)
-    if posted_raw and not job.posted_at:
-        for fmt in (
-            "%A, %B %d, %Y",   # Monday, May 4, 2026
-            "%B %d, %Y",       # May 4, 2026
-            "%d %B %Y",        # 4 May 2026
-            "%Y-%m-%d",
-            "%m-%d-%y",        # 05-05-26 (Ally)
-            "%d/%m/%Y",
-        ):
-            try:
-                job.posted_at = datetime.strptime(posted_raw.strip(), fmt)
-                break
-            except ValueError:
-                continue
+    if not job.posted_at:
+        job.posted_at = _iso_date(posting.get("datePosted")) or _shown_date(
+            first(_POSTED_LABELS)
+        )
+    if not job.application_deadline:
+        job.application_deadline = _iso_date(posting.get("validThrough")) or _shown_date(
+            first(_DEADLINE_LABELS)
+        )
 
     # Remote flag.
     remote_raw = first(_REMOTE_LABELS)
@@ -1365,9 +1661,52 @@ def _apply_detail_to_job(
             job.is_remote = False
 
     # Description.
-    if description and not job.description:
+    if detail.description and not job.description:
         # Cap at ~12kB to avoid Pydantic warnings on extreme outliers.
-        job.description = description[:25_000]
+        job.description = detail.description[:25_000]
+
+
+_POSTING_EMPLOYMENT_TYPES = frozenset(
+    {"FULL_TIME", "PART_TIME", "CONTRACT", "INTERN", "TEMPORARY"}
+)
+
+
+def _posting_place(value: object) -> str | None:
+    """A JobPosting ``jobLocation`` as ``city, region, country``."""
+    places = value if isinstance(value, list) else [value]
+    labels: list[str] = []
+    for place in places:
+        address = place.get("address") if isinstance(place, dict) else None
+        if not isinstance(address, dict):
+            continue
+        parts = (
+            address.get(key) for key in ("addressLocality", "addressRegion", "addressCountry")
+        )
+        label = ", ".join(dict.fromkeys(
+            part.strip() for part in parts if isinstance(part, str) and part.strip()
+        ))
+        if label:
+            labels.append(label)
+    return "; ".join(dict.fromkeys(labels)) or None
+
+
+def _iso_date(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
+def _shown_date(value: str | None) -> datetime | None:
+    """A date as a job page shows it; None in a form not known here."""
+    for fmt in _POSTED_FORMATS:
+        try:
+            return datetime.strptime((value or "").strip(), fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def _environment_proxy() -> bool:
