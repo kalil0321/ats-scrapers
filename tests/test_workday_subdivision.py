@@ -509,3 +509,23 @@ def test_a_value_a_full_listing_leaves_out_is_read(httpx_mock, small_cap) -> Non
     scraped = WorkdayScraper(URL, include_descriptions=False).fetch()
 
     assert sorted(job.requisition_id for job in scraped) == sorted(jobs)
+
+
+def test_a_value_a_later_facet_cannot_narrow_is_read_as_far_as_it_shows(httpx_mock, monkeypatch) -> None:
+    """After the country-only jobs, one job with only a worker type is left in a 150-job value."""
+    monkeypatch.setattr(workday, "QUERY_TOTAL_CAP", 200)
+    jobs: dict[str, dict[str, list[str]]] = {
+        f"R{i}": {
+            "timeType": ["ft" if i % 2 else "pt"],
+            **({"locationCountry": ["c0"]} if i < 20 else {}),
+            **({"workerSubType": ["w0"]} if i < 149 else {}),
+        }
+        for i in range(300)
+    }
+    jobs |= {f"C{i}": {"locationCountry": ["c0"]} for i in range(10)}
+    jobs["W0"] = {"workerSubType": ["w0"]}
+    httpx_mock.add_callback(_Board(jobs).reply, url=API, is_reusable=True)
+
+    scraped = WorkdayScraper(URL, include_descriptions=False).fetch()
+
+    assert sorted(job.requisition_id for job in scraped) == sorted(jobs)

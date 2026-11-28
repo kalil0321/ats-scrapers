@@ -668,10 +668,14 @@ class WorkdayScraper(BaseScraper):
             facets, [(sign, payload.get("facets") or []) for sign, payload in reached], skip=skip,
         )
         if plan is None:
-            if len(covered) > 1:
-                return True
-            missed = self._unreached(applied_facets, covered[0], facets, reached[0][1], size)
-            return missed is not None and missed <= 0
+            if len(covered) == 1:
+                missed = self._unreached(applied_facets, covered[0], facets, reached[0][1], size)
+                return missed is not None and missed <= 0
+            totals = [(sign, int(payload.get("total", 0))) for sign, payload in reached]
+            # Totals below the cap are exact: their union counts the jobs read.
+            return all(total < QUERY_TOTAL_CAP for _, total in totals) and (
+                size <= sum(sign * total for sign, total in totals)
+            )
         other, targets = plan
 
         async def recover(value_id: str, count: int, missed: int) -> None:
